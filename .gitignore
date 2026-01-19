@@ -1,1 +1,8 @@
 /target
+
+# Built kernel binaries (build with: cd images/build && docker run ...)
+images/kernel/vmlinux-*
+
+# Built rootfs images
+images/rootfs/*.ext4
+images/rootfs/*.squashfs

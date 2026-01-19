@@ -1,0 +1,35 @@
+# Kernel build environment for agentkernel
+#
+# Build:
+#   docker build -t agentkernel-kernel-builder -f Dockerfile.kernel-builder .
+#
+# Run:
+#   docker run --rm -v "$(pwd)/../kernel:/kernel" agentkernel-kernel-builder 6.1.70
+
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    bc \
+    bison \
+    flex \
+    libelf-dev \
+    libssl-dev \
+    curl \
+    xz-utils \
+    cpio \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy build script and config
+COPY build-kernel.sh /build/
+RUN chmod +x /build/build-kernel.sh
+
+# The kernel config will be mounted at runtime
+RUN mkdir -p /kernel
+
+ENV BUILD_DIR=/tmp/kernel-build
+
+ENTRYPOINT ["/build/build-kernel.sh"]
+CMD ["6.1.70"]
