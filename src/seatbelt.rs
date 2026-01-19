@@ -5,8 +5,12 @@
 //!
 //! Note: This only works on macOS and requires the `sandbox-exec` command.
 
-use anyhow::{Context, Result, bail};
-use std::process::{Command, Output, Stdio};
+use anyhow::{Result, bail};
+#[cfg(target_os = "macos")]
+use anyhow::Context;
+use std::process::Output;
+#[cfg(target_os = "macos")]
+use std::process::{Command, Stdio};
 
 /// Security profile for Seatbelt sandbox
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -64,6 +68,7 @@ impl SeatbeltSandbox {
     }
 
     /// Generate the Seatbelt profile SBPL (Sandbox Profile Language)
+    #[allow(dead_code)]
     fn generate_profile(&self) -> String {
         match self.profile {
             SeatbeltProfile::Permissive => {
