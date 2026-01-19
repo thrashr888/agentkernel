@@ -1,10 +1,12 @@
 mod config;
+mod vmm;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::config::Config;
+use crate::vmm::VmManager;
 
 #[derive(Parser)]
 #[command(name = "agentkernel")]
@@ -120,7 +122,7 @@ memory_mb = 512
             name,
             agent,
             config,
-            dir,
+            dir: _,
         } => {
             let cfg = if let Some(config_path) = config {
                 Config::from_file(&config_path)?
@@ -128,11 +130,15 @@ memory_mb = 512
                 Config::minimal(&name, &agent)
             };
 
-            // TODO: Implement Firecracker VMM
-            // 1. Create VM configuration
-            // 2. Set kernel and rootfs paths based on cfg.sandbox.runtime
-            // 3. Configure vsock for communication
-            // 4. Create the microVM
+            // Check platform
+            #[cfg(not(target_os = "linux"))]
+            {
+                eprintln!("Warning: Firecracker requires Linux with KVM.");
+                eprintln!("On macOS, use the Docker-based runner (coming soon).");
+                eprintln!();
+            }
+
+            let mut manager = VmManager::new()?;
 
             println!(
                 "Creating sandbox '{}' with runtime '{}'...",
@@ -140,57 +146,102 @@ memory_mb = 512
             );
             println!("  vCPUs: {}", cfg.resources.vcpus);
             println!("  Memory: {} MB", cfg.resources.memory_mb);
-            if let Some(d) = dir {
-                println!("  Project: {}", d.display());
-            }
-            println!();
-            bail!("Firecracker VMM not yet implemented. See: plan/firecracker-pivot.md");
+
+            manager
+                .create(
+                    &name,
+                    &cfg.sandbox.runtime,
+                    cfg.resources.vcpus,
+                    cfg.resources.memory_mb,
+                )
+                .await?;
+
+            println!("\nSandbox '{}' created.", name);
+            println!("\nNext steps:");
+            println!("  agentkernel start {}", name);
+            println!("  agentkernel attach {}", name);
         }
         Commands::Start { name } => {
-            // TODO: Implement Firecracker VMM
-            // 1. Start the microVM
-            // 2. Wait for guest agent to be ready
-            bail!("Firecracker VMM not yet implemented. Sandbox: {}", name);
+            let mut manager = VmManager::new()?;
+
+            // Re-create the VM config (in a real impl, we'd persist this)
+            manager.create(&name, "base", 1, 512).await?;
+
+            println!("Starting sandbox '{}'...", name);
+            manager.start(&name).await?;
+            println!("Sandbox '{}' started.", name);
+            println!("\nTo attach: agentkernel attach {}", name);
         }
         Commands::Stop { name } => {
-            // TODO: Implement Firecracker VMM
-            // 1. Send shutdown signal via vsock
-            // 2. Wait for VM to terminate
-            bail!("Firecracker VMM not yet implemented. Sandbox: {}", name);
+            let mut manager = VmManager::new()?;
+            manager.create(&name, "base", 1, 512).await?;
+            println!("Stopping sandbox '{}'...", name);
+            manager.stop(&name).await?;
+            println!("Sandbox '{}' stopped.", name);
         }
         Commands::Remove { name } => {
-            // TODO: Implement Firecracker VMM
-            // 1. Stop VM if running
-            // 2. Clean up resources
-            bail!("Firecracker VMM not yet implemented. Sandbox: {}", name);
+            let mut manager = VmManager::new()?;
+            println!("Removing sandbox '{}'...", name);
+            manager.remove(&name).await?;
+            println!("Sandbox '{}' removed.", name);
         }
         Commands::Attach { name } => {
-            // TODO: Implement vsock communication
-            // 1. Connect to VM's vsock
-            // 2. Start interactive shell via guest agent
-            bail!("Firecracker VMM not yet implemented. Sandbox: {}", name);
+            let manager = VmManager::new()?;
+
+            if let Some(vm) = manager.get(&name) {
+                if !vm.is_running() {
+                    bail!(
+                        "Sandbox '{}' is not running. Start it with: agentkernel start {}",
+                        name,
+                        name
+                    );
+                }
+
+                // TODO: Connect via vsock and spawn interactive shell
+                println!("Attaching to sandbox '{}'...", name);
+                println!("(vsock communication not yet implemented)");
+                println!("\nVM vsock path: {}", vm.vsock_path().display());
+            } else {
+                bail!("Sandbox '{}' not found", name);
+            }
         }
         Commands::Exec { name, command } => {
             if command.is_empty() {
                 bail!("No command specified. Usage: agentkernel exec <name> <command...>");
             }
 
-            // TODO: Implement vsock communication
-            // 1. Connect to VM's vsock
-            // 2. Send command to guest agent
-            // 3. Stream stdout/stderr back
-            bail!(
-                "Firecracker VMM not yet implemented. Sandbox: {}, Command: {:?}",
-                name,
-                command
-            );
+            let manager = VmManager::new()?;
+
+            if let Some(vm) = manager.get(&name) {
+                if !vm.is_running() {
+                    bail!(
+                        "Sandbox '{}' is not running. Start it with: agentkernel start {}",
+                        name,
+                        name
+                    );
+                }
+
+                // TODO: Send command via vsock
+                println!("Executing in sandbox '{}': {:?}", name, command);
+                println!("(vsock communication not yet implemented)");
+            } else {
+                bail!("Sandbox '{}' not found", name);
+            }
         }
         Commands::List => {
-            // TODO: Implement Firecracker VMM
-            // 1. List running microVMs
-            println!("No sandboxes found.");
-            println!("\nFirecracker VMM not yet implemented.");
-            println!("See: plan/firecracker-pivot.md");
+            let manager = VmManager::new()?;
+            let vms = manager.list();
+
+            if vms.is_empty() {
+                println!("No sandboxes found.");
+                println!("\nCreate one with: agentkernel create <name>");
+            } else {
+                println!("{:<20} {:<10}", "NAME", "STATUS");
+                for (name, running) in vms {
+                    let status = if running { "running" } else { "stopped" };
+                    println!("{:<20} {:<10}", name, status);
+                }
+            }
         }
     }
 

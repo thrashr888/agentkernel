@@ -51,12 +51,32 @@ The `microvm.config` is optimized for Firecracker:
 
 ## Rootfs Images
 
-(TODO: Document rootfs build process)
+### Building Rootfs
 
-Target images:
-- `base.ext4` - Minimal Alpine (~20MB)
-- `python.ext4` - Python 3.12 runtime (~50MB)
-- `node.ext4` - Node.js 20 LTS (~40MB)
+The rootfs is built using Docker (works on any platform):
+
+```bash
+cd images/build
+
+# Build base image (~64MB)
+./build-rootfs.sh base
+
+# Build with Python runtime (~256MB)
+./build-rootfs.sh python
+
+# Build with Node.js runtime (~256MB)
+./build-rootfs.sh node
+```
+
+### Available Runtimes
+
+| Runtime | Size | Contents |
+|---------|------|----------|
+| `base` | ~64MB | Alpine Linux, busybox, guest agent |
+| `python` | ~256MB | Base + Python 3, pip |
+| `node` | ~256MB | Base + Node.js, npm |
+| `go` | ~512MB | Base + Go toolchain |
+| `rust` | ~512MB | Base + Rust, Cargo |
 
 ## Testing
 

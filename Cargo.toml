@@ -12,9 +12,19 @@ categories = ["command-line-utilities", "development-tools"]
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.0", features = ["derive"] }
+hyper = { version = "1.5", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
+http-body-util = "0.1"
 serde = { version = "1.0", features = ["derive"] }
-tokio = { version = "1.0", features = ["full"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full", "process", "net"] }
 toml = "0.8"
+uuid = { version = "1.0", features = ["v4"] }
+
+# Unix socket support for Firecracker API
+[target.'cfg(unix)'.dependencies]
+hyperlocal = "0.9"
+tokio-vsock = "0.6"
 
 [dev-dependencies]
 tempfile = "3.0"
