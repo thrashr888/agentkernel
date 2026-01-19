@@ -1,17 +1,14 @@
 mod config;
-mod docker;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use std::process::Command;
 
 use crate::config::Config;
-use crate::docker::DockerManager;
 
 #[derive(Parser)]
 #[command(name = "agentkernel")]
-#[command(about = "A Firecracker-inspired microkernel for AI coding agents")]
+#[command(about = "Run AI coding agents in secure, isolated microVMs")]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -29,7 +26,7 @@ enum Commands {
         #[arg(short, long, default_value = "claude")]
         agent: String,
     },
-    /// Create a new sandbox environment
+    /// Create a new sandbox (microVM)
     Create {
         /// Name of the sandbox
         name: String,
@@ -57,9 +54,6 @@ enum Commands {
     Remove {
         /// Name of the sandbox to remove
         name: String,
-        /// Force removal even if running
-        #[arg(short, long)]
-        force: bool,
     },
     /// Attach to a running sandbox (opens interactive shell)
     Attach {
@@ -80,8 +74,6 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
-
     let cli = Cli::parse();
 
     match cli.command {
@@ -105,27 +97,14 @@ async fn main() -> Result<()> {
 
 [sandbox]
 name = "{}"
-base_image = "ubuntu:24.04"
+runtime = "base"    # base, python, node, go, rust
 
 [agent]
-preferred = "{}"
-
-[dependencies]
-system = ["git", "curl"]
-
-[scripts]
-# setup = "echo 'Setting up...'"
-# test = "echo 'Running tests...'"
-
-[mounts]
-"." = "/app"
-
-[network]
-ports = []
+preferred = "{}"    # claude, gemini, codex, opencode
 
 [resources]
-memory_mb = 2048
-cpu_limit = 2.0
+vcpus = 1
+memory_mb = 512
 "#,
                 sandbox_name, agent
             );
@@ -133,10 +112,7 @@ cpu_limit = 2.0
             std::fs::write(&config_path, config_content)?;
             println!("Created agentkernel.toml for sandbox '{}'", sandbox_name);
             println!("\nNext steps:");
-            println!(
-                "  agentkernel create {} --config agentkernel.toml --dir .",
-                sandbox_name
-            );
+            println!("  agentkernel create {} --dir .", sandbox_name);
             println!("  agentkernel start {}", sandbox_name);
             println!("  agentkernel attach {}", sandbox_name);
         }
@@ -152,118 +128,69 @@ cpu_limit = 2.0
                 Config::minimal(&name, &agent)
             };
 
-            let docker = DockerManager::new().await?;
-            let project_dir = dir.as_deref();
-            let container_id = docker.create_sandbox(&cfg, project_dir).await?;
+            // TODO: Implement Firecracker VMM
+            // 1. Create VM configuration
+            // 2. Set kernel and rootfs paths based on cfg.sandbox.runtime
+            // 3. Configure vsock for communication
+            // 4. Create the microVM
+
             println!(
-                "Created sandbox '{}' (container: {})",
-                name,
-                &container_id[..12]
+                "Creating sandbox '{}' with runtime '{}'...",
+                name, cfg.sandbox.runtime
             );
-            println!("\nNext steps:");
-            println!("  agentkernel start {}", name);
-            println!("  agentkernel attach {}", name);
+            println!("  vCPUs: {}", cfg.resources.vcpus);
+            println!("  Memory: {} MB", cfg.resources.memory_mb);
+            if let Some(d) = dir {
+                println!("  Project: {}", d.display());
+            }
+            println!();
+            bail!("Firecracker VMM not yet implemented. See: plan/firecracker-pivot.md");
         }
         Commands::Start { name } => {
-            let docker = DockerManager::new().await?;
-            docker.start_sandbox(&name).await?;
-            println!("Started sandbox '{}'", name);
-            println!("\nTo attach: agentkernel attach {}", name);
+            // TODO: Implement Firecracker VMM
+            // 1. Start the microVM
+            // 2. Wait for guest agent to be ready
+            bail!("Firecracker VMM not yet implemented. Sandbox: {}", name);
         }
         Commands::Stop { name } => {
-            let docker = DockerManager::new().await?;
-            docker.stop_sandbox(&name).await?;
-            println!("Stopped sandbox '{}'", name);
+            // TODO: Implement Firecracker VMM
+            // 1. Send shutdown signal via vsock
+            // 2. Wait for VM to terminate
+            bail!("Firecracker VMM not yet implemented. Sandbox: {}", name);
         }
-        Commands::Remove { name, force: _ } => {
-            let docker = DockerManager::new().await?;
-            docker.remove_sandbox(&name).await?;
-            println!("Removed sandbox '{}'", name);
+        Commands::Remove { name } => {
+            // TODO: Implement Firecracker VMM
+            // 1. Stop VM if running
+            // 2. Clean up resources
+            bail!("Firecracker VMM not yet implemented. Sandbox: {}", name);
         }
         Commands::Attach { name } => {
-            let docker = DockerManager::new().await?;
-
-            // Check if sandbox is running
-            if !docker.is_sandbox_running(&name).await? {
-                bail!(
-                    "Sandbox '{}' is not running. Start it with: agentkernel start {}",
-                    name,
-                    name
-                );
-            }
-
-            let container_name = DockerManager::container_name(&name);
-            println!("Attaching to sandbox '{}' (Ctrl+D to detach)...\n", name);
-
-            // Spawn docker exec with interactive TTY
-            let status = Command::new("docker")
-                .args(["exec", "-it", &container_name, "/bin/bash"])
-                .status()?;
-
-            if !status.success() {
-                // Try sh if bash isn't available
-                let status = Command::new("docker")
-                    .args(["exec", "-it", &container_name, "/bin/sh"])
-                    .status()?;
-
-                if !status.success() {
-                    bail!("Failed to attach to sandbox");
-                }
-            }
+            // TODO: Implement vsock communication
+            // 1. Connect to VM's vsock
+            // 2. Start interactive shell via guest agent
+            bail!("Firecracker VMM not yet implemented. Sandbox: {}", name);
         }
         Commands::Exec { name, command } => {
             if command.is_empty() {
                 bail!("No command specified. Usage: agentkernel exec <name> <command...>");
             }
 
-            let docker = DockerManager::new().await?;
-
-            // Check if sandbox is running
-            if !docker.is_sandbox_running(&name).await? {
-                bail!(
-                    "Sandbox '{}' is not running. Start it with: agentkernel start {}",
-                    name,
-                    name
-                );
-            }
-
-            let container_name = DockerManager::container_name(&name);
-
-            // Build docker exec command - use -it only if we have a TTY
-            use std::io::IsTerminal;
-            let mut args = if std::io::stdin().is_terminal() {
-                vec!["exec", "-it", &container_name]
-            } else {
-                vec!["exec", &container_name]
-            };
-            let cmd_strs: Vec<&str> = command.iter().map(|s| s.as_str()).collect();
-            args.extend(cmd_strs);
-
-            let status = Command::new("docker").args(&args).status()?;
-
-            if !status.success() {
-                std::process::exit(status.code().unwrap_or(1));
-            }
+            // TODO: Implement vsock communication
+            // 1. Connect to VM's vsock
+            // 2. Send command to guest agent
+            // 3. Stream stdout/stderr back
+            bail!(
+                "Firecracker VMM not yet implemented. Sandbox: {}, Command: {:?}",
+                name,
+                command
+            );
         }
         Commands::List => {
-            let docker = DockerManager::new().await?;
-            let sandboxes = docker.list_sandboxes().await?;
-
-            if sandboxes.is_empty() {
-                println!("No sandboxes found.");
-                println!("\nCreate one with: agentkernel create <name>");
-            } else {
-                println!(
-                    "{:<20} {:<12} {:<10} {:<20} IMAGE",
-                    "NAME", "CONTAINER", "AGENT", "STATUS"
-                );
-                for s in sandboxes {
-                    println!(
-                        "{:<20} {:<12} {:<10} {:<20} {}",
-                        s.name, s.container_id, s.agent, s.status, s.image
-                    );
-                }
-            }
+            // TODO: Implement Firecracker VMM
+            // 1. List running microVMs
+            println!("No sandboxes found.");
+            println!("\nFirecracker VMM not yet implemented.");
+            println!("See: plan/firecracker-pivot.md");
         }
     }
 
