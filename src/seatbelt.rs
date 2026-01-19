@@ -5,9 +5,9 @@
 //!
 //! Note: This only works on macOS and requires the `sandbox-exec` command.
 
-use anyhow::{Result, bail};
 #[cfg(target_os = "macos")]
 use anyhow::Context;
+use anyhow::{Result, bail};
 use std::process::Output;
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
