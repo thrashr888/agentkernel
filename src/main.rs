@@ -8,6 +8,7 @@ mod mcp;
 mod permissions;
 mod setup;
 mod vmm;
+mod vsock;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
