@@ -1,7 +1,10 @@
+mod agents;
 mod config;
 mod docker_backend;
+mod http_api;
 mod languages;
 mod mcp;
+mod permissions;
 mod setup;
 mod vmm;
 
@@ -99,9 +102,26 @@ enum Commands {
         /// Docker image to use (overrides config)
         #[arg(short, long)]
         image: Option<String>,
+        /// Security profile: permissive, moderate (default), restrictive
+        #[arg(short, long, default_value = "moderate")]
+        profile: String,
+        /// Disable network access
+        #[arg(long)]
+        no_network: bool,
     },
     /// Start MCP server for Claude Code integration (JSON-RPC over stdio)
     McpServer,
+    /// Start HTTP API server for programmatic access
+    Serve {
+        /// Host to bind to
+        #[arg(short = 'H', long, default_value = "127.0.0.1")]
+        host: String,
+        /// Port to listen on
+        #[arg(short, long, default_value = "8080")]
+        port: u16,
+    },
+    /// List supported AI agents and their availability
+    Agents,
 }
 
 #[tokio::main]
@@ -299,6 +319,8 @@ memory_mb = 512
             config,
             keep,
             image,
+            profile,
+            no_network,
         } => {
             if command.is_empty() {
                 bail!("No command specified. Usage: agentkernel run [OPTIONS] <command...>");
@@ -313,8 +335,8 @@ memory_mb = 512
             // because user is explicitly specifying what to run
             let docker_image = if let Some(img) = image {
                 img
-            } else if let Some(config_path) = config {
-                let cfg = Config::from_file(&config_path)?;
+            } else if let Some(ref config_path) = config {
+                let cfg = Config::from_file(config_path)?;
                 cfg.docker_image()
             } else if let Some(img) = languages::detect_from_command(&command) {
                 // Command-based detection first for `run`
@@ -331,13 +353,33 @@ memory_mb = 512
                 }
             };
 
+            // Get permissions from profile
+            let mut perms = permissions::SecurityProfile::from_str(&profile)
+                .unwrap_or_default()
+                .permissions();
+
+            // Apply --no-network override
+            if no_network {
+                perms.network = false;
+            }
+
+            // Apply config overrides if present
+            if let Some(ref config_path) = config {
+                let cfg = Config::from_file(config_path)?;
+                let cfg_perms = cfg.get_permissions();
+                // Config overrides take precedence over CLI profile
+                if cfg.security.network.is_some() {
+                    perms.network = cfg_perms.network;
+                }
+            }
+
             let mut manager = VmManager::new()?;
 
             // Create
             manager.create(&sandbox_name, &docker_image, 1, 512).await?;
 
-            // Start
-            if let Err(e) = manager.start(&sandbox_name).await {
+            // Start with permissions
+            if let Err(e) = manager.start_with_permissions(&sandbox_name, &perms).await {
                 // Cleanup on failure
                 let _ = manager.remove(&sandbox_name).await;
                 bail!("Failed to start sandbox: {}", e);
@@ -370,6 +412,33 @@ memory_mb = 512
         }
         Commands::McpServer => {
             mcp::run_server().await?;
+        }
+        Commands::Serve { host, port } => {
+            let addr: std::net::SocketAddr = format!("{}:{}", host, port)
+                .parse()
+                .expect("Invalid address");
+            http_api::run_server(addr).await?;
+        }
+        Commands::Agents => {
+            println!("{:<15} {:<15} API KEY", "AGENT", "STATUS");
+            println!("{:-<45}", "");
+            for status in agents::list_agents() {
+                let install_status = if status.installed {
+                    "installed"
+                } else {
+                    "not installed"
+                };
+                let key_status = if status.api_key_set { "set" } else { "missing" };
+                println!(
+                    "{:<15} {:<15} {}",
+                    status.agent_type.name(),
+                    install_status,
+                    key_status
+                );
+                if !status.installed {
+                    println!("  → {}", status.install_instructions);
+                }
+            }
         }
     }
 

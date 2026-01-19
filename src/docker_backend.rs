@@ -6,6 +6,8 @@
 use anyhow::{Context, Result, bail};
 use std::process::Command;
 
+use crate::permissions::Permissions;
+
 /// Container runtime to use
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContainerRuntime {
@@ -74,7 +76,14 @@ impl ContainerSandbox {
     }
 
     /// Start the container with the specified image
+    #[allow(dead_code)]
     pub async fn start(&mut self, image: &str) -> Result<()> {
+        self.start_with_permissions(image, &Permissions::default())
+            .await
+    }
+
+    /// Start the container with the specified image and permissions
+    pub async fn start_with_permissions(&mut self, image: &str, perms: &Permissions) -> Result<()> {
         let cmd = self.runtime.cmd();
 
         // Check if container already exists
@@ -94,21 +103,33 @@ impl ContainerSandbox {
             let _ = Command::new(cmd).args(["rm", "-f", &existing_id]).output();
         }
 
-        // Start new container with overridden entrypoint to handle tool images
+        // Build container arguments
+        let mut args = vec![
+            "run".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            format!("agentkernel-{}", self.name),
+            "--hostname".to_string(),
+            "agentkernel".to_string(),
+        ];
+
+        // Add permission-based security args
+        args.extend(perms.to_docker_args());
+        args.extend(perms.get_env_args());
+        args.extend(perms.get_mount_args(None));
+
+        // Add entrypoint override for tool images
+        args.extend([
+            "--entrypoint".to_string(),
+            "sh".to_string(),
+            image.to_string(),
+            "-c".to_string(),
+            "while true; do sleep 3600; done".to_string(),
+        ]);
+
+        // Start new container
         let output = Command::new(cmd)
-            .args([
-                "run",
-                "-d",
-                "--name",
-                &format!("agentkernel-{}", self.name),
-                "--hostname",
-                "agentkernel",
-                "--entrypoint",
-                "sh",
-                image,
-                "-c",
-                "while true; do sleep 3600; done",
-            ])
+            .args(&args)
             .output()
             .context("Failed to start container")?;
 

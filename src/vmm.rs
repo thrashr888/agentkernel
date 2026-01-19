@@ -4,6 +4,7 @@
 //! or containers (Docker/Podman) as fallback when KVM is not available.
 
 use crate::docker_backend::{ContainerRuntime, ContainerSandbox, detect_container_runtime};
+use crate::permissions::Permissions;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -559,6 +560,12 @@ impl VmManager {
 
     /// Start a sandbox
     pub async fn start(&mut self, name: &str) -> Result<()> {
+        self.start_with_permissions(name, &Permissions::default())
+            .await
+    }
+
+    /// Start a sandbox with specific permissions
+    pub async fn start_with_permissions(&mut self, name: &str, perms: &Permissions) -> Result<()> {
         let state = self
             .sandboxes
             .get(name)
@@ -596,7 +603,7 @@ impl VmManager {
                 }
 
                 let mut sandbox = ContainerSandbox::with_runtime(name, runtime);
-                sandbox.start(&state.image).await?;
+                sandbox.start_with_permissions(&state.image, perms).await?;
                 self.container_sandboxes.insert(name.to_string(), sandbox);
             }
         }

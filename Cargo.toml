@@ -11,8 +11,9 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1.0"
+bytes = "1.0"
 clap = { version = "4.0", features = ["derive"] }
-hyper = { version = "1.5", features = ["client", "http1"] }
+hyper = { version = "1.5", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
 http-body-util = "0.1"
 serde = { version = "1.0", features = ["derive"] }
@@ -29,3 +30,9 @@ tokio-vsock = "0.6"
 
 [dev-dependencies]
 tempfile = "3.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true

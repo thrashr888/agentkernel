@@ -4,6 +4,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::permissions::SecurityProfile;
+
 /// Root configuration structure matching agentkernel.toml schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -14,6 +16,19 @@ pub struct Config {
     pub resources: ResourcesConfig,
     #[serde(default)]
     pub network: NetworkConfig,
+    #[serde(default)]
+    pub security: SecurityConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    /// Security profile: permissive, moderate (default), restrictive
+    #[serde(default)]
+    pub profile: SecurityProfile,
+    /// Allow network access (overrides profile)
+    pub network: Option<bool>,
+    /// Mount current directory (overrides profile)
+    pub mount_cwd: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,7 +124,23 @@ impl Config {
             },
             resources: ResourcesConfig::default(),
             network: NetworkConfig::default(),
+            security: SecurityConfig::default(),
         }
+    }
+
+    /// Get the effective permissions based on config
+    pub fn get_permissions(&self) -> crate::permissions::Permissions {
+        let mut perms = self.security.profile.permissions();
+
+        // Apply overrides
+        if let Some(network) = self.security.network {
+            perms.network = network;
+        }
+        if let Some(mount_cwd) = self.security.mount_cwd {
+            perms.mount_cwd = mount_cwd;
+        }
+
+        perms
     }
 
     /// Get the effective Docker image for this config
