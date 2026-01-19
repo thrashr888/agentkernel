@@ -5,5 +5,12 @@
   "author": {
     "name": "Paul Thrasher",
     "email": "thrashr888@gmail.com"
+  },
+  "mcpServers": {
+    "agentkernel": {
+      "command": "agentkernel",
+      "args": ["mcp-server"],
+      "env": {}
+    }
   }
 }

@@ -34,6 +34,12 @@ Run any command in an isolated sandbox:
 agentkernel run <command> [args...]
 ```
 
+For compound commands with `&&` or `||`, wrap in `sh -c`:
+
+```bash
+agentkernel run sh -c 'npm install && npm test'
+```
+
 The runtime is auto-detected from the command:
 
 ```bash
@@ -122,6 +128,20 @@ agentkernel remove my-sandbox
 - Network access is available by default (can be restricted)
 - Host filesystem is NOT mounted by default
 - Each sandbox gets a clean environment
+
+## MCP Server Integration
+
+This plugin also provides an MCP (Model Context Protocol) server for direct tool integration. When enabled, the following MCP tools are available:
+
+| Tool | Description |
+|------|-------------|
+| `sandbox_run` | Run a command in a temporary sandbox (auto-cleanup) |
+| `sandbox_create` | Create a persistent sandbox |
+| `sandbox_exec` | Execute a command in an existing sandbox |
+| `sandbox_list` | List all sandboxes |
+| `sandbox_remove` | Remove a sandbox |
+
+The MCP server starts automatically when the plugin is loaded and provides these tools via JSON-RPC over stdio.
 
 ## Error Handling
 

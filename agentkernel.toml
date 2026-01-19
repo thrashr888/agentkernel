@@ -1,0 +1,13 @@
+# Rust App Example
+# agentkernel configuration for a Rust application
+
+[sandbox]
+name = "rust-app"
+base_image = "rust:1.85-alpine"
+
+[agent]
+preferred = "claude"
+
+[resources]
+vcpus = 1
+memory_mb = 512

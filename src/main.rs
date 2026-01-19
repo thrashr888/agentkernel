@@ -1,6 +1,7 @@
 mod config;
 mod docker_backend;
 mod languages;
+mod mcp;
 mod setup;
 mod vmm;
 
@@ -99,6 +100,8 @@ enum Commands {
         #[arg(short, long)]
         image: Option<String>,
     },
+    /// Start MCP server for Claude Code integration (JSON-RPC over stdio)
+    McpServer,
 }
 
 #[tokio::main]
@@ -364,6 +367,9 @@ memory_mb = 512
 
             // Return error if command failed
             result?;
+        }
+        Commands::McpServer => {
+            mcp::run_server().await?;
         }
     }
 
