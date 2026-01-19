@@ -92,6 +92,7 @@ mount -o loop "$ROOTFS_IMG" "$MOUNT_DIR"
 # Create Alpine rootfs using static busybox approach
 echo "==> Installing Alpine base system..."
 apk -X https://dl-cdn.alpinelinux.org/alpine/v3.20/main \
+    -X https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
     -U --allow-untrusted --root "$MOUNT_DIR" --initdb \
     add alpine-base busybox-static $PACKAGES
 
