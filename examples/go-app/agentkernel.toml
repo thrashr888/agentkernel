@@ -1,0 +1,28 @@
+# Go App Example
+# agentkernel configuration for a Go application
+
+[sandbox]
+name = "go-app"
+base_image = "golang:1.23-alpine"
+
+[agent]
+preferred = "claude"
+
+[environment]
+go_version = "1.23"
+
+[dependencies]
+system = ["git", "make"]
+
+[scripts]
+setup = "go mod download"
+test = "go test ./..."
+lint = "go vet ./..."
+build = "go build -o bin/app ."
+run = "./bin/app"
+
+[mounts]
+"." = "/app"
+
+[network]
+ports = [8080]
