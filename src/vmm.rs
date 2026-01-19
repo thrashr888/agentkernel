@@ -4,6 +4,7 @@
 //! or containers (Docker/Podman) as fallback when KVM is not available.
 
 use crate::docker_backend::{ContainerRuntime, ContainerSandbox, detect_container_runtime};
+use crate::firecracker_client::{BootSource, Drive, FirecrackerClient, MachineConfig, VsockDevice};
 use crate::permissions::Permissions;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -50,42 +51,7 @@ pub struct FirecrackerVm {
     process: Option<Child>,
 }
 
-// Firecracker API request/response types
-#[derive(Debug, Serialize)]
-struct BootSource {
-    kernel_image_path: String,
-    boot_args: String,
-}
-
-#[derive(Debug, Serialize)]
-struct Drive {
-    drive_id: String,
-    path_on_host: String,
-    is_root_device: bool,
-    is_read_only: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct MachineConfig {
-    vcpu_count: u32,
-    mem_size_mib: u64,
-}
-
-#[derive(Debug, Serialize)]
-struct VsockDevice {
-    guest_cid: u32,
-    uds_path: String,
-}
-
-#[derive(Debug, Serialize)]
-struct InstanceAction {
-    action_type: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiError {
-    fault_message: Option<String>,
-}
+// Firecracker API types are now in firecracker_client module
 
 impl FirecrackerVm {
     /// Create a new Firecracker VM instance (does not start it)
@@ -197,12 +163,14 @@ impl FirecrackerVm {
 
     /// Configure the VM via the Firecracker API
     async fn configure(&self) -> Result<()> {
+        let client = FirecrackerClient::new(&self.socket_path);
+
         // Set boot source
         let boot_source = BootSource {
             kernel_image_path: self.config.kernel_path.to_string_lossy().to_string(),
             boot_args: "console=ttyS0 reboot=k panic=1 pci=off init=/init".to_string(),
         };
-        self.api_put("/boot-source", &boot_source).await?;
+        client.set_boot_source(&boot_source).await?;
 
         // Set root drive
         let drive = Drive {
@@ -211,14 +179,14 @@ impl FirecrackerVm {
             is_root_device: true,
             is_read_only: false,
         };
-        self.api_put("/drives/rootfs", &drive).await?;
+        client.set_drive("rootfs", &drive).await?;
 
         // Set machine config
         let machine = MachineConfig {
             vcpu_count: self.config.vcpus,
             mem_size_mib: self.config.memory_mb,
         };
-        self.api_put("/machine-config", &machine).await?;
+        client.set_machine_config(&machine).await?;
 
         // Set vsock device
         let vsock_uds = format!("/tmp/agentkernel-{}-vsock.sock", self.config.name);
@@ -226,27 +194,22 @@ impl FirecrackerVm {
             guest_cid: self.config.vsock_cid,
             uds_path: vsock_uds,
         };
-        self.api_put("/vsock", &vsock).await?;
+        client.set_vsock(&vsock).await?;
 
         Ok(())
     }
 
     /// Start the VM instance
     async fn start_instance(&self) -> Result<()> {
-        let action = InstanceAction {
-            action_type: "InstanceStart".to_string(),
-        };
-        self.api_put("/actions", &action).await?;
-        Ok(())
+        let client = FirecrackerClient::new(&self.socket_path);
+        client.start_instance().await
     }
 
     /// Stop the VM
     pub async fn stop(&mut self) -> Result<()> {
         // Send shutdown signal via API
-        let action = InstanceAction {
-            action_type: "SendCtrlAltDel".to_string(),
-        };
-        let _ = self.api_put("/actions", &action).await;
+        let client = FirecrackerClient::new(&self.socket_path);
+        let _ = client.send_ctrl_alt_del().await;
 
         // Give it a moment to shutdown gracefully
         sleep(Duration::from_millis(500)).await;
@@ -260,42 +223,6 @@ impl FirecrackerVm {
         // Clean up socket
         if self.socket_path.exists() {
             let _ = std::fs::remove_file(&self.socket_path);
-        }
-
-        Ok(())
-    }
-
-    /// Make a PUT request to the Firecracker API
-    async fn api_put<T: Serialize>(&self, path: &str, body: &T) -> Result<()> {
-        let body_json = serde_json::to_string(body)?;
-
-        // Use curl for simplicity (works with Unix sockets)
-        let output = Command::new("curl")
-            .arg("--unix-socket")
-            .arg(&self.socket_path)
-            .arg("-X")
-            .arg("PUT")
-            .arg("-H")
-            .arg("Content-Type: application/json")
-            .arg("-d")
-            .arg(&body_json)
-            .arg(format!("http://localhost{}", path))
-            .output()
-            .context("Failed to call Firecracker API")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            bail!("Firecracker API error: {} {}", stderr, stdout);
-        }
-
-        // Check for API error in response
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if !stdout.is_empty()
-            && let Ok(error) = serde_json::from_str::<ApiError>(&stdout)
-            && let Some(msg) = error.fault_message
-        {
-            bail!("Firecracker API error: {}", msg);
         }
 
         Ok(())

@@ -1,6 +1,7 @@
 mod agents;
 mod config;
 mod docker_backend;
+mod firecracker_client;
 mod http_api;
 mod languages;
 mod mcp;
