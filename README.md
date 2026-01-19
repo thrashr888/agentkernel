@@ -48,6 +48,10 @@ Inspired by:
 - [Ramp's Background Agent](https://builders.ramp.com/post/why-we-built-our-background-agent) - Cloud sandbox architecture for AI agents
 - [Modal](https://modal.com/) - Serverless sandbox infrastructure
 
+## Technology
+
+Built with Rust for performance, safety, and minimal dependencies.
+
 ## License
 
 MIT
