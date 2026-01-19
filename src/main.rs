@@ -6,6 +6,7 @@ mod http_api;
 mod languages;
 mod mcp;
 mod permissions;
+mod seatbelt;
 mod setup;
 mod vmm;
 mod vsock;
