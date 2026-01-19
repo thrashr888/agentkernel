@@ -15,35 +15,38 @@ cargo install agentkernel
 ## Quick Start
 
 ```bash
-# In your project directory
-agentkernel run
+# Initialize config in your project
+agentkernel init
 
-# That's it. Your AI agent now runs in an isolated microVM.
+# Create and start a sandbox
+agentkernel create my-project --dir .
+agentkernel start my-project
+
+# Open interactive shell in the sandbox
+agentkernel attach my-project
 ```
-
-Agentkernel automatically:
-- Detects your project type (Python, Node, Go, Rust)
-- Boots a microVM with the right runtime (~125ms)
-- Mounts your project files
-- Runs your preferred AI agent (Claude Code, Gemini CLI, Codex, etc.)
 
 ## Usage
 
 ```bash
-# Run with default settings (auto-detect everything)
-agentkernel run
+# Create a sandbox with a specific agent
+agentkernel create my-project --agent claude --dir .
+agentkernel create my-project --agent gemini --dir .
 
-# Specify an agent
-agentkernel run --agent claude
-agentkernel run --agent gemini
-agentkernel run --agent codex
+# Start and attach
+agentkernel start my-project
+agentkernel attach my-project
 
-# Run a specific command in the sandbox
-agentkernel exec "npm test"
-agentkernel exec "python -m pytest"
+# Run a specific command
+agentkernel exec my-project npm test
+agentkernel exec my-project python -m pytest
 
-# Interactive shell inside the microVM
-agentkernel shell
+# List running sandboxes
+agentkernel list
+
+# Stop and remove
+agentkernel stop my-project
+agentkernel remove my-project
 ```
 
 ## Configuration
