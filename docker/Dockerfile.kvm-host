@@ -1,0 +1,54 @@
+# Dockerfile.kvm-host
+#
+# Docker container that provides KVM support for running Firecracker on macOS.
+# Uses nested virtualization via Docker Desktop's virtualization backend.
+#
+# Usage:
+#   docker build -t agentkernel-kvm-host -f docker/Dockerfile.kvm-host .
+#   docker run --privileged --device /dev/kvm -v /var/run/docker.sock:/var/run/docker.sock agentkernel-kvm-host
+#
+# Note: Requires Docker Desktop with "Use Virtualization.framework" enabled on macOS.
+
+FROM ubuntu:24.04
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    iproute2 \
+    iptables \
+    socat \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create agentkernel directories
+RUN mkdir -p /opt/agentkernel/bin \
+    /opt/agentkernel/images/kernel \
+    /opt/agentkernel/images/rootfs \
+    /var/run/agentkernel
+
+# Download Firecracker
+ARG FIRECRACKER_VERSION=v1.7.0
+ARG TARGETARCH
+
+RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "x86_64") && \
+    curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-${ARCH}.tgz" \
+    | tar -xz -C /tmp && \
+    mv /tmp/release-${FIRECRACKER_VERSION}-${ARCH}/firecracker-${FIRECRACKER_VERSION}-${ARCH} /opt/agentkernel/bin/firecracker && \
+    chmod +x /opt/agentkernel/bin/firecracker && \
+    rm -rf /tmp/release-*
+
+# Add firecracker to PATH
+ENV PATH="/opt/agentkernel/bin:${PATH}"
+
+# Expose vsock port range (for host communication)
+# Note: vsock uses CID-based addressing, not TCP ports
+
+# Default working directory
+WORKDIR /opt/agentkernel
+
+# Entry point script
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["sleep", "infinity"]
