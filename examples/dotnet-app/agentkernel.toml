@@ -1,0 +1,13 @@
+# .NET/C# App Example
+# agentkernel configuration for a .NET application
+
+[sandbox]
+name = "dotnet-app"
+base_image = "mcr.microsoft.com/dotnet/sdk:8.0"
+
+[agent]
+preferred = "claude"
+
+[resources]
+vcpus = 1
+memory_mb = 512

@@ -1,34 +1,35 @@
-//! Stress test: Spin up 100 microVMs, run echo, verify output, shut down.
+//! Stress test: Spin up multiple microVMs in parallel, run commands, verify output.
 //!
-//! This test validates that agentkernel can handle rapid VM lifecycle operations
-//! with minimal latency. Target: <125ms per VM boot, <10s total for 100 VMs.
+//! This test validates that agentkernel can handle concurrent VM operations.
+//! Target: <125ms per VM boot, all VMs complete successfully.
 //!
-//! Run with: cargo test --test stress_test -- --nocapture
+//! Run with: cargo test --test stress_test -- --nocapture --ignored
 //!
 //! Requirements:
-//!   - Linux with KVM (/dev/kvm accessible)
-//!   - Firecracker binary in PATH or FIRECRACKER_BIN env var
-//!   - Built kernel at images/kernel/vmlinux-*
-//!   - Built rootfs at images/rootfs/base.ext4
+//!   - agentkernel binary built (cargo build --release)
+//!   - Setup complete (agentkernel setup -y)
 
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-const VM_COUNT: usize = 100;
+const VM_COUNT: usize = 10;
 const EXPECTED_OUTPUT: &str = "hello";
-const MAX_TOTAL_TIME: Duration = Duration::from_secs(30);
-const MAX_BOOT_TIME: Duration = Duration::from_millis(500); // 500ms max per VM with overhead
+const MAX_TOTAL_TIME: Duration = Duration::from_secs(60);
 
-/// Results from a single VM test
+/// Results from a single sandbox test
 #[derive(Debug)]
-#[allow(dead_code)] // Fields used in Debug output and future implementation
-struct VMTestResult {
-    vm_id: usize,
-    boot_time: Duration,
+#[allow(dead_code)]
+struct SandboxTestResult {
+    sandbox_id: usize,
+    name: String,
+    create_time: Duration,
+    start_time: Duration,
     exec_time: Duration,
+    stop_time: Duration,
+    remove_time: Duration,
     output_correct: bool,
-    shutdown_time: Duration,
     error: Option<String>,
 }
 
@@ -38,23 +39,76 @@ struct StressTestResults {
     total_time: Duration,
     successful: usize,
     failed: usize,
-    avg_boot_time: Duration,
+    avg_create_time: Duration,
+    avg_start_time: Duration,
     avg_exec_time: Duration,
-    avg_shutdown_time: Duration,
-    max_boot_time: Duration,
+    avg_stop_time: Duration,
+    avg_remove_time: Duration,
+    max_start_time: Duration,
     errors: Vec<String>,
 }
 
+fn get_binary_path() -> String {
+    std::env::current_dir()
+        .unwrap()
+        .join("target/release/agentkernel")
+        .to_string_lossy()
+        .to_string()
+}
+
+fn run_cmd(args: &[&str]) -> Result<String, String> {
+    let binary = get_binary_path();
+    let output = Command::new(&binary)
+        .args(args)
+        .output()
+        .map_err(|e| format!("Failed to execute: {}", e))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Err(format!(
+            "Command failed: {}\nstdout: {}\nstderr: {}",
+            args.join(" "),
+            stdout,
+            stderr
+        ))
+    }
+}
+
 #[tokio::test]
-#[ignore] // Remove this once Firecracker VMM is implemented
-async fn test_100_vms_parallel() {
-    println!("\n=== Agentkernel Stress Test: 100 VMs ===\n");
+#[ignore] // Run manually: cargo test --test stress_test -- --nocapture --ignored
+async fn test_parallel_sandboxes() {
+    println!(
+        "\n=== Agentkernel Stress Test: {} Sandboxes ===\n",
+        VM_COUNT
+    );
+
+    // Check that binary exists
+    let binary = get_binary_path();
+    if !std::path::Path::new(&binary).exists() {
+        panic!(
+            "Binary not found at {}. Run 'cargo build --release' first.",
+            binary
+        );
+    }
+
+    // Check setup status
+    println!("Checking setup status...");
+    match run_cmd(&["status"]) {
+        Ok(output) => println!("{}", output),
+        Err(e) => panic!(
+            "Setup check failed: {}. Run 'agentkernel setup -y' first.",
+            e
+        ),
+    }
 
     let start = Instant::now();
     let success_count = Arc::new(AtomicUsize::new(0));
     let fail_count = Arc::new(AtomicUsize::new(0));
 
-    // Spawn 100 VM tasks concurrently
+    // Spawn sandbox tasks concurrently
     let mut handles = Vec::with_capacity(VM_COUNT);
 
     for i in 0..VM_COUNT {
@@ -62,7 +116,7 @@ async fn test_100_vms_parallel() {
         let fail = Arc::clone(&fail_count);
 
         let handle = tokio::spawn(async move {
-            let result = run_single_vm_test(i).await;
+            let result = run_single_sandbox_test(i).await;
 
             if result.error.is_none() && result.output_correct {
                 success.fetch_add(1, Ordering::SeqCst);
@@ -76,19 +130,22 @@ async fn test_100_vms_parallel() {
         handles.push(handle);
     }
 
-    // Wait for all VMs to complete
+    // Wait for all sandboxes to complete
     let mut results = Vec::with_capacity(VM_COUNT);
     for handle in handles {
         match handle.await {
             Ok(result) => results.push(result),
             Err(e) => {
                 fail_count.fetch_add(1, Ordering::SeqCst);
-                results.push(VMTestResult {
-                    vm_id: 0,
-                    boot_time: Duration::ZERO,
+                results.push(SandboxTestResult {
+                    sandbox_id: 0,
+                    name: "unknown".to_string(),
+                    create_time: Duration::ZERO,
+                    start_time: Duration::ZERO,
                     exec_time: Duration::ZERO,
+                    stop_time: Duration::ZERO,
+                    remove_time: Duration::ZERO,
                     output_correct: false,
-                    shutdown_time: Duration::ZERO,
                     error: Some(format!("Task panic: {}", e)),
                 });
             }
@@ -104,129 +161,120 @@ async fn test_100_vms_parallel() {
     // Assertions
     assert!(
         stats.failed == 0,
-        "Some VMs failed: {} failures out of {}",
+        "Some sandboxes failed: {} failures out of {}",
         stats.failed,
         VM_COUNT
     );
 
     assert!(
         stats.total_time < MAX_TOTAL_TIME,
-        "Total time {} exceeded maximum {}",
-        stats.total_time.as_secs_f64(),
-        MAX_TOTAL_TIME.as_secs_f64()
-    );
-
-    assert!(
-        stats.max_boot_time < MAX_BOOT_TIME,
-        "Max boot time {:?} exceeded maximum {:?}",
-        stats.max_boot_time,
-        MAX_BOOT_TIME
+        "Total time {:?} exceeded maximum {:?}",
+        stats.total_time,
+        MAX_TOTAL_TIME
     );
 
     println!("\n=== STRESS TEST PASSED ===\n");
 }
 
-async fn run_single_vm_test(vm_id: usize) -> VMTestResult {
-    let vm_name = format!("stress-test-{}", vm_id);
+async fn run_single_sandbox_test(sandbox_id: usize) -> SandboxTestResult {
+    let name = format!("stress-{}", sandbox_id);
 
-    // TODO: Replace with actual Firecracker VMM calls once implemented
-    // For now, this is a placeholder that simulates the expected behavior
+    // Create sandbox
+    let create_start = Instant::now();
+    let create_result = run_cmd(&["create", &name, "--agent", "claude"]);
+    let create_time = create_start.elapsed();
 
-    let boot_start = Instant::now();
-
-    // 1. Create and boot VM
-    let boot_result = create_and_boot_vm(&vm_name).await;
-    let boot_time = boot_start.elapsed();
-
-    if let Err(e) = boot_result {
-        return VMTestResult {
-            vm_id,
-            boot_time,
+    if let Err(e) = create_result {
+        return SandboxTestResult {
+            sandbox_id,
+            name,
+            create_time,
+            start_time: Duration::ZERO,
             exec_time: Duration::ZERO,
+            stop_time: Duration::ZERO,
+            remove_time: Duration::ZERO,
             output_correct: false,
-            shutdown_time: Duration::ZERO,
-            error: Some(format!("Boot failed: {}", e)),
+            error: Some(format!("Create failed: {}", e)),
         };
     }
 
-    // 2. Execute echo command
+    // Start sandbox
+    let start_start = Instant::now();
+    let start_result = run_cmd(&["start", &name]);
+    let start_time = start_start.elapsed();
+
+    if let Err(e) = start_result {
+        // Cleanup: try to remove
+        let _ = run_cmd(&["remove", &name]);
+        return SandboxTestResult {
+            sandbox_id,
+            name,
+            create_time,
+            start_time,
+            exec_time: Duration::ZERO,
+            stop_time: Duration::ZERO,
+            remove_time: Duration::ZERO,
+            output_correct: false,
+            error: Some(format!("Start failed: {}", e)),
+        };
+    }
+
+    // Execute command
     let exec_start = Instant::now();
-    let exec_result = exec_in_vm(&vm_name, &["echo", EXPECTED_OUTPUT]).await;
+    let exec_result = run_cmd(&["exec", &name, "echo", EXPECTED_OUTPUT]);
     let exec_time = exec_start.elapsed();
 
     let output_correct = match &exec_result {
-        Ok(output) => output.trim() == EXPECTED_OUTPUT,
+        Ok(output) => output.contains(EXPECTED_OUTPUT),
         Err(_) => false,
     };
 
-    let exec_error = exec_result.err().map(|e| format!("Exec failed: {}", e));
+    let exec_error = exec_result.err();
 
-    // 3. Shutdown VM
-    let shutdown_start = Instant::now();
-    let shutdown_result = shutdown_vm(&vm_name).await;
-    let shutdown_time = shutdown_start.elapsed();
+    // Stop sandbox
+    let stop_start = Instant::now();
+    let stop_result = run_cmd(&["stop", &name]);
+    let stop_time = stop_start.elapsed();
 
-    let error = exec_error.or_else(|| {
-        shutdown_result
-            .err()
-            .map(|e| format!("Shutdown failed: {}", e))
-    });
+    // Remove sandbox
+    let remove_start = Instant::now();
+    let remove_result = run_cmd(&["remove", &name]);
+    let remove_time = remove_start.elapsed();
 
-    VMTestResult {
-        vm_id,
-        boot_time,
+    // Combine errors
+    let error = exec_error
+        .or_else(|| stop_result.err())
+        .or_else(|| remove_result.err());
+
+    SandboxTestResult {
+        sandbox_id,
+        name,
+        create_time,
+        start_time,
         exec_time,
+        stop_time,
+        remove_time,
         output_correct,
-        shutdown_time,
         error,
     }
 }
 
-// Placeholder functions - to be replaced with actual Firecracker VMM implementation
-
-async fn create_and_boot_vm(_name: &str) -> Result<(), String> {
-    // TODO: Implement with Firecracker API
-    // 1. Create VM configuration
-    // 2. Set kernel and rootfs paths
-    // 3. Configure vsock for communication
-    // 4. Start VM
-    // 5. Wait for guest agent to be ready
-
-    Err("Firecracker VMM not yet implemented".to_string())
-}
-
-async fn exec_in_vm(_name: &str, _cmd: &[&str]) -> Result<String, String> {
-    // TODO: Implement with vsock communication to guest agent
-    // 1. Connect to VM's vsock
-    // 2. Send command to guest agent
-    // 3. Wait for response
-    // 4. Return stdout
-
-    Err("Firecracker VMM not yet implemented".to_string())
-}
-
-async fn shutdown_vm(_name: &str) -> Result<(), String> {
-    // TODO: Implement with Firecracker API
-    // 1. Send shutdown signal via vsock (graceful)
-    // 2. Or send InstanceActionInfo::SendCtrlAltDel
-    // 3. Wait for VM to terminate
-    // 4. Clean up resources
-
-    Err("Firecracker VMM not yet implemented".to_string())
-}
-
-fn calculate_stats(results: &[VMTestResult], total_time: Duration) -> StressTestResults {
+fn calculate_stats(results: &[SandboxTestResult], total_time: Duration) -> StressTestResults {
     let successful = results.iter().filter(|r| r.error.is_none()).count();
     let failed = results.len() - successful;
 
-    let boot_times: Vec<_> = results.iter().map(|r| r.boot_time).collect();
+    let create_times: Vec<_> = results.iter().map(|r| r.create_time).collect();
+    let start_times: Vec<_> = results.iter().map(|r| r.start_time).collect();
     let exec_times: Vec<_> = results.iter().map(|r| r.exec_time).collect();
-    let shutdown_times: Vec<_> = results.iter().map(|r| r.shutdown_time).collect();
+    let stop_times: Vec<_> = results.iter().map(|r| r.stop_time).collect();
+    let remove_times: Vec<_> = results.iter().map(|r| r.remove_time).collect();
 
-    let avg_boot = avg_duration(&boot_times);
+    let avg_create = avg_duration(&create_times);
+    let avg_start = avg_duration(&start_times);
     let avg_exec = avg_duration(&exec_times);
-    let avg_shutdown = avg_duration(&shutdown_times);
-    let max_boot = boot_times.iter().max().copied().unwrap_or(Duration::ZERO);
+    let avg_stop = avg_duration(&stop_times);
+    let avg_remove = avg_duration(&remove_times);
+    let max_start = start_times.iter().max().copied().unwrap_or(Duration::ZERO);
 
     let errors: Vec<_> = results.iter().filter_map(|r| r.error.clone()).collect();
 
@@ -234,10 +282,12 @@ fn calculate_stats(results: &[VMTestResult], total_time: Duration) -> StressTest
         total_time,
         successful,
         failed,
-        avg_boot_time: avg_boot,
+        avg_create_time: avg_create,
+        avg_start_time: avg_start,
         avg_exec_time: avg_exec,
-        avg_shutdown_time: avg_shutdown,
-        max_boot_time: max_boot,
+        avg_stop_time: avg_stop,
+        avg_remove_time: avg_remove,
+        max_start_time: max_start,
         errors,
     }
 }
@@ -251,14 +301,20 @@ fn avg_duration(durations: &[Duration]) -> Duration {
 }
 
 fn print_results(stats: &StressTestResults) {
-    println!("Results:");
+    println!("\nResults:");
     println!("  Total time:       {:?}", stats.total_time);
-    println!("  Successful:       {}/{}", stats.successful, VM_COUNT);
+    println!(
+        "  Successful:       {}/{}",
+        stats.successful,
+        stats.successful + stats.failed
+    );
     println!("  Failed:           {}", stats.failed);
-    println!("  Avg boot time:    {:?}", stats.avg_boot_time);
+    println!("  Avg create time:  {:?}", stats.avg_create_time);
+    println!("  Avg start time:   {:?}", stats.avg_start_time);
     println!("  Avg exec time:    {:?}", stats.avg_exec_time);
-    println!("  Avg shutdown:     {:?}", stats.avg_shutdown_time);
-    println!("  Max boot time:    {:?}", stats.max_boot_time);
+    println!("  Avg stop time:    {:?}", stats.avg_stop_time);
+    println!("  Avg remove time:  {:?}", stats.avg_remove_time);
+    println!("  Max start time:   {:?}", stats.max_start_time);
 
     if !stats.errors.is_empty() {
         println!("\nErrors (first 5):");

@@ -6,63 +6,131 @@ Run AI coding agents in secure, isolated microVMs. Sub-125ms boot times, real ha
 
 ```bash
 # macOS / Linux
-curl -fsSL https://agentkernel.dev/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/thrashr888/agentkernel/main/install.sh | sh
 
 # Or with Cargo
 cargo install agentkernel
+
+# Then run setup to download/build required components
+agentkernel setup
 ```
 
 ## Quick Start
 
 ```bash
-# Initialize config in your project
-agentkernel init
+# Run any command in an isolated sandbox (auto-detects runtime)
+agentkernel run python3 -c "print('Hello from sandbox!')"
+agentkernel run node -e "console.log('Hello from sandbox!')"
+agentkernel run ruby -e "puts 'Hello from sandbox!'"
 
-# Create and start a sandbox
-agentkernel create my-project --dir .
-agentkernel start my-project
+# Run commands in your project
+agentkernel run npm test
+agentkernel run cargo build
+agentkernel run pytest
 
-# Open interactive shell in the sandbox
-agentkernel attach my-project
+# Run with a specific image
+agentkernel run --image postgres:16-alpine psql --version
 ```
 
-## Usage
+## The `run` Command
+
+The fastest way to execute code in isolation. Creates a temporary sandbox, runs your command, and cleans up automatically.
 
 ```bash
-# Create a sandbox with a specific agent
-agentkernel create my-project --agent claude --dir .
-agentkernel create my-project --agent gemini --dir .
+# Auto-detects the right runtime from your command
+agentkernel run python3 script.py      # Uses python:3.12-alpine
+agentkernel run npm install            # Uses node:22-alpine
+agentkernel run cargo test             # Uses rust:1.85-alpine
+agentkernel run go build               # Uses golang:1.23-alpine
 
-# Start and attach
+# Override with explicit image
+agentkernel run --image ubuntu:24.04 apt-get --version
+
+# Keep the sandbox after execution for debugging
+agentkernel run --keep npm test
+
+# Use a config file
+agentkernel run --config ./agentkernel.toml npm test
+```
+
+## Auto-Detection
+
+Agentkernel automatically selects the right Docker image based on:
+
+1. **Command** (for `run`) - Detects from the command you're running
+2. **Project files** - Detects from files in your directory
+3. **Procfile** - Parses Heroku-style Procfiles
+4. **Config file** - Uses `agentkernel.toml` if present
+
+### Supported Languages
+
+| Language | Project Files | Commands | Docker Image |
+|----------|--------------|----------|--------------|
+| JavaScript/TypeScript | `package.json`, `yarn.lock`, `pnpm-lock.yaml` | `node`, `npm`, `npx`, `yarn`, `pnpm`, `bun` | `node:22-alpine` |
+| Python | `pyproject.toml`, `requirements.txt`, `Pipfile` | `python`, `python3`, `pip`, `poetry`, `uv` | `python:3.12-alpine` |
+| Rust | `Cargo.toml` | `cargo`, `rustc` | `rust:1.85-alpine` |
+| Go | `go.mod` | `go`, `gofmt` | `golang:1.23-alpine` |
+| Ruby | `Gemfile` | `ruby`, `bundle`, `rails` | `ruby:3.3-alpine` |
+| Java | `pom.xml`, `build.gradle` | `java`, `mvn`, `gradle` | `eclipse-temurin:21-alpine` |
+| Kotlin | `*.kt` | - | `eclipse-temurin:21-alpine` |
+| C# / .NET | `*.csproj`, `*.sln` | `dotnet` | `mcr.microsoft.com/dotnet/sdk:8.0` |
+| C/C++ | `Makefile`, `CMakeLists.txt` | `gcc`, `g++`, `make`, `cmake` | `gcc:14-bookworm` |
+| PHP | `composer.json` | `php`, `composer` | `php:8.3-alpine` |
+| Elixir | `mix.exs` | `elixir`, `mix` | `elixir:1.16-alpine` |
+| Lua | `*.lua` | `lua`, `luajit` | `nickblah/lua:5.4-alpine` |
+| HCL/Terraform | `*.tf`, `*.tfvars` | `terraform` | `hashicorp/terraform:1.10` |
+| Shell | `*.sh` | `bash`, `sh`, `zsh` | `alpine:3.20` |
+
+### Procfile Support
+
+If your project has a `Procfile`, agentkernel parses it to detect the runtime:
+
+```procfile
+web: bundle exec rails server -p $PORT
+worker: python manage.py runworker
+```
+
+## Persistent Sandboxes
+
+For longer-running work, create named sandboxes:
+
+```bash
+# Create a sandbox
+agentkernel create my-project --dir .
+
+# Start it
 agentkernel start my-project
-agentkernel attach my-project
 
-# Run a specific command
+# Run commands
 agentkernel exec my-project npm test
 agentkernel exec my-project python -m pytest
 
-# List running sandboxes
-agentkernel list
+# Attach an interactive shell
+agentkernel attach my-project
 
 # Stop and remove
 agentkernel stop my-project
 agentkernel remove my-project
+
+# List all sandboxes
+agentkernel list
 ```
 
 ## Configuration
 
-Create `agentkernel.toml` in your project root for custom settings:
+Create `agentkernel.toml` in your project root:
 
 ```toml
 [sandbox]
-runtime = "python"      # python, node, go, rust, or base
+name = "my-project"
+base_image = "python:3.12-alpine"    # Explicit Docker image
 
 [agent]
 preferred = "claude"    # claude, gemini, codex, opencode
 
 [resources]
 vcpus = 2
-memory_mb = 512
+memory_mb = 1024
 ```
 
 Most projects don't need a config file - agentkernel auto-detects everything.
@@ -85,11 +153,87 @@ Agentkernel uses **Firecracker microVMs** (the same tech behind AWS Lambda) to p
 
 ## Platform Support
 
-| Platform | Status |
-|----------|--------|
-| Linux (x86_64, aarch64) | Supported |
-| macOS (Apple Silicon, Intel) | Supported via Docker Desktop |
+| Platform | Backend | Status |
+|----------|---------|--------|
+| Linux (x86_64, aarch64) | Firecracker microVMs | Full support |
+| macOS (Apple Silicon, Intel) | Docker or Podman | Full support |
 
-## License
+On macOS, agentkernel automatically falls back to containers since Firecracker requires KVM (Linux only). Podman is preferred if available (rootless, daemonless), otherwise Docker is used.
 
-MIT
+## Claude Code Integration
+
+Agentkernel includes a Claude Code skill plugin for seamless AI agent integration.
+
+### Install the Plugin
+
+```bash
+# Add the marketplace and install (in Claude Code)
+/plugin marketplace add thrashr888/agentkernel
+/plugin install sandbox
+
+# Or install directly
+/plugin install sandbox@thrashr888/agentkernel
+```
+
+### Usage in Claude Code
+
+Once installed, Claude will automatically use agentkernel for isolated execution:
+
+- **Skill**: Claude detects when sandboxing is beneficial and uses the `sandbox` skill
+- **Command**: Use `/sandbox <command>` to explicitly run in a sandbox
+
+```
+/sandbox python3 -c "print('Hello from sandbox!')"
+/sandbox npm test
+/sandbox cargo build
+```
+
+## Benchmarks
+
+Run your own benchmarks:
+
+```bash
+./scripts/benchmark.sh        # Latency per operation
+./scripts/stress-test.sh 100 10  # Throughput (100 cmds, 10 concurrent)
+```
+
+### Docker Backend (macOS Apple Silicon)
+
+**Latency per operation:**
+
+| Operation | Avg | Min | Max |
+|-----------|-----|-----|-----|
+| Create | 52ms | 49ms | 58ms |
+| Start | 235ms | 232ms | 240ms |
+| Exec | 153ms | 104ms | 222ms |
+| Stop | 126ms | 116ms | 132ms |
+| Remove | 56ms | 48ms | 65ms |
+| **Full Cycle** | **622ms** | - | - |
+
+**Throughput (stress test):**
+
+| Concurrency | Commands/sec | p50 Latency | p99 Latency |
+|-------------|--------------|-------------|-------------|
+| 1 | ~1.6 | 622ms | 650ms |
+| 5 | ~10 | 1,656ms | 1,893ms |
+| 10 | ~9 | 4,500ms | 5,208ms |
+
+*Results from Docker via Colima on M1 MacBook Pro. Firecracker on Linux will be significantly faster.*
+
+## Examples
+
+See the `examples/` directory for language-specific configurations:
+
+```bash
+./scripts/run-examples.sh     # Run all examples
+./scripts/benchmark.sh        # Latency benchmark
+./scripts/stress-test.sh      # Throughput benchmark
+```
+
+## Roadmap
+
+- [ ] MCP server for programmatic integration
+- [ ] HTTP API for external agents
+- [ ] macOS Seatbelt backend (lightweight, no containers)
+- [ ] Permission/restriction profiles
+- [ ] Filesystem mounting and syncing

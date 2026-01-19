@@ -1,0 +1,13 @@
+# Ruby App Example
+# agentkernel configuration for a Ruby application
+
+[sandbox]
+name = "ruby-app"
+base_image = "ruby:3.3-alpine"
+
+[agent]
+preferred = "claude"
+
+[resources]
+vcpus = 1
+memory_mb = 512

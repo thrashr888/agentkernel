@@ -1,0 +1,13 @@
+# Bash/Shell Example
+# agentkernel configuration for shell scripts
+
+[sandbox]
+name = "bash-app"
+base_image = "alpine:3.20"
+
+[agent]
+preferred = "claude"
+
+[resources]
+vcpus = 1
+memory_mb = 256

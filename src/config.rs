@@ -19,9 +19,12 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxConfig {
     pub name: String,
-    /// Runtime image: base, python, node, go, rust, or path to custom rootfs
+    /// Runtime shorthand: base, python, node, go, rust, ruby, java, c, dotnet
     #[serde(default = "default_runtime")]
     pub runtime: String,
+    /// Custom Docker image (overrides runtime if specified)
+    #[serde(default)]
+    pub base_image: Option<String>,
 }
 
 fn default_runtime() -> String {
@@ -99,12 +102,34 @@ impl Config {
             sandbox: SandboxConfig {
                 name: name.to_string(),
                 runtime: default_runtime(),
+                base_image: None,
             },
             agent: AgentConfig {
                 preferred: agent.to_string(),
             },
             resources: ResourcesConfig::default(),
             network: NetworkConfig::default(),
+        }
+    }
+
+    /// Get the effective Docker image for this config
+    pub fn docker_image(&self) -> String {
+        // base_image takes precedence over runtime shorthand
+        if let Some(ref image) = self.sandbox.base_image {
+            return image.clone();
+        }
+
+        // Map runtime to default Docker image
+        match self.sandbox.runtime.as_str() {
+            "python" => "python:3.12-alpine".to_string(),
+            "node" => "node:22-alpine".to_string(),
+            "go" => "golang:1.23-alpine".to_string(),
+            "rust" => "rust:1.85-alpine".to_string(),
+            "ruby" => "ruby:3.3-alpine".to_string(),
+            "java" => "eclipse-temurin:21-alpine".to_string(),
+            "c" => "gcc:14-bookworm".to_string(),
+            "dotnet" => "mcr.microsoft.com/dotnet/sdk:8.0".to_string(),
+            _ => "alpine:3.20".to_string(),
         }
     }
 }

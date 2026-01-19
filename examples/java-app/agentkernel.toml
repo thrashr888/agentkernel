@@ -1,0 +1,13 @@
+# Java App Example
+# agentkernel configuration for a Java application
+
+[sandbox]
+name = "java-app"
+base_image = "eclipse-temurin:21-alpine"
+
+[agent]
+preferred = "claude"
+
+[resources]
+vcpus = 1
+memory_mb = 512

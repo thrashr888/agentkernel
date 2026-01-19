@@ -3,33 +3,11 @@
 
 [sandbox]
 name = "rust-app"
-base_image = "rust:1.85-slim"
+base_image = "rust:1.85-alpine"
 
 [agent]
 preferred = "claude"
 
-[environment]
-rust_version = "1.85"
-toolchain = "stable"
-
-[dependencies]
-system = ["git", "pkg-config", "libssl-dev"]
-
-[scripts]
-setup = "cargo fetch"
-test = "cargo test"
-lint = "cargo clippy -- -D warnings"
-fmt = "cargo fmt --check"
-build = "cargo build --release"
-run = "cargo run"
-
-[mounts]
-"." = "/app"
-
-# Cache cargo registry and target directory
-[cache]
-cargo_registry = true
-target_dir = true
-
-[network]
-ports = [3000]
+[resources]
+vcpus = 1
+memory_mb = 512

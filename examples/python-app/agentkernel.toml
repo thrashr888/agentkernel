@@ -3,30 +3,11 @@
 
 [sandbox]
 name = "python-app"
-base_image = "python:3.12-slim"
+base_image = "python:3.12-alpine"
 
 [agent]
-# Preferred agent: claude, gemini, codex, opencode
 preferred = "claude"
 
-[environment]
-python_version = "3.12"
-package_manager = "uv"  # uv, pip, poetry, pdm
-
-[dependencies]
-system = ["git", "curl"]
-python = ["flask", "pytest", "ruff"]
-
-[scripts]
-setup = "uv pip install -e ."
-test = "pytest"
-lint = "ruff check ."
-run = "python -m app"
-
-[mounts]
-# Mount current directory to /app in sandbox
-"." = "/app"
-
-[network]
-# Expose port 5000 for Flask
-ports = [5000]
+[resources]
+vcpus = 1
+memory_mb = 512

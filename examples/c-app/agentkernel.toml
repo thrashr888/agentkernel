@@ -1,0 +1,13 @@
+# C/C++ App Example
+# agentkernel configuration for C or C++ applications
+
+[sandbox]
+name = "c-app"
+base_image = "gcc:14-bookworm"
+
+[agent]
+preferred = "claude"
+
+[resources]
+vcpus = 1
+memory_mb = 512

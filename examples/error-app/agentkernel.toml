@@ -1,0 +1,13 @@
+# Error Example (Expected to Fail)
+# This example uses a non-existent image to test error handling
+
+[sandbox]
+name = "error-app"
+base_image = "nonexistent-image:invalid-tag-12345"
+
+[agent]
+preferred = "claude"
+
+[resources]
+vcpus = 1
+memory_mb = 256

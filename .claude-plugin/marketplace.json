@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "agentkernel",
+  "description": "Run commands in secure, isolated sandboxes with auto-detected runtimes",
+  "owner": {
+    "name": "Paul Thrasher",
+    "email": "thrashr888@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "sandbox",
+      "description": "Execute commands in isolated Docker/Podman containers for security. Auto-detects runtime for Python, Node, Rust, Go, Ruby, and more.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Paul Thrasher",
+        "email": "thrashr888@gmail.com"
+      },
+      "source": "./claude-plugin",
+      "category": "security",
+      "tags": ["sandbox", "docker", "podman", "isolation", "security"]
+    }
+  ]
+}

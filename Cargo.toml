@@ -3,7 +3,7 @@ name = "agentkernel"
 version = "0.1.0"
 edition = "2024"
 description = "Run AI coding agents in secure, isolated microVMs"
-authors = ["Paul Shortridge <thrashr888@gmail.com>"]
+authors = ["Paul Thrasher <thrashr888@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/thrashr888/agentkernel"
 keywords = ["ai", "agents", "sandbox", "firecracker", "microvm"]
@@ -20,6 +20,7 @@ serde_json = "1.0"
 tokio = { version = "1.0", features = ["full", "process", "net"] }
 toml = "0.8"
 uuid = { version = "1.0", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 # Unix socket support for Firecracker API
 [target.'cfg(unix)'.dependencies]

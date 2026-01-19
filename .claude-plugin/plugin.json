@@ -1,0 +1,8 @@
+{
+  "name": "agentkernel",
+  "version": "0.1.0",
+  "description": "Run commands in secure, isolated sandboxes using agentkernel",
+  "author": "Paul Thrasher",
+  "repository": "https://github.com/thrashr888/agentkernel",
+  "license": "MIT"
+}

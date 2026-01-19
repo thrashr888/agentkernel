@@ -1,0 +1,13 @@
+# TypeScript App Example
+# agentkernel configuration for a TypeScript application
+
+[sandbox]
+name = "typescript-app"
+base_image = "node:22-alpine"
+
+[agent]
+preferred = "claude"
+
+[resources]
+vcpus = 1
+memory_mb = 512
