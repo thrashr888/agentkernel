@@ -77,6 +77,30 @@ agentkernel run --image ubuntu:24.04 apt-get update
 agentkernel run --image postgres:16-alpine psql --version
 ```
 
+### Security Profiles
+
+Control sandbox permissions with security profiles:
+
+```bash
+# Default: moderate security (network enabled, no mounts)
+agentkernel run npm test
+
+# Restrictive: no network, read-only filesystem, all capabilities dropped
+agentkernel run --profile restrictive python3 script.py
+
+# Permissive: network, mounts, environment passthrough
+agentkernel run --profile permissive cargo build
+
+# Disable network access specifically
+agentkernel run --no-network curl example.com  # Will fail
+```
+
+| Profile | Network | Mount CWD | Mount Home | Pass Env | Read-only |
+|---------|---------|-----------|------------|----------|-----------|
+| permissive | Yes | Yes | Yes | Yes | No |
+| moderate | Yes | No | No | No | No |
+| restrictive | No | No | No | No | Yes |
+
 ### Keeping Sandboxes for Debugging
 
 Keep the sandbox after execution:
@@ -125,8 +149,10 @@ agentkernel remove my-sandbox
 
 - Sandboxes run in isolated containers (Docker or Podman)
 - On Linux with KVM, Firecracker microVMs provide hardware-level isolation
-- Network access is available by default (can be restricted)
-- Host filesystem is NOT mounted by default
+- Three security profiles: `permissive`, `moderate` (default), `restrictive`
+- Use `--profile restrictive` for maximum isolation (no network, read-only fs)
+- Use `--no-network` to disable network access specifically
+- Host filesystem is NOT mounted by default (use `permissive` profile to enable)
 - Each sandbox gets a clean environment
 
 ## MCP Server Integration

@@ -11,3 +11,6 @@ preferred = "claude"
 [resources]
 vcpus = 1
 memory_mb = 256
+
+[security]
+profile = "restrictive"

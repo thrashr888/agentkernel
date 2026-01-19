@@ -45,9 +45,16 @@ docker run --rm -v "$(pwd)/../kernel:/kernel" agentkernel-kernel-builder 6.1.70
 
 ```
 src/
-├── main.rs      # CLI entry point (clap-based), command dispatch
-├── config.rs    # Config parsing for agentkernel.toml
-└── docker.rs    # Docker container management (temporary, being replaced)
+├── main.rs           # CLI entry point (clap-based), command dispatch
+├── config.rs         # Config parsing for agentkernel.toml
+├── permissions.rs    # Security profiles and permission management
+├── agents.rs         # Multi-agent support (Claude, Gemini, Codex, OpenCode)
+├── http_api.rs       # HTTP REST API server
+├── mcp.rs            # MCP server for Claude Code integration
+├── docker_backend.rs # Docker/Podman container backend
+├── vmm.rs            # Virtual machine manager (abstracts backends)
+├── languages.rs      # Language/runtime detection
+└── setup.rs          # Setup and installation management
 
 images/
 ├── kernel/
@@ -84,18 +91,31 @@ plan/
 ```toml
 [sandbox]
 name = "my-project"
-rootfs = "python"         # base, python, node, rust, or custom path
+base_image = "python:3.12-alpine"  # Or use runtime shorthand
 
 [agent]
-preferred = "claude"
+preferred = "claude"      # claude, gemini, codex, opencode
 
 [resources]
 vcpus = 2
-memory_mb = 512           # MicroVMs are memory-efficient
+memory_mb = 512
+
+[security]
+profile = "restrictive"   # permissive, moderate, restrictive
+network = false           # Override: disable network
+mount_cwd = false         # Override: mount current directory
 
 [network]
 vsock_cid = 3             # Auto-assigned if not specified
 ```
+
+### Security Profiles
+
+| Profile | Network | Mount CWD | Mount Home | Pass Env | Read-only |
+|---------|---------|-----------|------------|----------|-----------|
+| permissive | Yes | Yes | Yes | Yes | No |
+| moderate | Yes | No | No | No | No |
+| restrictive | No | No | No | No | Yes |
 
 ## Key Dependencies
 
@@ -121,6 +141,8 @@ MicroVM isolation provides:
 - **Hardware isolation**: KVM/VT-x enforced memory boundaries
 - **Minimal attack surface**: Firecracker is ~50k lines of Rust
 - **No container escapes**: Not sharing host kernel
+- **Security profiles**: `restrictive` (default in examples), `moderate`, `permissive`
+- **Network control**: `--no-network` flag or config override
 
 ## Beads Issue Tracking
 

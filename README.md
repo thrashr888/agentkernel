@@ -116,6 +116,30 @@ agentkernel remove my-project
 agentkernel list
 ```
 
+## Security Profiles
+
+Control sandbox permissions with security profiles:
+
+```bash
+# Default: moderate security (network enabled, no mounts)
+agentkernel run npm test
+
+# Restrictive: no network, read-only filesystem, all capabilities dropped
+agentkernel run --profile restrictive python3 script.py
+
+# Permissive: network, mounts, environment passthrough
+agentkernel run --profile permissive cargo build
+
+# Disable network access specifically
+agentkernel run --no-network curl example.com  # Will fail
+```
+
+| Profile | Network | Mount CWD | Mount Home | Pass Env | Read-only |
+|---------|---------|-----------|------------|----------|-----------|
+| permissive | Yes | Yes | Yes | Yes | No |
+| moderate | Yes | No | No | No | No |
+| restrictive | No | No | No | No | Yes |
+
 ## Configuration
 
 Create `agentkernel.toml` in your project root:
@@ -131,9 +155,64 @@ preferred = "claude"    # claude, gemini, codex, opencode
 [resources]
 vcpus = 2
 memory_mb = 1024
+
+[security]
+profile = "restrictive"    # permissive, moderate, restrictive
+network = false            # Override: disable network
 ```
 
 Most projects don't need a config file - agentkernel auto-detects everything.
+
+## HTTP API
+
+Run agentkernel as an HTTP server for programmatic access:
+
+```bash
+# Start the API server
+agentkernel serve --host 127.0.0.1 --port 8080
+```
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check |
+| POST | `/run` | Run command in temporary sandbox |
+| GET | `/sandboxes` | List all sandboxes |
+| POST | `/sandboxes` | Create a sandbox |
+| GET | `/sandboxes/{name}` | Get sandbox info |
+| DELETE | `/sandboxes/{name}` | Remove sandbox |
+| POST | `/sandboxes/{name}/exec` | Execute command in sandbox |
+
+### Example
+
+```bash
+# Run a command
+curl -X POST http://localhost:8080/run \
+  -H "Content-Type: application/json" \
+  -d '{"command": ["python3", "-c", "print(1+1)"], "profile": "restrictive"}'
+
+# Response: {"success": true, "data": {"output": "2\n"}}
+```
+
+## Multi-Agent Support
+
+Check which AI coding agents are available:
+
+```bash
+agentkernel agents
+```
+
+Output:
+```
+AGENT           STATUS          API KEY
+---------------------------------------------
+Claude Code     installed       set
+Gemini CLI      not installed   missing
+  → Install Gemini CLI: pip install google-generativeai
+Codex           installed       set
+OpenCode        installed       set
+```
 
 ## Why Agentkernel?
 
@@ -232,8 +311,10 @@ See the `examples/` directory for language-specific configurations:
 
 ## Roadmap
 
-- [ ] MCP server for programmatic integration
-- [ ] HTTP API for external agents
+- [x] MCP server for programmatic integration
+- [x] HTTP API for external agents
+- [x] Permission/restriction profiles
+- [x] Multi-agent support (Claude, Gemini, Codex, OpenCode)
 - [ ] macOS Seatbelt backend (lightweight, no containers)
-- [ ] Permission/restriction profiles
 - [ ] Filesystem mounting and syncing
+- [ ] Native Firecracker microVMs (Linux)
