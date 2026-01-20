@@ -1,7 +1,7 @@
 [package]
 name = "agentkernel-guest"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 description = "Guest agent for agentkernel microVMs"
 authors = ["Paul Thrasher <thrashr888@gmail.com>"]
 license = "MIT"
