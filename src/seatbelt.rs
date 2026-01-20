@@ -12,6 +12,8 @@ use std::process::Output;
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
 
+use crate::validation;
+
 /// Security profile for Seatbelt sandbox
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -43,10 +45,17 @@ impl SeatbeltSandbox {
     }
 
     /// Set the working directory for commands
+    ///
+    /// # Security
+    /// The path is validated to prevent SBPL injection attacks.
+    /// Returns an error if the path contains characters that could
+    /// break the Seatbelt profile syntax.
     #[allow(dead_code)]
-    pub fn with_working_dir(mut self, dir: &str) -> Self {
-        self.working_dir = Some(dir.to_string());
-        self
+    pub fn with_working_dir(mut self, dir: &str) -> Result<Self> {
+        // Security: Validate path to prevent SBPL injection
+        let validated = validation::validate_seatbelt_path(dir)?;
+        self.working_dir = Some(validated);
+        Ok(self)
     }
 
     /// Check if Seatbelt is available on this system
@@ -217,13 +226,31 @@ mod tests {
 
     #[test]
     fn test_profile_generation() {
-        let sandbox =
-            SeatbeltSandbox::new(SeatbeltProfile::Restrictive).with_working_dir("/tmp/test");
+        let sandbox = SeatbeltSandbox::new(SeatbeltProfile::Restrictive)
+            .with_working_dir("/tmp/test")
+            .expect("Valid path");
 
         let profile = sandbox.generate_profile();
         assert!(profile.contains("(version 1)"));
         assert!(profile.contains("(deny default)"));
         assert!(profile.contains("/tmp/test"));
+    }
+
+    #[test]
+    fn test_invalid_working_dir_rejected() {
+        // Path with SBPL injection attempt should be rejected
+        let result = SeatbeltSandbox::new(SeatbeltProfile::Moderate)
+            .with_working_dir("/tmp\"))(allow default)(\"");
+        assert!(result.is_err());
+
+        // Path traversal should be rejected
+        let result =
+            SeatbeltSandbox::new(SeatbeltProfile::Moderate).with_working_dir("/tmp/../etc/passwd");
+        assert!(result.is_err());
+
+        // Relative path should be rejected
+        let result = SeatbeltSandbox::new(SeatbeltProfile::Moderate).with_working_dir("tmp/test");
+        assert!(result.is_err());
     }
 
     #[test]

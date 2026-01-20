@@ -556,15 +556,22 @@ ls -lh "$ROOTFS_IMG"
     std::fs::write(&script_path, &build_script)?;
 
     // Run build in Docker
+    // SECURITY NOTE: Building rootfs images requires privileged access to create
+    // loop devices and mount filesystems. This is only used during setup, not
+    // during normal sandbox operation. The build runs a minimal Alpine container
+    // with a controlled script. For production deployments, consider using
+    // pre-built images instead of building locally.
+    eprintln!("  (Building with privileged Docker - required for loop device access)");
     let status = Command::new("docker")
         .args([
             "run",
             "--rm",
             "--privileged",
+            // Security: Mount build script as read-only to prevent tampering
             "-v",
             &format!("{}:/output", rootfs_dir.display()),
             "-v",
-            &format!("{}:/build.sh", script_path.display()),
+            &format!("{}:/build.sh:ro", script_path.display()),
             "alpine:3.20",
             "/bin/sh",
             "/build.sh",

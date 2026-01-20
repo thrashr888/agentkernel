@@ -6,6 +6,7 @@
 use crate::docker_backend::{ContainerRuntime, ContainerSandbox, detect_container_runtime};
 use crate::firecracker_client::{BootSource, Drive, FirecrackerClient, MachineConfig, VsockDevice};
 use crate::permissions::Permissions;
+use crate::validation;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -60,8 +61,12 @@ impl FirecrackerVm {
         let socket_path = PathBuf::from(format!("/tmp/agentkernel-{}.sock", config.name));
 
         // Clean up any existing socket
-        if socket_path.exists() {
-            std::fs::remove_file(&socket_path)?;
+        // Security: Use atomic remove to avoid TOCTOU race condition
+        // where an attacker could create a symlink between exists() and remove_file()
+        match std::fs::remove_file(&socket_path) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
 
         Ok(Self {
@@ -220,10 +225,8 @@ impl FirecrackerVm {
             let _ = process.wait();
         }
 
-        // Clean up socket
-        if self.socket_path.exists() {
-            let _ = std::fs::remove_file(&self.socket_path);
-        }
+        // Clean up socket (ignore errors - best effort cleanup)
+        let _ = std::fs::remove_file(&self.socket_path);
 
         Ok(())
     }
@@ -257,9 +260,8 @@ impl Drop for FirecrackerVm {
         if let Some(ref mut process) = self.process {
             let _ = process.kill();
         }
-        if self.socket_path.exists() {
-            let _ = std::fs::remove_file(&self.socket_path);
-        }
+        // Best effort socket cleanup (ignore errors)
+        let _ = std::fs::remove_file(&self.socket_path);
     }
 }
 
@@ -430,7 +432,14 @@ impl VmManager {
     }
 
     /// Get rootfs path for a runtime (Firecracker only)
+    ///
+    /// # Security
+    /// The runtime parameter is validated against an allowlist to prevent
+    /// path traversal attacks (e.g., `../../../etc/passwd`).
     pub fn rootfs_path(&self, runtime: &str) -> Result<PathBuf> {
+        // Security: Validate runtime against allowlist to prevent path traversal
+        validation::validate_runtime(runtime)?;
+
         let rootfs_dir = self
             .rootfs_dir
             .as_ref()

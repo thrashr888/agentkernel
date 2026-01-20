@@ -8,6 +8,7 @@ mod mcp;
 mod permissions;
 mod seatbelt;
 mod setup;
+mod validation;
 mod vmm;
 mod vsock;
 
@@ -190,6 +191,9 @@ memory_mb = 512
             config,
             dir: _,
         } => {
+            // Validate sandbox name first (security: prevents command injection)
+            validation::validate_sandbox_name(&name)?;
+
             // Check setup status first
             let status = check_installation();
             if !status.is_ready() {
@@ -231,6 +235,8 @@ memory_mb = 512
             println!("  agentkernel attach {}", name);
         }
         Commands::Start { name } => {
+            validation::validate_sandbox_name(&name)?;
+
             let status = check_installation();
             if !status.is_ready() {
                 bail!("Agentkernel is not fully set up. Run 'agentkernel setup' first.");
@@ -252,6 +258,8 @@ memory_mb = 512
             println!("\nTo attach: agentkernel attach {}", name);
         }
         Commands::Stop { name } => {
+            validation::validate_sandbox_name(&name)?;
+
             let mut manager = VmManager::new()?;
 
             if !manager.exists(&name) {
@@ -263,12 +271,16 @@ memory_mb = 512
             println!("Sandbox '{}' stopped.", name);
         }
         Commands::Remove { name } => {
+            validation::validate_sandbox_name(&name)?;
+
             let mut manager = VmManager::new()?;
             println!("Removing sandbox '{}'...", name);
             manager.remove(&name).await?;
             println!("Sandbox '{}' removed.", name);
         }
         Commands::Attach { name } => {
+            validation::validate_sandbox_name(&name)?;
+
             let manager = VmManager::new()?;
 
             if let Some(vm) = manager.get(&name) {
@@ -289,6 +301,8 @@ memory_mb = 512
             }
         }
         Commands::Exec { name, command } => {
+            validation::validate_sandbox_name(&name)?;
+
             if command.is_empty() {
                 bail!("No command specified. Usage: agentkernel exec <name> <command...>");
             }

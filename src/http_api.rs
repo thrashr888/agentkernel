@@ -16,6 +16,7 @@ use tokio::net::TcpListener;
 
 use crate::languages;
 use crate::permissions::SecurityProfile;
+use crate::validation;
 use crate::vmm::VmManager;
 
 type BoxBody = http_body_util::combinators::BoxBody<bytes::Bytes, hyper::Error>;
@@ -188,6 +189,16 @@ async fn handle_run(req: Request<Incoming>, state: Arc<AppState>) -> Response<Bo
         );
     }
 
+    // Validate Docker image name if provided (security: prevents injection)
+    if let Some(ref img) = body.image
+        && let Err(e) = validation::validate_docker_image(img)
+    {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
     let image = body
         .image
         .unwrap_or_else(|| languages::detect_image(&body.command));
@@ -272,7 +283,25 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         Err(resp) => return resp,
     };
 
+    // Validate sandbox name (security: prevents command injection)
+    if let Err(e) = validation::validate_sandbox_name(&body.name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
     let image = body.image.as_deref().unwrap_or("alpine:3.20");
+
+    // Validate Docker image name if provided
+    if let Some(ref img) = body.image
+        && let Err(e) = validation::validate_docker_image(img)
+    {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
 
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
@@ -309,6 +338,14 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
 }
 
 async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    // Validate sandbox name (security: prevents command injection)
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
     let manager = match state.get_manager().await {
         Ok(m) => m,
         Err(e) => {
@@ -343,6 +380,14 @@ async fn handle_exec_sandbox(
     name: &str,
     state: Arc<AppState>,
 ) -> Response<BoxBody> {
+    // Validate sandbox name (security: prevents command injection)
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
     let body: ExecRequest = match read_json_body(req).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -378,6 +423,14 @@ async fn handle_exec_sandbox(
 }
 
 async fn handle_delete_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    // Validate sandbox name (security: prevents command injection)
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
         Err(e) => {
