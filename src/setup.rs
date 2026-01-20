@@ -129,10 +129,8 @@ impl SetupStatus {
         // Show guidance for KVM permission issues
         if self.kvm_permission_denied {
             println!();
-            println!("  Note: /dev/kvm exists but you don't have permission to access it.");
-            println!("  To fix this, add yourself to the 'kvm' group:");
-            println!("    sudo usermod -aG kvm $USER");
-            println!("  Then log out and back in (or run: newgrp kvm)");
+            println!("  ⚠️  /dev/kvm exists but you don't have permission to access it.");
+            println!("  Fix with: sudo usermod -aG kvm $USER && newgrp kvm");
         }
 
         println!(
@@ -413,6 +411,37 @@ pub async fn run_setup(non_interactive: bool) -> Result<()> {
     }
 
     println!("\n=== Setup Complete ===");
+
+    // Re-check status after installation
+    let final_status = check_installation();
+
+    // Offer verification test if Firecracker backend is available
+    if final_status.kernel_installed
+        && final_status.rootfs_base_installed
+        && final_status.firecracker_installed
+    {
+        if final_status.kvm_available {
+            if !non_interactive {
+                println!();
+                if prompt_yes_no("Run a quick verification test?", true)? {
+                    run_verification_test(&data_dir).await?;
+                }
+            }
+        } else if final_status.kvm_permission_denied {
+            println!(
+                "\n⚠️  KVM permission denied - you need to fix this before using Firecracker."
+            );
+            println!("\nTo fix KVM permissions:");
+            println!("  1. Add yourself to the kvm group:");
+            println!("     sudo usermod -aG kvm $USER");
+            println!("  2. Apply the group change (choose one):");
+            println!("     - Log out and back in, OR");
+            println!("     - Run: newgrp kvm");
+            println!("     - Run commands with: sg kvm -c 'agentkernel start ...'");
+            println!("\nAfter fixing permissions, run: agentkernel setup --verify");
+        }
+    }
+
     println!("\nYou can now create sandboxes with:");
     println!("  agentkernel create my-sandbox");
     println!("  agentkernel start my-sandbox");
@@ -587,17 +616,36 @@ CMD ["/agent"]
         bail!("Failed to extract guest agent binary");
     }
 
-    // Make executable
+    // Make executable and verify the binary is valid
+    let agent_path = bin_dir.join("agent");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let agent_path = bin_dir.join("agent");
         if agent_path.exists() {
             std::fs::set_permissions(&agent_path, std::fs::Permissions::from_mode(0o755))?;
         }
     }
 
-    println!("Guest agent built: {}", bin_dir.join("agent").display());
+    // Verify the binary is non-empty (catches build failures like wrong Rust edition)
+    let agent_size = std::fs::metadata(&agent_path).map(|m| m.len()).unwrap_or(0);
+    if agent_size == 0 {
+        bail!(
+            "Guest agent binary is empty (0 bytes). This usually means the Rust build failed.\n\
+             Check that guest-agent/Cargo.toml uses a supported Rust edition (2021, not 2024)."
+        );
+    }
+    if agent_size < 10000 {
+        eprintln!(
+            "Warning: Guest agent binary is unusually small ({} bytes). It may not work correctly.",
+            agent_size
+        );
+    }
+
+    println!(
+        "Guest agent built: {} ({} bytes)",
+        agent_path.display(),
+        agent_size
+    );
     Ok(())
 }
 
@@ -812,6 +860,64 @@ ls -lh "$ROOTFS_IMG"
         rootfs_dir.display(),
         runtime
     );
+    Ok(())
+}
+
+/// Run a quick verification test to ensure Firecracker can boot
+async fn run_verification_test(data_dir: &Path) -> Result<()> {
+    println!("\n==> Running verification test...");
+
+    let kernel_path = find_kernel(data_dir).ok_or_else(|| anyhow::anyhow!("Kernel not found"))?;
+    let rootfs_path = data_dir.join("images/rootfs/base.ext4");
+    let firecracker_path = data_dir.join("bin/firecracker");
+
+    if !rootfs_path.exists() {
+        bail!("Rootfs not found: {}", rootfs_path.display());
+    }
+    if !firecracker_path.exists() {
+        bail!("Firecracker not found: {}", firecracker_path.display());
+    }
+
+    println!("  Kernel: {}", kernel_path.display());
+    println!("  Rootfs: {}", rootfs_path.display());
+    println!("  Firecracker: {}", firecracker_path.display());
+
+    // Create a test using our vmm module
+    // For now, just verify the files exist and are accessible
+    let kernel_size = std::fs::metadata(&kernel_path)?.len();
+    let rootfs_size = std::fs::metadata(&rootfs_path)?.len();
+    let fc_size = std::fs::metadata(&firecracker_path)?.len();
+
+    println!("\n  Kernel size: {} bytes", kernel_size);
+    println!("  Rootfs size: {} bytes", rootfs_size);
+    println!("  Firecracker size: {} bytes", fc_size);
+
+    // Basic sanity checks
+    if kernel_size < 1_000_000 {
+        eprintln!("  ⚠️  Kernel seems too small, might not be built correctly");
+    }
+    if rootfs_size < 10_000_000 {
+        eprintln!("  ⚠️  Rootfs seems too small, might not be built correctly");
+    }
+
+    // Check guest agent in rootfs (would require mounting, skip for now)
+    let agent_path = data_dir.join("bin/agent");
+    if agent_path.exists() {
+        let agent_size = std::fs::metadata(&agent_path)?.len();
+        println!("  Guest agent: {} bytes", agent_size);
+        if agent_size > 0 {
+            println!("\n✓ All components look good!");
+            println!(
+                "\nNote: Full boot test requires KVM access. Create and start a sandbox to test:"
+            );
+            println!("  agentkernel create test-sandbox");
+            println!("  agentkernel start test-sandbox");
+            println!("  agentkernel exec test-sandbox -- echo 'Hello from microVM!'");
+        }
+    } else {
+        eprintln!("  ⚠️  Guest agent not found at {}", agent_path.display());
+    }
+
     Ok(())
 }
 

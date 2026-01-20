@@ -6,7 +6,7 @@ Performance measurements for sandbox lifecycle operations.
 
 | Backend | Platform | Avg Boot | Ready Time | Exec Latency | Throughput |
 |---------|----------|----------|------------|--------------|------------|
-| Docker | macOS (M1) | 188ms | 188ms | 83ms | 2.0 sandboxes/sec |
+| Docker | macOS (M3 Pro) | 188ms | 188ms | 83ms | 2.0 sandboxes/sec |
 | Docker | Linux (AMD EPYC) | 155ms | 155ms | 53ms | ~4 sandboxes/sec |
 | Firecracker | Linux (AMD EPYC) | 78ms | 1015ms | 19ms | ~1 sandbox/sec |
 
@@ -14,7 +14,7 @@ Performance measurements for sandbox lifecycle operations.
 
 ## Docker Backend (macOS)
 
-Tested on Apple Silicon (M1) with Docker via Colima. This is the fallback backend for systems without KVM.
+Tested on Apple Silicon (M3 Pro) with Docker via Colima. This is the fallback backend for systems without KVM.
 
 ### Stress Test Results (10 parallel sandboxes)
 
