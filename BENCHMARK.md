@@ -8,9 +8,9 @@ Performance measurements for sandbox lifecycle operations.
 |---------|----------|----------|------------|--------------|------------|
 | Docker | macOS (M3 Pro) | 188ms | 188ms | 83ms | 2.0 sandboxes/sec |
 | Docker | Linux (AMD EPYC) | 155ms | 155ms | 53ms | ~4 sandboxes/sec |
-| Firecracker | Linux (AMD EPYC) | 78ms | 1015ms | 19ms | ~1 sandbox/sec |
+| Firecracker | Linux (AMD EPYC) | 78ms | **110ms** | 19ms | ~9 sandboxes/sec |
 
-**Key insight**: Firecracker hypervisor overhead is just 78ms (faster than Docker). The 1015ms "ready" time includes full kernel boot + userspace init + guest agent startup. Once running, Firecracker has 3x lower exec latency.
+**Key insight**: With optimized boot args, Firecracker achieves **110ms** agent-ready time - faster than Docker while providing true VM isolation. The 89% speedup (from 961ms baseline) came from disabling PS/2 keyboard drivers (`i8042.nokbd i8042.noaux`).
 
 ## Docker Backend (macOS)
 
@@ -73,13 +73,27 @@ Firecracker microVMs provide stronger isolation (separate kernel per VM) and low
 
 ### Measured Performance (AMD EPYC, KVM)
 
-| Metric | Measured | Notes |
-|--------|----------|-------|
-| Firecracker API ready | 46ms | Process start to socket available |
-| Instance start | 78ms | VM started (hypervisor overhead only) |
-| Agent ready | 1015ms | Full boot: kernel + init + agent |
-| Command execution | 19ms | Via vsock (3x faster than Docker exec) |
-| Shutdown | 20ms | 6x faster than Docker cleanup |
+| Metric | Baseline | Optimized | Notes |
+|--------|----------|-----------|-------|
+| Firecracker API ready | 46ms | 46ms | Process start to socket available |
+| Instance start | 78ms | 78ms | VM started (hypervisor overhead only) |
+| Agent ready | 961ms | **110ms** | 89% faster with boot arg optimizations |
+| Command execution | 19ms | 19ms | Via vsock (3x faster than Docker exec) |
+| Shutdown | 20ms | 20ms | 6x faster than Docker cleanup |
+
+### Boot Optimization Details
+
+The 89% speedup came from kernel boot args that disable unnecessary PS/2 keyboard drivers:
+
+```
+quiet loglevel=4 i8042.nokbd i8042.noaux
+```
+
+| Optimization | Time Saved | Notes |
+|--------------|------------|-------|
+| i8042.nokbd | ~500ms | Disable PS/2 keyboard driver |
+| i8042.noaux | ~260ms | Skip PS/2 aux port probe |
+| quiet loglevel=4 | ~90ms | Reduce console output |
 
 ### Docker vs Firecracker Comparison (Linux)
 
@@ -87,7 +101,7 @@ Firecracker microVMs provide stronger isolation (separate kernel per VM) and low
 |--------|--------|-------------|--------|
 | Process start | 40ms | 46ms | Tie |
 | Instance/container up | 155ms | 78ms | **Firecracker** |
-| Ready to execute | 155ms | 1015ms | **Docker** (no kernel boot) |
+| Ready to execute | 155ms | **110ms** | **Firecracker** (optimized) |
 | Command execution | 53ms | 19ms | **Firecracker** (vsock) |
 | Shutdown/cleanup | 130ms | 20ms | **Firecracker** (6x faster) |
 
@@ -103,9 +117,11 @@ Firecracker microVMs provide stronger isolation (separate kernel per VM) and low
 
 ### Use Case Recommendations
 
-- **Short-lived tasks (<5 commands)**: Docker is faster for total cycle time
-- **Longer sessions**: Firecracker is better (lower per-command latency)
+With the optimized boot args, Firecracker is now faster than Docker in almost all scenarios:
+
+- **All workloads**: Firecracker recommended (110ms start + 19ms exec vs Docker's 155ms start + 53ms exec)
 - **Security-critical code**: Firecracker required (true VM isolation)
+- **macOS development**: Docker fallback (no KVM available)
 - **Untrusted code**: Firecracker strongly recommended
 
 ### Requirements
