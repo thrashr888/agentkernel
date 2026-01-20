@@ -531,6 +531,7 @@ RUN cp target/*/release/agent /agent || cp target/release/agent /agent
 
 FROM scratch
 COPY --from=builder /agent /agent
+CMD ["/agent"]
 "#;
 
     std::fs::write(temp_dir.join("Dockerfile"), dockerfile)?;
