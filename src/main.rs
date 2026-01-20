@@ -6,6 +6,7 @@ mod http_api;
 mod languages;
 mod mcp;
 mod permissions;
+mod pool;
 mod seatbelt;
 mod setup;
 mod validation;
@@ -112,6 +113,9 @@ enum Commands {
         /// Disable network access
         #[arg(long)]
         no_network: bool,
+        /// Use container pool for faster execution (skips create/destroy overhead)
+        #[arg(short = 'F', long)]
+        fast: bool,
     },
     /// Start MCP server for Claude Code integration (JSON-RPC over stdio)
     McpServer,
@@ -338,9 +342,26 @@ memory_mb = 512
             image,
             profile,
             no_network,
+            fast,
         } => {
             if command.is_empty() {
                 bail!("No command specified. Usage: agentkernel run [OPTIONS] <command...>");
+            }
+
+            // Fast path: use container pool for ephemeral runs
+            if fast {
+                if keep {
+                    bail!("Cannot use --fast with --keep (pooled containers are ephemeral)");
+                }
+                if image.is_some() || config.is_some() {
+                    eprintln!(
+                        "Warning: --image and --config are ignored with --fast (pool uses alpine:3.20)"
+                    );
+                }
+
+                let output = VmManager::run_pooled(&command).await?;
+                print!("{}", output);
+                return Ok(());
             }
 
             // Generate a unique sandbox name

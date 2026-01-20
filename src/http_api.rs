@@ -33,6 +33,13 @@ struct RunRequest {
     command: Vec<String>,
     image: Option<String>,
     profile: Option<String>,
+    /// Use container pool for faster execution (default: true for /run)
+    #[serde(default = "default_fast")]
+    fast: bool,
+}
+
+fn default_fast() -> bool {
+    true // Default to fast mode for HTTP API
 }
 
 /// Request to create a sandbox
@@ -188,6 +195,31 @@ async fn handle_run(req: Request<Incoming>, state: Arc<AppState>) -> Response<Bo
             &ApiResponse::<()>::error("command is required"),
         );
     }
+
+    // Fast path: use container pool (default for HTTP API)
+    if body.fast {
+        if body.image.is_some() {
+            // Pool uses alpine:3.20, warn if custom image requested
+            eprintln!("Warning: custom image ignored in fast mode (pool uses alpine:3.20)");
+        }
+
+        match VmManager::run_pooled(&body.command).await {
+            Ok(output) => {
+                return json_response(
+                    StatusCode::OK,
+                    &ApiResponse::success(RunResponse { output }),
+                );
+            }
+            Err(e) => {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(e.to_string()),
+                );
+            }
+        }
+    }
+
+    // Slow path: full sandbox lifecycle (when fast=false or custom image needed)
 
     // Validate Docker image name if provided (security: prevents injection)
     if let Some(ref img) = body.image

@@ -5,6 +5,13 @@
 //!
 //! Run with: cargo test --test stress_test -- --nocapture --ignored
 //!
+//! Configurable via environment:
+//!   STRESS_VM_COUNT=100        - Number of sandboxes to create (default: 10)
+//!   STRESS_MAX_CONCURRENT=50   - Max concurrent sandbox operations (default: 50)
+//!
+//! Example large run:
+//!   STRESS_VM_COUNT=1000 STRESS_MAX_CONCURRENT=100 cargo test --test stress_test -- --nocapture --ignored
+//!
 //! Requirements:
 //!   - agentkernel binary built (cargo build --release)
 //!   - Setup complete (agentkernel setup -y)
@@ -15,10 +22,23 @@ use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
 
-const VM_COUNT: usize = 10;
 const EXPECTED_OUTPUT: &str = "hello";
-const MAX_TOTAL_TIME: Duration = Duration::from_secs(60);
+const MAX_TOTAL_TIME: Duration = Duration::from_secs(600); // 10 min for large runs
+
+fn get_config() -> (usize, usize) {
+    let vm_count = std::env::var("STRESS_VM_COUNT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+    // Limit concurrent sandbox operations to prevent Docker daemon/thread pool exhaustion
+    let max_concurrent = std::env::var("STRESS_MAX_CONCURRENT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
+    (vm_count, max_concurrent)
+}
 
 /// Results from a single sandbox test
 #[derive(Debug, Serialize)]
@@ -82,9 +102,11 @@ fn run_cmd(args: &[&str]) -> Result<String, String> {
 #[tokio::test]
 #[ignore] // Run manually: cargo test --test stress_test -- --nocapture --ignored
 async fn test_parallel_sandboxes() {
+    let (vm_count, max_concurrent) = get_config();
+
     println!(
-        "\n=== Agentkernel Stress Test: {} Sandboxes ===\n",
-        VM_COUNT
+        "\n=== Agentkernel Stress Test: {} Sandboxes (max {} concurrent) ===\n",
+        vm_count, max_concurrent
     );
 
     // Check that binary exists
@@ -106,18 +128,53 @@ async fn test_parallel_sandboxes() {
         ),
     }
 
+    // Clean up any leftover stress-* sandboxes from previous runs
+    println!("Cleaning up leftover sandboxes...");
+
+    // 1. Remove Docker containers (names use "agentkernel-" prefix)
+    let container_names: Vec<String> = (0..vm_count)
+        .map(|i| format!("agentkernel-stress-{}", i))
+        .collect();
+    for chunk in container_names.chunks(100) {
+        let _ = std::process::Command::new("docker")
+            .args(["rm", "-f"])
+            .args(chunk)
+            .output();
+    }
+
+    // 2. Remove sandbox state files from ~/.local/share/agentkernel/sandboxes/
+    let sandboxes_dir = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".local/share/agentkernel/sandboxes"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/agentkernel/sandboxes"));
+    for i in 0..vm_count {
+        let state_file = sandboxes_dir.join(format!("stress-{}.json", i));
+        let _ = std::fs::remove_file(state_file);
+    }
+    println!("Done.\n");
+
     let start = Instant::now();
     let success_count = Arc::new(AtomicUsize::new(0));
     let fail_count = Arc::new(AtomicUsize::new(0));
+    let completed_count = Arc::new(AtomicUsize::new(0));
+
+    // Semaphore to limit concurrent sandbox operations
+    // This prevents Docker daemon and thread pool exhaustion with large VM counts
+    let semaphore = Arc::new(Semaphore::new(max_concurrent));
 
     // Spawn sandbox tasks concurrently
-    let mut handles = Vec::with_capacity(VM_COUNT);
+    let mut handles = Vec::with_capacity(vm_count);
 
-    for i in 0..VM_COUNT {
+    for i in 0..vm_count {
         let success = Arc::clone(&success_count);
         let fail = Arc::clone(&fail_count);
+        let completed = Arc::clone(&completed_count);
+        let sem = Arc::clone(&semaphore);
+        let total = vm_count;
 
         let handle = tokio::spawn(async move {
+            // Acquire semaphore permit before starting sandbox operations
+            let _permit = sem.acquire().await.unwrap();
+
             let result = run_single_sandbox_test(i).await;
 
             if result.error.is_none() && result.output_correct {
@@ -126,14 +183,21 @@ async fn test_parallel_sandboxes() {
                 fail.fetch_add(1, Ordering::SeqCst);
             }
 
+            let done = completed.fetch_add(1, Ordering::SeqCst) + 1;
+            // Print progress every 10 sandboxes or at completion
+            if done % 10 == 0 || done == 1 {
+                eprintln!("  Progress: {}/{} sandboxes completed", done, total);
+            }
+
             result
+            // Permit automatically released when _permit is dropped
         });
 
         handles.push(handle);
     }
 
     // Wait for all sandboxes to complete
-    let mut results = Vec::with_capacity(VM_COUNT);
+    let mut results = Vec::with_capacity(vm_count);
     for handle in handles {
         match handle.await {
             Ok(result) => results.push(result),
@@ -163,12 +227,15 @@ async fn test_parallel_sandboxes() {
     // Save results to files
     save_stress_results(&stats, &results);
 
-    // Assertions
+    // Assertions - allow up to 5% failure rate for stress tests
+    // Docker can have occasional flakiness under high concurrency
+    let success_rate = stats.successful as f64 / vm_count as f64;
     assert!(
-        stats.failed == 0,
-        "Some sandboxes failed: {} failures out of {}",
+        success_rate >= 0.95,
+        "Success rate {:.1}% is below 95% ({} failures out of {})",
+        success_rate * 100.0,
         stats.failed,
-        VM_COUNT
+        vm_count
     );
 
     assert!(

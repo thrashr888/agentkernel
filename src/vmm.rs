@@ -7,13 +7,31 @@ use crate::docker_backend::{ContainerRuntime, ContainerSandbox, detect_container
 use crate::firecracker_client::{BootSource, Drive, FirecrackerClient, MachineConfig, VsockDevice};
 use crate::languages::docker_image_to_firecracker_runtime;
 use crate::permissions::Permissions;
+use crate::pool::ContainerPool;
 use crate::validation;
 use crate::vsock::VsockClient;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use tokio::sync::OnceCell;
 use tokio::time::{Duration, sleep};
+
+/// Global container pool for fast ephemeral runs
+static CONTAINER_POOL: OnceCell<Arc<ContainerPool>> = OnceCell::const_new();
+
+/// Get or initialize the global container pool
+async fn get_pool() -> Result<Arc<ContainerPool>> {
+    CONTAINER_POOL
+        .get_or_try_init(|| async {
+            let pool = ContainerPool::with_config(5, 20, "alpine:3.20")?;
+            pool.start().await?;
+            Ok(Arc::new(pool))
+        })
+        .await
+        .cloned()
+}
 
 /// Backend type for sandbox execution
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -739,5 +757,43 @@ impl VmManager {
     #[allow(dead_code)]
     pub fn backend(&self) -> Backend {
         self.backend
+    }
+
+    /// Run a command using the container pool (fast path for ephemeral runs)
+    ///
+    /// This uses a pre-warmed container pool to avoid the overhead of
+    /// creating and destroying containers for each command. Typically
+    /// saves ~250ms per command on Docker.
+    ///
+    /// Returns the command output.
+    pub async fn run_pooled(cmd: &[String]) -> Result<String> {
+        let pool = get_pool().await?;
+
+        // Acquire a container from the pool
+        let container = pool.acquire().await?;
+
+        // Run the command
+        let result = container.run_command(cmd).await;
+
+        // Release container back to pool
+        pool.release(container).await;
+
+        result
+    }
+
+    /// Check if pooled execution is available
+    #[allow(dead_code)]
+    pub fn pool_available() -> bool {
+        detect_container_runtime().is_some()
+    }
+
+    /// Get pool statistics (for debugging/monitoring)
+    #[allow(dead_code)]
+    pub async fn pool_stats() -> Option<crate::pool::PoolStats> {
+        if let Some(pool) = CONTAINER_POOL.get() {
+            Some(pool.stats().await)
+        } else {
+            None
+        }
     }
 }

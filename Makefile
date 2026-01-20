@@ -8,6 +8,7 @@ RELEASE_DIR := dist
 
 .PHONY: all build build-release clean install test lint check help
 .PHONY: build-macos build-linux build-all release
+.PHONY: stress-test benchmark-test pool-benchmark
 
 # Default target
 all: build
@@ -23,6 +24,25 @@ build-release:
 # Run tests
 test:
 	cargo test
+
+# Stress test (parallel sandbox creation)
+# Usage: make stress-test
+# Usage: make stress-test VM_COUNT=100 MAX_CONCURRENT=50
+stress-test: build-release
+	STRESS_VM_COUNT=$(or $(VM_COUNT),10) STRESS_MAX_CONCURRENT=$(or $(MAX_CONCURRENT),50) \
+		cargo test --test stress_test -- --nocapture --ignored
+
+# Benchmark test (repeated lifecycle measurement)
+# Usage: make benchmark-test
+# Usage: make benchmark-test SANDBOXES=20 ITERATIONS=5 MAX_CONCURRENT=100
+benchmark-test: build-release
+	BENCH_SANDBOXES=$(or $(SANDBOXES),10) BENCH_ITERATIONS=$(or $(ITERATIONS),10) BENCH_MAX_CONCURRENT=$(or $(MAX_CONCURRENT),50) \
+		cargo test --test benchmark_test -- --nocapture --ignored
+
+# Pool benchmark (compare pooled vs direct container operations)
+# Usage: make pool-benchmark
+pool-benchmark:
+	cargo test --test pool_benchmark -- --nocapture --ignored
 
 # Run linting and formatting checks
 lint:
@@ -127,6 +147,13 @@ help:
 	@echo "  make check         - Run all checks (lint + test)"
 	@echo "  make install       - Install to ~/.cargo/bin"
 	@echo "  make clean         - Clean build artifacts"
+	@echo ""
+	@echo "Benchmarking:"
+	@echo "  make stress-test                      - Run stress test (10 sandboxes)"
+	@echo "  make stress-test VM_COUNT=100         - Custom sandbox count"
+	@echo "  make benchmark-test                   - Run benchmark (10x10 cycles)"
+	@echo "  make benchmark-test SANDBOXES=20      - Custom benchmark config"
+	@echo "  make pool-benchmark                   - Compare pooled vs direct containers"
 	@echo ""
 	@echo "Cross-compilation:"
 	@echo "  make build-macos-arm64 - Build for macOS ARM64"

@@ -6,8 +6,12 @@
 //! Run with: cargo test --test benchmark_test -- --nocapture --ignored
 //!
 //! Configurable via environment:
-//!   BENCH_SANDBOXES=100  - Number of sandboxes per iteration (default: 10)
-//!   BENCH_ITERATIONS=100 - Number of iterations (default: 10)
+//!   BENCH_SANDBOXES=100       - Number of sandboxes per iteration (default: 10)
+//!   BENCH_ITERATIONS=100      - Number of iterations (default: 10)
+//!   BENCH_MAX_CONCURRENT=50   - Max concurrent sandbox operations (default: 50)
+//!
+//! Example large run:
+//!   BENCH_SANDBOXES=100 BENCH_ITERATIONS=10 BENCH_MAX_CONCURRENT=100 cargo test --test benchmark_test -- --nocapture --ignored
 //!
 //! Requirements:
 //!   - agentkernel binary built (cargo build --release)
@@ -17,10 +21,11 @@ use serde::Serialize;
 use std::fs;
 use std::process::Command;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
 
-fn get_config() -> (usize, usize) {
+fn get_config() -> (usize, usize, usize) {
     let sandboxes = std::env::var("BENCH_SANDBOXES")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -29,7 +34,12 @@ fn get_config() -> (usize, usize) {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
-    (sandboxes, iterations)
+    // Limit concurrent sandbox operations to prevent Docker daemon/thread pool exhaustion
+    let max_concurrent = std::env::var("BENCH_MAX_CONCURRENT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
+    (sandboxes, iterations, max_concurrent)
 }
 
 /// Results from a single sandbox lifecycle
@@ -97,13 +107,14 @@ fn run_cmd(args: &[&str]) -> Result<String, String> {
 #[tokio::test]
 #[ignore] // Run manually: cargo test --test benchmark_test -- --nocapture --ignored
 async fn benchmark_sandbox_lifecycle() {
-    let (sandboxes, iterations) = get_config();
+    let (sandboxes, iterations, max_concurrent) = get_config();
 
     println!(
-        "\n=== Agentkernel Benchmark: {}x{} ({} total cycles) ===\n",
+        "\n=== Agentkernel Benchmark: {}x{} ({} total, max {} concurrent) ===\n",
         sandboxes,
         iterations,
-        sandboxes * iterations
+        sandboxes * iterations,
+        max_concurrent
     );
 
     // Check that binary exists
@@ -125,8 +136,37 @@ async fn benchmark_sandbox_lifecycle() {
         ),
     }
 
+    // Clean up any leftover bench-* sandboxes from previous runs
+    println!("Cleaning up leftover sandboxes...");
+
+    // 1. Remove Docker containers (names use "agentkernel-" prefix)
+    let container_names: Vec<String> = (0..iterations)
+        .flat_map(|iter| (0..sandboxes).map(move |id| format!("agentkernel-bench-{}-{}", iter, id)))
+        .collect();
+    for chunk in container_names.chunks(100) {
+        let _ = std::process::Command::new("docker")
+            .args(["rm", "-f"])
+            .args(chunk)
+            .output();
+    }
+
+    // 2. Remove sandbox state files from ~/.local/share/agentkernel/sandboxes/
+    let sandboxes_dir = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".local/share/agentkernel/sandboxes"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/agentkernel/sandboxes"));
+    for iter in 0..iterations {
+        for id in 0..sandboxes {
+            let state_file = sandboxes_dir.join(format!("bench-{}-{}.json", iter, id));
+            let _ = std::fs::remove_file(state_file);
+        }
+    }
+    println!("Done.\n");
+
     let mut all_results: Vec<LifecycleResult> = Vec::new();
     let wall_start = Instant::now();
+
+    // Create semaphore to limit concurrent sandbox operations
+    let semaphore = Arc::new(Semaphore::new(max_concurrent));
 
     for iteration in 0..iterations {
         println!(
@@ -137,7 +177,7 @@ async fn benchmark_sandbox_lifecycle() {
         );
 
         let iter_start = Instant::now();
-        let results = run_parallel_sandboxes(iteration, sandboxes).await;
+        let results = run_parallel_sandboxes(iteration, sandboxes, Arc::clone(&semaphore)).await;
         let iter_time = iter_start.elapsed();
 
         let successful = results.iter().filter(|r| r.success).count();
@@ -169,14 +209,33 @@ async fn benchmark_sandbox_lifecycle() {
     println!("\n=== BENCHMARK COMPLETE ===\n");
 }
 
-async fn run_parallel_sandboxes(iteration: usize, count: usize) -> Vec<LifecycleResult> {
-    let success_count = Arc::new(AtomicUsize::new(0));
+async fn run_parallel_sandboxes(
+    iteration: usize,
+    count: usize,
+    semaphore: Arc<Semaphore>,
+) -> Vec<LifecycleResult> {
+    let completed_count = Arc::new(AtomicUsize::new(0));
     let mut handles = Vec::with_capacity(count);
 
     for sandbox_id in 0..count {
-        let success = Arc::clone(&success_count);
-        let handle =
-            tokio::spawn(async move { run_single_lifecycle(iteration, sandbox_id, success).await });
+        let sem = Arc::clone(&semaphore);
+        let completed = Arc::clone(&completed_count);
+
+        let handle = tokio::spawn(async move {
+            // Acquire semaphore permit before starting sandbox operations
+            let _permit = sem.acquire().await.unwrap();
+
+            let result = run_single_lifecycle(iteration, sandbox_id).await;
+
+            let done = completed.fetch_add(1, Ordering::SeqCst) + 1;
+            // Print progress every 10 sandboxes
+            if done % 10 == 0 {
+                eprintln!("    Progress: {}/{}", done, count);
+            }
+
+            result
+            // Permit automatically released when _permit is dropped
+        });
         handles.push(handle);
     }
 
@@ -204,11 +263,7 @@ async fn run_parallel_sandboxes(iteration: usize, count: usize) -> Vec<Lifecycle
     results
 }
 
-async fn run_single_lifecycle(
-    iteration: usize,
-    sandbox_id: usize,
-    _success_count: Arc<AtomicUsize>,
-) -> LifecycleResult {
+async fn run_single_lifecycle(iteration: usize, sandbox_id: usize) -> LifecycleResult {
     let name = format!("bench-{}-{}", iteration, sandbox_id);
     let total_start = Instant::now();
     let mut success = true;

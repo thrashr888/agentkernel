@@ -1,0 +1,508 @@
+//! Container pool for fast sandbox acquisition.
+//!
+//! Instead of creating/destroying containers per command, we maintain a pool
+//! of pre-warmed containers ready for immediate use. This eliminates the
+//! ~150ms container start time for most operations.
+//!
+//! Architecture:
+//! - Warm pool: Pre-started containers waiting for work
+//! - Active set: Containers currently in use
+//! - Cleanup queue: Containers pending async garbage collection
+
+// Allow unused pool API methods - they're part of the public API for future use
+#![allow(dead_code)]
+
+use anyhow::{Result, bail};
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::sync::{Mutex, Semaphore};
+use tokio::time::{Duration, interval};
+
+use crate::docker_backend::{ContainerRuntime, ContainerSandbox, detect_container_runtime};
+use crate::permissions::Permissions;
+
+/// Default pool configuration
+const DEFAULT_POOL_SIZE: usize = 10;
+const DEFAULT_MAX_POOL_SIZE: usize = 50;
+const DEFAULT_IMAGE: &str = "alpine:3.20";
+const GC_INTERVAL_MS: u64 = 1000;
+const GC_BATCH_SIZE: usize = 10;
+
+/// A pooled container ready for use
+#[derive(Debug)]
+pub struct PooledContainer {
+    pub name: String,
+    #[allow(dead_code)] // Used for container lifecycle tracking
+    pub container_id: String,
+    runtime: ContainerRuntime,
+}
+
+impl PooledContainer {
+    /// Run a command in this container
+    pub async fn run_command(&self, cmd: &[String]) -> Result<String> {
+        let runtime_cmd = self.runtime.cmd();
+        let container_name = format!("agentkernel-{}", self.name);
+
+        let mut args = vec!["exec", &container_name];
+        let cmd_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
+        args.extend(cmd_refs);
+
+        let output = std::process::Command::new(runtime_cmd)
+            .args(&args)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("Command failed: {}", stderr);
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+}
+
+/// Container pool manager
+pub struct ContainerPool {
+    /// Pre-warmed containers ready for use
+    warm_pool: Arc<Mutex<VecDeque<PooledContainer>>>,
+    /// Containers queued for async cleanup
+    cleanup_queue: Arc<Mutex<VecDeque<String>>>,
+    /// Semaphore to limit concurrent container starts
+    start_semaphore: Arc<Semaphore>,
+    /// Counter for unique container names
+    name_counter: AtomicUsize,
+    /// Container runtime to use
+    runtime: ContainerRuntime,
+    /// Image to use for pooled containers
+    image: String,
+    /// Target pool size
+    target_size: usize,
+    /// Maximum pool size
+    max_size: usize,
+    /// Whether the pool is running
+    running: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ContainerPool {
+    /// Create a new container pool
+    pub fn new() -> Result<Self> {
+        let runtime = detect_container_runtime()
+            .ok_or_else(|| anyhow::anyhow!("No container runtime available"))?;
+
+        Ok(Self {
+            warm_pool: Arc::new(Mutex::new(VecDeque::new())),
+            cleanup_queue: Arc::new(Mutex::new(VecDeque::new())),
+            start_semaphore: Arc::new(Semaphore::new(10)), // Max 10 concurrent starts
+            name_counter: AtomicUsize::new(0),
+            runtime,
+            image: DEFAULT_IMAGE.to_string(),
+            target_size: DEFAULT_POOL_SIZE,
+            max_size: DEFAULT_MAX_POOL_SIZE,
+            running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
+    }
+
+    /// Create a pool with custom settings
+    pub fn with_config(target_size: usize, max_size: usize, image: &str) -> Result<Self> {
+        let mut pool = Self::new()?;
+        pool.target_size = target_size;
+        pool.max_size = max_size;
+        pool.image = image.to_string();
+        Ok(pool)
+    }
+
+    /// Start the pool (pre-warm containers and start GC task)
+    pub async fn start(&self) -> Result<()> {
+        self.running.store(true, Ordering::SeqCst);
+
+        // Pre-warm the pool
+        self.warm_pool_to_target().await?;
+
+        // Start background GC task
+        self.spawn_gc_task();
+
+        Ok(())
+    }
+
+    /// Stop the pool and clean up all containers
+    pub async fn stop(&self) -> Result<()> {
+        self.running.store(false, Ordering::SeqCst);
+
+        // Drain warm pool to cleanup queue
+        {
+            let mut warm = self.warm_pool.lock().await;
+            let mut cleanup = self.cleanup_queue.lock().await;
+            while let Some(container) = warm.pop_front() {
+                cleanup.push_back(container.name);
+            }
+        }
+
+        // Force immediate GC
+        self.gc_all().await;
+
+        Ok(())
+    }
+
+    /// Acquire a container from the pool
+    /// Returns immediately if pool has containers, otherwise creates one
+    pub async fn acquire(&self) -> Result<PooledContainer> {
+        // Try to get from warm pool first
+        {
+            let mut pool = self.warm_pool.lock().await;
+            if let Some(container) = pool.pop_front() {
+                // Trigger async refill
+                self.spawn_refill_task();
+                return Ok(container);
+            }
+        }
+
+        // Pool empty, create a new container
+        self.create_container().await
+    }
+
+    /// Release a container back to the pool or queue for cleanup
+    pub async fn release(&self, container: PooledContainer) {
+        let pool_size = {
+            let pool = self.warm_pool.lock().await;
+            pool.len()
+        };
+
+        if pool_size < self.max_size {
+            // Return to pool for reuse
+            let mut pool = self.warm_pool.lock().await;
+            pool.push_back(container);
+        } else {
+            // Pool full, queue for cleanup
+            let mut cleanup = self.cleanup_queue.lock().await;
+            cleanup.push_back(container.name);
+        }
+    }
+
+    /// Release a container by name (queues for cleanup, doesn't return to pool)
+    pub async fn release_for_cleanup(&self, name: String) {
+        let mut cleanup = self.cleanup_queue.lock().await;
+        cleanup.push_back(name);
+    }
+
+    /// Get current pool statistics
+    pub async fn stats(&self) -> PoolStats {
+        let warm = self.warm_pool.lock().await;
+        let cleanup = self.cleanup_queue.lock().await;
+        PoolStats {
+            warm_count: warm.len(),
+            cleanup_pending: cleanup.len(),
+            target_size: self.target_size,
+            max_size: self.max_size,
+        }
+    }
+
+    /// Create a new container
+    async fn create_container(&self) -> Result<PooledContainer> {
+        let _permit = self.start_semaphore.acquire().await?;
+
+        let id = self.name_counter.fetch_add(1, Ordering::SeqCst);
+        let name = format!("pool-{}", id);
+
+        let mut sandbox = ContainerSandbox::with_runtime(&name, self.runtime);
+        sandbox
+            .start_with_permissions(&self.image, &Permissions::default())
+            .await?;
+
+        // Get container ID
+        let container_name = format!("agentkernel-{}", name);
+        let output = std::process::Command::new(self.runtime.cmd())
+            .args(["inspect", "-f", "{{.Id}}", &container_name])
+            .output()?;
+
+        let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        Ok(PooledContainer {
+            name,
+            container_id,
+            runtime: self.runtime,
+        })
+    }
+
+    /// Warm the pool up to target size
+    async fn warm_pool_to_target(&self) -> Result<()> {
+        let current_size = {
+            let pool = self.warm_pool.lock().await;
+            pool.len()
+        };
+
+        let needed = self.target_size.saturating_sub(current_size);
+        if needed == 0 {
+            return Ok(());
+        }
+
+        eprintln!("Warming pool: creating {} containers...", needed);
+
+        // Create containers in parallel
+        let mut handles = Vec::new();
+        for _ in 0..needed {
+            let pool = self.clone_for_task();
+            handles.push(tokio::spawn(async move { pool.create_container().await }));
+        }
+
+        // Collect results
+        let mut created = 0;
+        for handle in handles {
+            if let Ok(Ok(container)) = handle.await {
+                let mut pool = self.warm_pool.lock().await;
+                pool.push_back(container);
+                created += 1;
+            }
+        }
+
+        eprintln!("Pool warmed: {} containers ready", created);
+        Ok(())
+    }
+
+    /// Spawn a background task to refill the pool
+    fn spawn_refill_task(&self) {
+        let pool = self.clone_for_task();
+        tokio::spawn(async move {
+            let _ = pool.warm_pool_to_target().await;
+        });
+    }
+
+    /// Spawn the background GC task
+    fn spawn_gc_task(&self) {
+        let pool = self.clone_for_task();
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_millis(GC_INTERVAL_MS));
+            while pool.running.load(Ordering::SeqCst) {
+                interval.tick().await;
+                pool.gc_batch().await;
+            }
+        });
+    }
+
+    /// Run garbage collection on a batch of containers
+    async fn gc_batch(&self) {
+        let to_cleanup: Vec<String> = {
+            let mut queue = self.cleanup_queue.lock().await;
+            let mut batch = Vec::new();
+            for _ in 0..GC_BATCH_SIZE {
+                if let Some(name) = queue.pop_front() {
+                    batch.push(name);
+                } else {
+                    break;
+                }
+            }
+            batch
+        };
+
+        if to_cleanup.is_empty() {
+            return;
+        }
+
+        // Clean up containers in parallel
+        let runtime = self.runtime;
+        let handles: Vec<_> = to_cleanup
+            .into_iter()
+            .map(|name| {
+                let container_name = format!("agentkernel-{}", name);
+                tokio::spawn(async move {
+                    let _ = std::process::Command::new(runtime.cmd())
+                        .args(["rm", "-f", &container_name])
+                        .output();
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
+    /// Force garbage collection of all pending containers
+    async fn gc_all(&self) {
+        loop {
+            let remaining = {
+                let queue = self.cleanup_queue.lock().await;
+                queue.len()
+            };
+            if remaining == 0 {
+                break;
+            }
+            self.gc_batch().await;
+        }
+    }
+
+    /// Clone references for use in spawned tasks
+    fn clone_for_task(&self) -> ContainerPoolHandle {
+        ContainerPoolHandle {
+            warm_pool: Arc::clone(&self.warm_pool),
+            cleanup_queue: Arc::clone(&self.cleanup_queue),
+            start_semaphore: Arc::clone(&self.start_semaphore),
+            name_counter: self.name_counter.load(Ordering::SeqCst),
+            runtime: self.runtime,
+            image: self.image.clone(),
+            target_size: self.target_size,
+            running: Arc::clone(&self.running),
+        }
+    }
+}
+
+/// Lightweight handle for pool operations in spawned tasks
+struct ContainerPoolHandle {
+    warm_pool: Arc<Mutex<VecDeque<PooledContainer>>>,
+    cleanup_queue: Arc<Mutex<VecDeque<String>>>,
+    start_semaphore: Arc<Semaphore>,
+    name_counter: usize,
+    runtime: ContainerRuntime,
+    image: String,
+    target_size: usize,
+    running: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ContainerPoolHandle {
+    async fn warm_pool_to_target(&self) -> Result<()> {
+        let current_size = {
+            let pool = self.warm_pool.lock().await;
+            pool.len()
+        };
+
+        let needed = self.target_size.saturating_sub(current_size);
+        if needed == 0 {
+            return Ok(());
+        }
+
+        // Create containers
+        for i in 0..needed {
+            let _permit = self.start_semaphore.acquire().await?;
+
+            let name = format!("pool-{}", self.name_counter + i);
+            let mut sandbox = ContainerSandbox::with_runtime(&name, self.runtime);
+            if sandbox
+                .start_with_permissions(&self.image, &Permissions::default())
+                .await
+                .is_ok()
+            {
+                let container_name = format!("agentkernel-{}", name);
+                if let Ok(output) = std::process::Command::new(self.runtime.cmd())
+                    .args(["inspect", "-f", "{{.Id}}", &container_name])
+                    .output()
+                {
+                    let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    let mut pool = self.warm_pool.lock().await;
+                    pool.push_back(PooledContainer {
+                        name,
+                        container_id,
+                        runtime: self.runtime,
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn gc_batch(&self) {
+        let to_cleanup: Vec<String> = {
+            let mut queue = self.cleanup_queue.lock().await;
+            let mut batch = Vec::new();
+            for _ in 0..GC_BATCH_SIZE {
+                if let Some(name) = queue.pop_front() {
+                    batch.push(name);
+                } else {
+                    break;
+                }
+            }
+            batch
+        };
+
+        if to_cleanup.is_empty() {
+            return;
+        }
+
+        let runtime = self.runtime;
+        for name in to_cleanup {
+            let container_name = format!("agentkernel-{}", name);
+            let _ = std::process::Command::new(runtime.cmd())
+                .args(["rm", "-f", &container_name])
+                .output();
+        }
+    }
+
+    async fn create_container(&self) -> Result<PooledContainer> {
+        let _permit = self.start_semaphore.acquire().await?;
+
+        // Use a unique timestamp-based name to avoid conflicts
+        let id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let name = format!("pool-{}", id);
+
+        let mut sandbox = ContainerSandbox::with_runtime(&name, self.runtime);
+        sandbox
+            .start_with_permissions(&self.image, &Permissions::default())
+            .await?;
+
+        let container_name = format!("agentkernel-{}", name);
+        let output = std::process::Command::new(self.runtime.cmd())
+            .args(["inspect", "-f", "{{.Id}}", &container_name])
+            .output()?;
+
+        let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        Ok(PooledContainer {
+            name,
+            container_id,
+            runtime: self.runtime,
+        })
+    }
+}
+
+/// Pool statistics
+#[derive(Debug, Clone)]
+pub struct PoolStats {
+    pub warm_count: usize,
+    pub cleanup_pending: usize,
+    pub target_size: usize,
+    pub max_size: usize,
+}
+
+impl std::fmt::Display for PoolStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Pool: {}/{} warm, {} pending cleanup",
+            self.warm_count, self.target_size, self.cleanup_pending
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore] // Requires Docker
+    async fn test_pool_basic() {
+        let pool = ContainerPool::with_config(2, 5, "alpine:3.20").unwrap();
+        pool.start().await.unwrap();
+
+        // Acquire a container
+        let container = pool.acquire().await.unwrap();
+        assert!(!container.name.is_empty());
+
+        // Run a command
+        let output = container
+            .run_command(&["echo".into(), "hello".into()])
+            .await
+            .unwrap();
+        assert!(output.contains("hello"));
+
+        // Release back to pool
+        pool.release(container).await;
+
+        // Check stats
+        let stats = pool.stats().await;
+        assert!(stats.warm_count >= 1);
+
+        pool.stop().await.unwrap();
+    }
+}

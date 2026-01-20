@@ -144,25 +144,37 @@ agentkernel status
 Tests parallel sandbox creation and execution:
 
 ```bash
-# Default: 10 sandboxes
+# Default: 10 sandboxes, 50 concurrent
 cargo test --test stress_test -- --nocapture --ignored
+
+# Large run: 1000 sandboxes, 100 concurrent
+STRESS_VM_COUNT=1000 STRESS_MAX_CONCURRENT=100 cargo test --test stress_test -- --nocapture --ignored
 
 # Results saved to benchmark-results/stress_*.json
 ```
+
+Environment variables:
+- `STRESS_VM_COUNT` - Number of sandboxes (default: 10)
+- `STRESS_MAX_CONCURRENT` - Max concurrent operations (default: 50)
 
 ### Benchmark Test
 
 Tests repeated sandbox lifecycle with statistics:
 
 ```bash
-# Default: 10 sandboxes x 10 iterations
+# Default: 10 sandboxes x 10 iterations, 50 concurrent
 cargo test --test benchmark_test -- --nocapture --ignored
 
 # Configure via environment
-BENCH_SANDBOXES=20 BENCH_ITERATIONS=5 cargo test --test benchmark_test -- --nocapture --ignored
+BENCH_SANDBOXES=20 BENCH_ITERATIONS=5 BENCH_MAX_CONCURRENT=100 cargo test --test benchmark_test -- --nocapture --ignored
 
 # Results saved to benchmark-results/benchmark_*.json
 ```
+
+Environment variables:
+- `BENCH_SANDBOXES` - Sandboxes per iteration (default: 10)
+- `BENCH_ITERATIONS` - Number of iterations (default: 10)
+- `BENCH_MAX_CONCURRENT` - Max concurrent operations (default: 50)
 
 ### Shell Scripts
 

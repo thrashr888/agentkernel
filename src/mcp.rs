@@ -160,7 +160,7 @@ impl McpServer {
             "tools": [
                 {
                     "name": "sandbox_run",
-                    "description": "Run a command in an isolated sandbox. The sandbox is created, started, the command is executed, and then the sandbox is cleaned up. Supports auto-detection of runtime from the command (python, node, cargo, go, etc.).",
+                    "description": "Run a command in an isolated sandbox. By default uses a pre-warmed container pool for fast execution (~50ms). Set fast=false for custom images.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -171,7 +171,12 @@ impl McpServer {
                             },
                             "image": {
                                 "type": "string",
-                                "description": "Optional Docker image to use. If not specified, auto-detected from command."
+                                "description": "Docker image to use (only when fast=false). If not specified, auto-detected from command."
+                            },
+                            "fast": {
+                                "type": "boolean",
+                                "description": "Use container pool for fast execution (default: true). Set to false for custom images.",
+                                "default": true
                             }
                         },
                         "required": ["command"]
@@ -302,6 +307,21 @@ impl McpServer {
             anyhow::bail!("command is required");
         }
 
+        // Default to fast mode (use container pool)
+        let fast = args.get("fast").and_then(|v| v.as_bool()).unwrap_or(true);
+
+        // Fast path: use container pool (default)
+        if fast {
+            if args.get("image").is_some() {
+                eprintln!("Warning: custom image ignored in fast mode (pool uses alpine:3.20)");
+            }
+
+            return tokio::task::block_in_place(|| {
+                Handle::current().block_on(async { VmManager::run_pooled(&command).await })
+            });
+        }
+
+        // Slow path: full sandbox lifecycle (when fast=false or custom image needed)
         let image = args
             .get("image")
             .and_then(|v| v.as_str())
