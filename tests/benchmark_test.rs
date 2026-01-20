@@ -1,7 +1,8 @@
 //! Benchmark test: Measure sandbox lifecycle performance at scale.
 //!
-//! This test runs many sandbox create/start/exec/stop/remove cycles to measure
-//! performance characteristics and identify bottlenecks.
+//! This test runs both pooled and non-pooled modes to compare performance:
+//! - Non-pooled: Full sandbox lifecycle (create/start/exec/stop/remove)
+//! - Pooled: Fast execution using pre-warmed container pool (run --fast)
 //!
 //! Run with: cargo test --test benchmark_test -- --nocapture --ignored
 //!
@@ -80,6 +81,38 @@ struct BenchmarkStats {
 
     // Throughput
     sandboxes_per_second: f64,
+}
+
+/// Results from a single pooled command execution
+#[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
+struct PooledResult {
+    iteration: usize,
+    command_id: usize,
+    exec_time: Duration,
+    success: bool,
+}
+
+/// Aggregate pooled benchmark statistics
+#[derive(Debug, Serialize)]
+struct PooledBenchmarkStats {
+    total_commands: usize,
+    successful_commands: usize,
+    failed_commands: usize,
+    total_wall_time: Duration,
+
+    // Exec stats
+    avg_exec: Duration,
+    min_exec: Duration,
+    max_exec: Duration,
+
+    // Percentiles
+    p50_exec: Duration,
+    p95_exec: Duration,
+    p99_exec: Duration,
+
+    // Throughput
+    commands_per_second: f64,
 }
 
 fn get_binary_path() -> String {
@@ -198,12 +231,73 @@ async fn benchmark_sandbox_lifecycle() {
     // Save results to files
     save_benchmark_results(&stats, &all_results);
 
-    // Assertions
+    // Assertions for non-pooled
     let success_rate = stats.successful_cycles as f64 / stats.total_cycles as f64;
     assert!(
         success_rate >= 0.95,
-        "Success rate {:.1}% is below 95%",
+        "Non-pooled success rate {:.1}% is below 95%",
         success_rate * 100.0
+    );
+
+    // ============================================
+    // POOLED BENCHMARK
+    // ============================================
+    println!("\n==========================================");
+    println!("       POOLED BENCHMARK (run --fast)");
+    println!("==========================================\n");
+
+    let pooled_total = sandboxes * iterations;
+    println!(
+        "Running {} pooled commands ({} iterations x {} commands)...\n",
+        pooled_total, iterations, sandboxes
+    );
+
+    let pooled_wall_start = Instant::now();
+    let mut pooled_results: Vec<PooledResult> = Vec::new();
+
+    for iteration in 0..iterations {
+        println!(
+            "Pooled iteration {}/{}: Running {} commands...",
+            iteration + 1,
+            iterations,
+            sandboxes
+        );
+
+        let iter_start = Instant::now();
+        let results = run_pooled_commands(iteration, sandboxes, Arc::clone(&semaphore)).await;
+        let iter_time = iter_start.elapsed();
+
+        let successful = results.iter().filter(|r| r.success).count();
+        println!(
+            "  Completed: {}/{} successful in {:?}",
+            successful, sandboxes, iter_time
+        );
+
+        pooled_results.extend(results);
+    }
+
+    let pooled_wall_time = pooled_wall_start.elapsed();
+
+    // Calculate and print pooled statistics
+    let pooled_stats = calculate_pooled_stats(&pooled_results, pooled_wall_time);
+    print_pooled_results(&pooled_stats);
+
+    // ============================================
+    // COMPARISON
+    // ============================================
+    print_comparison(&stats, &pooled_stats);
+
+    // Save all results
+    save_benchmark_results(&stats, &all_results);
+    save_pooled_results(&pooled_stats, &pooled_results);
+
+    // Assertions for pooled
+    let pooled_success_rate =
+        pooled_stats.successful_commands as f64 / pooled_stats.total_commands as f64;
+    assert!(
+        pooled_success_rate >= 0.95,
+        "Pooled success rate {:.1}% is below 95%",
+        pooled_success_rate * 100.0
     );
 
     println!("\n=== BENCHMARK COMPLETE ===\n");
@@ -459,6 +553,206 @@ fn save_benchmark_results(stats: &BenchmarkStats, results: &[LifecycleResult]) {
             eprintln!("Failed to save detailed results: {}", e);
         } else {
             println!("Saved detailed results to: {}", details_file.display());
+        }
+    }
+}
+
+// ============================================
+// POOLED BENCHMARK FUNCTIONS
+// ============================================
+
+async fn run_pooled_commands(
+    iteration: usize,
+    count: usize,
+    semaphore: Arc<Semaphore>,
+) -> Vec<PooledResult> {
+    let completed_count = Arc::new(AtomicUsize::new(0));
+    let mut handles = Vec::with_capacity(count);
+
+    for command_id in 0..count {
+        let sem = Arc::clone(&semaphore);
+        let completed = Arc::clone(&completed_count);
+
+        let handle = tokio::spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+
+            let result = run_single_pooled_command(iteration, command_id).await;
+
+            let done = completed.fetch_add(1, Ordering::SeqCst) + 1;
+            if done % 10 == 0 {
+                eprintln!("    Progress: {}/{}", done, count);
+            }
+
+            result
+        });
+        handles.push(handle);
+    }
+
+    let mut results = Vec::with_capacity(count);
+    for handle in handles {
+        match handle.await {
+            Ok(result) => results.push(result),
+            Err(e) => {
+                results.push(PooledResult {
+                    iteration,
+                    command_id: 0,
+                    exec_time: Duration::ZERO,
+                    success: false,
+                });
+                eprintln!("Task panic: {}", e);
+            }
+        }
+    }
+
+    results
+}
+
+async fn run_single_pooled_command(iteration: usize, command_id: usize) -> PooledResult {
+    let exec_start = Instant::now();
+
+    // Use `run --fast` which uses the container pool
+    let result = run_cmd(&["run", "--fast", "echo", "benchmark"]);
+
+    let exec_time = exec_start.elapsed();
+    let success = result.is_ok();
+
+    PooledResult {
+        iteration,
+        command_id,
+        exec_time,
+        success,
+    }
+}
+
+fn calculate_pooled_stats(
+    results: &[PooledResult],
+    total_wall_time: Duration,
+) -> PooledBenchmarkStats {
+    let total_commands = results.len();
+    let successful_commands = results.iter().filter(|r| r.success).count();
+    let failed_commands = total_commands - successful_commands;
+
+    let successful_results: Vec<_> = results.iter().filter(|r| r.success).collect();
+
+    let exec_times: Vec<Duration> = successful_results.iter().map(|r| r.exec_time).collect();
+
+    let avg_exec = avg_duration(exec_times.clone());
+    let min_exec = exec_times.iter().min().copied().unwrap_or(Duration::ZERO);
+    let max_exec = exec_times.iter().max().copied().unwrap_or(Duration::ZERO);
+
+    let mut sorted_exec = exec_times;
+    sorted_exec.sort();
+
+    let p50_exec = percentile(&sorted_exec, 50);
+    let p95_exec = percentile(&sorted_exec, 95);
+    let p99_exec = percentile(&sorted_exec, 99);
+
+    let commands_per_second = if total_wall_time.as_secs_f64() > 0.0 {
+        successful_commands as f64 / total_wall_time.as_secs_f64()
+    } else {
+        0.0
+    };
+
+    PooledBenchmarkStats {
+        total_commands,
+        successful_commands,
+        failed_commands,
+        total_wall_time,
+        avg_exec,
+        min_exec,
+        max_exec,
+        p50_exec,
+        p95_exec,
+        p99_exec,
+        commands_per_second,
+    }
+}
+
+fn print_pooled_results(stats: &PooledBenchmarkStats) {
+    println!("\n==========================================");
+    println!("         POOLED BENCHMARK RESULTS");
+    println!("==========================================\n");
+
+    println!("Overview:");
+    println!("  Total commands:     {}", stats.total_commands);
+    println!("  Successful:         {}", stats.successful_commands);
+    println!("  Failed:             {}", stats.failed_commands);
+    println!("  Total wall time:    {:?}", stats.total_wall_time);
+    println!(
+        "  Throughput:         {:.2} commands/sec",
+        stats.commands_per_second
+    );
+
+    println!("\nExec Times:");
+    println!("  Average:            {:?}", stats.avg_exec);
+    println!("  Min:                {:?}", stats.min_exec);
+    println!("  Max:                {:?}", stats.max_exec);
+
+    println!("\nLatency Percentiles:");
+    println!("  p50:                {:?}", stats.p50_exec);
+    println!("  p95:                {:?}", stats.p95_exec);
+    println!("  p99:                {:?}", stats.p99_exec);
+
+    println!("\n==========================================\n");
+}
+
+fn print_comparison(non_pooled: &BenchmarkStats, pooled: &PooledBenchmarkStats) {
+    println!("\n==========================================");
+    println!("           COMPARISON SUMMARY");
+    println!("==========================================\n");
+
+    let non_pooled_avg = non_pooled.avg_total.as_millis();
+    let pooled_avg = pooled.avg_exec.as_millis();
+    let speedup = if pooled_avg > 0 {
+        non_pooled_avg as f64 / pooled_avg as f64
+    } else {
+        0.0
+    };
+
+    println!("Average execution time:");
+    println!("  Non-pooled (full lifecycle): {:?}", non_pooled.avg_total);
+    println!("  Pooled (run --fast):         {:?}", pooled.avg_exec);
+    println!("  Speedup:                     {:.1}x faster", speedup);
+
+    println!("\nThroughput:");
+    println!(
+        "  Non-pooled: {:.2} sandboxes/sec",
+        non_pooled.sandboxes_per_second
+    );
+    println!(
+        "  Pooled:     {:.2} commands/sec",
+        pooled.commands_per_second
+    );
+
+    let savings_ms = non_pooled_avg as i64 - pooled_avg as i64;
+    println!("\nSavings per command: ~{}ms", savings_ms);
+
+    println!("\n==========================================\n");
+}
+
+fn save_pooled_results(stats: &PooledBenchmarkStats, results: &[PooledResult]) {
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let results_dir = std::path::Path::new("benchmark-results");
+
+    let _ = fs::create_dir_all(results_dir);
+
+    // Save pooled stats
+    let stats_file = results_dir.join(format!("benchmark_pooled_{}.json", timestamp));
+    if let Ok(json) = serde_json::to_string_pretty(stats) {
+        if let Err(e) = fs::write(&stats_file, json) {
+            eprintln!("Failed to save pooled stats: {}", e);
+        } else {
+            println!("Saved pooled stats to: {}", stats_file.display());
+        }
+    }
+
+    // Save detailed results
+    let details_file = results_dir.join(format!("benchmark_pooled_{}_details.json", timestamp));
+    if let Ok(json) = serde_json::to_string_pretty(results) {
+        if let Err(e) = fs::write(&details_file, json) {
+            eprintln!("Failed to save pooled details: {}", e);
+        } else {
+            println!("Saved pooled details to: {}", details_file.display());
         }
     }
 }

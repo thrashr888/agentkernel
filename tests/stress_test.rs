@@ -1,6 +1,7 @@
 //! Stress test: Spin up multiple microVMs in parallel, run commands, verify output.
 //!
 //! This test validates that agentkernel can handle concurrent VM operations.
+//! It runs both non-pooled (full lifecycle) and pooled (run --fast) modes for comparison.
 //! Target: <125ms per VM boot, all VMs complete successfully.
 //!
 //! Run with: cargo test --test stress_test -- --nocapture --ignored
@@ -67,6 +68,28 @@ struct StressTestResults {
     avg_stop_time: Duration,
     avg_remove_time: Duration,
     max_start_time: Duration,
+    errors: Vec<String>,
+}
+
+/// Results from a single pooled command
+#[derive(Debug, Serialize)]
+#[allow(dead_code)]
+struct PooledTestResult {
+    command_id: usize,
+    exec_time: Duration,
+    output_correct: bool,
+    error: Option<String>,
+}
+
+/// Aggregate results from pooled stress test
+#[derive(Debug, Serialize)]
+struct PooledStressResults {
+    total_time: Duration,
+    successful: usize,
+    failed: usize,
+    avg_exec_time: Duration,
+    min_exec_time: Duration,
+    max_exec_time: Duration,
     errors: Vec<String>,
 }
 
@@ -243,6 +266,93 @@ async fn test_parallel_sandboxes() {
         "Total time {:?} exceeded maximum {:?}",
         stats.total_time,
         MAX_TOTAL_TIME
+    );
+
+    // ============================================
+    // POOLED STRESS TEST
+    // ============================================
+    println!("\n==========================================");
+    println!("       POOLED STRESS TEST (run --fast)");
+    println!("==========================================\n");
+
+    println!(
+        "Running {} pooled commands (max {} concurrent)...\n",
+        vm_count, max_concurrent
+    );
+
+    let pooled_start = Instant::now();
+    let pooled_success_count = Arc::new(AtomicUsize::new(0));
+    let pooled_fail_count = Arc::new(AtomicUsize::new(0));
+    let pooled_completed_count = Arc::new(AtomicUsize::new(0));
+
+    let mut pooled_handles = Vec::with_capacity(vm_count);
+
+    for i in 0..vm_count {
+        let success = Arc::clone(&pooled_success_count);
+        let fail = Arc::clone(&pooled_fail_count);
+        let completed = Arc::clone(&pooled_completed_count);
+        let sem = Arc::clone(&semaphore);
+        let total = vm_count;
+
+        let handle = tokio::spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+
+            let result = run_single_pooled_test(i).await;
+
+            if result.error.is_none() && result.output_correct {
+                success.fetch_add(1, Ordering::SeqCst);
+            } else {
+                fail.fetch_add(1, Ordering::SeqCst);
+            }
+
+            let done = completed.fetch_add(1, Ordering::SeqCst) + 1;
+            if done % 10 == 0 || done == 1 {
+                eprintln!("  Pooled progress: {}/{} commands completed", done, total);
+            }
+
+            result
+        });
+
+        pooled_handles.push(handle);
+    }
+
+    let mut pooled_results = Vec::with_capacity(vm_count);
+    for handle in pooled_handles {
+        match handle.await {
+            Ok(result) => pooled_results.push(result),
+            Err(e) => {
+                pooled_fail_count.fetch_add(1, Ordering::SeqCst);
+                pooled_results.push(PooledTestResult {
+                    command_id: 0,
+                    exec_time: Duration::ZERO,
+                    output_correct: false,
+                    error: Some(format!("Task panic: {}", e)),
+                });
+            }
+        }
+    }
+
+    let pooled_total_time = pooled_start.elapsed();
+
+    let pooled_stats = calculate_pooled_stats(&pooled_results, pooled_total_time);
+    print_pooled_results(&pooled_stats);
+
+    // Save pooled results
+    save_pooled_stress_results(&pooled_stats, &pooled_results);
+
+    // ============================================
+    // COMPARISON
+    // ============================================
+    print_stress_comparison(&stats, &pooled_stats);
+
+    // Assertions for pooled
+    let pooled_success_rate = pooled_stats.successful as f64 / vm_count as f64;
+    assert!(
+        pooled_success_rate >= 0.95,
+        "Pooled success rate {:.1}% is below 95% ({} failures out of {})",
+        pooled_success_rate * 100.0,
+        pooled_stats.failed,
+        vm_count
     );
 
     println!("\n=== STRESS TEST PASSED ===\n");
@@ -423,6 +533,148 @@ fn save_stress_results(stats: &StressTestResults, results: &[SandboxTestResult])
             eprintln!("Failed to save detailed results: {}", e);
         } else {
             println!("Saved detailed results to: {}", details_file.display());
+        }
+    }
+}
+
+// ============================================
+// POOLED STRESS TEST FUNCTIONS
+// ============================================
+
+async fn run_single_pooled_test(command_id: usize) -> PooledTestResult {
+    let exec_start = Instant::now();
+
+    // Use `run --fast` which uses the container pool
+    let result = run_cmd(&["run", "--fast", "echo", EXPECTED_OUTPUT]);
+
+    let exec_time = exec_start.elapsed();
+
+    let output_correct = match &result {
+        Ok(output) => output.contains(EXPECTED_OUTPUT),
+        Err(_) => false,
+    };
+
+    let error = result.err();
+
+    PooledTestResult {
+        command_id,
+        exec_time,
+        output_correct,
+        error,
+    }
+}
+
+fn calculate_pooled_stats(
+    results: &[PooledTestResult],
+    total_time: Duration,
+) -> PooledStressResults {
+    let successful = results
+        .iter()
+        .filter(|r| r.error.is_none() && r.output_correct)
+        .count();
+    let failed = results.len() - successful;
+
+    let exec_times: Vec<_> = results.iter().map(|r| r.exec_time).collect();
+
+    let avg_exec_time = avg_duration(&exec_times);
+    let min_exec_time = exec_times.iter().min().copied().unwrap_or(Duration::ZERO);
+    let max_exec_time = exec_times.iter().max().copied().unwrap_or(Duration::ZERO);
+
+    let errors: Vec<_> = results.iter().filter_map(|r| r.error.clone()).collect();
+
+    PooledStressResults {
+        total_time,
+        successful,
+        failed,
+        avg_exec_time,
+        min_exec_time,
+        max_exec_time,
+        errors,
+    }
+}
+
+fn print_pooled_results(stats: &PooledStressResults) {
+    println!("\nPooled Results:");
+    println!("  Total time:       {:?}", stats.total_time);
+    println!(
+        "  Successful:       {}/{}",
+        stats.successful,
+        stats.successful + stats.failed
+    );
+    println!("  Failed:           {}", stats.failed);
+    println!("  Avg exec time:    {:?}", stats.avg_exec_time);
+    println!("  Min exec time:    {:?}", stats.min_exec_time);
+    println!("  Max exec time:    {:?}", stats.max_exec_time);
+
+    if !stats.errors.is_empty() {
+        println!("\nPooled Errors (first 5):");
+        for (i, err) in stats.errors.iter().take(5).enumerate() {
+            println!("  {}: {}", i + 1, err);
+        }
+        if stats.errors.len() > 5 {
+            println!("  ... and {} more", stats.errors.len() - 5);
+        }
+    }
+}
+
+fn print_stress_comparison(non_pooled: &StressTestResults, pooled: &PooledStressResults) {
+    println!("\n==========================================");
+    println!("           COMPARISON SUMMARY");
+    println!("==========================================\n");
+
+    // Calculate total lifecycle time for non-pooled
+    let non_pooled_avg_total = non_pooled.avg_create_time
+        + non_pooled.avg_start_time
+        + non_pooled.avg_exec_time
+        + non_pooled.avg_stop_time
+        + non_pooled.avg_remove_time;
+
+    let non_pooled_ms = non_pooled_avg_total.as_millis();
+    let pooled_ms = pooled.avg_exec_time.as_millis();
+    let speedup = if pooled_ms > 0 {
+        non_pooled_ms as f64 / pooled_ms as f64
+    } else {
+        0.0
+    };
+
+    println!("Average time per operation:");
+    println!("  Non-pooled (full lifecycle): {:?}", non_pooled_avg_total);
+    println!("  Pooled (run --fast):         {:?}", pooled.avg_exec_time);
+    println!("  Speedup:                     {:.1}x faster", speedup);
+
+    println!("\nTotal wall time:");
+    println!("  Non-pooled: {:?}", non_pooled.total_time);
+    println!("  Pooled:     {:?}", pooled.total_time);
+
+    let savings_ms = non_pooled_ms as i64 - pooled_ms as i64;
+    println!("\nSavings per command: ~{}ms", savings_ms);
+
+    println!("\n==========================================\n");
+}
+
+fn save_pooled_stress_results(stats: &PooledStressResults, results: &[PooledTestResult]) {
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let results_dir = std::path::Path::new("benchmark-results");
+
+    let _ = fs::create_dir_all(results_dir);
+
+    // Save pooled stats
+    let stats_file = results_dir.join(format!("stress_pooled_{}.json", timestamp));
+    if let Ok(json) = serde_json::to_string_pretty(stats) {
+        if let Err(e) = fs::write(&stats_file, json) {
+            eprintln!("Failed to save pooled stress stats: {}", e);
+        } else {
+            println!("Saved pooled stress stats to: {}", stats_file.display());
+        }
+    }
+
+    // Save detailed results
+    let details_file = results_dir.join(format!("stress_pooled_{}_details.json", timestamp));
+    if let Ok(json) = serde_json::to_string_pretty(results) {
+        if let Err(e) = fs::write(&details_file, json) {
+            eprintln!("Failed to save pooled details: {}", e);
+        } else {
+            println!("Saved pooled details to: {}", details_file.display());
         }
     }
 }
