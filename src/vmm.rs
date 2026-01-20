@@ -580,12 +580,6 @@ impl VmManager {
     pub async fn exec_cmd(&mut self, name: &str, cmd: &[String]) -> Result<String> {
         match self.backend {
             Backend::Firecracker => {
-                // Get the VM's CID from the sandbox state
-                let state = self
-                    .sandboxes
-                    .get(name)
-                    .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
-
                 // Check if VM is running
                 if !self.vms.contains_key(name) {
                     bail!(
@@ -595,8 +589,11 @@ impl VmManager {
                     );
                 }
 
-                // Connect to guest agent via vsock
-                let client = VsockClient::new(state.vsock_cid);
+                // Get the vsock UDS path for this VM
+                let vsock_path = format!("/tmp/agentkernel-{}-vsock.sock", name);
+
+                // Connect to guest agent via Firecracker vsock
+                let client = VsockClient::for_firecracker(&vsock_path);
                 let result = client
                     .run_command(cmd)
                     .await

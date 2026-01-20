@@ -83,21 +83,38 @@ pub struct RunResult {
 }
 
 /// Vsock client for communicating with guest agent
+///
+/// Supports two modes:
+/// - Native vsock (via kernel AF_VSOCK)
+/// - Firecracker vsock (via Unix domain socket with CONNECT protocol)
 #[allow(dead_code)]
 pub struct VsockClient {
     cid: u32,
     port: u32,
     timeout_secs: u64,
+    /// Path to Firecracker vsock UDS (if using Firecracker mode)
+    uds_path: Option<std::path::PathBuf>,
 }
 
 #[allow(dead_code)]
 impl VsockClient {
-    /// Create a new vsock client for the given guest CID
+    /// Create a new vsock client for the given guest CID (native vsock mode)
     pub fn new(cid: u32) -> Self {
         Self {
             cid,
             port: AGENT_PORT,
             timeout_secs: 30,
+            uds_path: None,
+        }
+    }
+
+    /// Create a client for Firecracker vsock (via Unix socket)
+    pub fn for_firecracker(uds_path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            cid: 0, // Not used in Firecracker mode
+            port: AGENT_PORT,
+            timeout_secs: 30,
+            uds_path: Some(uds_path.into()),
         }
     }
 
@@ -207,7 +224,18 @@ impl VsockClient {
     /// Send a request to the guest agent and receive response
     #[cfg(unix)]
     async fn send_request(&self, request: &AgentRequest) -> Result<AgentResponse> {
-        // Connect to guest
+        // Choose connection method based on whether we have a UDS path (Firecracker mode)
+        if let Some(ref uds_path) = self.uds_path {
+            self.send_request_via_firecracker(request, uds_path).await
+        } else {
+            self.send_request_via_native_vsock(request).await
+        }
+    }
+
+    /// Send request via native kernel vsock
+    #[cfg(unix)]
+    async fn send_request_via_native_vsock(&self, request: &AgentRequest) -> Result<AgentResponse> {
+        // Connect to guest via native vsock
         let addr = VsockAddr::new(self.cid, self.port);
         let mut stream = timeout(
             Duration::from_secs(self.timeout_secs),
@@ -217,6 +245,64 @@ impl VsockClient {
         .context("Connection timeout")?
         .context("Failed to connect to guest agent")?;
 
+        self.send_and_receive(&mut stream, request).await
+    }
+
+    /// Send request via Firecracker vsock Unix socket
+    #[cfg(unix)]
+    async fn send_request_via_firecracker(
+        &self,
+        request: &AgentRequest,
+        uds_path: &std::path::Path,
+    ) -> Result<AgentResponse> {
+        use tokio::net::UnixStream;
+
+        // Connect to Firecracker vsock Unix socket
+        let mut stream = timeout(
+            Duration::from_secs(self.timeout_secs),
+            UnixStream::connect(uds_path),
+        )
+        .await
+        .context("Connection timeout")?
+        .context("Failed to connect to Firecracker vsock socket")?;
+
+        // Firecracker vsock protocol: send CONNECT <port>\n
+        let connect_cmd = format!("CONNECT {}\n", self.port);
+        stream
+            .write_all(connect_cmd.as_bytes())
+            .await
+            .context("Failed to send CONNECT")?;
+        stream.flush().await?;
+
+        // Read response: OK <host_port>\n
+        let mut response_buf = [0u8; 32];
+        let n = timeout(Duration::from_secs(5), stream.read(&mut response_buf))
+            .await
+            .context("Timeout waiting for CONNECT response")?
+            .context("Failed to read CONNECT response")?;
+
+        let response_str = std::str::from_utf8(&response_buf[..n])
+            .context("Invalid CONNECT response")?
+            .trim();
+
+        if !response_str.starts_with("OK ") {
+            bail!("Firecracker vsock CONNECT failed: {}", response_str);
+        }
+
+        // Now we can communicate with the guest agent
+        self.send_and_receive(&mut stream, request).await
+    }
+
+    /// Common send/receive logic for both connection types
+    #[cfg(unix)]
+    async fn send_and_receive<S>(
+        &self,
+        stream: &mut S,
+        request: &AgentRequest,
+    ) -> Result<AgentResponse>
+    where
+        S: AsyncReadExt + AsyncWriteExt + Unpin,
+    {
         // Serialize request
         let request_bytes = serde_json::to_vec(request)?;
 
