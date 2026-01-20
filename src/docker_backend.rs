@@ -99,6 +99,7 @@ impl ContainerSandbox {
         let mut args = vec![
             "run".to_string(),
             "-d".to_string(),
+            "--rm".to_string(), // Auto-remove on stop for faster cleanup
             "--name".to_string(),
             format!("agentkernel-{}", self.name),
             "--hostname".to_string(),
@@ -159,25 +160,27 @@ impl ContainerSandbox {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    /// Stop the container
+    /// Stop the container (uses rm -f to kill and remove in one operation)
     #[allow(dead_code)]
     pub async fn stop(&mut self) -> Result<()> {
         let container_name = format!("agentkernel-{}", self.name);
 
-        // Use short timeout (1s) - our containers are ephemeral and don't need graceful shutdown
+        // Use rm -f instead of stop - kills and removes in one CLI call
+        // This is faster than stop + remove for ephemeral containers
         let _ = Command::new(self.runtime.cmd())
-            .args(["stop", "-t", "1", &container_name])
+            .args(["rm", "-f", &container_name])
             .output();
 
         self.container_id = None;
         Ok(())
     }
 
-    /// Remove the container
+    /// Remove the container (no-op if already stopped with rm -f)
     #[allow(dead_code)]
     pub async fn remove(&mut self) -> Result<()> {
         let container_name = format!("agentkernel-{}", self.name);
 
+        // Safe to call even if container was already removed by stop()
         let _ = Command::new(self.runtime.cmd())
             .args(["rm", "-f", &container_name])
             .output();
