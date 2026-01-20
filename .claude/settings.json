@@ -1,0 +1,26 @@
+{
+  "enabledPlugins": {
+    "allbeads@allbeads-marketplace": true,
+    "beads@beads-marketplace": true
+  },
+  "extraKnownMarketplaces": {
+    "allbeads-marketplace": {
+      "source": {
+        "repo": "thrashr888/AllBeads",
+        "source": "github"
+      }
+    },
+    "beads-marketplace": {
+      "source": {
+        "repo": "steveyegge/beads",
+        "source": "github"
+      }
+    },
+    "skills-marketplace": {
+      "source": {
+        "repo": "anthropics/skills",
+        "source": "github"
+      }
+    }
+  }
+}
