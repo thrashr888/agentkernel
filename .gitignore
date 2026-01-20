@@ -6,3 +6,8 @@ images/kernel/vmlinux-*
 # Built rootfs images
 images/rootfs/*.ext4
 images/rootfs/*.squashfs
+
+# Benchmark results (generated files)
+benchmark-results/*.json
+benchmark-results/*.txt
+!benchmark-results/.gitkeep

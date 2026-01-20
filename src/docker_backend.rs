@@ -86,22 +86,14 @@ impl ContainerSandbox {
     pub async fn start_with_permissions(&mut self, image: &str, perms: &Permissions) -> Result<()> {
         let cmd = self.runtime.cmd();
 
-        // Check if container already exists
-        let existing = Command::new(cmd)
-            .args([
-                "ps",
-                "-aq",
-                "-f",
-                &format!("name=agentkernel-{}", self.name),
-            ])
-            .output()
-            .context("Failed to check for existing container")?;
+        // Optimized: Use --rm to auto-remove on stop, avoiding separate cleanup
+        // Also use --force-rm style by directly replacing any existing container
+        let container_name = format!("agentkernel-{}", self.name);
 
-        let existing_id = String::from_utf8_lossy(&existing.stdout).trim().to_string();
-        if !existing_id.is_empty() {
-            // Remove existing container
-            let _ = Command::new(cmd).args(["rm", "-f", &existing_id]).output();
-        }
+        // Fast-path: remove any existing container (no check, just force remove)
+        let _ = Command::new(cmd)
+            .args(["rm", "-f", &container_name])
+            .output();
 
         // Build container arguments
         let mut args = vec![
@@ -172,8 +164,9 @@ impl ContainerSandbox {
     pub async fn stop(&mut self) -> Result<()> {
         let container_name = format!("agentkernel-{}", self.name);
 
+        // Use short timeout (1s) - our containers are ephemeral and don't need graceful shutdown
         let _ = Command::new(self.runtime.cmd())
-            .args(["stop", &container_name])
+            .args(["stop", "-t", "1", &container_name])
             .output();
 
         self.container_id = None;

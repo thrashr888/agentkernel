@@ -308,13 +308,3 @@ See the `examples/` directory for language-specific configurations:
 ./scripts/benchmark.sh        # Latency benchmark
 ./scripts/stress-test.sh      # Throughput benchmark
 ```
-
-## Roadmap
-
-- [x] MCP server for programmatic integration
-- [x] HTTP API for external agents
-- [x] Permission/restriction profiles
-- [x] Multi-agent support (Claude, Gemini, Codex, OpenCode)
-- [ ] macOS Seatbelt backend (lightweight, no containers)
-- [ ] Filesystem mounting and syncing
-- [ ] Native Firecracker microVMs (Linux)

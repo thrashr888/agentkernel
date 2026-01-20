@@ -13,6 +13,8 @@
 //!   - agentkernel binary built (cargo build --release)
 //!   - Setup complete (agentkernel setup -y)
 
+use serde::Serialize;
+use std::fs;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -31,7 +33,7 @@ fn get_config() -> (usize, usize) {
 }
 
 /// Results from a single sandbox lifecycle
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
 struct LifecycleResult {
     iteration: usize,
@@ -46,7 +48,7 @@ struct LifecycleResult {
 }
 
 /// Aggregate benchmark statistics
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct BenchmarkStats {
     total_cycles: usize,
     successful_cycles: usize,
@@ -152,6 +154,9 @@ async fn benchmark_sandbox_lifecycle() {
     // Calculate and print statistics
     let stats = calculate_benchmark_stats(&all_results, total_wall_time);
     print_benchmark_results(&stats);
+
+    // Save results to files
+    save_benchmark_results(&stats, &all_results);
 
     // Assertions
     let success_rate = stats.successful_cycles as f64 / stats.total_cycles as f64;
@@ -373,4 +378,32 @@ fn print_benchmark_results(stats: &BenchmarkStats) {
     println!("  p99:                {:?}", stats.p99_total);
 
     println!("\n==========================================\n");
+}
+
+fn save_benchmark_results(stats: &BenchmarkStats, results: &[LifecycleResult]) {
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let results_dir = std::path::Path::new("benchmark-results");
+
+    // Ensure directory exists
+    let _ = fs::create_dir_all(results_dir);
+
+    // Save summary stats as JSON
+    let stats_file = results_dir.join(format!("benchmark_{}.json", timestamp));
+    if let Ok(json) = serde_json::to_string_pretty(stats) {
+        if let Err(e) = fs::write(&stats_file, json) {
+            eprintln!("Failed to save benchmark stats: {}", e);
+        } else {
+            println!("Saved benchmark stats to: {}", stats_file.display());
+        }
+    }
+
+    // Save detailed results as JSON
+    let details_file = results_dir.join(format!("benchmark_{}_details.json", timestamp));
+    if let Ok(json) = serde_json::to_string_pretty(results) {
+        if let Err(e) = fs::write(&details_file, json) {
+            eprintln!("Failed to save detailed results: {}", e);
+        } else {
+            println!("Saved detailed results to: {}", details_file.display());
+        }
+    }
 }

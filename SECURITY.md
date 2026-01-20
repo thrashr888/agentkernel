@@ -8,7 +8,7 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability, please report it by emailing security@[project-domain] or by opening a private security advisory on GitHub.
+If you discover a security vulnerability, please report it by submitting a GitHub issue.
 
 **Please do NOT open a public issue for security vulnerabilities.**
 

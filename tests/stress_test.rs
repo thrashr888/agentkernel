@@ -9,6 +9,8 @@
 //!   - agentkernel binary built (cargo build --release)
 //!   - Setup complete (agentkernel setup -y)
 
+use serde::Serialize;
+use std::fs;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,7 +21,7 @@ const EXPECTED_OUTPUT: &str = "hello";
 const MAX_TOTAL_TIME: Duration = Duration::from_secs(60);
 
 /// Results from a single sandbox test
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 #[allow(dead_code)]
 struct SandboxTestResult {
     sandbox_id: usize,
@@ -34,7 +36,7 @@ struct SandboxTestResult {
 }
 
 /// Aggregate results from the stress test
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct StressTestResults {
     total_time: Duration,
     successful: usize,
@@ -157,6 +159,9 @@ async fn test_parallel_sandboxes() {
     // Calculate statistics
     let stats = calculate_stats(&results, total_time);
     print_results(&stats);
+
+    // Save results to files
+    save_stress_results(&stats, &results);
 
     // Assertions
     assert!(
@@ -323,6 +328,34 @@ fn print_results(stats: &StressTestResults) {
         }
         if stats.errors.len() > 5 {
             println!("  ... and {} more", stats.errors.len() - 5);
+        }
+    }
+}
+
+fn save_stress_results(stats: &StressTestResults, results: &[SandboxTestResult]) {
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let results_dir = std::path::Path::new("benchmark-results");
+
+    // Ensure directory exists
+    let _ = fs::create_dir_all(results_dir);
+
+    // Save summary stats as JSON
+    let stats_file = results_dir.join(format!("stress_{}.json", timestamp));
+    if let Ok(json) = serde_json::to_string_pretty(stats) {
+        if let Err(e) = fs::write(&stats_file, json) {
+            eprintln!("Failed to save stress test stats: {}", e);
+        } else {
+            println!("Saved stress test stats to: {}", stats_file.display());
+        }
+    }
+
+    // Save detailed results as JSON
+    let details_file = results_dir.join(format!("stress_{}_details.json", timestamp));
+    if let Ok(json) = serde_json::to_string_pretty(results) {
+        if let Err(e) = fs::write(&details_file, json) {
+            eprintln!("Failed to save detailed results: {}", e);
+        } else {
+            println!("Saved detailed results to: {}", details_file.display());
         }
     }
 }
