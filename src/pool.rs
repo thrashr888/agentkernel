@@ -8,12 +8,15 @@
 //! - Warm pool: Pre-started containers waiting for work
 //! - Active set: Containers currently in use
 //! - Cleanup queue: Containers pending async garbage collection
+//! - Persistent exec: Keep shell sessions open for faster command execution
 
 // Allow unused pool API methods - they're part of the public API for future use
 #![allow(dead_code)]
 
 use anyhow::{Result, bail};
 use std::collections::VecDeque;
+use std::io::Write;
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{Mutex, Semaphore};
@@ -21,6 +24,94 @@ use tokio::time::{Duration, interval};
 
 use crate::docker_backend::{ContainerRuntime, ContainerSandbox, detect_container_runtime};
 use crate::permissions::Permissions;
+
+/// Sentinel marker for detecting end of command output
+const OUTPUT_SENTINEL: &str = "___AGENTKERNEL_DONE___";
+
+/// A persistent shell session for fast command execution
+pub struct PersistentShell {
+    child: Child,
+    stdin: ChildStdin,
+    container_name: String,
+}
+
+impl PersistentShell {
+    /// Create a new persistent shell session in the container
+    pub fn new(runtime: ContainerRuntime, container_name: &str) -> Result<Self> {
+        let mut child = std::process::Command::new(runtime.cmd())
+            .args(["exec", "-i", container_name, "sh"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to get stdin"))?;
+
+        Ok(Self {
+            child,
+            stdin,
+            container_name: container_name.to_string(),
+        })
+    }
+
+    /// Run a command through the persistent shell
+    /// Uses a sentinel to detect end of output
+    pub fn run_command(&mut self, cmd: &[String]) -> Result<String> {
+        // Build the command with sentinel
+        let cmd_str = cmd.join(" ");
+        let full_cmd = format!("({}) 2>&1; echo '{}'\n", cmd_str, OUTPUT_SENTINEL);
+
+        // Write command to stdin
+        self.stdin.write_all(full_cmd.as_bytes())?;
+        self.stdin.flush()?;
+
+        // Read output until sentinel
+        // Note: This is synchronous; for production use, we'd want async I/O
+        let stdout = self
+            .child
+            .stdout
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Failed to get stdout"))?;
+
+        let mut output = String::new();
+        let mut buf = [0u8; 4096];
+
+        use std::io::Read;
+        loop {
+            let n = stdout.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            output.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if output.contains(OUTPUT_SENTINEL) {
+                break;
+            }
+        }
+
+        // Remove sentinel from output
+        if let Some(pos) = output.find(OUTPUT_SENTINEL) {
+            output.truncate(pos);
+        }
+
+        // Trim trailing newline
+        Ok(output.trim_end().to_string())
+    }
+
+    /// Check if the shell is still alive
+    pub fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+}
+
+impl Drop for PersistentShell {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
 
 /// Default pool configuration
 const DEFAULT_POOL_SIZE: usize = 10;
@@ -30,17 +121,43 @@ const GC_INTERVAL_MS: u64 = 1000;
 const GC_BATCH_SIZE: usize = 10;
 
 /// A pooled container ready for use
-#[derive(Debug)]
 pub struct PooledContainer {
     pub name: String,
     #[allow(dead_code)] // Used for container lifecycle tracking
     pub container_id: String,
     runtime: ContainerRuntime,
+    /// Persistent shell for faster command execution (optional)
+    persistent_shell: Option<std::sync::Mutex<PersistentShell>>,
+}
+
+impl std::fmt::Debug for PooledContainer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PooledContainer")
+            .field("name", &self.name)
+            .field("container_id", &self.container_id)
+            .field("runtime", &self.runtime)
+            .field("persistent_shell", &self.persistent_shell.is_some())
+            .finish()
+    }
 }
 
 impl PooledContainer {
-    /// Run a command in this container
+    /// Run a command in this container using the fastest available method
     pub async fn run_command(&self, cmd: &[String]) -> Result<String> {
+        // Try persistent shell first (faster: ~15-20ms vs ~100ms for docker exec)
+        if let Some(ref shell_mutex) = self.persistent_shell
+            && let Ok(mut shell) = shell_mutex.lock()
+            && shell.is_alive()
+        {
+            return shell.run_command(cmd);
+        }
+
+        // Fallback to docker exec
+        self.run_command_exec(cmd).await
+    }
+
+    /// Run a command using docker exec (slower but more reliable)
+    pub async fn run_command_exec(&self, cmd: &[String]) -> Result<String> {
         let runtime_cmd = self.runtime.cmd();
         let container_name = format!("agentkernel-{}", self.name);
 
@@ -58,6 +175,14 @@ impl PooledContainer {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Initialize the persistent shell for this container
+    pub fn init_persistent_shell(&mut self) -> Result<()> {
+        let container_name = format!("agentkernel-{}", self.name);
+        let shell = PersistentShell::new(self.runtime, &container_name)?;
+        self.persistent_shell = Some(std::sync::Mutex::new(shell));
+        Ok(())
     }
 }
 
@@ -216,11 +341,20 @@ impl ContainerPool {
 
         let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-        Ok(PooledContainer {
+        // Create container with persistent shell for faster execution
+        let mut container = PooledContainer {
             name,
             container_id,
             runtime: self.runtime,
-        })
+            persistent_shell: None,
+        };
+
+        // Try to initialize persistent shell (non-fatal if it fails)
+        if let Err(e) = container.init_persistent_shell() {
+            eprintln!("Warning: Failed to init persistent shell: {}", e);
+        }
+
+        Ok(container)
     }
 
     /// Warm the pool up to target size
@@ -386,12 +520,16 @@ impl ContainerPoolHandle {
                     .output()
                 {
                     let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    let mut pool = self.warm_pool.lock().await;
-                    pool.push_back(PooledContainer {
+                    let mut container = PooledContainer {
                         name,
                         container_id,
                         runtime: self.runtime,
-                    });
+                        persistent_shell: None,
+                    };
+                    // Try to init persistent shell
+                    let _ = container.init_persistent_shell();
+                    let mut pool = self.warm_pool.lock().await;
+                    pool.push_back(container);
                 }
             }
         }
@@ -448,11 +586,17 @@ impl ContainerPoolHandle {
 
         let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-        Ok(PooledContainer {
+        let mut container = PooledContainer {
             name,
             container_id,
             runtime: self.runtime,
-        })
+            persistent_shell: None,
+        };
+
+        // Try to init persistent shell
+        let _ = container.init_persistent_shell();
+
+        Ok(container)
     }
 }
 

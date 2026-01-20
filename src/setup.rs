@@ -410,6 +410,14 @@ pub async fn run_setup(non_interactive: bool) -> Result<()> {
         install_firecracker_binary(&data_dir).await?;
     }
 
+    // Pre-pull Docker images for faster container startup
+    if status.docker_available {
+        println!("\n==> Pre-pulling Docker images...");
+        if let Err(e) = prepull_docker_images(false) {
+            eprintln!("Warning: Failed to pre-pull some images: {}", e);
+        }
+    }
+
     println!("\n=== Setup Complete ===");
 
     // Re-check status after installation
@@ -916,6 +924,51 @@ async fn run_verification_test(data_dir: &Path) -> Result<()> {
         }
     } else {
         eprintln!("  ⚠️  Guest agent not found at {}", agent_path.display());
+    }
+
+    Ok(())
+}
+
+/// Common Docker images to pre-pull for faster container startup
+const DOCKER_IMAGES: &[&str] = &[
+    "alpine:3.20",        // Default pool image
+    "python:3.12-alpine", // Python runtime
+    "node:20-alpine",     // Node.js runtime
+    "golang:1.22-alpine", // Go runtime
+    "rust:1.85-alpine",   // Rust runtime
+];
+
+/// Pre-pull common Docker images to avoid download delays during sandbox creation
+pub fn prepull_docker_images(quiet: bool) -> Result<()> {
+    if !check_docker() {
+        if !quiet {
+            println!("Docker not available, skipping image pre-pull");
+        }
+        return Ok(());
+    }
+
+    if !quiet {
+        println!("Pre-pulling common Docker images for faster startup...");
+    }
+
+    for image in DOCKER_IMAGES {
+        if !quiet {
+            print!("  Pulling {}... ", image);
+            io::stdout().flush()?;
+        }
+
+        let output = Command::new("docker")
+            .args(["pull", "-q", image])
+            .output()
+            .context("Failed to pull Docker image")?;
+
+        if output.status.success() {
+            if !quiet {
+                println!("done");
+            }
+        } else if !quiet {
+            println!("failed (will be pulled on first use)");
+        }
     }
 
     Ok(())

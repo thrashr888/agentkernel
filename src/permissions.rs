@@ -109,6 +109,8 @@ impl Permissions {
         // Memory limit
         if let Some(mem) = self.max_memory_mb {
             args.push(format!("--memory={}m", mem));
+            // Disable OOM killer overhead - container will be constrained but not killed
+            args.push("--oom-kill-disable".to_string());
         }
 
         // CPU limit
