@@ -4,10 +4,13 @@ Performance measurements for sandbox lifecycle operations.
 
 ## Quick Summary
 
-| Backend | Platform | Avg Boot | Full Cycle | Throughput |
-|---------|----------|----------|------------|------------|
-| Docker | macOS (M1) | 188ms | 446ms | 2.0 sandboxes/sec |
-| Firecracker | Linux (KVM) | <125ms | <200ms | Target: 10+ sandboxes/sec |
+| Backend | Platform | Avg Boot | Ready Time | Exec Latency | Throughput |
+|---------|----------|----------|------------|--------------|------------|
+| Docker | macOS (M1) | 188ms | 188ms | 83ms | 2.0 sandboxes/sec |
+| Docker | Linux (AMD EPYC) | 155ms | 155ms | 53ms | ~4 sandboxes/sec |
+| Firecracker | Linux (AMD EPYC) | 78ms | 1015ms | 19ms | ~1 sandbox/sec |
+
+**Key insight**: Firecracker hypervisor overhead is just 78ms (faster than Docker). The 1015ms "ready" time includes full kernel boot + userspace init + guest agent startup. Once running, Firecracker has 3x lower exec latency.
 
 ## Docker Backend (macOS)
 
@@ -66,18 +69,29 @@ The ~175ms start time is the practical floor for Docker. Remaining overhead come
 
 ## Firecracker Backend (Linux)
 
-Firecracker microVMs provide significantly faster boot times by eliminating container orchestration overhead.
+Firecracker microVMs provide stronger isolation (separate kernel per VM) and lower exec latency via vsock.
 
-### Target Performance
+### Measured Performance (AMD EPYC, KVM)
 
-| Metric | Target |
-|--------|--------|
-| Boot time | <125ms |
-| Shutdown | <50ms |
-| Memory overhead | <10MB per VM |
-| 100 VM test | <30s total |
+| Metric | Measured | Notes |
+|--------|----------|-------|
+| Firecracker API ready | 46ms | Process start to socket available |
+| Instance start | 78ms | VM started (hypervisor overhead only) |
+| Agent ready | 1015ms | Full boot: kernel + init + agent |
+| Command execution | 19ms | Via vsock (3x faster than Docker exec) |
+| Shutdown | 20ms | 6x faster than Docker cleanup |
 
-### Why Firecracker is Faster
+### Docker vs Firecracker Comparison (Linux)
+
+| Metric | Docker | Firecracker | Winner |
+|--------|--------|-------------|--------|
+| Process start | 40ms | 46ms | Tie |
+| Instance/container up | 155ms | 78ms | **Firecracker** |
+| Ready to execute | 155ms | 1015ms | **Docker** (no kernel boot) |
+| Command execution | 53ms | 19ms | **Firecracker** (vsock) |
+| Shutdown/cleanup | 130ms | 20ms | **Firecracker** (6x faster) |
+
+### Why Firecracker
 
 | Aspect | Docker | Firecracker |
 |--------|--------|-------------|
@@ -85,6 +99,14 @@ Firecracker microVMs provide significantly faster boot times by eliminating cont
 | Boot path | Container runtime → namespaces → cgroups | KVM → minimal kernel → init |
 | Overhead | Docker daemon, containerd, runc | Direct KVM hypercalls |
 | Memory | ~50-100MB per container | ~10MB per VM |
+| Security | Container escapes possible | Hardware isolation via KVM |
+
+### Use Case Recommendations
+
+- **Short-lived tasks (<5 commands)**: Docker is faster for total cycle time
+- **Longer sessions**: Firecracker is better (lower per-command latency)
+- **Security-critical code**: Firecracker required (true VM isolation)
+- **Untrusted code**: Firecracker strongly recommended
 
 ### Requirements
 
