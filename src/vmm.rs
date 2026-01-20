@@ -173,9 +173,15 @@ impl FirecrackerVm {
         let client = FirecrackerClient::new(&self.socket_path);
 
         // Set boot source
+        // Boot args optimized for fast startup:
+        // - quiet: reduce console output
+        // - i8042.noaux: skip PS/2 aux port probe (saves ~260ms)
+        // - loglevel=4: show warnings and errors only
         let boot_source = BootSource {
             kernel_image_path: self.config.kernel_path.to_string_lossy().to_string(),
-            boot_args: "console=ttyS0 reboot=k panic=1 pci=off init=/init".to_string(),
+            boot_args:
+                "console=ttyS0 reboot=k panic=1 pci=off init=/init quiet loglevel=4 i8042.noaux"
+                    .to_string(),
         };
         client.set_boot_source(&boot_source).await?;
 
