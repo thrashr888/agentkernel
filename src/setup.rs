@@ -546,44 +546,40 @@ COPY --from=builder /agent /agent
         bail!("Failed to build guest agent Docker image");
     }
 
-    // Extract the binary
-    // Note: This initial attempt may fail, we use docker cp below as the primary method
+    // Extract the binary using docker cp
+    // First remove any existing temp container
     let _ = Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "-v",
-            &format!("{}:/output", bin_dir.display()),
-            "--entrypoint",
-            "/bin/sh",
-            "rust:1.85-alpine",
-            "-c",
-            "docker run --rm agentkernel-guest-builder cat /agent > /output/agent 2>/dev/null || \
-             (cd /build && cargo build --release && cp target/release/agent /output/agent)",
-        ])
-        .status();
+        .args(["rm", "-f", "agentkernel-guest-tmp"])
+        .output();
 
-    // Alternative: use docker cp from a temporary container
-    let _ = Command::new("docker")
+    // Create a temporary container from the built image
+    let status = Command::new("docker")
         .args([
             "create",
             "--name",
-            "agentkernel-tmp",
+            "agentkernel-guest-tmp",
             "agentkernel-guest-builder",
         ])
-        .output();
+        .status()
+        .context("Failed to create temp container")?;
 
+    if !status.success() {
+        bail!("Failed to create temp container for guest agent");
+    }
+
+    // Copy the binary out
     let status = Command::new("docker")
         .args([
             "cp",
-            "agentkernel-tmp:/agent",
+            "agentkernel-guest-tmp:/agent",
             &bin_dir.join("agent").to_string_lossy(),
         ])
         .status()
         .context("Failed to extract guest agent binary")?;
 
+    // Clean up temp container
     let _ = Command::new("docker")
-        .args(["rm", "agentkernel-tmp"])
+        .args(["rm", "-f", "agentkernel-guest-tmp"])
         .output();
 
     if !status.success() {
