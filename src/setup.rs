@@ -625,6 +625,41 @@ ls -lh "$ROOTFS_IMG"
         bail!("Rootfs build failed for {}", runtime);
     }
 
+    // Fix ownership - Docker creates files as root, but we need user access for Firecracker
+    let rootfs_path = rootfs_dir.join(format!("{}.ext4", runtime));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::chown;
+        if let (Some(uid), Some(gid)) = (
+            std::env::var("UID").ok().and_then(|s| s.parse().ok()),
+            std::env::var("GID")
+                .ok()
+                .or_else(|| std::env::var("GROUPS").ok())
+                .and_then(|s| s.split_whitespace().next().and_then(|g| g.parse().ok())),
+        ) {
+            let _ = chown(&rootfs_path, Some(uid), Some(gid));
+        } else {
+            // Fallback: try to get uid/gid from the id command
+            if let Ok(output) = Command::new("id").args(["-u"]).output()
+                && output.status.success()
+            {
+                let uid: u32 = String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .parse()
+                    .unwrap_or(1000);
+                if let Ok(output) = Command::new("id").args(["-g"]).output()
+                    && output.status.success()
+                {
+                    let gid: u32 = String::from_utf8_lossy(&output.stdout)
+                        .trim()
+                        .parse()
+                        .unwrap_or(1000);
+                    let _ = chown(&rootfs_path, Some(uid), Some(gid));
+                }
+            }
+        }
+    }
+
     println!(
         "Rootfs installed to: {}/{}.ext4",
         rootfs_dir.display(),
