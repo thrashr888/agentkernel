@@ -229,6 +229,34 @@ pub fn detect_image(command: &[String]) -> String {
     DEFAULT_IMAGE.to_string()
 }
 
+/// Map a Docker image name to a Firecracker rootfs runtime name
+///
+/// Firecracker uses pre-built rootfs images with specific runtimes,
+/// while Docker uses standard container images. This function maps between them.
+pub fn docker_image_to_firecracker_runtime(image: &str) -> &'static str {
+    // Map based on image prefix
+    if image.starts_with("python:") || image.starts_with("python") {
+        "python"
+    } else if image.starts_with("node:") || image.starts_with("node") {
+        "node"
+    } else if image.starts_with("golang:") || image.starts_with("go:") || image.starts_with("go") {
+        "go"
+    } else if image.starts_with("rust:") || image.starts_with("rust") {
+        "rust"
+    } else if image.starts_with("ruby:") || image.starts_with("ruby") {
+        "ruby"
+    } else if image.starts_with("eclipse-temurin:") || image.starts_with("openjdk:") {
+        "java"
+    } else if image.starts_with("gcc:") || image.starts_with("g++:") {
+        "c"
+    } else if image.contains("dotnet") {
+        "dotnet"
+    } else {
+        // Default to base Alpine for anything else
+        "base"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

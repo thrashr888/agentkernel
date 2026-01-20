@@ -5,6 +5,7 @@
 
 use crate::docker_backend::{ContainerRuntime, ContainerSandbox, detect_container_runtime};
 use crate::firecracker_client::{BootSource, Drive, FirecrackerClient, MachineConfig, VsockDevice};
+use crate::languages::docker_image_to_firecracker_runtime;
 use crate::permissions::Permissions;
 use crate::validation;
 use anyhow::{Context, Result, bail};
@@ -466,17 +467,22 @@ impl VmManager {
             bail!("Sandbox '{}' already exists", name);
         }
 
-        // Validate rootfs exists (only for Firecracker)
-        if self.backend == Backend::Firecracker {
-            self.rootfs_path(image)?;
-        }
+        // For Firecracker, convert Docker image names to runtime names
+        // Docker backend uses full image names, Firecracker uses runtime names
+        let effective_image = if self.backend == Backend::Firecracker {
+            let runtime = docker_image_to_firecracker_runtime(image);
+            self.rootfs_path(runtime)?; // Validate rootfs exists
+            runtime.to_string()
+        } else {
+            image.to_string()
+        };
 
         let vsock_cid = self.next_cid;
         self.next_cid += 1;
 
         let state = SandboxState {
             name: name.to_string(),
-            image: image.to_string(),
+            image: effective_image,
             vcpus,
             memory_mb,
             vsock_cid,
