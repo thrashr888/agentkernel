@@ -500,10 +500,121 @@ CMD ["6.1.70"]
     Ok(())
 }
 
+/// Build the guest agent binary for inclusion in rootfs
+///
+/// Cross-compiles the guest agent to x86_64-unknown-linux-musl for static linking.
+async fn build_guest_agent(data_dir: &Path) -> Result<()> {
+    let bin_dir = data_dir.join("bin");
+    std::fs::create_dir_all(&bin_dir)?;
+
+    // Embedded guest agent source
+    let guest_agent_source = include_str!("../guest-agent/src/main.rs");
+    let guest_agent_cargo = include_str!("../guest-agent/Cargo.toml");
+
+    // Create temp directory for build
+    let temp_dir = std::env::temp_dir().join("agentkernel-guest-build");
+    std::fs::create_dir_all(&temp_dir)?;
+    std::fs::create_dir_all(temp_dir.join("src"))?;
+
+    // Write source files
+    std::fs::write(temp_dir.join("src/main.rs"), guest_agent_source)?;
+    std::fs::write(temp_dir.join("Cargo.toml"), guest_agent_cargo)?;
+
+    // Dockerfile for building with musl
+    let dockerfile = r#"
+FROM rust:1.85-alpine AS builder
+RUN apk add --no-cache musl-dev
+WORKDIR /build
+COPY . .
+RUN cargo build --release --target x86_64-unknown-linux-musl 2>/dev/null || cargo build --release
+RUN cp target/*/release/agent /agent || cp target/release/agent /agent
+
+FROM scratch
+COPY --from=builder /agent /agent
+"#;
+
+    std::fs::write(temp_dir.join("Dockerfile"), dockerfile)?;
+
+    // Build in Docker
+    let status = Command::new("docker")
+        .args(["build", "-t", "agentkernel-guest-builder", "."])
+        .current_dir(&temp_dir)
+        .status()
+        .context("Failed to build guest agent Docker image")?;
+
+    if !status.success() {
+        bail!("Failed to build guest agent Docker image");
+    }
+
+    // Extract the binary
+    // Note: This initial attempt may fail, we use docker cp below as the primary method
+    let _ = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "-v",
+            &format!("{}:/output", bin_dir.display()),
+            "--entrypoint",
+            "/bin/sh",
+            "rust:1.85-alpine",
+            "-c",
+            "docker run --rm agentkernel-guest-builder cat /agent > /output/agent 2>/dev/null || \
+             (cd /build && cargo build --release && cp target/release/agent /output/agent)",
+        ])
+        .status();
+
+    // Alternative: use docker cp from a temporary container
+    let _ = Command::new("docker")
+        .args([
+            "create",
+            "--name",
+            "agentkernel-tmp",
+            "agentkernel-guest-builder",
+        ])
+        .output();
+
+    let status = Command::new("docker")
+        .args([
+            "cp",
+            "agentkernel-tmp:/agent",
+            &bin_dir.join("agent").to_string_lossy(),
+        ])
+        .status()
+        .context("Failed to extract guest agent binary")?;
+
+    let _ = Command::new("docker")
+        .args(["rm", "agentkernel-tmp"])
+        .output();
+
+    if !status.success() {
+        bail!("Failed to extract guest agent binary");
+    }
+
+    // Make executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let agent_path = bin_dir.join("agent");
+        if agent_path.exists() {
+            std::fs::set_permissions(&agent_path, std::fs::Permissions::from_mode(0o755))?;
+        }
+    }
+
+    println!("Guest agent built: {}", bin_dir.join("agent").display());
+    Ok(())
+}
+
 /// Build a rootfs image
 async fn build_rootfs(data_dir: &Path, runtime: &str) -> Result<()> {
     let rootfs_dir = data_dir.join("images/rootfs");
     std::fs::create_dir_all(&rootfs_dir)?;
+
+    // First, build the guest agent if not already built
+    let agent_bin = data_dir.join("bin/agent");
+    if !agent_bin.exists() {
+        println!("Building guest agent...");
+        build_guest_agent(data_dir).await?;
+    }
 
     // Size based on runtime
     let size_mb = match runtime {
@@ -549,8 +660,15 @@ apk -X https://dl-cdn.alpinelinux.org/alpine/v3.20/main \
     -U --allow-untrusted --root "$MOUNT_DIR" --initdb \
     add alpine-base busybox-static $PACKAGES || true
 
-mkdir -p "$MOUNT_DIR"/{{dev,proc,sys,tmp,run,root,app}}
+mkdir -p "$MOUNT_DIR"/{{dev,proc,sys,tmp,run,root,app,usr/bin}}
 chmod 1777 "$MOUNT_DIR/tmp"
+
+# Copy guest agent if available
+if [ -f /agent-bin/agent ]; then
+    cp /agent-bin/agent "$MOUNT_DIR/usr/bin/agent"
+    chmod +x "$MOUNT_DIR/usr/bin/agent"
+    echo "Guest agent installed"
+fi
 
 # Create device nodes
 mknod -m 622 "$MOUNT_DIR/dev/console" c 5 1 || true
@@ -560,13 +678,20 @@ mknod -m 666 "$MOUNT_DIR/dev/tty" c 5 0 || true
 mknod -m 666 "$MOUNT_DIR/dev/random" c 1 8 || true
 mknod -m 666 "$MOUNT_DIR/dev/urandom" c 1 9 || true
 
-# Create init script
+# Create init script that starts the guest agent
 cat > "$MOUNT_DIR/init" << 'INIT'
 #!/bin/busybox sh
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sysfs /sys
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 /bin/busybox hostname agentkernel
+
+# Start guest agent in background if available
+if [ -x /usr/bin/agent ]; then
+    /usr/bin/agent &
+    echo "Guest agent started"
+fi
+
 echo "Agentkernel guest ready"
 if [ $# -eq 0 ]; then
     exec /bin/busybox sh
@@ -614,6 +739,8 @@ ls -lh "$ROOTFS_IMG"
             &format!("{}:/output", rootfs_dir.display()),
             "-v",
             &format!("{}:/build.sh:ro", script_path.display()),
+            "-v",
+            &format!("{}:/agent-bin:ro", data_dir.join("bin").display()),
             "alpine:3.20",
             "/bin/sh",
             "/build.sh",

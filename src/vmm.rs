@@ -8,6 +8,7 @@ use crate::firecracker_client::{BootSource, Drive, FirecrackerClient, MachineCon
 use crate::languages::docker_image_to_firecracker_runtime;
 use crate::permissions::Permissions;
 use crate::validation;
+use crate::vsock::VsockClient;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -579,7 +580,42 @@ impl VmManager {
     pub async fn exec_cmd(&mut self, name: &str, cmd: &[String]) -> Result<String> {
         match self.backend {
             Backend::Firecracker => {
-                bail!("Exec not yet implemented for Firecracker backend (requires vsock)");
+                // Get the VM's CID from the sandbox state
+                let state = self
+                    .sandboxes
+                    .get(name)
+                    .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+
+                // Check if VM is running
+                if !self.vms.contains_key(name) {
+                    bail!(
+                        "Sandbox '{}' is not running. Start it with: agentkernel start {}",
+                        name,
+                        name
+                    );
+                }
+
+                // Connect to guest agent via vsock
+                let client = VsockClient::new(state.vsock_cid);
+                let result = client
+                    .run_command(cmd)
+                    .await
+                    .context("Failed to execute command via vsock")?;
+
+                // Combine stdout and stderr for output
+                let mut output = result.stdout;
+                if !result.stderr.is_empty() {
+                    if !output.is_empty() {
+                        output.push('\n');
+                    }
+                    output.push_str(&result.stderr);
+                }
+
+                if result.exit_code != 0 {
+                    bail!("Command exited with code {}: {}", result.exit_code, output);
+                }
+
+                Ok(output)
             }
             Backend::Container(runtime) => {
                 // Check if container is running
