@@ -49,13 +49,20 @@ pub fn default_data_dir() -> PathBuf {
 pub fn check_installation() -> SetupStatus {
     let data_dir = default_data_dir();
 
+    // Check KVM status - distinguish between "not present" and "permission denied"
+    let kvm_path = std::path::PathBuf::from("/dev/kvm");
+    let kvm_exists = kvm_path.exists();
+    let kvm_accessible = check_kvm();
+    let kvm_permission_denied = kvm_exists && !kvm_accessible;
+
     SetupStatus {
         kernel_installed: find_kernel(&data_dir).is_some(),
         rootfs_base_installed: data_dir.join("images/rootfs/base.ext4").exists(),
         rootfs_python_installed: data_dir.join("images/rootfs/python.ext4").exists(),
         rootfs_node_installed: data_dir.join("images/rootfs/node.ext4").exists(),
         firecracker_installed: find_firecracker().is_some(),
-        kvm_available: check_kvm(),
+        kvm_available: kvm_accessible,
+        kvm_permission_denied,
         docker_available: check_docker(),
     }
 }
@@ -70,6 +77,8 @@ pub struct SetupStatus {
     pub rootfs_node_installed: bool,
     pub firecracker_installed: bool,
     pub kvm_available: bool,
+    /// True if /dev/kvm exists but user lacks permission to access it
+    pub kvm_permission_denied: bool,
     pub docker_available: bool,
 }
 
@@ -107,14 +116,25 @@ impl SetupStatus {
                 "not installed"
             }
         );
-        println!(
-            "  KVM:         {}",
-            if self.kvm_available {
-                "available"
-            } else {
-                "not available"
-            }
-        );
+        // Show KVM status with helpful message if permission denied
+        let kvm_status = if self.kvm_available {
+            "available"
+        } else if self.kvm_permission_denied {
+            "permission denied"
+        } else {
+            "not available"
+        };
+        println!("  KVM:         {}", kvm_status);
+
+        // Show guidance for KVM permission issues
+        if self.kvm_permission_denied {
+            println!();
+            println!("  Note: /dev/kvm exists but you don't have permission to access it.");
+            println!("  To fix this, add yourself to the 'kvm' group:");
+            println!("    sudo usermod -aG kvm $USER");
+            println!("  Then log out and back in (or run: newgrp kvm)");
+        }
+
         println!(
             "  Docker:      {}",
             if self.docker_available {
@@ -175,9 +195,31 @@ fn find_firecracker() -> Option<PathBuf> {
     None
 }
 
-/// Check if KVM is available
+/// Check if KVM is available and accessible
+///
+/// Returns true only if /dev/kvm exists AND the current user has read/write access.
+/// This prevents the confusing case where status says "KVM: available" but operations fail.
 fn check_kvm() -> bool {
-    PathBuf::from("/dev/kvm").exists()
+    let kvm_path = std::path::PathBuf::from("/dev/kvm");
+    if !kvm_path.exists() {
+        return false;
+    }
+
+    // Check if we can actually access KVM (not just that it exists)
+    // Try to open with read/write to verify permissions
+    #[cfg(unix)]
+    {
+        use std::fs::OpenOptions;
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&kvm_path)
+            .is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 /// Check if Docker is available

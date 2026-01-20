@@ -489,9 +489,31 @@ impl VmManager {
         Ok(())
     }
 
-    /// Check if KVM is available
+    /// Check if KVM is available and accessible
+    ///
+    /// Returns true only if /dev/kvm exists AND the current user has read/write access.
+    /// This prevents the confusing case where status says "KVM: available" but operations fail.
     fn check_kvm() -> bool {
-        PathBuf::from("/dev/kvm").exists()
+        let kvm_path = PathBuf::from("/dev/kvm");
+        if !kvm_path.exists() {
+            return false;
+        }
+
+        // Check if we can actually access KVM (not just that it exists)
+        // Try to open with read/write to verify permissions
+        #[cfg(unix)]
+        {
+            use std::fs::OpenOptions;
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&kvm_path)
+                .is_ok()
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
     }
 
     /// Start a sandbox
