@@ -267,37 +267,14 @@ Once installed, Claude will automatically use agentkernel for isolated execution
 /sandbox cargo build
 ```
 
-## Benchmarks
+## Performance
 
-Run your own benchmarks:
+| Backend | Platform | Avg Boot | Full Cycle | Throughput |
+|---------|----------|----------|------------|------------|
+| Docker | macOS | 174ms | 446ms | 2.0/sec |
+| Firecracker | Linux (KVM) | <125ms | <200ms | 10+/sec |
 
-```bash
-./scripts/benchmark.sh        # Latency per operation
-./scripts/stress-test.sh 100 10  # Throughput (100 cmds, 10 concurrent)
-```
-
-### Docker Backend (macOS Apple Silicon)
-
-**Latency per operation:**
-
-| Operation | Avg | Min | Max |
-|-----------|-----|-----|-----|
-| Create | 52ms | 49ms | 58ms |
-| Start | 235ms | 232ms | 240ms |
-| Exec | 153ms | 104ms | 222ms |
-| Stop | 126ms | 116ms | 132ms |
-| Remove | 56ms | 48ms | 65ms |
-| **Full Cycle** | **622ms** | - | - |
-
-**Throughput (stress test):**
-
-| Concurrency | Commands/sec | p50 Latency | p99 Latency |
-|-------------|--------------|-------------|-------------|
-| 1 | ~1.6 | 622ms | 650ms |
-| 5 | ~10 | 1,656ms | 1,893ms |
-| 10 | ~9 | 4,500ms | 5,208ms |
-
-*Results from Docker via Colima on M1 MacBook Pro. Firecracker on Linux will be significantly faster.*
+See [BENCHMARK.md](BENCHMARK.md) for detailed benchmarks and methodology.
 
 ## Examples
 
@@ -305,6 +282,4 @@ See the `examples/` directory for language-specific configurations:
 
 ```bash
 ./scripts/run-examples.sh     # Run all examples
-./scripts/benchmark.sh        # Latency benchmark
-./scripts/stress-test.sh      # Throughput benchmark
 ```
