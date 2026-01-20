@@ -704,6 +704,12 @@ echo "root:x:0:0:root:/root:/bin/sh" > "$MOUNT_DIR/etc/passwd"
 echo "root:x:0:" > "$MOUNT_DIR/etc/group"
 
 umount "$MOUNT_DIR"
+
+# Fix ownership so Firecracker can access the file
+if [ -n "$HOST_UID" ] && [ -n "$HOST_GID" ]; then
+    chown "$HOST_UID:$HOST_GID" "$ROOTFS_IMG"
+fi
+
 echo "Rootfs created: $ROOTFS_IMG"
 ls -lh "$ROOTFS_IMG"
 "#,
@@ -726,11 +732,28 @@ ls -lh "$ROOTFS_IMG"
     // with a controlled script. For production deployments, consider using
     // pre-built images instead of building locally.
     eprintln!("  (Building with privileged Docker - required for loop device access)");
+
+    // Get current user's UID/GID to fix ownership after build
+    let uid = Command::new("id")
+        .args(["-u"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "1000".to_string());
+    let gid = Command::new("id")
+        .args(["-g"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "1000".to_string());
+
     let status = Command::new("docker")
         .args([
             "run",
             "--rm",
             "--privileged",
+            "-e",
+            &format!("HOST_UID={}", uid),
+            "-e",
+            &format!("HOST_GID={}", gid),
             // Security: Mount build script as read-only to prevent tampering
             "-v",
             &format!("{}:/output", rootfs_dir.display()),
