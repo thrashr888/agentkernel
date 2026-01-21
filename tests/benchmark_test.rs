@@ -123,6 +123,50 @@ fn get_binary_path() -> String {
         .to_string()
 }
 
+/// Cleanup leftover sandboxes from previous runs (backend-agnostic)
+fn cleanup_sandboxes(iterations: usize, sandboxes: usize) {
+    // Use agentkernel remove for each sandbox (works with both Firecracker and Docker)
+    for iter in 0..iterations {
+        for id in 0..sandboxes {
+            let name = format!("bench-{}-{}", iter, id);
+            let _ = run_cmd(&["remove", &name]);
+        }
+    }
+
+    // Also try Docker cleanup as fallback (in case backend changed)
+    let container_names: Vec<String> = (0..iterations)
+        .flat_map(|iter| (0..sandboxes).map(move |id| format!("agentkernel-bench-{}-{}", iter, id)))
+        .collect();
+    for chunk in container_names.chunks(100) {
+        let _ = std::process::Command::new("docker")
+            .args(["rm", "-f"])
+            .args(chunk)
+            .output();
+    }
+
+    // Clean up sandbox state files
+    let sandboxes_dir = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".local/share/agentkernel/sandboxes"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/agentkernel/sandboxes"));
+    for iter in 0..iterations {
+        for id in 0..sandboxes {
+            let state_file = sandboxes_dir.join(format!("bench-{}-{}.json", iter, id));
+            let _ = std::fs::remove_file(state_file);
+        }
+    }
+
+    // Clean up any Firecracker sockets that might be left over
+    for iter in 0..iterations {
+        for id in 0..sandboxes {
+            let name = format!("bench-{}-{}", iter, id);
+            let socket = format!("/tmp/agentkernel-{}.sock", name);
+            let vsock = format!("/tmp/agentkernel-{}-vsock.sock", name);
+            let _ = std::fs::remove_file(socket);
+            let _ = std::fs::remove_file(vsock);
+        }
+    }
+}
+
 fn run_cmd(args: &[&str]) -> Result<String, String> {
     let binary = get_binary_path();
     let output = Command::new(&binary)
@@ -171,28 +215,7 @@ async fn benchmark_sandbox_lifecycle() {
 
     // Clean up any leftover bench-* sandboxes from previous runs
     println!("Cleaning up leftover sandboxes...");
-
-    // 1. Remove Docker containers (names use "agentkernel-" prefix)
-    let container_names: Vec<String> = (0..iterations)
-        .flat_map(|iter| (0..sandboxes).map(move |id| format!("agentkernel-bench-{}-{}", iter, id)))
-        .collect();
-    for chunk in container_names.chunks(100) {
-        let _ = std::process::Command::new("docker")
-            .args(["rm", "-f"])
-            .args(chunk)
-            .output();
-    }
-
-    // 2. Remove sandbox state files from ~/.local/share/agentkernel/sandboxes/
-    let sandboxes_dir = std::env::var_os("HOME")
-        .map(|h| std::path::PathBuf::from(h).join(".local/share/agentkernel/sandboxes"))
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/agentkernel/sandboxes"));
-    for iter in 0..iterations {
-        for id in 0..sandboxes {
-            let state_file = sandboxes_dir.join(format!("bench-{}-{}.json", iter, id));
-            let _ = std::fs::remove_file(state_file);
-        }
-    }
+    cleanup_sandboxes(iterations, sandboxes);
     println!("Done.\n");
 
     let mut all_results: Vec<LifecycleResult> = Vec::new();
