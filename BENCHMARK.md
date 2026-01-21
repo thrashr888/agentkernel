@@ -4,13 +4,31 @@ Performance measurements for sandbox lifecycle operations.
 
 ## Quick Summary
 
-| Backend | Platform | Avg Boot | Ready Time | Exec Latency | Throughput |
-|---------|----------|----------|------------|--------------|------------|
-| Docker | macOS (M3 Pro) | 188ms | 188ms | 83ms | 2.0 sandboxes/sec |
-| Docker | Linux (AMD EPYC) | 155ms | 155ms | 53ms | ~4 sandboxes/sec |
-| Firecracker | Linux (AMD EPYC) | 78ms | **110ms** | 19ms | ~9 sandboxes/sec |
+### End-to-End Command Latency (`agentkernel run -- echo hello`)
 
-**Key insight**: With optimized boot args, Firecracker achieves **110ms** agent-ready time - faster than Docker while providing true VM isolation. The 89% speedup (from 961ms baseline) came from disabling PS/2 keyboard drivers (`i8042.nokbd i8042.noaux`).
+This is what users experience - total time from command start to output:
+
+| Mode | Platform | Latency | Notes |
+|------|----------|---------|-------|
+| Firecracker Daemon | Linux (AMD EPYC) | **195ms** | Pre-warmed VM pool (3-5 VMs) |
+| Docker Pool | Linux (AMD EPYC) | ~250ms | Container pool with `-F` flag |
+| Docker Pool | macOS (M3 Pro) | ~300ms | Container pool with `-F` flag |
+| Docker Ephemeral | Linux (AMD EPYC) | ~450ms | Full create/start/exec/stop/remove |
+| Docker Ephemeral | macOS (M3 Pro) | ~500ms | Full lifecycle |
+| Firecracker Ephemeral | Linux (AMD EPYC) | **800ms** | Full VM lifecycle (cold start) |
+
+**Key insight**: Daemon mode with pre-warmed VMs provides the best latency (195ms) with full VM isolation. For ephemeral usage, Docker is faster than cold Firecracker starts.
+
+### Component Breakdown
+
+| Backend | Platform | Boot | Ready | Exec | Shutdown | Throughput |
+|---------|----------|------|-------|------|----------|------------|
+| Docker | macOS (M3 Pro) | 188ms | 188ms | 83ms | 109ms | 2.0/sec |
+| Docker | Linux (AMD EPYC) | 155ms | 155ms | 53ms | 130ms | ~4/sec |
+| Firecracker | Linux (AMD EPYC) | 78ms | 110ms | 19ms | 20ms | ~9/sec |
+| **FC Daemon** | Linux (AMD EPYC) | 0ms | 0ms | 19ms | 0ms | **~5/sec** |
+
+The daemon mode eliminates boot/ready/shutdown overhead by reusing pre-warmed VMs.
 
 ## Docker Backend (macOS)
 
@@ -117,12 +135,81 @@ quiet loglevel=4 i8042.nokbd i8042.noaux
 
 ### Use Case Recommendations
 
-With the optimized boot args, Firecracker is now faster than Docker in almost all scenarios:
+| Use Case | Recommended Mode | Why |
+|----------|------------------|-----|
+| Interactive/API use | Daemon mode | 195ms latency, VM isolation |
+| Batch processing | Firecracker ephemeral | Clean VM per job |
+| macOS development | Docker pool (`-F`) | No KVM available |
+| Security-critical | Daemon or Firecracker | True VM isolation |
+| CI/CD | Docker ephemeral | No KVM in most runners |
 
-- **All workloads**: Firecracker recommended (110ms start + 19ms exec vs Docker's 155ms start + 53ms exec)
-- **Security-critical code**: Firecracker required (true VM isolation)
-- **macOS development**: Docker fallback (no KVM available)
-- **Untrusted code**: Firecracker strongly recommended
+## Daemon Mode (Linux)
+
+The daemon maintains a pool of pre-warmed Firecracker VMs for fast execution.
+
+### How It Works
+
+```
+┌─────────────────────────────────────────┐
+│           agentkernel daemon            │
+│                                         │
+│  ┌────┐ ┌────┐ ┌────┐    ┌────┐       │
+│  │ VM │ │ VM │ │ VM │    │ VM │       │
+│  │warm│ │warm│ │warm│    │use │       │
+│  └────┘ └────┘ └────┘    └────┘       │
+│       Warm Pool           In Use       │
+└─────────────────────────────────────────┘
+```
+
+- Pool maintains 3-5 pre-booted VMs
+- `run` command acquires VM from pool (~0ms)
+- Executes command via vsock (~19ms)
+- Returns VM to pool for reuse (~0ms)
+
+### Measured Performance (AMD EPYC, KVM)
+
+```bash
+# Start daemon (pre-warms 3 VMs)
+agentkernel daemon start
+
+# Run commands (uses warm pool)
+time agentkernel run -- echo hello
+```
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Daemon startup | ~3s | Boots 3 warm VMs |
+| Command latency | **195ms** | Acquire + exec + release |
+| Concurrent requests | ✓ | Tested 3 parallel jobs |
+| VM reuse | ~95% | Only cold start when pool exhausted |
+
+### Comparison: Daemon vs Ephemeral
+
+| Metric | Ephemeral | Daemon | Speedup |
+|--------|-----------|--------|---------|
+| First command | 800ms | 195ms | **4.1x** |
+| Subsequent commands | 800ms | 195ms | **4.1x** |
+| 10 sequential commands | 8.0s | 1.95s | **4.1x** |
+
+### When to Use Daemon Mode
+
+**Use daemon when:**
+- Running many commands (API server, interactive use)
+- Low latency matters more than memory
+- You have a long-running service
+
+**Use ephemeral when:**
+- Running occasional one-off commands
+- Memory is constrained
+- You want clean VM per execution
+
+### Daemon Commands
+
+```bash
+agentkernel daemon start   # Start daemon, pre-warm pool
+agentkernel daemon status  # Show pool stats
+agentkernel daemon stop    # Graceful shutdown
+```
 
 ### Requirements
 
