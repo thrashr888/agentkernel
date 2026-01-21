@@ -269,12 +269,45 @@ Once installed, Claude will automatically use agentkernel for isolated execution
 
 ## Performance
 
-| Backend | Platform | Avg Boot | Full Cycle | Throughput |
-|---------|----------|----------|------------|------------|
-| Docker | macOS | 174ms | 446ms | 2.0/sec |
-| Firecracker | Linux (KVM) | <125ms | <200ms | 10+/sec |
+| Mode | Platform | Latency | Use Case |
+|------|----------|---------|----------|
+| Daemon (warm pool) | Linux | **195ms** | API/interactive - fastest with VM isolation |
+| Docker | macOS | ~300ms | macOS development |
+| Firecracker (cold) | Linux | ~800ms | One-off commands |
 
 See [BENCHMARK.md](BENCHMARK.md) for detailed benchmarks and methodology.
+
+## Daemon Mode (Linux)
+
+For the fastest execution on Linux, use daemon mode to maintain a pool of pre-warmed VMs:
+
+```bash
+# Start the daemon (pre-warms 3 VMs)
+agentkernel daemon start
+
+# Run commands (uses warm VMs - ~195ms latency)
+agentkernel run echo "Hello from warm VM!"
+
+# Check pool status
+agentkernel daemon status
+# Output: Pool: Warm VMs: 3, In use: 0, Min/Max: 3/5
+
+# Stop the daemon
+agentkernel daemon stop
+```
+
+The daemon maintains 3-5 pre-booted Firecracker VMs. Commands execute in ~195ms vs ~800ms for cold starts - a **4x speedup**.
+
+**When to use daemon mode:**
+- Running an API server
+- Interactive development
+- Many sequential commands
+- Low latency requirements
+
+**When to use ephemeral mode:**
+- One-off commands
+- Clean VM per execution
+- Memory-constrained environments
 
 ## Examples
 
