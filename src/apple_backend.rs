@@ -83,9 +83,12 @@ impl AppleContainerSandbox {
         ];
 
         // Resource limits
-        if let Some(cpu) = perms.max_cpu_percent {
+        // Apple containers expects integer CPU count, not percentage
+        // Convert percentage to CPU count: 100% = 1 CPU, 200% = 2 CPUs, etc.
+        if let Some(cpu_percent) = perms.max_cpu_percent {
+            let cpus = std::cmp::max(1, cpu_percent / 100);
             args.push("--cpus".to_string());
-            args.push(format!("{:.2}", cpu as f64 / 100.0));
+            args.push(cpus.to_string());
         }
         if let Some(mem) = perms.max_memory_mb {
             args.push("--memory".to_string());
@@ -248,9 +251,12 @@ impl AppleContainerSandbox {
         ];
 
         // Resource limits
-        if let Some(cpu) = perms.max_cpu_percent {
+        // Apple containers expects integer CPU count, not percentage
+        // Convert percentage to CPU count: 100% = 1 CPU, 200% = 2 CPUs, etc.
+        if let Some(cpu_percent) = perms.max_cpu_percent {
+            let cpus = std::cmp::max(1, cpu_percent / 100);
             args.push("--cpus".to_string());
-            args.push(format!("{:.2}", cpu as f64 / 100.0));
+            args.push(cpus.to_string());
         }
         if let Some(mem) = perms.max_memory_mb {
             args.push("--memory".to_string());

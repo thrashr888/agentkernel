@@ -16,8 +16,10 @@ This is what users experience - total time from command start to output:
 | Docker Ephemeral | Linux (AMD EPYC) | ~450ms | Full create/start/exec/stop/remove |
 | Docker Ephemeral | macOS (M3 Pro) | ~500ms | Full lifecycle |
 | Firecracker Ephemeral | Linux (AMD EPYC) | **800ms** | Full VM lifecycle (cold start) |
+| Apple Containers | macOS 26 (M3 Pro) | ~1000ms | Direct `container run --rm` |
+| Apple Containers | macOS 26 (M3 Pro) | ~2200ms | Via agentkernel (full lifecycle) |
 
-**Key insight**: Daemon mode with pre-warmed VMs provides the best latency (195ms) with full VM isolation. For ephemeral usage, Docker is faster than cold Firecracker starts.
+**Key insight**: Daemon mode with pre-warmed VMs provides the best latency (195ms) with full VM isolation. For ephemeral usage, Docker is faster than cold Firecracker starts. Apple Containers provide true VM isolation on macOS but with higher latency than Docker containers.
 
 ### Component Breakdown
 
@@ -139,9 +141,76 @@ quiet loglevel=4 i8042.nokbd i8042.noaux
 |----------|------------------|-----|
 | Interactive/API use | Daemon mode | 195ms latency, VM isolation |
 | Batch processing | Firecracker ephemeral | Clean VM per job |
-| macOS development | Docker pool (`-F`) | No KVM available |
-| Security-critical | Daemon or Firecracker | True VM isolation |
+| macOS development (speed) | Docker pool (`-F`) | Fastest on macOS |
+| macOS development (security) | Apple Containers | True VM isolation |
+| Security-critical | Daemon, Firecracker, or Apple | True VM isolation |
 | CI/CD | Docker ephemeral | No KVM in most runners |
+
+## Apple Containers Backend (macOS 26+)
+
+Apple Containers use the native macOS hypervisor to run lightweight VMs (one VM per container), providing Firecracker-like isolation on Apple Silicon without requiring KVM.
+
+### Measured Performance (M3 Pro, macOS 26.3)
+
+| Metric | Time | Notes |
+|--------|------|-------|
+| Create container | 168ms | Container definition created |
+| Start (VM boot) | **778ms** | Main overhead - VM boot time |
+| Wait/Logs | ~20ms | Fast after boot |
+| Remove | ~20ms | Quick cleanup |
+| **Full `run --rm`** | **~1000ms** | Single operation |
+| **Via agentkernel** | **~2200ms** | create+start+exec+stop+remove |
+
+### Why Apple Containers Are Slower
+
+The ~2200ms agentkernel latency comes from multiple operations:
+1. Start container with `sleep infinity` (~1000ms)
+2. Exec command in running container (~100ms)
+3. Stop container (~100ms)
+4. Remove container (~100ms)
+5. CLI overhead and state management (~900ms)
+
+**Optimization opportunity**: Use single `container run --rm` instead of multi-step lifecycle for ephemeral runs.
+
+### Comparison: Apple Containers vs Docker (macOS)
+
+| Metric | Docker | Apple Containers | Winner |
+|--------|--------|------------------|--------|
+| Isolation | Shared kernel (namespaces) | Separate VM per container | **Apple** (stronger) |
+| Boot time | ~175ms | ~778ms | **Docker** (4x faster) |
+| Full lifecycle | ~500ms | ~1000ms | **Docker** (2x faster) |
+| Memory overhead | ~50MB | ~100MB+ | **Docker** |
+| Security | Container escapes possible | Hardware isolation | **Apple** (more secure) |
+
+### When to Use Apple Containers
+
+**Use Apple Containers when:**
+- Strong isolation is required (untrusted code)
+- Running on macOS 26+ without Docker
+- Security is more important than speed
+
+**Use Docker when:**
+- Speed is the priority
+- Running trusted code
+- Memory is constrained
+
+### Requirements
+
+- macOS 26.0 or later (Tahoe)
+- Apple Silicon (arm64)
+- `container` CLI from https://github.com/apple/container/releases
+
+```bash
+# Install Apple Containers CLI
+# Download from: https://github.com/apple/container/releases
+sudo installer -pkg container-installer-signed.pkg -target /
+
+# Start the system service
+container system start
+
+# Verify
+container --version
+```
 
 ## Daemon Mode (Linux)
 
@@ -296,7 +365,8 @@ cat benchmark-results/stress_*_details.json | jq '[.[].start_time] | add / lengt
 
 ## Environment Notes
 
-- **macOS**: Uses Docker or Podman (no KVM). Expect 150-250ms boot times.
+- **macOS 26+**: Auto-selects Apple Containers for VM isolation (~1s boot). Falls back to Docker if not available.
+- **macOS <26**: Uses Docker or Podman (no KVM). Expect 150-250ms boot times.
 - **Linux with KVM**: Uses Firecracker. Achieves **110ms boot times** (beat <125ms target).
 - **Linux without KVM**: Falls back to Docker. Similar to macOS performance.
 - **CI/CD**: GitHub Actions runners don't have KVM. Use Docker backend.
