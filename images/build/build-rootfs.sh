@@ -14,11 +14,30 @@ set -euo pipefail
 
 RUNTIME="${1:-base}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 ROOTFS_DIR="$(dirname "$SCRIPT_DIR")/rootfs"
 OUTPUT="$ROOTFS_DIR/${RUNTIME}.ext4"
 SIZE_MB=256  # Default size
+AGENT_BIN="$PROJECT_ROOT/target/x86_64-unknown-linux-musl/release/agent"
 
 echo "==> Building rootfs for runtime: $RUNTIME"
+
+# Step 1: Build guest-agent for musl (static binary)
+echo "==> Building guest-agent for musl target..."
+if [ ! -f "$AGENT_BIN" ]; then
+    echo "    Cross-compiling guest-agent..."
+    docker run --rm \
+        -v "$PROJECT_ROOT:/project" \
+        -w /project/guest-agent \
+        rust:1.85-alpine \
+        sh -c 'apk add --no-cache musl-dev && rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl'
+fi
+
+if [ ! -f "$AGENT_BIN" ]; then
+    echo "ERROR: Failed to build guest-agent"
+    exit 1
+fi
+echo "    Guest agent built: $(ls -lh "$AGENT_BIN" | awk '{print $5}')"
 
 # Create rootfs directory
 mkdir -p "$ROOTFS_DIR"
@@ -72,6 +91,7 @@ echo "    Packages: ${PACKAGES:-none}"
 # Create rootfs image
 docker run --rm --privileged \
     -v "$ROOTFS_DIR:/output" \
+    -v "$AGENT_BIN:/agent-bin:ro" \
     -e RUNTIME="$RUNTIME" \
     -e SIZE_MB="$SIZE_MB" \
     -e PACKAGES="$PACKAGES" \
@@ -108,7 +128,12 @@ mknod -m 666 "$MOUNT_DIR/dev/tty" c 5 0 || true
 mknod -m 666 "$MOUNT_DIR/dev/random" c 1 8 || true
 mknod -m 666 "$MOUNT_DIR/dev/urandom" c 1 9 || true
 
-# Create init script
+# Copy guest agent binary
+echo "==> Installing guest agent..."
+cp /agent-bin "$MOUNT_DIR/usr/bin/agent"
+chmod +x "$MOUNT_DIR/usr/bin/agent"
+
+# Create init script that starts the agent
 cat > "$MOUNT_DIR/init" << '\''INIT'\''
 #!/bin/busybox sh
 
@@ -120,10 +145,13 @@ cat > "$MOUNT_DIR/init" << '\''INIT'\''
 # Set hostname
 /bin/busybox hostname agentkernel
 
-# Start guest agent
+# Start guest agent in background
+echo "Starting agentkernel guest agent..."
+/usr/bin/agent &
+
 echo "Agentkernel guest ready"
 
-# If no arguments, run shell
+# If no arguments, run shell (for debugging)
 if [ $# -eq 0 ]; then
     exec /bin/busybox sh
 else
@@ -131,27 +159,6 @@ else
 fi
 INIT
 chmod +x "$MOUNT_DIR/init"
-
-# Create a simple vsock-based agent (shell script for now)
-cat > "$MOUNT_DIR/usr/bin/agent" << '\''AGENT'\''
-#!/bin/sh
-# Simple vsock agent - listens for commands and executes them
-# For production, this should be a proper binary
-
-PORT=52000
-
-echo "Agent starting on vsock port $PORT"
-
-# We will use socat or a simple nc loop once vsock support is added
-# For now, just indicate readiness
-echo "READY"
-
-# Keep running
-while true; do
-    sleep 1
-done
-AGENT
-chmod +x "$MOUNT_DIR/usr/bin/agent"
 
 # Set up /etc files
 echo "agentkernel" > "$MOUNT_DIR/etc/hostname"
