@@ -207,12 +207,12 @@ The ~2200ms agentkernel latency comes from multiple operations:
 # Download from: https://github.com/apple/container/releases
 sudo installer -pkg container-installer-signed.pkg -target /
 
-# Start the system service
-container system start
-
-# Verify
-container --version
+# Setup and verify (auto-starts Apple container system)
+agentkernel setup
+agentkernel status
 ```
+
+Note: `agentkernel setup` automatically starts the Apple container system service and pre-pulls the Alpine base image. The service start is also triggered automatically on first `agentkernel run` when using the Apple backend.
 
 ## Daemon Mode (Linux)
 

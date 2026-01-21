@@ -282,18 +282,55 @@ fn check_macos_version() -> bool {
         .output()
         .ok()
         .and_then(|output| {
-            String::from_utf8(output.stdout)
-                .ok()
-                .and_then(|version| {
-                    version
-                        .trim()
-                        .split('.')
-                        .next()
-                        .and_then(|major| major.parse::<u32>().ok())
-                        .map(|major| major >= 26)
-                })
+            String::from_utf8(output.stdout).ok().and_then(|version| {
+                version
+                    .trim()
+                    .split('.')
+                    .next()
+                    .and_then(|major| major.parse::<u32>().ok())
+                    .map(|major| major >= 26)
+            })
         })
         .unwrap_or(false)
+}
+
+/// Initialize Apple containers system (start service and download kernel if needed)
+fn initialize_apple_containers() -> Result<()> {
+    // Check if system is already running
+    let status_output = Command::new("container")
+        .args(["system", "status"])
+        .output()?;
+
+    if status_output.status.success()
+        && String::from_utf8_lossy(&status_output.stdout).contains("is running")
+    {
+        println!("  Apple container system already running");
+        return Ok(());
+    }
+
+    // Start the system (auto-accept kernel download)
+    println!("  Starting Apple container system...");
+    let output = Command::new("sh")
+        .args(["-c", "echo 'Y' | container system start"])
+        .output()
+        .context("Failed to start Apple container system")?;
+
+    if output.status.success() {
+        println!("  Apple container system started");
+
+        // Pre-pull alpine image for faster first run
+        println!("  Pre-pulling alpine:3.20 image...");
+        let _ = Command::new("container")
+            .args(["image", "pull", "alpine:3.20"])
+            .output();
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.contains("already") {
+            bail!("Failed to start Apple container system: {}", stderr);
+        }
+    }
+
+    Ok(())
 }
 
 /// Prompt user to select from options
@@ -482,6 +519,14 @@ pub async fn run_setup(non_interactive: bool) -> Result<()> {
         println!("\n==> Pre-pulling Docker images...");
         if let Err(e) = prepull_docker_images(false) {
             eprintln!("Warning: Failed to pre-pull some images: {}", e);
+        }
+    }
+
+    // Initialize Apple containers system if available
+    if status.macos_version_supported && status.apple_containers_available {
+        println!("\n==> Initializing Apple container system...");
+        if let Err(e) = initialize_apple_containers() {
+            eprintln!("Warning: Failed to initialize Apple containers: {}", e);
         }
     }
 

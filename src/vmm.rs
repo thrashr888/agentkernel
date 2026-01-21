@@ -3,7 +3,9 @@
 //! This module provides the interface to sandboxes via Firecracker microVMs
 //! or containers (Docker/Podman) as fallback when KVM is not available.
 
-use crate::apple_backend::{AppleContainerSandbox, apple_containers_available, macos_version_supported};
+use crate::apple_backend::{
+    AppleContainerSandbox, apple_containers_available, macos_version_supported, start_apple_system,
+};
 use crate::docker_backend::{ContainerRuntime, ContainerSandbox, detect_container_runtime};
 use crate::firecracker_client::{BootSource, Drive, FirecrackerClient, MachineConfig, VsockDevice};
 use crate::languages::docker_image_to_firecracker_runtime;
@@ -341,11 +343,17 @@ impl VmManager {
         let backend = if Self::check_kvm() {
             Backend::Firecracker
         } else if apple_containers_available() && macos_version_supported() {
+            // Auto-start Apple container system if needed
+            if let Err(e) = start_apple_system() {
+                eprintln!("Warning: Failed to start Apple container system: {}", e);
+            }
             Backend::Apple
         } else if let Some(runtime) = detect_container_runtime() {
             Backend::Container(runtime)
         } else {
-            bail!("No sandbox backend available. Need one of: KVM (Linux), Apple containers (macOS 26+), or Docker/Podman.");
+            bail!(
+                "No sandbox backend available. Need one of: KVM (Linux), Apple containers (macOS 26+), or Docker/Podman."
+            );
         };
 
         // Find kernel and rootfs paths (only needed for Firecracker)
@@ -708,14 +716,13 @@ impl VmManager {
             }
             Backend::Apple => {
                 // Check if Apple container is running
-                let sandbox = self
-                    .apple_sandboxes
-                    .get(name)
-                    .ok_or_else(|| anyhow::anyhow!(
+                let sandbox = self.apple_sandboxes.get(name).ok_or_else(|| {
+                    anyhow::anyhow!(
                         "Sandbox '{}' is not running. Start it with: agentkernel start {}",
                         name,
                         name
-                    ))?;
+                    )
+                })?;
 
                 // Execute via Apple container exec
                 sandbox.execute(cmd).await
@@ -792,7 +799,9 @@ impl VmManager {
                     }
                     Backend::Apple => {
                         // Check if Apple container is tracked (and running)
-                        self.apple_sandboxes.get(name).is_some_and(|s| s.is_running())
+                        self.apple_sandboxes
+                            .get(name)
+                            .is_some_and(|s| s.is_running())
                     }
                 };
                 (name.as_str(), running)

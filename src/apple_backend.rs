@@ -8,6 +8,43 @@ use std::process::Command;
 
 use crate::permissions::Permissions;
 
+/// Check if Apple container system service is running
+pub fn apple_system_running() -> bool {
+    Command::new("container")
+        .args(["system", "status"])
+        .output()
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("is running"))
+        .unwrap_or(false)
+}
+
+/// Start the Apple container system service (handles kernel download automatically)
+pub fn start_apple_system() -> Result<()> {
+    if apple_system_running() {
+        return Ok(());
+    }
+
+    eprintln!("Starting Apple container system...");
+
+    // Use echo "Y" to auto-accept kernel download prompt
+    let output = Command::new("sh")
+        .args(["-c", "echo 'Y' | container system start"])
+        .output()
+        .context("Failed to start Apple container system")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Ignore "already running" errors
+        if !stderr.contains("already") {
+            bail!("Failed to start Apple container system: {}", stderr);
+        }
+    }
+
+    // Wait a moment for system to be ready
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    Ok(())
+}
+
 /// Check if Apple containers is available
 pub fn apple_containers_available() -> bool {
     // Check if we're on macOS
@@ -30,10 +67,7 @@ pub fn macos_version_supported() -> bool {
     }
 
     // Get macOS version
-    let output = Command::new("sw_vers")
-        .arg("-productVersion")
-        .output()
-        .ok();
+    let output = Command::new("sw_vers").arg("-productVersion").output().ok();
 
     if let Some(output) = output
         && let Ok(version) = String::from_utf8(output.stdout)
@@ -62,11 +96,7 @@ impl AppleContainerSandbox {
     }
 
     /// Start the container with the specified image and permissions
-    pub async fn start_with_permissions(
-        &mut self,
-        image: &str,
-        perms: &Permissions,
-    ) -> Result<()> {
+    pub async fn start_with_permissions(&mut self, image: &str, perms: &Permissions) -> Result<()> {
         let container_name = format!("agentkernel-{}", self.name);
 
         // Remove any existing container (ignore errors)
@@ -165,9 +195,7 @@ impl AppleContainerSandbox {
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-        if !output.status.success()
-            && !stderr.is_empty()
-        {
+        if !output.status.success() && !stderr.is_empty() {
             bail!("Command failed: {}", stderr);
         }
 
@@ -301,9 +329,7 @@ impl AppleContainerSandbox {
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-        if !output.status.success()
-            && !stderr.is_empty()
-        {
+        if !output.status.success() && !stderr.is_empty() {
             bail!("Container command failed: {}", stderr);
         }
 
