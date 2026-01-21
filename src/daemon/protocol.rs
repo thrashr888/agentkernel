@@ -16,6 +16,13 @@ pub enum DaemonRequest {
         /// VM ID to release
         id: String,
     },
+    /// Execute a command in a pooled VM (acquire + exec + release in one call)
+    Exec {
+        /// Runtime type (base, python, node, etc.)
+        runtime: String,
+        /// Command to execute
+        command: Vec<String>,
+    },
     /// Get daemon status
     Status,
     /// Shutdown the daemon
@@ -37,6 +44,15 @@ pub enum DaemonResponse {
     },
     /// VM released successfully
     Released,
+    /// Command executed successfully
+    Executed {
+        /// Exit code from command
+        exit_code: i32,
+        /// Standard output
+        stdout: String,
+        /// Standard error
+        stderr: String,
+    },
     /// Daemon status
     Status {
         /// Number of warm VMs in pool

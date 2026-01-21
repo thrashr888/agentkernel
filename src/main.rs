@@ -384,9 +384,11 @@ memory_mb = 512
                 return Ok(());
             }
 
-            // Daemon path: use daemon VM pool if available (Firecracker only)
-            let daemon_client = daemon::DaemonClient::new();
-            if daemon_client.is_available() && !keep {
+            // Daemon path: try daemon VM pool first (single round-trip)
+            // Skip is_available() check - just try and fall back on error
+            if !keep {
+                let daemon_client = daemon::DaemonClient::new();
+
                 // Determine runtime from image/config
                 let runtime = if let Some(ref img) = image {
                     languages::docker_image_to_firecracker_runtime(img).to_string()
@@ -397,35 +399,19 @@ memory_mb = 512
                     "base".to_string()
                 };
 
-                eprintln!("Using daemon ({})", runtime);
-
-                // Acquire VM from pool
-                let vm = daemon_client.acquire(&runtime).await?;
-
-                // Execute command via vsock
-                let vsock_client = vsock::VsockClient::for_firecracker(&vm.vsock_path);
-                let result = vsock_client.run_command(&command).await;
-
-                // Release VM back to pool (always, even on error)
-                let _ = daemon_client.release(&vm.id).await;
-
-                // Handle result
-                match result {
-                    Ok(run_result) => {
-                        print!("{}", run_result.stdout);
-                        if !run_result.stderr.is_empty() {
-                            eprint!("{}", run_result.stderr);
-                        }
-                        if run_result.exit_code != 0 {
-                            std::process::exit(run_result.exit_code);
-                        }
+                // Try daemon (single round-trip: acquire + exec + release)
+                if let Ok(result) = daemon_client.run_in_pool(&runtime, &command).await {
+                    eprintln!("Using daemon ({})", runtime);
+                    print!("{}", result.stdout);
+                    if !result.stderr.is_empty() {
+                        eprint!("{}", result.stderr);
                     }
-                    Err(e) => {
-                        bail!("Command failed: {}", e);
+                    if result.exit_code != 0 {
+                        std::process::exit(result.exit_code);
                     }
+                    return Ok(());
                 }
-
-                return Ok(());
+                // Daemon not available or failed, fall through to ephemeral mode
             }
 
             // Fallback: ephemeral VM mode

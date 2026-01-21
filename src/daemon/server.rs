@@ -8,6 +8,7 @@ use tokio::net::{UnixListener, UnixStream};
 
 use super::pool::{FirecrackerPool, PoolConfig};
 use super::protocol::{DaemonRequest, DaemonResponse};
+use crate::vsock::VsockClient;
 
 /// Daemon server state
 pub struct DaemonServer {
@@ -160,6 +161,30 @@ async fn handle_request(request: DaemonRequest, pool: &FirecrackerPool) -> Daemo
             Ok(_) => DaemonResponse::Released,
             Err(e) => DaemonResponse::error(format!("Failed to release VM: {}", e)),
         },
+        DaemonRequest::Exec { runtime, command } => {
+            // Acquire VM from pool
+            let vm = match pool.acquire(&runtime).await {
+                Ok(vm) => vm,
+                Err(e) => return DaemonResponse::error(format!("Failed to acquire VM: {}", e)),
+            };
+
+            // Execute command via vsock
+            let vsock_client = VsockClient::for_firecracker(&vm.vsock_path);
+            let result = vsock_client.run_command(&command).await;
+
+            // Release VM back to pool (always, even on error)
+            let _ = pool.release(&vm.id).await;
+
+            // Return result
+            match result {
+                Ok(run_result) => DaemonResponse::Executed {
+                    exit_code: run_result.exit_code,
+                    stdout: run_result.stdout,
+                    stderr: run_result.stderr,
+                },
+                Err(e) => DaemonResponse::error(format!("Command failed: {}", e)),
+            }
+        }
         DaemonRequest::Status => {
             let (warm, in_use) = pool.stats().await;
             DaemonResponse::Status {

@@ -21,6 +21,13 @@ pub struct VmHandle {
     pub vsock_path: String,
 }
 
+/// Result of running a command in a pooled VM
+pub struct RunResult {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 impl DaemonClient {
     /// Create a new client with default socket path
     pub fn new() -> Self {
@@ -129,6 +136,32 @@ impl DaemonClient {
 
         match self.send_request(&request).await? {
             DaemonResponse::ShuttingDown => Ok(()),
+            DaemonResponse::Error { message } => {
+                bail!("Daemon error: {}", message)
+            }
+            other => {
+                bail!("Unexpected response: {:?}", other)
+            }
+        }
+    }
+
+    /// Run a command in a pooled VM (single round-trip: acquire + run + release)
+    pub async fn run_in_pool(&self, runtime: &str, command: &[String]) -> Result<RunResult> {
+        let request = DaemonRequest::Exec {
+            runtime: runtime.to_string(),
+            command: command.to_vec(),
+        };
+
+        match self.send_request(&request).await? {
+            DaemonResponse::Executed {
+                exit_code,
+                stdout,
+                stderr,
+            } => Ok(RunResult {
+                exit_code,
+                stdout,
+                stderr,
+            }),
             DaemonResponse::Error { message } => {
                 bail!("Daemon error: {}", message)
             }
