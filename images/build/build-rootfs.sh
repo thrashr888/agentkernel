@@ -24,21 +24,29 @@ echo "==> Building rootfs for runtime: $RUNTIME"
 
 # Step 1: Build guest-agent for musl (static binary)
 echo "==> Building guest-agent for musl target..."
-# Always rebuild to ensure it's up to date
+AGENT_LOCAL="$ROOTFS_DIR/agent"
 echo "    Cross-compiling guest-agent..."
-mkdir -p "$PROJECT_ROOT/target/x86_64-unknown-linux-musl/release"
-docker run --rm \
-    -v "$PROJECT_ROOT:/project" \
-    -v "$PROJECT_ROOT/target:/project/target" \
-    -w /project/guest-agent \
-    rust:1.85-alpine \
-    sh -c 'apk add --no-cache musl-dev && rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl'
 
-if [ ! -f "$AGENT_BIN" ]; then
+# Build in Docker and copy out the binary
+docker run --rm \
+    -v "$PROJECT_ROOT/guest-agent:/src:ro" \
+    -v "$ROOTFS_DIR:/output" \
+    rust:1.85-alpine \
+    sh -c '
+        apk add --no-cache musl-dev
+        rustup target add x86_64-unknown-linux-musl
+        cd /src
+        cargo build --release --target x86_64-unknown-linux-musl
+        cp /src/target/x86_64-unknown-linux-musl/release/agent /output/agent
+        chmod +x /output/agent
+    '
+
+if [ ! -f "$AGENT_LOCAL" ]; then
     echo "ERROR: Failed to build guest-agent"
     exit 1
 fi
-echo "    Guest agent built: $(ls -lh "$AGENT_BIN" | awk '{print $5}')"
+echo "    Guest agent built: $(ls -lh "$AGENT_LOCAL" | awk '{print $5}')"
+AGENT_BIN="$AGENT_LOCAL"
 
 # Create rootfs directory
 mkdir -p "$ROOTFS_DIR"
