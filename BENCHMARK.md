@@ -8,16 +8,16 @@ Performance measurements for sandbox lifecycle operations.
 
 This is what users experience - total time from command start to output:
 
-| Mode | Platform | Latency | Notes |
-|------|----------|---------|-------|
-| Firecracker Daemon | Linux (AMD EPYC) | **195ms** | Pre-warmed VM pool (3-5 VMs) |
-| Docker Pool | Linux (AMD EPYC) | ~250ms | Container pool with `-F` flag |
-| Docker Pool | macOS (M3 Pro) | ~300ms | Container pool with `-F` flag |
-| Docker Ephemeral | Linux (AMD EPYC) | ~450ms | Full create/start/exec/stop/remove |
-| Docker Ephemeral | macOS (M3 Pro) | ~500ms | Full lifecycle |
-| Firecracker Ephemeral | Linux (AMD EPYC) | **800ms** | Full VM lifecycle (cold start) |
-| Apple Containers | macOS 26 (M3 Pro) | ~1000ms | Direct `container run --rm` |
-| Apple Containers | macOS 26 (M3 Pro) | ~2200ms | Via agentkernel (full lifecycle) |
+| Mode | Platform | Latency | Throughput | Notes |
+|------|----------|---------|------------|-------|
+| Firecracker Daemon | Linux (AMD EPYC) | **195ms** | **~5.1/sec** | Pre-warmed VM pool (3-5 VMs) |
+| Docker Pool | Linux (AMD EPYC) | ~250ms | ~4.0/sec | Container pool with `-F` flag |
+| Docker Pool | macOS (M3 Pro) | ~300ms | ~3.3/sec | Container pool with `-F` flag |
+| Docker Ephemeral | Linux (AMD EPYC) | ~450ms | ~2.2/sec | Full create/start/exec/stop/remove |
+| Docker Ephemeral | macOS (M3 Pro) | ~500ms | ~2.0/sec | Full lifecycle |
+| Firecracker Ephemeral | Linux (AMD EPYC) | **800ms** | ~1.3/sec | Full VM lifecycle (cold start) |
+| Apple Containers | macOS 26 (M3 Pro) | ~940ms | ~1.1/sec | Direct `container run --rm` |
+| Apple Containers | macOS 26 (M3 Pro) | ~2200ms | ~0.5/sec | Via agentkernel (full lifecycle) |
 
 **Key insight**: Daemon mode with pre-warmed VMs provides the best latency (195ms) with full VM isolation. For ephemeral usage, Docker is faster than cold Firecracker starts. Apple Containers provide true VM isolation on macOS but with higher latency than Docker containers.
 
