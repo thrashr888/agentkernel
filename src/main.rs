@@ -1,5 +1,6 @@
 mod agents;
 mod config;
+mod daemon;
 mod docker_backend;
 mod firecracker_client;
 mod http_api;
@@ -15,7 +16,7 @@ mod vsock;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::setup::{check_installation, run_setup};
@@ -130,6 +131,25 @@ enum Commands {
     },
     /// List supported AI agents and their availability
     Agents,
+    /// Manage the daemon (VM pool server)
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    /// Start the daemon in foreground
+    Start {
+        /// Run in background (daemonize)
+        #[arg(short, long)]
+        background: bool,
+    },
+    /// Stop the running daemon
+    Stop,
+    /// Show daemon status
+    Status,
 }
 
 #[tokio::main]
@@ -364,6 +384,51 @@ memory_mb = 512
                 return Ok(());
             }
 
+            // Daemon path: use daemon VM pool if available (Firecracker only)
+            let daemon_client = daemon::DaemonClient::new();
+            if daemon_client.is_available() && !keep {
+                // Determine runtime from image/config
+                let runtime = if let Some(ref img) = image {
+                    languages::docker_image_to_firecracker_runtime(img).to_string()
+                } else if let Some(ref config_path) = config {
+                    let cfg = Config::from_file(config_path)?;
+                    languages::docker_image_to_firecracker_runtime(&cfg.docker_image()).to_string()
+                } else {
+                    "base".to_string()
+                };
+
+                eprintln!("Using daemon ({})", runtime);
+
+                // Acquire VM from pool
+                let vm = daemon_client.acquire(&runtime).await?;
+
+                // Execute command via vsock
+                let vsock_client = vsock::VsockClient::for_firecracker(&vm.vsock_path);
+                let result = vsock_client.run_command(&command).await;
+
+                // Release VM back to pool (always, even on error)
+                let _ = daemon_client.release(&vm.id).await;
+
+                // Handle result
+                match result {
+                    Ok(run_result) => {
+                        print!("{}", run_result.stdout);
+                        if !run_result.stderr.is_empty() {
+                            eprint!("{}", run_result.stderr);
+                        }
+                        if run_result.exit_code != 0 {
+                            std::process::exit(run_result.exit_code);
+                        }
+                    }
+                    Err(e) => {
+                        bail!("Command failed: {}", e);
+                    }
+                }
+
+                return Ok(());
+            }
+
+            // Fallback: ephemeral VM mode
             // Generate a unique sandbox name
             let run_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
             let sandbox_name = format!("run-{}", run_id);
@@ -478,9 +543,121 @@ memory_mb = 512
                 }
             }
         }
+        Commands::Daemon { action } => {
+            match action {
+                DaemonAction::Start { background } => {
+                    // Check setup status first
+                    let status = check_installation();
+                    if !status.kvm_available {
+                        bail!("Daemon mode requires KVM. Run 'agentkernel status' to check.");
+                    }
+                    if !status.kernel_installed || !status.rootfs_base_installed {
+                        bail!(
+                            "Agentkernel is not fully set up. Run 'agentkernel setup' first.\n\
+                             Missing: {}",
+                            missing_components(&status)
+                        );
+                    }
+
+                    let socket_path = daemon::DaemonServer::default_socket_path();
+                    if daemon::DaemonServer::is_running(&socket_path) {
+                        bail!("Daemon is already running at {}", socket_path.display());
+                    }
+
+                    // Find kernel and rootfs paths
+                    let base_dir = find_images_dir()?;
+                    let kernel_path = find_kernel(&base_dir)?;
+                    let rootfs_dir = base_dir.join("rootfs");
+
+                    let config = daemon::PoolConfig::default();
+                    let server = daemon::DaemonServer::new(config, kernel_path, rootfs_dir);
+
+                    if background {
+                        // TODO: Fork and daemonize
+                        bail!("Background mode not yet implemented. Run in foreground for now.");
+                    }
+
+                    println!("Starting daemon...");
+                    server.run().await?;
+                }
+                DaemonAction::Stop => {
+                    let client = daemon::DaemonClient::new();
+                    if !client.is_available() {
+                        bail!("Daemon is not running");
+                    }
+
+                    println!("Stopping daemon...");
+                    client.shutdown().await?;
+                    println!("Daemon stopped.");
+                }
+                DaemonAction::Status => {
+                    let client = daemon::DaemonClient::new();
+                    if !client.is_available() {
+                        println!("Daemon: not running");
+                        println!("Socket: {}", client.socket_path().display());
+                        return Ok(());
+                    }
+
+                    let (warm, in_use, min_warm, max_warm) = client.status().await?;
+                    println!("Daemon: running");
+                    println!("Socket: {}", client.socket_path().display());
+                    println!("Pool:");
+                    println!("  Warm VMs:    {}", warm);
+                    println!("  In use:      {}", in_use);
+                    println!("  Min/Max:     {}/{}", min_warm, max_warm);
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+/// Find the images directory
+fn find_images_dir() -> Result<PathBuf> {
+    // Check installed location first (preferred)
+    if let Some(home) = std::env::var_os("HOME") {
+        let home_path = PathBuf::from(home).join(".local/share/agentkernel/images");
+        // Check if it has actual content (kernel or rootfs)
+        if home_path.join("kernel").exists() || home_path.join("rootfs").exists() {
+            return Ok(home_path);
+        }
+    }
+
+    // Check relative to current dir (development mode)
+    let paths = [PathBuf::from("images"), PathBuf::from("../images")];
+
+    for path in &paths {
+        if path.join("kernel").exists() || path.join("rootfs").exists() {
+            return Ok(path.clone());
+        }
+    }
+
+    bail!(
+        "Images directory not found. Run 'agentkernel setup' first, or check ~/.local/share/agentkernel/images"
+    );
+}
+
+/// Find the kernel image
+fn find_kernel(base_dir: &Path) -> Result<PathBuf> {
+    let kernel_dir = base_dir.join("kernel");
+
+    // Look for vmlinux-*-agentkernel
+    if kernel_dir.exists() {
+        for entry in std::fs::read_dir(&kernel_dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("vmlinux-") && name_str.ends_with("-agentkernel") {
+                return Ok(entry.path());
+            }
+        }
+    }
+
+    bail!(
+        "Kernel not found in {}. Run 'agentkernel setup' first.",
+        kernel_dir.display()
+    );
 }
 
 fn missing_components(status: &setup::SetupStatus) -> String {
