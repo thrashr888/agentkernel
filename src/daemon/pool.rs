@@ -130,15 +130,17 @@ impl FirecrackerPool {
 
     /// Get pool statistics
     pub async fn stats(&self) -> (usize, usize) {
-        let warm = self.warm_pool.lock().await.len();
-        let in_use = self.in_use.lock().await.len();
+        // Lock separately to avoid holding both locks at once
+        let warm = { self.warm_pool.lock().await.len() };
+        let in_use = { self.in_use.lock().await.len() };
         (warm, in_use)
     }
 
     /// Acquire a VM from the pool
     pub async fn acquire(&self, runtime: &str) -> Result<VmHandle> {
         // Try to get a VM from the warm pool
-        {
+        // IMPORTANT: Release warm_pool lock before acquiring in_use lock to prevent deadlock
+        let vm_opt = {
             let mut pool = self.warm_pool.lock().await;
 
             // Find a VM with matching runtime
@@ -149,19 +151,24 @@ impl FirecrackerPool {
             if let Some(idx) = idx {
                 let mut vm = pool.remove(idx).unwrap();
                 vm.last_used = Instant::now();
-
-                // Create handle before moving VM
-                let handle = VmHandle {
-                    id: vm.id.clone(),
-                    cid: vm.cid,
-                    vsock_path: vm.vsock_path.clone(),
-                };
-
-                // Move to in_use
-                self.in_use.lock().await.insert(vm.id.clone(), vm);
-
-                return Ok(handle);
+                Some(vm)
+            } else {
+                None
             }
+        }; // warm_pool lock released here
+
+        if let Some(vm) = vm_opt {
+            // Create handle before moving VM
+            let handle = VmHandle {
+                id: vm.id.clone(),
+                cid: vm.cid,
+                vsock_path: vm.vsock_path.clone(),
+            };
+
+            // Move to in_use (now safe - no nested locks)
+            self.in_use.lock().await.insert(vm.id.clone(), vm);
+
+            return Ok(handle);
         }
 
         // No warm VM available, start a new one
@@ -182,15 +189,19 @@ impl FirecrackerPool {
 
     /// Release a VM back to the pool
     pub async fn release(&self, id: &str) -> Result<()> {
-        let mut in_use = self.in_use.lock().await;
+        // IMPORTANT: Release in_use lock before acquiring warm_pool lock to prevent deadlock
+        let vm_opt = {
+            let mut in_use = self.in_use.lock().await;
+            in_use.remove(id)
+        }; // in_use lock released here
 
-        if let Some(mut vm) = in_use.remove(id) {
+        if let Some(mut vm) = vm_opt {
             // Check if VM is still healthy and not too old
             let age = vm.created_at.elapsed();
             let max_age = Duration::from_secs(self.config.max_age_secs);
 
             if vm.is_alive() && age < max_age {
-                // Return to warm pool
+                // Return to warm pool (now safe - no nested locks)
                 vm.last_used = Instant::now();
                 let mut pool = self.warm_pool.lock().await;
 
