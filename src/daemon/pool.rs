@@ -12,6 +12,17 @@ use tokio::time::sleep;
 use crate::firecracker_client::{BootSource, Drive, FirecrackerClient, MachineConfig, VsockDevice};
 use crate::vsock::VsockClient;
 
+/// VM handle returned to clients (without process ownership)
+#[derive(Debug, Clone)]
+pub struct VmHandle {
+    /// Unique ID
+    pub id: String,
+    /// vsock CID
+    pub cid: u32,
+    /// Path to vsock UDS
+    pub vsock_path: PathBuf,
+}
+
 /// Pool configuration
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
@@ -125,7 +136,7 @@ impl FirecrackerPool {
     }
 
     /// Acquire a VM from the pool
-    pub async fn acquire(&self, runtime: &str) -> Result<PooledVm> {
+    pub async fn acquire(&self, runtime: &str) -> Result<VmHandle> {
         // Try to get a VM from the warm pool
         {
             let mut pool = self.warm_pool.lock().await;
@@ -139,47 +150,34 @@ impl FirecrackerPool {
                 let mut vm = pool.remove(idx).unwrap();
                 vm.last_used = Instant::now();
 
-                // Move to in_use
-                let id = vm.id.clone();
-                self.in_use.lock().await.insert(id, vm);
-
-                // Return a reference via ID lookup
-                let in_use = self.in_use.lock().await;
-                let vm = in_use.values().find(|v| v.runtime == runtime).unwrap();
-
-                return Ok(PooledVm {
+                // Create handle before moving VM
+                let handle = VmHandle {
                     id: vm.id.clone(),
                     cid: vm.cid,
                     vsock_path: vm.vsock_path.clone(),
-                    api_socket_path: vm.api_socket_path.clone(),
-                    process: Command::new("true").spawn()?, // Placeholder - real process is tracked
-                    runtime: vm.runtime.clone(),
-                    created_at: vm.created_at,
-                    last_used: vm.last_used,
-                });
+                };
+
+                // Move to in_use
+                self.in_use.lock().await.insert(vm.id.clone(), vm);
+
+                return Ok(handle);
             }
         }
 
         // No warm VM available, start a new one
         let vm = self.start_vm(runtime).await?;
-        let id = vm.id.clone();
+
+        // Create handle before moving VM
+        let handle = VmHandle {
+            id: vm.id.clone(),
+            cid: vm.cid,
+            vsock_path: vm.vsock_path.clone(),
+        };
 
         // Track in in_use
-        self.in_use.lock().await.insert(
-            id.clone(),
-            PooledVm {
-                id: id.clone(),
-                cid: vm.cid,
-                vsock_path: vm.vsock_path.clone(),
-                api_socket_path: vm.api_socket_path.clone(),
-                process: Command::new("true").spawn()?, // Placeholder
-                runtime: vm.runtime.clone(),
-                created_at: vm.created_at,
-                last_used: vm.last_used,
-            },
-        );
+        self.in_use.lock().await.insert(vm.id.clone(), vm);
 
-        Ok(vm)
+        Ok(handle)
     }
 
     /// Release a VM back to the pool
