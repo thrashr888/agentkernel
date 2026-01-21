@@ -14,9 +14,9 @@ pub struct DaemonClient {
 }
 
 /// VM handle returned from acquire
+#[allow(dead_code)]
 pub struct VmHandle {
     pub id: String,
-    #[allow(dead_code)]
     pub cid: u32,
     pub vsock_path: String,
 }
@@ -71,6 +71,7 @@ impl DaemonClient {
     }
 
     /// Acquire a VM from the pool
+    #[allow(dead_code)]
     pub async fn acquire(&self, runtime: &str) -> Result<VmHandle> {
         let request = DaemonRequest::Acquire {
             runtime: runtime.to_string(),
@@ -96,6 +97,7 @@ impl DaemonClient {
     }
 
     /// Release a VM back to the pool
+    #[allow(dead_code)]
     pub async fn release(&self, id: &str) -> Result<()> {
         let request = DaemonRequest::Release { id: id.to_string() };
 

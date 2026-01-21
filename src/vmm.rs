@@ -3,6 +3,7 @@
 //! This module provides the interface to sandboxes via Firecracker microVMs
 //! or containers (Docker/Podman) as fallback when KVM is not available.
 
+use crate::apple_backend::{AppleContainerSandbox, apple_containers_available, macos_version_supported};
 use crate::docker_backend::{ContainerRuntime, ContainerSandbox, detect_container_runtime};
 use crate::firecracker_client::{BootSource, Drive, FirecrackerClient, MachineConfig, VsockDevice};
 use crate::languages::docker_image_to_firecracker_runtime;
@@ -40,6 +41,8 @@ pub enum Backend {
     Firecracker,
     /// Container (Docker or Podman)
     Container(ContainerRuntime),
+    /// Apple containers (macOS 26+ with native hypervisor)
+    Apple,
 }
 
 /// Persisted sandbox state (saved to disk)
@@ -314,11 +317,12 @@ impl Drop for FirecrackerVm {
     }
 }
 
-/// VM Manager - manages sandboxes via Firecracker or containers (Docker/Podman)
+/// VM Manager - manages sandboxes via Firecracker or containers (Docker/Podman/Apple)
 pub struct VmManager {
     backend: Backend,
     vms: std::collections::HashMap<String, FirecrackerVm>,
     container_sandboxes: std::collections::HashMap<String, ContainerSandbox>,
+    apple_sandboxes: std::collections::HashMap<String, AppleContainerSandbox>,
     sandboxes: std::collections::HashMap<String, SandboxState>,
     data_dir: PathBuf,
     kernel_path: Option<PathBuf>,
@@ -333,13 +337,15 @@ impl VmManager {
         let sandboxes_dir = data_dir.join("sandboxes");
         std::fs::create_dir_all(&sandboxes_dir)?;
 
-        // Determine backend based on KVM availability
+        // Determine backend based on availability (priority: KVM > Apple containers > Docker)
         let backend = if Self::check_kvm() {
             Backend::Firecracker
+        } else if apple_containers_available() && macos_version_supported() {
+            Backend::Apple
         } else if let Some(runtime) = detect_container_runtime() {
             Backend::Container(runtime)
         } else {
-            bail!("Neither KVM nor a container runtime (Docker/Podman) is available.");
+            bail!("No sandbox backend available. Need one of: KVM (Linux), Apple containers (macOS 26+), or Docker/Podman.");
         };
 
         // Find kernel and rootfs paths (only needed for Firecracker)
@@ -364,6 +370,7 @@ impl VmManager {
                 Backend::Firecracker => "Firecracker".to_string(),
                 Backend::Container(ContainerRuntime::Docker) => "Docker".to_string(),
                 Backend::Container(ContainerRuntime::Podman) => "Podman".to_string(),
+                Backend::Apple => "Apple Containers".to_string(),
             }
         );
 
@@ -371,6 +378,7 @@ impl VmManager {
             backend,
             vms: std::collections::HashMap::new(),
             container_sandboxes: std::collections::HashMap::new(),
+            apple_sandboxes: std::collections::HashMap::new(),
             sandboxes,
             data_dir,
             kernel_path,
@@ -618,6 +626,15 @@ impl VmManager {
                 sandbox.start_with_permissions(&state.image, perms).await?;
                 self.container_sandboxes.insert(name.to_string(), sandbox);
             }
+            Backend::Apple => {
+                if self.apple_sandboxes.contains_key(name) {
+                    bail!("Sandbox '{}' is already running", name);
+                }
+
+                let mut sandbox = AppleContainerSandbox::new(name);
+                sandbox.start_with_permissions(&state.image, perms).await?;
+                self.apple_sandboxes.insert(name.to_string(), sandbox);
+            }
         }
 
         Ok(())
@@ -689,6 +706,20 @@ impl VmManager {
 
                 Ok(String::from_utf8_lossy(&output.stdout).to_string())
             }
+            Backend::Apple => {
+                // Check if Apple container is running
+                let sandbox = self
+                    .apple_sandboxes
+                    .get(name)
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "Sandbox '{}' is not running. Start it with: agentkernel start {}",
+                        name,
+                        name
+                    ))?;
+
+                // Execute via Apple container exec
+                sandbox.execute(cmd).await
+            }
         }
     }
 
@@ -708,6 +739,11 @@ impl VmManager {
                     .output();
                 // Also remove from in-memory map if present
                 self.container_sandboxes.remove(name);
+            }
+            Backend::Apple => {
+                if let Some(mut sandbox) = self.apple_sandboxes.remove(name) {
+                    let _ = sandbox.stop().await;
+                }
             }
         }
         Ok(())
@@ -730,6 +766,11 @@ impl VmManager {
                 // Also remove from in-memory map if present
                 self.container_sandboxes.remove(name);
             }
+            Backend::Apple => {
+                if let Some(mut sandbox) = self.apple_sandboxes.remove(name) {
+                    let _ = sandbox.remove().await;
+                }
+            }
         }
 
         self.delete_sandbox(name)?;
@@ -748,6 +789,10 @@ impl VmManager {
                     Backend::Container(runtime) => {
                         // Check container status directly (containers persist across CLI calls)
                         Self::is_container_running(name, runtime)
+                    }
+                    Backend::Apple => {
+                        // Check if Apple container is tracked (and running)
+                        self.apple_sandboxes.get(name).is_some_and(|s| s.is_running())
                     }
                 };
                 (name.as_str(), running)

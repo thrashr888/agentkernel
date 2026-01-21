@@ -199,6 +199,7 @@ impl VsockConnection {
     }
 
     /// Check if the connection is still alive by sending a ping.
+    #[allow(dead_code)]
     pub async fn ping(&mut self) -> bool {
         let request = AgentRequest {
             id: "ping".to_string(),
