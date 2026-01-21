@@ -1,19 +1,26 @@
 //! Daemon server - Unix socket server for VM pool management.
 
 use anyhow::{Result, bail};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::Mutex;
 
 use super::pool::{FirecrackerPool, PoolConfig};
 use super::protocol::{DaemonRequest, DaemonResponse};
-use crate::vsock::VsockClient;
+use crate::vsock::{VsockClient, VsockConnection, AGENT_PORT};
+
+/// Cache for persistent vsock connections
+type ConnectionCache = Arc<Mutex<HashMap<String, VsockConnection>>>;
 
 /// Daemon server state
 pub struct DaemonServer {
     pool: Arc<FirecrackerPool>,
     socket_path: PathBuf,
+    /// Cache of persistent vsock connections (keyed by vsock path)
+    connections: ConnectionCache,
 }
 
 impl DaemonServer {
@@ -21,8 +28,13 @@ impl DaemonServer {
     pub fn new(config: PoolConfig, kernel_path: PathBuf, rootfs_dir: PathBuf) -> Self {
         let socket_path = Self::default_socket_path();
         let pool = Arc::new(FirecrackerPool::new(config, kernel_path, rootfs_dir));
+        let connections = Arc::new(Mutex::new(HashMap::new()));
 
-        Self { pool, socket_path }
+        Self {
+            pool,
+            socket_path,
+            connections,
+        }
     }
 
     /// Get the default socket path
@@ -81,8 +93,9 @@ impl DaemonServer {
             match listener.accept().await {
                 Ok((stream, _)) => {
                     let pool = Arc::clone(&self.pool);
+                    let connections = Arc::clone(&self.connections);
                     tokio::spawn(async move {
-                        if let Err(e) = handle_client(stream, pool).await {
+                        if let Err(e) = handle_client(stream, pool, connections).await {
                             eprintln!("Client error: {}", e);
                         }
                     });
@@ -110,7 +123,11 @@ impl DaemonServer {
 }
 
 /// Handle a single client connection
-async fn handle_client(stream: UnixStream, pool: Arc<FirecrackerPool>) -> Result<()> {
+async fn handle_client(
+    stream: UnixStream,
+    pool: Arc<FirecrackerPool>,
+    connections: ConnectionCache,
+) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
@@ -133,7 +150,7 @@ async fn handle_client(stream: UnixStream, pool: Arc<FirecrackerPool>) -> Result
             }
         };
 
-        let response = handle_request(request, &pool).await;
+        let response = handle_request(request, &pool, &connections).await;
         let json = serde_json::to_string(&response)? + "\n";
         writer.write_all(json.as_bytes()).await?;
 
@@ -147,7 +164,11 @@ async fn handle_client(stream: UnixStream, pool: Arc<FirecrackerPool>) -> Result
 }
 
 /// Handle a single request
-async fn handle_request(request: DaemonRequest, pool: &FirecrackerPool) -> DaemonResponse {
+async fn handle_request(
+    request: DaemonRequest,
+    pool: &FirecrackerPool,
+    connections: &ConnectionCache,
+) -> DaemonResponse {
     match request {
         DaemonRequest::Acquire { runtime } => match pool.acquire(&runtime).await {
             Ok(vm) => DaemonResponse::Acquired {
@@ -168,9 +189,37 @@ async fn handle_request(request: DaemonRequest, pool: &FirecrackerPool) -> Daemo
                 Err(e) => return DaemonResponse::error(format!("Failed to acquire VM: {}", e)),
             };
 
-            // Execute command via vsock
-            let vsock_client = VsockClient::for_firecracker(&vm.vsock_path);
-            let result = vsock_client.run_command(&command).await;
+            let vsock_path = vm.vsock_path.to_string_lossy().to_string();
+
+            // Try to use cached connection, or create new one
+            let result = {
+                let mut cache = connections.lock().await;
+
+                // Check if we have a cached connection for this VM
+                if let Some(conn) = cache.get_mut(&vsock_path) {
+                    // Use existing connection
+                    conn.run_command(&command).await
+                } else {
+                    // No cached connection, create new one
+                    drop(cache); // Release lock before async operation
+
+                    match VsockConnection::connect(&vm.vsock_path, AGENT_PORT).await {
+                        Ok(mut conn) => {
+                            let result = conn.run_command(&command).await;
+                            // Cache the connection for future use
+                            if result.is_ok() {
+                                connections.lock().await.insert(vsock_path.clone(), conn);
+                            }
+                            result
+                        }
+                        Err(e) => {
+                            // Fall back to non-cached client
+                            let vsock_client = VsockClient::for_firecracker(&vm.vsock_path);
+                            vsock_client.run_command(&command).await.map_err(|_| e)
+                        }
+                    }
+                }
+            };
 
             // Release VM back to pool (always, even on error)
             let _ = pool.release(&vm.id).await;

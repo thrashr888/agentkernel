@@ -82,6 +82,136 @@ pub struct RunResult {
     pub stderr: String,
 }
 
+/// A persistent vsock connection that can be reused for multiple commands.
+/// This saves the overhead of reconnecting and re-handshaking for each command.
+#[cfg(unix)]
+pub struct VsockConnection {
+    stream: tokio::net::UnixStream,
+    timeout_secs: u64,
+}
+
+#[cfg(unix)]
+impl VsockConnection {
+    /// Establish a new vsock connection to a Firecracker VM.
+    /// Performs the CONNECT handshake so the connection is ready for commands.
+    pub async fn connect(uds_path: impl AsRef<std::path::Path>, port: u32) -> Result<Self> {
+        use tokio::net::UnixStream;
+
+        let mut stream = timeout(
+            Duration::from_secs(30),
+            UnixStream::connect(uds_path.as_ref()),
+        )
+        .await
+        .context("Connection timeout")?
+        .context("Failed to connect to Firecracker vsock socket")?;
+
+        // Firecracker vsock protocol: send CONNECT <port>\n
+        let connect_cmd = format!("CONNECT {}\n", port);
+        stream
+            .write_all(connect_cmd.as_bytes())
+            .await
+            .context("Failed to send CONNECT")?;
+        stream.flush().await?;
+
+        // Read response: OK <host_port>\n
+        let mut response_buf = [0u8; 32];
+        let n = timeout(Duration::from_secs(5), stream.read(&mut response_buf))
+            .await
+            .context("Timeout waiting for CONNECT response")?
+            .context("Failed to read CONNECT response")?;
+
+        let response_str = std::str::from_utf8(&response_buf[..n])
+            .context("Invalid CONNECT response")?
+            .trim();
+
+        if !response_str.starts_with("OK ") {
+            bail!("Firecracker vsock CONNECT failed: {}", response_str);
+        }
+
+        Ok(Self {
+            stream,
+            timeout_secs: 30,
+        })
+    }
+
+    /// Run a command using this established connection.
+    pub async fn run_command(&mut self, command: &[String]) -> Result<RunResult> {
+        let request = AgentRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            request_type: RequestType::Run,
+            command: Some(command.to_vec()),
+            cwd: None,
+            env: None,
+        };
+
+        let response = self.send_request(&request).await?;
+
+        if let Some(error) = response.error {
+            bail!("Guest agent error: {}", error);
+        }
+
+        Ok(RunResult {
+            exit_code: response.exit_code.unwrap_or(-1),
+            stdout: response.stdout.unwrap_or_default(),
+            stderr: response.stderr.unwrap_or_default(),
+        })
+    }
+
+    /// Send a request and receive response over the established connection.
+    async fn send_request(&mut self, request: &AgentRequest) -> Result<AgentResponse> {
+        // Serialize request
+        let request_bytes = serde_json::to_vec(request)?;
+
+        // Send length-prefixed request
+        let len = request_bytes.len() as u32;
+        self.stream.write_all(&len.to_le_bytes()).await?;
+        self.stream.write_all(&request_bytes).await?;
+        self.stream.flush().await?;
+
+        // Read length-prefixed response
+        let mut len_bytes = [0u8; 4];
+        timeout(
+            Duration::from_secs(self.timeout_secs),
+            self.stream.read_exact(&mut len_bytes),
+        )
+        .await
+        .context("Read timeout")?
+        .context("Failed to read response length")?;
+
+        let len = u32::from_le_bytes(len_bytes) as usize;
+        if len > 10 * 1024 * 1024 {
+            bail!("Response too large: {} bytes", len);
+        }
+
+        let mut response_bytes = vec![0u8; len];
+        timeout(
+            Duration::from_secs(self.timeout_secs),
+            self.stream.read_exact(&mut response_bytes),
+        )
+        .await
+        .context("Read timeout")?
+        .context("Failed to read response body")?;
+
+        let response: AgentResponse =
+            serde_json::from_slice(&response_bytes).context("Failed to parse response")?;
+
+        Ok(response)
+    }
+
+    /// Check if the connection is still alive by sending a ping.
+    pub async fn ping(&mut self) -> bool {
+        let request = AgentRequest {
+            id: "ping".to_string(),
+            request_type: RequestType::Ping,
+            command: None,
+            cwd: None,
+            env: None,
+        };
+
+        self.send_request(&request).await.is_ok()
+    }
+}
+
 /// Vsock client for communicating with guest agent
 ///
 /// Supports two modes:
