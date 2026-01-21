@@ -124,6 +124,9 @@ impl FirecrackerVm {
         // Start the VM
         self.start_instance().await?;
 
+        // Wait for guest agent to be ready
+        self.wait_for_agent().await?;
+
         Ok(())
     }
 
@@ -235,6 +238,25 @@ impl FirecrackerVm {
     async fn start_instance(&self) -> Result<()> {
         let client = FirecrackerClient::new(&self.socket_path);
         client.start_instance().await
+    }
+
+    /// Wait for the guest agent to become available
+    async fn wait_for_agent(&self) -> Result<()> {
+        let vsock_path = self.vsock_path();
+        let client = crate::vsock::VsockClient::for_firecracker(&vsock_path);
+
+        // Wait up to 10 seconds for agent to be ready
+        for i in 0..100 {
+            if client.ping().await.unwrap_or(false) {
+                return Ok(());
+            }
+            if i % 20 == 0 && i > 0 {
+                eprintln!("Waiting for guest agent... ({}s)", i / 10);
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        bail!("Guest agent not available after 10 seconds. VM may have failed to boot.")
     }
 
     /// Stop the VM
