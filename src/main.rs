@@ -415,11 +415,6 @@ memory_mb = 512
                 // Daemon not available or failed, fall through to ephemeral mode
             }
 
-            // Fallback: ephemeral VM mode
-            // Generate a unique sandbox name
-            let run_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-            let sandbox_name = format!("run-{}", run_id);
-
             // Determine Docker image: --image > --config > command > ./agentkernel.toml > project files > default
             // For `run`, command detection has higher priority than project files
             // because user is explicitly specifying what to run
@@ -464,6 +459,33 @@ memory_mb = 512
             }
 
             let mut manager = VmManager::new()?;
+
+            // Optimized path: use run_ephemeral for single-operation execution
+            // This is faster than create→start→exec→stop→remove cycle:
+            // - Docker: single `docker run --rm` command
+            // - Apple containers: single `container run --rm` (~940ms vs ~2200ms)
+            // Only used when --keep is not specified
+            if !keep {
+                match manager.run_ephemeral(&docker_image, &command, &perms).await {
+                    Ok(output) => {
+                        print!("{}", output);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        // Firecracker doesn't support ephemeral mode, fall through to multi-step
+                        if !e.to_string().contains("Ephemeral mode not supported") {
+                            // Real error, bail out
+                            bail!("{}", e);
+                        }
+                        // Fall through to multi-step cycle for Firecracker
+                    }
+                }
+            }
+
+            // Fallback: multi-step VM mode (for --keep or Firecracker backend)
+            // Generate a unique sandbox name
+            let run_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+            let sandbox_name = format!("run-{}", run_id);
 
             // Create
             manager.create(&sandbox_name, &docker_image, 1, 512).await?;
