@@ -64,6 +64,8 @@ pub fn check_installation() -> SetupStatus {
         kvm_available: kvm_accessible,
         kvm_permission_denied,
         docker_available: check_docker(),
+        apple_containers_available: check_apple_containers(),
+        macos_version_supported: check_macos_version(),
     }
 }
 
@@ -80,14 +82,26 @@ pub struct SetupStatus {
     /// True if /dev/kvm exists but user lacks permission to access it
     pub kvm_permission_denied: bool,
     pub docker_available: bool,
+    /// True if Apple containers CLI is installed (macOS 26+)
+    pub apple_containers_available: bool,
+    /// True if macOS version supports Apple containers (26+)
+    pub macos_version_supported: bool,
 }
 
 impl SetupStatus {
     pub fn is_ready(&self) -> bool {
-        self.kernel_installed
-            && self.rootfs_base_installed
-            && self.firecracker_installed
-            && (self.kvm_available || self.docker_available)
+        // Ready if we have a working backend (KVM, Docker, or Apple containers)
+        let has_backend =
+            self.kvm_available || self.docker_available || self.apple_containers_available;
+
+        // For Firecracker backend, we need kernel + rootfs
+        let firecracker_ready =
+            self.kvm_available && self.kernel_installed && self.rootfs_base_installed;
+
+        // For container backends (Docker/Apple), just need the backend available
+        let container_ready = self.docker_available || self.apple_containers_available;
+
+        has_backend && (firecracker_ready || container_ready)
     }
 
     pub fn print(&self) {
@@ -141,6 +155,25 @@ impl SetupStatus {
                 "not available"
             }
         );
+
+        // Show Apple containers status on macOS
+        if cfg!(target_os = "macos") {
+            let apple_status = if self.apple_containers_available {
+                "available"
+            } else if self.macos_version_supported {
+                "not installed (macOS 26+ detected)"
+            } else {
+                "not available (requires macOS 26+)"
+            };
+            println!("  Apple Containers: {}", apple_status);
+
+            // Show installation hint if macOS 26+ but CLI not installed
+            if self.macos_version_supported && !self.apple_containers_available {
+                println!();
+                println!("  💡 Apple Containers provides VM-level isolation on macOS.");
+                println!("  Install from: https://github.com/apple/container/releases");
+            }
+        }
     }
 }
 
@@ -226,6 +259,40 @@ fn check_docker() -> bool {
         .arg("version")
         .output()
         .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Check if Apple containers CLI is installed
+fn check_apple_containers() -> bool {
+    Command::new("container")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Check if macOS version supports Apple containers (26+)
+fn check_macos_version() -> bool {
+    if !cfg!(target_os = "macos") {
+        return false;
+    }
+
+    Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .and_then(|output| {
+            String::from_utf8(output.stdout)
+                .ok()
+                .and_then(|version| {
+                    version
+                        .trim()
+                        .split('.')
+                        .next()
+                        .and_then(|major| major.parse::<u32>().ok())
+                        .map(|major| major >= 26)
+                })
+        })
         .unwrap_or(false)
 }
 

@@ -29,6 +29,7 @@ This is what users experience - total time from command start to output:
 | Docker | Linux (AMD EPYC) | 155ms | 155ms | 53ms | 130ms | ~4/sec |
 | Firecracker | Linux (AMD EPYC) | 78ms | 110ms | 19ms | 20ms | ~9/sec |
 | **FC Daemon** | Linux (AMD EPYC) | 0ms | 0ms | 19ms | 0ms | **~5/sec** |
+| Apple Containers | macOS 26 (M3 Pro) | 860ms | 860ms | 95ms | 37ms | ~1/sec |
 
 The daemon mode eliminates boot/ready/shutdown overhead by reusing pre-warmed VMs.
 
@@ -154,11 +155,12 @@ Apple Containers use the native macOS hypervisor to run lightweight VMs (one VM 
 
 | Metric | Time | Notes |
 |--------|------|-------|
-| Create container | 168ms | Container definition created |
-| Start (VM boot) | **778ms** | Main overhead - VM boot time |
-| Wait/Logs | ~20ms | Fast after boot |
-| Remove | ~20ms | Quick cleanup |
-| **Full `run --rm`** | **~1000ms** | Single operation |
+| Create container | ~190ms | Container definition created |
+| Start (VM boot) | **~860ms** | Main overhead - VM boot time |
+| Exec (in running) | ~95ms | Fast once VM is running |
+| Stop | ~37ms | Quick shutdown |
+| Remove | ~100ms | Cleanup |
+| **Full `run --rm`** | **~940ms** | Single operation (optimal) |
 | **Via agentkernel** | **~2200ms** | create+start+exec+stop+remove |
 
 ### Why Apple Containers Are Slower
