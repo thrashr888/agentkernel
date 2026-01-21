@@ -24,14 +24,15 @@ echo "==> Building rootfs for runtime: $RUNTIME"
 
 # Step 1: Build guest-agent for musl (static binary)
 echo "==> Building guest-agent for musl target..."
-if [ ! -f "$AGENT_BIN" ]; then
-    echo "    Cross-compiling guest-agent..."
-    docker run --rm \
-        -v "$PROJECT_ROOT:/project" \
-        -w /project/guest-agent \
-        rust:1.85-alpine \
-        sh -c 'apk add --no-cache musl-dev && rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl'
-fi
+# Always rebuild to ensure it's up to date
+echo "    Cross-compiling guest-agent..."
+mkdir -p "$PROJECT_ROOT/target/x86_64-unknown-linux-musl/release"
+docker run --rm \
+    -v "$PROJECT_ROOT:/project" \
+    -v "$PROJECT_ROOT/target:/project/target" \
+    -w /project/guest-agent \
+    rust:1.85-alpine \
+    sh -c 'apk add --no-cache musl-dev && rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl'
 
 if [ ! -f "$AGENT_BIN" ]; then
     echo "ERROR: Failed to build guest-agent"
