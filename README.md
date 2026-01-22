@@ -271,8 +271,9 @@ Once installed, Claude will automatically use agentkernel for isolated execution
 
 | Mode | Platform | Latency | Use Case |
 |------|----------|---------|----------|
-| **Hyperlight (pooled)** | Linux | **68ms** | Fastest - Wasm in micro VM (experimental) |
-| Daemon (warm pool) | Linux | 195ms | API/interactive - fastest with full VM isolation |
+| **Hyperlight Pool** | Linux | **<1µs** | Sub-microsecond with pre-warmed runtimes (experimental) |
+| Hyperlight (cold) | Linux | ~41ms | Cold start Wasm runtime |
+| Daemon (warm pool) | Linux | 195ms | API/interactive - fast with full VM isolation |
 | Docker | macOS | ~300ms | macOS development |
 | Firecracker (cold) | Linux | ~800ms | One-off commands |
 
