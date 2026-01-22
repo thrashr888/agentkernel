@@ -34,7 +34,7 @@ tokio-vsock = "0.6"
 
 # Hyperlight for sub-millisecond Wasm sandboxes (Linux only, requires KVM)
 [target.'cfg(target_os = "linux")'.dependencies]
-hyperlight-host = { version = "0.5", optional = true }
+hyperlight-host = { version = "0.12", optional = true }
 
 [dev-dependencies]
 tempfile = "3.0"
