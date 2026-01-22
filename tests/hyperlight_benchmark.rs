@@ -234,8 +234,9 @@ fn benchmark_hyperlight_pool() {
         // Benchmark acquire times (warm path)
         // First, pre-warm the pool with enough runtimes for all iterations
         println!("\nPre-warming pool with {} runtimes...", ITERATIONS);
-        for _ in 0..ITERATIONS {
-            let _ = pool.warm_up();
+        if let Err(e) = pool.warm_to(ITERATIONS) {
+            eprintln!("Failed to pre-warm pool: {}", e);
+            return;
         }
         let stats = pool.stats();
         println!("Pool now has {} warm runtimes", stats.warm_count);

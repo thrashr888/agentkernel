@@ -268,6 +268,40 @@ impl HyperlightPool {
         Ok(())
     }
 
+    /// Add one runtime to the pool (useful for pre-warming beyond min_warm)
+    pub fn add_one(&self) -> Result<()> {
+        let current = self.warm_pool.lock().unwrap().len();
+        if current >= self.config.max_warm {
+            return Ok(()); // Pool is full
+        }
+        let runtime = self.create_runtime()?;
+        self.warm_pool.lock().unwrap().push_back(runtime);
+        Ok(())
+    }
+
+    /// Pre-warm the pool to a specific count
+    pub fn warm_to(&self, count: usize) -> Result<()> {
+        let target = count.min(self.config.max_warm);
+        let current = self.warm_pool.lock().unwrap().len();
+        let needed = target.saturating_sub(current);
+
+        for _ in 0..needed {
+            if self.shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            match self.create_runtime() {
+                Ok(runtime) => {
+                    self.warm_pool.lock().unwrap().push_back(runtime);
+                }
+                Err(e) => {
+                    eprintln!("Failed to warm up Hyperlight runtime: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Get pool statistics
     pub fn stats(&self) -> HyperlightPoolStats {
         let warm_count = self.warm_pool.lock().unwrap().len();
