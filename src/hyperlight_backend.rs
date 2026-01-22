@@ -137,9 +137,9 @@ pub struct HyperlightPoolConfig {
     /// Maximum number of warm sandboxes to maintain
     pub max_warm: usize,
     /// Guest heap size in bytes
-    pub guest_heap_size: usize,
+    pub guest_heap_size: u64,
     /// Guest stack size in bytes
-    pub guest_stack_size: usize,
+    pub guest_stack_size: u64,
 }
 
 #[cfg(all(target_os = "linux", feature = "hyperlight"))]
@@ -343,8 +343,8 @@ pub struct HyperlightPoolStats {
 pub struct HyperlightPoolConfig {
     pub min_warm: usize,
     pub max_warm: usize,
-    pub guest_heap_size: usize,
-    pub guest_stack_size: usize,
+    pub guest_heap_size: u64,
+    pub guest_stack_size: u64,
 }
 
 /// Stub pool statistics

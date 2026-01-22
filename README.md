@@ -1,4 +1,4 @@
-# Agentkernel
+# agentkernel
 
 Run AI coding agents in secure, isolated microVMs. Sub-125ms boot times, real hardware isolation.
 
@@ -55,7 +55,7 @@ agentkernel run --config ./agentkernel.toml npm test
 
 ## Auto-Detection
 
-Agentkernel automatically selects the right Docker image based on:
+agentkernel automatically selects the right Docker image based on:
 
 1. **Command** (for `run`) - Detects from the command you're running
 2. **Project files** - Detects from files in your directory
@@ -209,21 +209,20 @@ AGENT           STATUS          API KEY
 ---------------------------------------------
 Claude Code     installed       set
 Gemini CLI      not installed   missing
-  → Install Gemini CLI: pip install google-generativeai
 Codex           installed       set
 OpenCode        installed       set
 ```
 
-## Why Agentkernel?
+## Why agentkernel?
 
 AI coding agents execute arbitrary code. Running them directly on your machine is risky:
 - They can read/modify any file
 - They can access your credentials and SSH keys
 - Container escapes are a real threat
 
-Agentkernel uses **Firecracker microVMs** (the same tech behind AWS Lambda) to provide true hardware isolation:
+agentkernel uses **Firecracker microVMs** (the same tech behind AWS Lambda) to provide true hardware isolation:
 
-| Feature | Docker | Agentkernel |
+| Feature | Docker | agentkernel |
 |---------|--------|-------------|
 | Isolation | Shared kernel | Separate kernel per VM |
 | Boot time | 1-5 seconds | <125ms |
@@ -235,13 +234,14 @@ Agentkernel uses **Firecracker microVMs** (the same tech behind AWS Lambda) to p
 | Platform | Backend | Status |
 |----------|---------|--------|
 | Linux (x86_64, aarch64) | Firecracker microVMs | Full support |
+| Linux (x86_64, aarch64) | Hyperlight Wasm | Experimental |
 | macOS (Apple Silicon, Intel) | Docker or Podman | Full support |
 
-On macOS, agentkernel automatically falls back to containers since Firecracker requires KVM (Linux only). Podman is preferred if available (rootless, daemonless), otherwise Docker is used.
+On macOS, agentkernel automatically falls back to containers since Firecracker and Hyperlight require KVM (Linux only). Podman is preferred if available (rootless, daemonless), otherwise Docker is used.
 
 ## Claude Code Integration
 
-Agentkernel includes a Claude Code skill plugin for seamless AI agent integration.
+agentkernel includes a Claude Code skill plugin for seamless AI agent integration.
 
 ### Install the Plugin
 
@@ -271,7 +271,8 @@ Once installed, Claude will automatically use agentkernel for isolated execution
 
 | Mode | Platform | Latency | Use Case |
 |------|----------|---------|----------|
-| Daemon (warm pool) | Linux | **195ms** | API/interactive - fastest with VM isolation |
+| **Hyperlight (pooled)** | Linux | **68ms** | Fastest - Wasm in micro VM (experimental) |
+| Daemon (warm pool) | Linux | 195ms | API/interactive - fastest with full VM isolation |
 | Docker | macOS | ~300ms | macOS development |
 | Firecracker (cold) | Linux | ~800ms | One-off commands |
 
@@ -297,6 +298,30 @@ agentkernel daemon stop
 ```
 
 The daemon maintains 3-5 pre-booted Firecracker VMs. Commands execute in ~195ms vs ~800ms for cold starts - a **4x speedup**.
+
+## Hyperlight Backend (Linux, Experimental)
+
+Hyperlight uses Microsoft's hypervisor-isolated micro VMs to run WebAssembly with dual-layer security (Wasm sandbox + hypervisor boundary). This provides the fastest isolation with ~68ms latency.
+
+**Requirements:**
+- Linux with KVM (`/dev/kvm` accessible)
+- Build with `--features hyperlight`
+
+```bash
+# Build with Hyperlight support
+cargo build --features hyperlight
+
+# Run Wasm modules (experimental)
+agentkernel run --backend hyperlight module.wasm
+```
+
+**Key differences from Firecracker:**
+- Runs WebAssembly modules only (not arbitrary shell commands)
+- ~68ms startup vs 195ms daemon mode (2.9x faster)
+- Sub-millisecond function calls after runtime is loaded
+- Requires AOT-compiled Wasm modules for best performance
+
+See [BENCHMARK.md](BENCHMARK.md) for detailed Hyperlight benchmarks.
 
 **When to use daemon mode:**
 - Running an API server
