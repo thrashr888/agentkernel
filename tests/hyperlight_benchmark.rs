@@ -218,7 +218,7 @@ fn test_hyperlight_availability() {
         #[cfg(feature = "hyperlight")]
         {
             println!("Hyperlight feature: enabled");
-            let hypervisor_present = hyperlight_wasm::is_hypervisor_present().unwrap_or(false);
+            let hypervisor_present = hyperlight_wasm::is_hypervisor_present();
             println!("Hypervisor present: {}", hypervisor_present);
         }
         #[cfg(not(feature = "hyperlight"))]

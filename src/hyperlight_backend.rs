@@ -14,7 +14,9 @@
 
 #![allow(dead_code)]
 
-use anyhow::{bail, Result};
+#[cfg(not(all(target_os = "linux", feature = "hyperlight")))]
+use anyhow::bail;
+use anyhow::Result;
 
 #[cfg(all(target_os = "linux", feature = "hyperlight"))]
 use anyhow::Context;
@@ -27,8 +29,7 @@ pub fn hyperlight_available() -> bool {
     #[cfg(all(target_os = "linux", feature = "hyperlight"))]
     {
         // Check if KVM is available and hypervisor is present
-        std::path::Path::new("/dev/kvm").exists()
-            && hyperlight_wasm::is_hypervisor_present().unwrap_or(false)
+        std::path::Path::new("/dev/kvm").exists() && hyperlight_wasm::is_hypervisor_present()
     }
 
     #[cfg(not(all(target_os = "linux", feature = "hyperlight")))]
