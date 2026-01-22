@@ -54,6 +54,24 @@ impl fmt::Display for BackendType {
     }
 }
 
+impl std::str::FromStr for BackendType {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "docker" => Ok(BackendType::Docker),
+            "podman" => Ok(BackendType::Podman),
+            "firecracker" => Ok(BackendType::Firecracker),
+            "apple" => Ok(BackendType::Apple),
+            "hyperlight" => Ok(BackendType::Hyperlight),
+            _ => Err(format!(
+                "Unknown backend '{}'. Valid options: docker, podman, firecracker, apple, hyperlight",
+                s
+            )),
+        }
+    }
+}
+
 /// Configuration for starting a sandbox
 #[derive(Debug, Clone)]
 pub struct SandboxConfig {

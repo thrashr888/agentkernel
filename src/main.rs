@@ -11,6 +11,7 @@ mod languages;
 mod mcp;
 mod permissions;
 mod pool;
+mod sandbox_pool;
 mod seatbelt;
 mod setup;
 mod validation;
@@ -66,11 +67,17 @@ enum Commands {
         /// Project directory to mount into sandbox
         #[arg(short, long)]
         dir: Option<PathBuf>,
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight (default: auto-detect)
+        #[arg(short = 'B', long)]
+        backend: Option<String>,
     },
     /// Start a sandbox
     Start {
         /// Name of the sandbox to start
         name: String,
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight (default: auto-detect)
+        #[arg(short = 'B', long)]
+        backend: Option<String>,
     },
     /// Stop a running sandbox
     Stop {
@@ -120,6 +127,9 @@ enum Commands {
         /// Use container pool for faster execution (skips create/destroy overhead)
         #[arg(short = 'F', long)]
         fast: bool,
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight (default: auto-detect)
+        #[arg(short = 'B', long)]
+        backend: Option<String>,
     },
     /// Start MCP server for Claude Code integration (JSON-RPC over stdio)
     McpServer,
@@ -217,6 +227,7 @@ memory_mb = 512
             agent,
             config,
             dir: _,
+            backend,
         } => {
             // Validate sandbox name first (security: prevents command injection)
             validation::validate_sandbox_name(&name)?;
@@ -237,7 +248,16 @@ memory_mb = 512
                 Config::minimal(&name, &agent)
             };
 
-            let mut manager = VmManager::new()?;
+            // Parse backend option if provided
+            let backend_type = if let Some(ref b) = backend {
+                Some(
+                    b.parse::<crate::backend::BackendType>()
+                        .map_err(|e| anyhow::anyhow!(e))?,
+                )
+            } else {
+                None
+            };
+            let mut manager = VmManager::with_backend(backend_type)?;
 
             let docker_image = cfg.docker_image();
             println!(
@@ -261,7 +281,7 @@ memory_mb = 512
             println!("  agentkernel start {}", name);
             println!("  agentkernel attach {}", name);
         }
-        Commands::Start { name } => {
+        Commands::Start { name, backend } => {
             validation::validate_sandbox_name(&name)?;
 
             let status = check_installation();
@@ -269,7 +289,16 @@ memory_mb = 512
                 bail!("Agentkernel is not fully set up. Run 'agentkernel setup' first.");
             }
 
-            let mut manager = VmManager::new()?;
+            // Parse backend option if provided
+            let backend_type = if let Some(ref b) = backend {
+                Some(
+                    b.parse::<crate::backend::BackendType>()
+                        .map_err(|e| anyhow::anyhow!(e))?,
+                )
+            } else {
+                None
+            };
+            let mut manager = VmManager::with_backend(backend_type)?;
 
             if !manager.exists(&name) {
                 bail!(
@@ -365,6 +394,7 @@ memory_mb = 512
             profile,
             no_network,
             fast,
+            backend,
         } => {
             if command.is_empty() {
                 bail!("No command specified. Usage: agentkernel run [OPTIONS] <command...>");
@@ -459,7 +489,16 @@ memory_mb = 512
                 }
             }
 
-            let mut manager = VmManager::new()?;
+            // Parse backend option if provided
+            let backend_type = if let Some(ref b) = backend {
+                Some(
+                    b.parse::<crate::backend::BackendType>()
+                        .map_err(|e| anyhow::anyhow!(e))?,
+                )
+            } else {
+                None
+            };
+            let mut manager = VmManager::with_backend(backend_type)?;
 
             // Optimized path: use run_ephemeral for single-operation execution
             // This is faster than create→start→exec→stop→remove cycle:

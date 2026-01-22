@@ -67,16 +67,32 @@ pub struct VmManager {
 impl VmManager {
     /// Create a new VM manager (auto-selects backend based on availability)
     pub fn new() -> Result<Self> {
+        Self::with_backend(None)
+    }
+
+    /// Create a new VM manager with explicit backend selection
+    ///
+    /// If backend is None, auto-detects the best available backend.
+    /// If backend is Some, uses the specified backend (fails if unavailable).
+    pub fn with_backend(explicit_backend: Option<BackendType>) -> Result<Self> {
         let data_dir = Self::data_dir();
         let sandboxes_dir = data_dir.join("sandboxes");
         std::fs::create_dir_all(&sandboxes_dir)?;
 
-        // Detect best backend
-        let backend = detect_best_backend().ok_or_else(|| {
-            anyhow::anyhow!(
-                "No sandbox backend available. Need one of: KVM (Linux), Apple containers (macOS 26+), or Docker/Podman."
-            )
-        })?;
+        // Use explicit backend or auto-detect
+        let backend = if let Some(b) = explicit_backend {
+            // Verify the requested backend is available
+            if !crate::backend::backend_available(b) {
+                bail!("Backend '{}' is not available on this system", b);
+            }
+            b
+        } else {
+            detect_best_backend().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No sandbox backend available. Need one of: KVM (Linux), Apple containers (macOS 26+), or Docker/Podman."
+                )
+            })?
+        };
 
         // Find rootfs path (only needed for Firecracker)
         let rootfs_dir = if backend == BackendType::Firecracker {

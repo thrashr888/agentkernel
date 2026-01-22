@@ -6,4 +6,5 @@ pub mod backend;
 pub mod firecracker_client;
 pub mod hyperlight_backend;
 pub mod languages;
+pub mod sandbox_pool;
 pub mod vsock;
