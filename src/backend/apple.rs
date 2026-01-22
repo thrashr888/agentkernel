@@ -248,6 +248,114 @@ impl Sandbox for AppleSandbox {
             false
         }
     }
+
+    async fn write_file_unchecked(&mut self, path: &str, content: &[u8]) -> Result<()> {
+        let container_id = self
+            .container_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Container not started"))?;
+
+        // Create a temporary file to copy
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join(format!("agentkernel-upload-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&temp_file, content).context("Failed to write temp file")?;
+
+        // Ensure parent directory exists in container
+        let parent = std::path::Path::new(path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/".to_string());
+
+        let _ = Command::new("container")
+            .args(["exec", container_id, "mkdir", "-p", &parent])
+            .output();
+
+        // Copy file into container
+        let dest = format!("{}:{}", container_id, path);
+        let output = Command::new("container")
+            .args(["cp", temp_file.to_str().unwrap(), &dest])
+            .output()
+            .context("Failed to copy file to container")?;
+
+        let _ = std::fs::remove_file(&temp_file);
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("container cp failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
+    async fn read_file_unchecked(&mut self, path: &str) -> Result<Vec<u8>> {
+        let container_id = self
+            .container_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Container not started"))?;
+
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join(format!("agentkernel-download-{}", uuid::Uuid::new_v4()));
+
+        let src = format!("{}:{}", container_id, path);
+        let output = Command::new("container")
+            .args(["cp", &src, temp_file.to_str().unwrap()])
+            .output()
+            .context("Failed to copy file from container")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("container cp failed: {}", stderr);
+        }
+
+        let content = std::fs::read(&temp_file).context("Failed to read temp file")?;
+        let _ = std::fs::remove_file(&temp_file);
+
+        Ok(content)
+    }
+
+    async fn remove_file_unchecked(&mut self, path: &str) -> Result<()> {
+        let container_id = self
+            .container_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Container not started"))?;
+
+        let output = Command::new("container")
+            .args(["exec", container_id, "rm", "-f", path])
+            .output()
+            .context("Failed to remove file in container")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("rm failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
+    async fn mkdir_unchecked(&mut self, path: &str, recursive: bool) -> Result<()> {
+        let container_id = self
+            .container_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Container not started"))?;
+
+        let mut args = vec!["exec", container_id, "mkdir"];
+        if recursive {
+            args.push("-p");
+        }
+        args.push(path);
+
+        let output = Command::new("container")
+            .args(&args)
+            .output()
+            .context("Failed to create directory in container")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("mkdir failed: {}", stderr);
+        }
+
+        Ok(())
+    }
 }
 
 impl Drop for AppleSandbox {

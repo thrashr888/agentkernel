@@ -468,4 +468,30 @@ impl VmManager {
             tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(pool.stats()))
         })
     }
+
+    /// Write a file to a running sandbox
+    pub async fn write_file(&mut self, name: &str, path: &str, content: &[u8]) -> Result<()> {
+        let sandbox = self.running.get_mut(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Sandbox '{}' is not running. Start it with: agentkernel start {}",
+                name,
+                name
+            )
+        })?;
+
+        sandbox.write_file(path, content).await
+    }
+
+    /// Read a file from a running sandbox
+    pub async fn read_file(&mut self, name: &str, path: &str) -> Result<Vec<u8>> {
+        let sandbox = self.running.get_mut(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Sandbox '{}' is not running. Start it with: agentkernel start {}",
+                name,
+                name
+            )
+        })?;
+
+        sandbox.read_file(path).await
+    }
 }

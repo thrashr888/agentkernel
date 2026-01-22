@@ -102,6 +102,17 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+    /// Copy files to/from a running sandbox
+    ///
+    /// Examples:
+    ///   agentkernel cp ./local/file my-sandbox:/remote/path
+    ///   agentkernel cp my-sandbox:/remote/path ./local/file
+    Cp {
+        /// Source path (./local/file or sandbox:/path)
+        source: String,
+        /// Destination path (./local/file or sandbox:/path)
+        dest: String,
+    },
     /// List all sandboxes
     List,
     /// Run a command in a temporary sandbox (create, start, exec, stop, remove)
@@ -370,6 +381,65 @@ memory_mb = 512
 
             let output = manager.exec_cmd(&name, &command).await?;
             print!("{}", output);
+        }
+        Commands::Cp { source, dest } => {
+            // Parse source and destination to determine direction
+            // Format: sandbox:/path or ./local/path
+            let (src_sandbox, src_path) = parse_cp_path(&source);
+            let (dst_sandbox, dst_path) = parse_cp_path(&dest);
+
+            match (src_sandbox, dst_sandbox) {
+                (Some(sandbox), None) => {
+                    // Copy from sandbox to local
+                    validation::validate_sandbox_name(&sandbox)?;
+                    let mut manager = VmManager::new()?;
+
+                    if !manager.exists(&sandbox) {
+                        bail!("Sandbox '{}' not found", sandbox);
+                    }
+                    if !manager.is_running(&sandbox) {
+                        bail!("Sandbox '{}' is not running", sandbox);
+                    }
+
+                    let content = manager.read_file(&sandbox, &src_path).await?;
+                    std::fs::write(&dst_path, content)?;
+                    println!(
+                        "Copied {} bytes from {}:{} to {}",
+                        std::fs::metadata(&dst_path)?.len(),
+                        sandbox,
+                        src_path,
+                        dst_path
+                    );
+                }
+                (None, Some(sandbox)) => {
+                    // Copy from local to sandbox
+                    validation::validate_sandbox_name(&sandbox)?;
+                    let mut manager = VmManager::new()?;
+
+                    if !manager.exists(&sandbox) {
+                        bail!("Sandbox '{}' not found", sandbox);
+                    }
+                    if !manager.is_running(&sandbox) {
+                        bail!("Sandbox '{}' is not running", sandbox);
+                    }
+
+                    let content = std::fs::read(&src_path)?;
+                    manager.write_file(&sandbox, &dst_path, &content).await?;
+                    println!(
+                        "Copied {} bytes from {} to {}:{}",
+                        content.len(),
+                        src_path,
+                        sandbox,
+                        dst_path
+                    );
+                }
+                (Some(_), Some(_)) => {
+                    bail!("Cannot copy between sandboxes. Copy to local first.");
+                }
+                (None, None) => {
+                    bail!("At least one path must be a sandbox path (sandbox:/path)");
+                }
+            }
         }
         Commands::List => {
             let manager = VmManager::new()?;
@@ -724,4 +794,25 @@ fn missing_components(status: &setup::SetupStatus) -> String {
         missing.push("KVM or Docker");
     }
     missing.join(", ")
+}
+
+/// Parse a cp-style path (sandbox:/path or ./local/path)
+/// Returns (Some(sandbox_name), path) for sandbox paths
+/// Returns (None, path) for local paths
+fn parse_cp_path(path: &str) -> (Option<String>, String) {
+    // Check for sandbox:path format (must have : but not be a Windows path like C:\)
+    if let Some(colon_pos) = path.find(':') {
+        // Make sure it's not a local path starting with / or .
+        let before_colon = &path[..colon_pos];
+        if !before_colon.is_empty()
+            && !before_colon.starts_with('/')
+            && !before_colon.starts_with('.')
+        {
+            let sandbox_name = before_colon.to_string();
+            let remote_path = path[colon_pos + 1..].to_string();
+            return (Some(sandbox_name), remote_path);
+        }
+    }
+    // Local path
+    (None, path.to_string())
 }

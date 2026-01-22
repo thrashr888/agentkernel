@@ -188,4 +188,20 @@ impl Sandbox for HyperlightSandbox {
             false
         }
     }
+
+    async fn write_file_unchecked(&mut self, _path: &str, _content: &[u8]) -> anyhow::Result<()> {
+        bail!("File operations not supported for Hyperlight WebAssembly backend")
+    }
+
+    async fn read_file_unchecked(&mut self, _path: &str) -> anyhow::Result<Vec<u8>> {
+        bail!("File operations not supported for Hyperlight WebAssembly backend")
+    }
+
+    async fn remove_file_unchecked(&mut self, _path: &str) -> anyhow::Result<()> {
+        bail!("File operations not supported for Hyperlight WebAssembly backend")
+    }
+
+    async fn mkdir_unchecked(&mut self, _path: &str, _recursive: bool) -> anyhow::Result<()> {
+        bail!("File operations not supported for Hyperlight WebAssembly backend")
+    }
 }

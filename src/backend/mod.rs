@@ -199,6 +199,7 @@ impl ExecResult {
 /// Each backend implements this trait to provide a consistent API for:
 /// - Starting sandboxes with configuration
 /// - Executing commands
+/// - File operations (read/write)
 /// - Stopping and cleaning up
 #[async_trait]
 pub trait Sandbox: Send + Sync {
@@ -219,6 +220,96 @@ pub trait Sandbox: Send + Sync {
 
     /// Check if the sandbox is running
     fn is_running(&self) -> bool;
+
+    // --- File Operations ---
+
+    /// Write a file to the sandbox filesystem
+    ///
+    /// # Arguments
+    /// * `path` - Absolute path inside the sandbox (must start with '/')
+    /// * `content` - File content as bytes
+    ///
+    /// # Security
+    /// Path is validated to prevent traversal attacks and writes to system paths
+    async fn write_file(&mut self, path: &str, content: &[u8]) -> Result<()> {
+        validate_sandbox_path(path)?;
+        self.write_file_unchecked(path, content).await
+    }
+
+    /// Internal write implementation (no validation, called by write_file)
+    async fn write_file_unchecked(&mut self, path: &str, content: &[u8]) -> Result<()>;
+
+    /// Read a file from the sandbox filesystem
+    ///
+    /// # Arguments
+    /// * `path` - Absolute path inside the sandbox (must start with '/')
+    ///
+    /// # Returns
+    /// File content as bytes
+    async fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
+        validate_sandbox_path(path)?;
+        self.read_file_unchecked(path).await
+    }
+
+    /// Internal read implementation (no validation, called by read_file)
+    async fn read_file_unchecked(&mut self, path: &str) -> Result<Vec<u8>>;
+
+    /// Remove a file from the sandbox filesystem
+    async fn remove_file(&mut self, path: &str) -> Result<()> {
+        validate_sandbox_path(path)?;
+        self.remove_file_unchecked(path).await
+    }
+
+    /// Internal remove implementation
+    async fn remove_file_unchecked(&mut self, path: &str) -> Result<()>;
+
+    /// Create a directory in the sandbox filesystem
+    async fn mkdir(&mut self, path: &str, recursive: bool) -> Result<()> {
+        validate_sandbox_path(path)?;
+        self.mkdir_unchecked(path, recursive).await
+    }
+
+    /// Internal mkdir implementation
+    async fn mkdir_unchecked(&mut self, path: &str, recursive: bool) -> Result<()>;
+}
+
+/// Validate a path for sandbox file operations
+///
+/// Ensures paths are:
+/// - Absolute (start with '/')
+/// - No path traversal (..)
+/// - Not targeting sensitive system paths
+pub fn validate_sandbox_path(path: &str) -> Result<()> {
+    use anyhow::bail;
+
+    // Must be absolute path
+    if !path.starts_with('/') {
+        bail!("Sandbox path must be absolute, got: {}", path);
+    }
+
+    // No path traversal
+    if path.contains("..") {
+        bail!("Path traversal not allowed: {}", path);
+    }
+
+    // Block sensitive system paths
+    const BLOCKED_PATHS: &[&str] = &[
+        "/proc",
+        "/sys",
+        "/dev",
+        "/etc/passwd",
+        "/etc/shadow",
+        "/etc/sudoers",
+        "/root/.ssh",
+    ];
+
+    for blocked in BLOCKED_PATHS {
+        if path.starts_with(blocked) {
+            bail!("Cannot access system path: {}", path);
+        }
+    }
+
+    Ok(())
 }
 
 /// Detect the best available backend for the current platform
