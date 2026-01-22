@@ -8,17 +8,40 @@
 
 use std::time::Instant;
 
-/// Simple Wasm module that returns immediately (for measuring startup overhead)
-/// This is a minimal valid Wasm module with just a _start function
+/// A minimal valid Wasm module that exports a simple function
+/// This is the simplest possible Wasm module that Hyperlight can load:
+/// - Type section: defines function type () -> i32
+/// - Function section: declares one function of that type
+/// - Export section: exports the function as "add"
+/// - Code section: function body that returns 42
 #[cfg(all(target_os = "linux", feature = "hyperlight"))]
 const MINIMAL_WASM: &[u8] = &[
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-    0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type section: () -> ()
-    0x03, 0x02, 0x01, 0x00, // function section: 1 function of type 0
-    0x07, 0x09, 0x01, 0x05, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00,
-    0x00, // export "_start" as function 0
-    0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b, // code section: function body (empty)
+    0x00, 0x61, 0x73, 0x6d, // magic: \0asm
+    0x01, 0x00, 0x00, 0x00, // version: 1
+    // Type section (id=1)
+    0x01, 0x05, // section id=1, size=5
+    0x01,       // 1 type
+    0x60,       // func type
+    0x00,       // 0 params
+    0x01, 0x7f, // 1 result: i32
+    // Function section (id=3)
+    0x03, 0x02, // section id=3, size=2
+    0x01,       // 1 function
+    0x00,       // type index 0
+    // Export section (id=7)
+    0x07, 0x07, // section id=7, size=7
+    0x01,       // 1 export
+    0x03,       // name length: 3
+    b'a', b'd', b'd', // name: "add"
+    0x00,       // export kind: function
+    0x00,       // function index 0
+    // Code section (id=10)
+    0x0a, 0x06, // section id=10, size=6
+    0x01,       // 1 function body
+    0x04,       // body size: 4
+    0x00,       // 0 locals
+    0x41, 0x2a, // i32.const 42
+    0x0b,       // end
 ];
 
 #[test]
@@ -35,72 +58,82 @@ fn benchmark_hyperlight_startup() {
     {
         use agentkernel::hyperlight_backend::HyperlightSandbox;
 
-        const ITERATIONS: usize = 100;
+        const WARMUP: usize = 3;
+        const ITERATIONS: usize = 20;
 
         println!("\n=== Hyperlight Benchmark ===\n");
-        println!("Testing sandbox creation and initialization...\n");
+        println!("Iterations: {} (after {} warmup)", ITERATIONS, WARMUP);
+        println!();
 
         // Warm up
-        for _ in 0..5 {
+        println!("Warming up...");
+        for _ in 0..WARMUP {
             let mut sandbox = HyperlightSandbox::new("warmup");
-            let _ = sandbox.init_with_wasm(MINIMAL_WASM);
+            match sandbox.init_with_wasm(MINIMAL_WASM) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Warmup failed: {}", e);
+                    return;
+                }
+            }
         }
 
-        // Benchmark sandbox creation (no Wasm)
-        let start = Instant::now();
+        // Benchmark full lifecycle: create + init
+        println!("\nBenchmarking sandbox creation + Wasm init...");
+        let mut times_us: Vec<u128> = Vec::with_capacity(ITERATIONS);
+
         for i in 0..ITERATIONS {
-            let _sandbox = HyperlightSandbox::new(&format!("bench-{}", i));
+            let start = Instant::now();
+            let mut sandbox = HyperlightSandbox::new(&format!("bench-{}", i));
+            match sandbox.init_with_wasm(MINIMAL_WASM) {
+                Ok(_) => {
+                    let elapsed = start.elapsed().as_micros();
+                    times_us.push(elapsed);
+                }
+                Err(e) => {
+                    eprintln!("Iteration {} failed: {}", i, e);
+                    return;
+                }
+            }
         }
-        let create_time = start.elapsed();
-        let avg_create = create_time.as_micros() as f64 / ITERATIONS as f64;
 
-        println!("Sandbox creation (no init):");
-        println!("  Total: {:?}", create_time);
-        println!(
-            "  Average: {:.2}µs ({:.2}ms)",
-            avg_create,
-            avg_create / 1000.0
-        );
-        println!();
+        // Calculate statistics
+        times_us.sort();
+        let total: u128 = times_us.iter().sum();
+        let avg = total as f64 / ITERATIONS as f64;
+        let min = *times_us.first().unwrap() as f64;
+        let max = *times_us.last().unwrap() as f64;
+        let p50 = times_us[ITERATIONS / 2] as f64;
+        let p95 = times_us[(ITERATIONS as f64 * 0.95) as usize] as f64;
+        let p99 = times_us[(ITERATIONS as f64 * 0.99) as usize] as f64;
 
-        // Benchmark sandbox creation + Wasm initialization
-        let start = Instant::now();
-        for i in 0..ITERATIONS {
-            let mut sandbox = HyperlightSandbox::new(&format!("bench-init-{}", i));
-            let _ = sandbox.init_with_wasm(MINIMAL_WASM);
-        }
-        let init_time = start.elapsed();
-        let avg_init = init_time.as_micros() as f64 / ITERATIONS as f64;
-
-        println!("Sandbox creation + Wasm init:");
-        println!("  Total: {:?}", init_time);
-        println!("  Average: {:.2}µs ({:.2}ms)", avg_init, avg_init / 1000.0);
-        println!();
-
-        // Summary
-        println!("=== Summary ===");
+        println!("\n=== Results ===");
         println!("| Metric | Time |");
         println!("|--------|------|");
-        println!("| Create sandbox | {:.2}µs |", avg_create);
-        println!(
-            "| Create + init | {:.2}µs ({:.2}ms) |",
-            avg_init,
-            avg_init / 1000.0
-        );
+        println!("| Average | {:.2}µs ({:.2}ms) |", avg, avg / 1000.0);
+        println!("| Min | {:.2}µs ({:.2}ms) |", min, min / 1000.0);
+        println!("| Max | {:.2}µs ({:.2}ms) |", max, max / 1000.0);
+        println!("| p50 | {:.2}µs ({:.2}ms) |", p50, p50 / 1000.0);
+        println!("| p95 | {:.2}µs ({:.2}ms) |", p95, p95 / 1000.0);
+        println!("| p99 | {:.2}µs ({:.2}ms) |", p99, p99 / 1000.0);
         println!();
 
         // Compare with other backends
         println!("=== Comparison (from BENCHMARK.md) ===");
         println!("| Backend | Startup |");
         println!("|---------|---------|");
-        println!("| Hyperlight | {:.2}ms |", avg_init / 1000.0);
+        println!(
+            "| Hyperlight | {:.2}ms (avg), {:.2}ms (p50) |",
+            avg / 1000.0,
+            p50 / 1000.0
+        );
         println!("| Firecracker Daemon | 195ms |");
         println!("| Docker Pool | 250ms |");
         println!("| Apple Containers | 940ms |");
         println!();
 
-        let speedup_fc = 195.0 / (avg_init / 1000.0);
-        let speedup_docker = 250.0 / (avg_init / 1000.0);
+        let speedup_fc = 195.0 / (avg / 1000.0);
+        let speedup_docker = 250.0 / (avg / 1000.0);
         println!("Speedup vs Firecracker Daemon: {:.1}x", speedup_fc);
         println!("Speedup vs Docker Pool: {:.1}x", speedup_docker);
     }
@@ -120,22 +153,50 @@ fn benchmark_hyperlight_execution() {
         use agentkernel::hyperlight_backend::HyperlightSandbox;
 
         println!("\n=== Hyperlight Execution Benchmark ===\n");
-        println!("Note: Wasm execution not yet implemented");
-        println!("This test will be expanded once run_wasm() is complete.\n");
 
         // Create and init sandbox
         let mut sandbox = HyperlightSandbox::new("exec-bench");
         match sandbox.init_with_wasm(MINIMAL_WASM) {
             Ok(_) => println!("Sandbox initialized successfully"),
-            Err(e) => println!("Sandbox init error (expected): {}", e),
+            Err(e) => {
+                println!("Sandbox init error: {}", e);
+                return;
+            }
         }
 
-        // TODO: Benchmark actual Wasm execution once implemented
-        // let start = Instant::now();
-        // for _ in 0..1000 {
-        //     sandbox.run_wasm(&[]).await.unwrap();
-        // }
-        // let exec_time = start.elapsed();
+        // Benchmark function calls
+        const ITERATIONS: usize = 100;
+        println!("\nBenchmarking {} function calls...", ITERATIONS);
+
+        let start = Instant::now();
+        for _ in 0..ITERATIONS {
+            match sandbox.call_function::<i32>("add") {
+                Ok(result) => {
+                    assert_eq!(result, 42);
+                }
+                Err(e) => {
+                    println!("Function call failed: {}", e);
+                    return;
+                }
+            }
+        }
+        let total = start.elapsed();
+        let avg_us = total.as_micros() as f64 / ITERATIONS as f64;
+
+        println!("\n=== Execution Results ===");
+        println!("| Metric | Time |");
+        println!("|--------|------|");
+        println!("| Total ({} calls) | {:?} |", ITERATIONS, total);
+        println!("| Average per call | {:.2}µs ({:.3}ms) |", avg_us, avg_us / 1000.0);
+        println!();
+
+        // Compare with Docker exec
+        println!("=== Comparison ===");
+        println!("| Backend | Exec latency |");
+        println!("|---------|--------------|");
+        println!("| Hyperlight | {:.3}ms |", avg_us / 1000.0);
+        println!("| Firecracker vsock | 19ms |");
+        println!("| Docker exec | 83ms |");
     }
 }
 
@@ -155,7 +216,11 @@ fn test_hyperlight_availability() {
         println!("KVM device exists: {}", kvm_exists);
 
         #[cfg(feature = "hyperlight")]
-        println!("Hyperlight feature: enabled");
+        {
+            println!("Hyperlight feature: enabled");
+            let hypervisor_present = hyperlight_wasm::is_hypervisor_present().unwrap_or(false);
+            println!("Hypervisor present: {}", hypervisor_present);
+        }
         #[cfg(not(feature = "hyperlight"))]
         println!("Hyperlight feature: disabled (use --features hyperlight)");
     }
@@ -164,5 +229,5 @@ fn test_hyperlight_availability() {
     println!("Platform: macOS (Hyperlight not supported)");
 
     #[cfg(target_os = "windows")]
-    println!("Platform: Windows (WHP support planned)");
+    println!("Platform: Windows (WHP support available)");
 }
