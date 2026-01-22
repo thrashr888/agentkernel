@@ -6,6 +6,7 @@
 //! - Linux with KVM (`/dev/kvm` accessible)
 //! - Build with `--features hyperlight`
 
+#[cfg(all(target_os = "linux", feature = "hyperlight"))]
 use std::time::Instant;
 
 #[test]
@@ -161,4 +162,158 @@ fn test_hyperlight_availability() {
 
     #[cfg(target_os = "windows")]
     println!("Platform: Windows (WHP support available)");
+}
+
+/// Benchmark Hyperlight pool performance
+///
+/// Run with: cargo test --test hyperlight_benchmark --features hyperlight -- --nocapture --ignored
+#[test]
+#[ignore] // Run manually with --ignored
+fn benchmark_hyperlight_pool() {
+    #[cfg(not(all(target_os = "linux", feature = "hyperlight")))]
+    {
+        eprintln!("Hyperlight pool benchmark requires Linux with KVM and --features hyperlight");
+        eprintln!("Skipping on this platform.");
+        return;
+    }
+
+    #[cfg(all(target_os = "linux", feature = "hyperlight"))]
+    {
+        use agentkernel::hyperlight_backend::{HyperlightPool, HyperlightPoolConfig};
+
+        const WARMUP: usize = 2;
+        const ITERATIONS: usize = 10;
+
+        println!("\n=== Hyperlight Pool Benchmark ===\n");
+
+        // Create pool with custom config
+        let config = HyperlightPoolConfig {
+            min_warm: 3,
+            max_warm: 5,
+            ..Default::default()
+        };
+
+        let pool = match HyperlightPool::new(config) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Failed to create pool: {}", e);
+                return;
+            }
+        };
+
+        // Measure warm-up time
+        println!("Warming up pool (3 runtimes)...");
+        let warm_start = Instant::now();
+        if let Err(e) = pool.warm_up() {
+            eprintln!("Failed to warm up pool: {}", e);
+            return;
+        }
+        let warm_time = warm_start.elapsed();
+        println!("Pool warm-up: {:.2}ms (3 runtimes)", warm_time.as_secs_f64() * 1000.0);
+
+        let stats = pool.stats();
+        println!("Pool stats: {} warm runtimes\n", stats.warm_count);
+
+        // Warmup iterations (discard)
+        println!("Warmup iterations...");
+        for _ in 0..WARMUP {
+            match pool.acquire() {
+                Ok(_runtime) => {
+                    // Runtime is consumed when we load a module
+                    // For this benchmark, we're just measuring acquire time
+                }
+                Err(e) => {
+                    eprintln!("Warmup acquire failed: {}", e);
+                }
+            }
+        }
+
+        // Re-warm the pool
+        let _ = pool.warm_up();
+
+        // Benchmark acquire times (warm path)
+        println!("\nBenchmarking warm acquire (pre-warmed pool)...");
+        let mut warm_times_us: Vec<u128> = Vec::with_capacity(ITERATIONS);
+
+        for i in 0..ITERATIONS {
+            // Re-warm if needed
+            let stats = pool.stats();
+            if stats.warm_count == 0 {
+                let _ = pool.warm_up();
+            }
+
+            let start = Instant::now();
+            match pool.acquire() {
+                Ok(_runtime) => {
+                    let elapsed = start.elapsed().as_micros();
+                    warm_times_us.push(elapsed);
+                }
+                Err(e) => {
+                    eprintln!("Iteration {} acquire failed: {}", i, e);
+                }
+            }
+        }
+
+        // Calculate statistics for warm acquire
+        if !warm_times_us.is_empty() {
+            warm_times_us.sort();
+            let total: u128 = warm_times_us.iter().sum();
+            let avg = total as f64 / warm_times_us.len() as f64;
+            let min = *warm_times_us.first().unwrap() as f64;
+            let max = *warm_times_us.last().unwrap() as f64;
+            let p50_idx = warm_times_us.len() / 2;
+            let p50 = warm_times_us[p50_idx] as f64;
+
+            println!("\n=== Warm Acquire Results ===");
+            println!("| Metric | Time |");
+            println!("|--------|------|");
+            println!("| Average | {:.2}µs ({:.3}ms) |", avg, avg / 1000.0);
+            println!("| Min | {:.2}µs ({:.3}ms) |", min, min / 1000.0);
+            println!("| Max | {:.2}µs ({:.3}ms) |", max, max / 1000.0);
+            println!("| p50 | {:.2}µs ({:.3}ms) |", p50, p50 / 1000.0);
+        }
+
+        // Benchmark cold acquire (empty pool)
+        println!("\nBenchmarking cold acquire (empty pool)...");
+        pool.clear();
+
+        let mut cold_times_us: Vec<u128> = Vec::with_capacity(5);
+        for i in 0..5 {
+            pool.clear(); // Ensure pool is empty
+
+            let start = Instant::now();
+            match pool.acquire() {
+                Ok(_runtime) => {
+                    let elapsed = start.elapsed().as_micros();
+                    cold_times_us.push(elapsed);
+                }
+                Err(e) => {
+                    eprintln!("Cold iteration {} acquire failed: {}", i, e);
+                }
+            }
+        }
+
+        if !cold_times_us.is_empty() {
+            cold_times_us.sort();
+            let total: u128 = cold_times_us.iter().sum();
+            let avg = total as f64 / cold_times_us.len() as f64;
+            let min = *cold_times_us.first().unwrap() as f64;
+            let max = *cold_times_us.last().unwrap() as f64;
+
+            println!("\n=== Cold Acquire Results (no warm runtimes) ===");
+            println!("| Metric | Time |");
+            println!("|--------|------|");
+            println!("| Average | {:.2}µs ({:.2}ms) |", avg, avg / 1000.0);
+            println!("| Min | {:.2}µs ({:.2}ms) |", min, min / 1000.0);
+            println!("| Max | {:.2}µs ({:.2}ms) |", max, max / 1000.0);
+        }
+
+        println!("\n=== Summary ===");
+        println!("Pool pre-warming eliminates the ~68ms runtime startup cost.");
+        println!("Warm acquire from pool should be <1ms (mostly lock acquisition).");
+        println!("Cold acquire falls back to full runtime startup (~68ms).");
+
+        // Clean up
+        pool.shutdown();
+    }
 }

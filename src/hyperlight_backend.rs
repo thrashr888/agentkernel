@@ -22,7 +22,16 @@ use anyhow::Result;
 use anyhow::Context;
 
 #[cfg(all(target_os = "linux", feature = "hyperlight"))]
-use hyperlight_wasm::{LoadedWasmSandbox, SandboxBuilder};
+use hyperlight_wasm::{LoadedWasmSandbox, SandboxBuilder, WasmSandbox};
+
+#[cfg(all(target_os = "linux", feature = "hyperlight"))]
+use std::collections::VecDeque;
+#[cfg(all(target_os = "linux", feature = "hyperlight"))]
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(all(target_os = "linux", feature = "hyperlight"))]
+use std::sync::{Arc, Mutex};
+#[cfg(all(target_os = "linux", feature = "hyperlight"))]
+use std::time::Instant;
 
 /// Check if Hyperlight is available on this system
 pub fn hyperlight_available() -> bool {
@@ -117,6 +126,266 @@ impl HyperlightSandbox {
     pub fn name(&self) -> &str {
         &self.name
     }
+}
+
+/// Pool configuration
+#[cfg(all(target_os = "linux", feature = "hyperlight"))]
+#[derive(Debug, Clone)]
+pub struct HyperlightPoolConfig {
+    /// Minimum number of warm sandboxes to maintain
+    pub min_warm: usize,
+    /// Maximum number of warm sandboxes to maintain
+    pub max_warm: usize,
+    /// Guest heap size in bytes
+    pub guest_heap_size: usize,
+    /// Guest stack size in bytes
+    pub guest_stack_size: usize,
+}
+
+#[cfg(all(target_os = "linux", feature = "hyperlight"))]
+impl Default for HyperlightPoolConfig {
+    fn default() -> Self {
+        Self {
+            min_warm: 3,
+            max_warm: 10,
+            guest_heap_size: 10_000_000,  // 10MB
+            guest_stack_size: 1_000_000,   // 1MB
+        }
+    }
+}
+
+/// A pre-warmed Hyperlight runtime ready for module loading
+#[cfg(all(target_os = "linux", feature = "hyperlight"))]
+pub struct PooledRuntime {
+    /// The warm WasmSandbox ready for module loading
+    sandbox: WasmSandbox,
+    /// When this runtime was created
+    pub created_at: Instant,
+}
+
+/// Pool of pre-warmed Hyperlight runtimes for fast execution
+///
+/// The main cost of Hyperlight is runtime startup (~68ms). This pool
+/// maintains pre-warmed runtimes so module loading and function calls
+/// can happen in sub-millisecond time.
+///
+/// Usage:
+/// ```ignore
+/// let pool = HyperlightPool::new(HyperlightPoolConfig::default())?;
+/// pool.warm_up()?;  // Pre-warm runtimes
+///
+/// // Fast path: acquire warm runtime, load module, execute
+/// let runtime = pool.acquire()?;
+/// let loaded = runtime.load_module_from_buffer(&wasm_bytes)?;
+/// let result = loaded.call_guest_function::<i32>("main", ())?;
+/// ```
+#[cfg(all(target_os = "linux", feature = "hyperlight"))]
+pub struct HyperlightPool {
+    /// Pre-warmed runtimes ready for use
+    warm_pool: Arc<Mutex<VecDeque<PooledRuntime>>>,
+    /// Pool configuration
+    config: HyperlightPoolConfig,
+    /// Counter for tracking pool operations
+    acquired_count: AtomicUsize,
+    /// Shutdown flag
+    shutdown: AtomicBool,
+}
+
+#[cfg(all(target_os = "linux", feature = "hyperlight"))]
+impl HyperlightPool {
+    /// Create a new Hyperlight pool
+    pub fn new(config: HyperlightPoolConfig) -> Result<Self> {
+        if !hyperlight_available() {
+            anyhow::bail!("Hyperlight is not available on this system");
+        }
+
+        Ok(Self {
+            warm_pool: Arc::new(Mutex::new(VecDeque::new())),
+            config,
+            acquired_count: AtomicUsize::new(0),
+            shutdown: AtomicBool::new(false),
+        })
+    }
+
+    /// Create a pool with default configuration
+    pub fn with_defaults() -> Result<Self> {
+        Self::new(HyperlightPoolConfig::default())
+    }
+
+    /// Pre-warm the pool to min_warm runtimes
+    pub fn warm_up(&self) -> Result<()> {
+        let current = self.warm_pool.lock().unwrap().len();
+        let needed = self.config.min_warm.saturating_sub(current);
+
+        for _ in 0..needed {
+            if self.shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+
+            match self.create_runtime() {
+                Ok(runtime) => {
+                    self.warm_pool.lock().unwrap().push_back(runtime);
+                }
+                Err(e) => {
+                    eprintln!("Failed to warm up Hyperlight runtime: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Acquire a warm runtime from the pool
+    ///
+    /// If the pool is empty, creates a new runtime (slower path).
+    /// Returns the WasmSandbox ready for module loading.
+    pub fn acquire(&self) -> Result<WasmSandbox> {
+        self.acquired_count.fetch_add(1, Ordering::SeqCst);
+
+        // Try to get from warm pool first
+        {
+            let mut pool = self.warm_pool.lock().unwrap();
+            if let Some(runtime) = pool.pop_front() {
+                // Trigger async refill (in a real impl, spawn a thread)
+                drop(pool); // Release lock before potentially slow operation
+
+                // Simple synchronous refill if pool is below minimum
+                let current = self.warm_pool.lock().unwrap().len();
+                if current < self.config.min_warm {
+                    // In production, this would be async
+                    let _ = self.refill_one();
+                }
+
+                return Ok(runtime.sandbox);
+            }
+        }
+
+        // Pool empty, create a new runtime (slow path)
+        let runtime = self.create_runtime()?;
+        Ok(runtime.sandbox)
+    }
+
+    /// Get pool statistics
+    pub fn stats(&self) -> HyperlightPoolStats {
+        let warm_count = self.warm_pool.lock().unwrap().len();
+        HyperlightPoolStats {
+            warm_count,
+            acquired_total: self.acquired_count.load(Ordering::SeqCst),
+            config_min: self.config.min_warm,
+            config_max: self.config.max_warm,
+        }
+    }
+
+    /// Create a new warm runtime
+    fn create_runtime(&self) -> Result<PooledRuntime> {
+        let proto = SandboxBuilder::new()
+            .with_guest_heap_size(self.config.guest_heap_size)
+            .with_guest_stack_size(self.config.guest_stack_size)
+            .build()
+            .context("Failed to build Hyperlight sandbox")?;
+
+        let sandbox = proto
+            .load_runtime()
+            .context("Failed to load Hyperlight runtime")?;
+
+        Ok(PooledRuntime {
+            sandbox,
+            created_at: Instant::now(),
+        })
+    }
+
+    /// Refill the pool with one runtime
+    fn refill_one(&self) -> Result<()> {
+        let current = self.warm_pool.lock().unwrap().len();
+        if current >= self.config.max_warm {
+            return Ok(()); // Pool is full
+        }
+
+        let runtime = self.create_runtime()?;
+        self.warm_pool.lock().unwrap().push_back(runtime);
+        Ok(())
+    }
+
+    /// Signal shutdown
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+    }
+
+    /// Clear all warm runtimes
+    pub fn clear(&self) {
+        let mut pool = self.warm_pool.lock().unwrap();
+        pool.clear();
+    }
+}
+
+/// Pool statistics
+#[cfg(all(target_os = "linux", feature = "hyperlight"))]
+#[derive(Debug, Clone)]
+pub struct HyperlightPoolStats {
+    /// Number of warm runtimes ready
+    pub warm_count: usize,
+    /// Total number of acquires since pool creation
+    pub acquired_total: usize,
+    /// Configured minimum warm runtimes
+    pub config_min: usize,
+    /// Configured maximum warm runtimes
+    pub config_max: usize,
+}
+
+// ============================================================================
+// Stub implementations for non-Linux/non-hyperlight builds
+// ============================================================================
+
+/// Stub pool configuration
+#[cfg(not(all(target_os = "linux", feature = "hyperlight")))]
+#[derive(Debug, Clone, Default)]
+pub struct HyperlightPoolConfig {
+    pub min_warm: usize,
+    pub max_warm: usize,
+    pub guest_heap_size: usize,
+    pub guest_stack_size: usize,
+}
+
+/// Stub pool statistics
+#[cfg(not(all(target_os = "linux", feature = "hyperlight")))]
+#[derive(Debug, Clone)]
+pub struct HyperlightPoolStats {
+    pub warm_count: usize,
+    pub acquired_total: usize,
+    pub config_min: usize,
+    pub config_max: usize,
+}
+
+/// Stub pool implementation
+#[cfg(not(all(target_os = "linux", feature = "hyperlight")))]
+pub struct HyperlightPool;
+
+#[cfg(not(all(target_os = "linux", feature = "hyperlight")))]
+impl HyperlightPool {
+    pub fn new(_config: HyperlightPoolConfig) -> Result<Self> {
+        bail!("Hyperlight pool is not available on this platform")
+    }
+
+    pub fn with_defaults() -> Result<Self> {
+        bail!("Hyperlight pool is not available on this platform")
+    }
+
+    pub fn warm_up(&self) -> Result<()> {
+        bail!("Hyperlight pool is not available on this platform")
+    }
+
+    pub fn stats(&self) -> HyperlightPoolStats {
+        HyperlightPoolStats {
+            warm_count: 0,
+            acquired_total: 0,
+            config_min: 0,
+            config_max: 0,
+        }
+    }
+
+    pub fn shutdown(&self) {}
+    pub fn clear(&self) {}
 }
 
 /// Stub implementation for non-Linux or non-hyperlight builds

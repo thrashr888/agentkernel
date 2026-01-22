@@ -10,23 +10,27 @@ This is what users experience - total time from command start to output:
 
 | Mode | Platform | Latency | Notes |
 |------|----------|---------|-------|
-| Firecracker Daemon | Linux (AMD EPYC) | **195ms** | Pre-warmed VM pool (3-5 VMs) |
+| **Hyperlight** | Linux (AMD EPYC) | **68ms** | Wasm runtime in micro VM (experimental) |
+| Firecracker Daemon | Linux (AMD EPYC) | 195ms | Pre-warmed VM pool (3-5 VMs) |
 | Docker Pool | Linux (AMD EPYC) | ~250ms | Container pool with `-F` flag |
 | Docker Pool | macOS (M3 Pro) | ~300ms | Container pool with `-F` flag |
 | Docker Ephemeral | Linux (AMD EPYC) | ~450ms | Full create/start/exec/stop/remove |
 | Docker Ephemeral | macOS (M3 Pro) | ~500ms | Full lifecycle |
-| Firecracker Ephemeral | Linux (AMD EPYC) | **800ms** | Full VM lifecycle (cold start) |
+| Firecracker Ephemeral | Linux (AMD EPYC) | 800ms | Full VM lifecycle (cold start) |
 
-**Key insight**: Daemon mode with pre-warmed VMs provides the best latency (195ms) with full VM isolation. For ephemeral usage, Docker is faster than cold Firecracker starts.
+**Key insight**: Hyperlight provides the fastest sandbox startup (68ms) with dual-layer isolation (Wasm + hypervisor). Daemon mode with pre-warmed VMs provides 195ms latency. For ephemeral usage, Docker is faster than cold Firecracker starts.
 
 ### Component Breakdown
 
 | Backend | Platform | Boot | Ready | Exec | Shutdown | Throughput |
 |---------|----------|------|-------|------|----------|------------|
+| **Hyperlight** | Linux (AMD EPYC) | 68ms | 68ms | <1ms* | N/A | TBD |
 | Docker | macOS (M3 Pro) | 188ms | 188ms | 83ms | 109ms | 2.0/sec |
 | Docker | Linux (AMD EPYC) | 155ms | 155ms | 53ms | 130ms | ~4/sec |
 | Firecracker | Linux (AMD EPYC) | 78ms | 110ms | 19ms | 20ms | ~9/sec |
 | **FC Daemon** | Linux (AMD EPYC) | 0ms | 0ms | 19ms | 0ms | **~5/sec** |
+
+*Hyperlight exec time is for Wasm function calls after runtime is loaded.
 
 The daemon mode eliminates boot/ready/shutdown overhead by reusing pre-warmed VMs.
 
@@ -84,6 +88,53 @@ The ~175ms start time is the practical floor for Docker. Remaining overhead come
 - cgroup setup (~30ms)
 - Filesystem layering (~50ms)
 - Process spawn overhead (~25ms)
+
+## Hyperlight Backend (Linux)
+
+Hyperlight uses Microsoft's hypervisor-isolated micro VMs to run WebAssembly modules with dual-layer security (Wasm sandbox + hypervisor boundary).
+
+### Requirements
+
+- Linux with KVM (`/dev/kvm` accessible)
+- Build with `--features hyperlight`
+
+### Measured Performance (AMD EPYC, KVM)
+
+```
+cargo test --test hyperlight_benchmark --features hyperlight -- --nocapture --ignored
+```
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Runtime startup (avg) | **68ms** | SandboxBuilder + load_runtime |
+| Runtime startup (p50) | 67ms | |
+| Runtime startup (min) | 64ms | |
+| Runtime startup (max) | 85ms | First iteration warmup |
+| Function call | <1ms | After runtime loaded |
+
+### Comparison with Other Backends
+
+| Backend | Startup | Speedup vs Hyperlight |
+|---------|---------|----------------------|
+| **Hyperlight** | 68ms | 1.0x (baseline) |
+| Firecracker Daemon | 195ms | 2.9x slower |
+| Docker Pool | 250ms | 3.7x slower |
+| Docker Ephemeral | 450ms | 6.6x slower |
+
+### Key Insight
+
+Hyperlight's advertised "sub-millisecond" latency refers to **function calls** after the runtime is loaded, not sandbox startup. The 68ms startup is still significantly faster than all other backends.
+
+For optimal performance:
+1. Use sandbox pooling (pre-warm runtimes)
+2. Use AOT-compiled Wasm modules
+3. Reuse loaded sandboxes for multiple function calls
+
+### Limitations
+
+- **No macOS support**: Requires KVM (Linux) or WHP (Windows)
+- **Wasm only**: Cannot run arbitrary shell commands like Docker/Firecracker
+- **Module format**: Requires Wasm modules built for component model
 
 ## Firecracker Backend (Linux)
 
