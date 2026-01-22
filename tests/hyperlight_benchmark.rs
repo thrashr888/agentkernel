@@ -27,9 +27,7 @@ fn benchmark_hyperlight_runtime_startup() {
         const ITERATIONS: usize = 20;
 
         println!("\n=== Hyperlight Runtime Startup Benchmark ===\n");
-        println!(
-            "This measures: SandboxBuilder::new().build() + load_runtime()"
-        );
+        println!("This measures: SandboxBuilder::new().build() + load_runtime()");
         println!("Iterations: {} (after {} warmup)", ITERATIONS, WARMUP);
         println!();
 
@@ -209,7 +207,10 @@ fn benchmark_hyperlight_pool() {
             return;
         }
         let warm_time = warm_start.elapsed();
-        println!("Pool warm-up: {:.2}ms (3 runtimes)", warm_time.as_secs_f64() * 1000.0);
+        println!(
+            "Pool warm-up: {:.2}ms (3 runtimes)",
+            warm_time.as_secs_f64() * 1000.0
+        );
 
         let stats = pool.stats();
         println!("Pool stats: {} warm runtimes\n", stats.warm_count);

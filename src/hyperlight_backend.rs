@@ -14,9 +14,9 @@
 
 #![allow(dead_code)]
 
+use anyhow::Result;
 #[cfg(not(all(target_os = "linux", feature = "hyperlight")))]
 use anyhow::bail;
-use anyhow::Result;
 
 #[cfg(all(target_os = "linux", feature = "hyperlight"))]
 use anyhow::Context;
@@ -148,8 +148,8 @@ impl Default for HyperlightPoolConfig {
         Self {
             min_warm: 3,
             max_warm: 10,
-            guest_heap_size: 10_000_000,  // 10MB
-            guest_stack_size: 1_000_000,   // 1MB
+            guest_heap_size: 10_000_000, // 10MB
+            guest_stack_size: 1_000_000, // 1MB
         }
     }
 }

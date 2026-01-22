@@ -7,6 +7,7 @@ name = "agentkernel"
 version = "0.1.2"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bytes",
  "chrono",
  "clap",
