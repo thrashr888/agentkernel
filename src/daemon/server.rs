@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 
 use super::pool::{FirecrackerPool, PoolConfig};
 use super::protocol::{DaemonRequest, DaemonResponse};
-use crate::vsock::{VsockClient, VsockConnection, AGENT_PORT};
+use crate::vsock::{AGENT_PORT, VsockClient, VsockConnection};
 
 /// Cache for persistent vsock connections
 type ConnectionCache = Arc<Mutex<HashMap<String, VsockConnection>>>;

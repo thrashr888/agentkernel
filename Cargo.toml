@@ -9,6 +9,10 @@ repository = "https://github.com/thrashr888/agentkernel"
 keywords = ["ai", "agents", "sandbox", "firecracker", "microvm"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+default = []
+hyperlight = ["dep:hyperlight-host"]
+
 [dependencies]
 anyhow = "1.0"
 bytes = "1.0"
@@ -27,6 +31,10 @@ chrono = { version = "0.4", features = ["serde"] }
 [target.'cfg(unix)'.dependencies]
 hyperlocal = "0.9"
 tokio-vsock = "0.6"
+
+# Hyperlight for sub-millisecond Wasm sandboxes (Linux only, requires KVM)
+[target.'cfg(target_os = "linux")'.dependencies]
+hyperlight-host = { version = "0.5", optional = true }
 
 [dev-dependencies]
 tempfile = "3.0"
