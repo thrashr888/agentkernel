@@ -3,20 +3,40 @@
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{BackendType, ExecResult, Sandbox, SandboxConfig};
 
+/// Cached flag indicating if system is already verified running
+static SYSTEM_VERIFIED: AtomicBool = AtomicBool::new(false);
+
 /// Check if Apple container system service is running
 pub fn apple_system_running() -> bool {
-    Command::new("container")
+    // Fast path: if we've already verified, skip the command
+    if SYSTEM_VERIFIED.load(Ordering::Relaxed) {
+        return true;
+    }
+
+    let running = Command::new("container")
         .args(["system", "status"])
         .output()
         .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("is running"))
-        .unwrap_or(false)
+        .unwrap_or(false);
+
+    if running {
+        SYSTEM_VERIFIED.store(true, Ordering::Relaxed);
+    }
+
+    running
 }
 
 /// Start the Apple container system service
 pub fn start_apple_system() -> Result<()> {
+    // Fast path: if already verified running, skip everything
+    if SYSTEM_VERIFIED.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+
     if apple_system_running() {
         return Ok(());
     }
@@ -36,7 +56,9 @@ pub fn start_apple_system() -> Result<()> {
         }
     }
 
+    // Only sleep on first start, not when already running
     std::thread::sleep(std::time::Duration::from_millis(500));
+    SYSTEM_VERIFIED.store(true, Ordering::Relaxed);
     Ok(())
 }
 

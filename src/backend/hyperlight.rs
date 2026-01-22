@@ -2,11 +2,42 @@
 //!
 //! Note: Hyperlight runs WebAssembly modules, not shell commands.
 //! The `exec` method expects Wasm function names, not shell commands.
+//!
+//! Supports both .wasm (binary) and .wat (text) format files.
+//! WAT files are automatically compiled to WASM on load.
 
 use anyhow::{Result, bail};
 use async_trait::async_trait;
+use std::path::Path;
 
 use super::{BackendType, ExecResult, Sandbox, SandboxConfig};
+
+/// Compile WAT (WebAssembly Text) to WASM binary
+pub fn compile_wat(wat_source: &str) -> Result<Vec<u8>> {
+    wat::parse_str(wat_source).map_err(|e| anyhow::anyhow!("WAT compilation error: {}", e))
+}
+
+/// Compile WAT file to WASM binary
+pub fn compile_wat_file(path: &Path) -> Result<Vec<u8>> {
+    let source = std::fs::read_to_string(path)?;
+    compile_wat(&source)
+}
+
+/// Check if a file is WAT format (by extension)
+pub fn is_wat_file(path: &Path) -> bool {
+    path.extension()
+        .map(|ext| ext.eq_ignore_ascii_case("wat"))
+        .unwrap_or(false)
+}
+
+/// Load WASM from file, auto-detecting WAT format
+pub fn load_wasm_file(path: &Path) -> Result<Vec<u8>> {
+    if is_wat_file(path) {
+        compile_wat_file(path)
+    } else {
+        std::fs::read(path).map_err(Into::into)
+    }
+}
 
 /// Check if Hyperlight is available on this system
 pub fn hyperlight_available() -> bool {
@@ -76,20 +107,28 @@ impl HyperlightSandbox {
 
 #[async_trait]
 impl Sandbox for HyperlightSandbox {
-    async fn start(&mut self, _config: &SandboxConfig) -> Result<()> {
-        // Hyperlight requires a Wasm module to be loaded via init_with_wasm()
-        // The SandboxConfig.image field could be used as a path to a .wasm file
+    async fn start(&mut self, config: &SandboxConfig) -> Result<()> {
+        // Hyperlight requires a Wasm module to be loaded
+        // The SandboxConfig.image field is used as a path to a .wasm or .wat file
 
         #[cfg(all(target_os = "linux", feature = "hyperlight"))]
         {
-            // For now, just mark as "ready" - actual initialization requires wasm bytes
-            // In a full implementation, we could load the wasm from config.image path
-            self.running = true;
+            let image_path = Path::new(&config.image);
+
+            // If image looks like a file path, try to load it
+            if image_path.exists() {
+                let wasm_bytes = load_wasm_file(image_path)?;
+                self.init_with_wasm(&wasm_bytes)?;
+            } else {
+                // Just mark as ready - wasm can be loaded later via init_with_wasm
+                self.running = true;
+            }
             Ok(())
         }
 
         #[cfg(not(all(target_os = "linux", feature = "hyperlight")))]
         {
+            let _ = config;
             bail!("Hyperlight is not available on this platform. Requires Linux with KVM.")
         }
     }

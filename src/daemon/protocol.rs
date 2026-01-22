@@ -2,6 +2,21 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Backend type for daemon requests
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DaemonBackend {
+    /// Firecracker microVM (default)
+    #[default]
+    Firecracker,
+    /// Hyperlight WebAssembly
+    Hyperlight,
+    /// Docker container
+    Docker,
+    /// Apple Containers
+    Apple,
+}
+
 /// Request from CLI to daemon
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -10,6 +25,9 @@ pub enum DaemonRequest {
     Acquire {
         /// Runtime type (base, python, node, etc.)
         runtime: String,
+        /// Backend to use (optional, defaults to Firecracker)
+        #[serde(default)]
+        backend: DaemonBackend,
     },
     /// Release a VM back to the pool
     Release {
@@ -22,6 +40,9 @@ pub enum DaemonRequest {
         runtime: String,
         /// Command to execute
         command: Vec<String>,
+        /// Backend to use (optional, defaults to Firecracker)
+        #[serde(default)]
+        backend: DaemonBackend,
     },
     /// Get daemon status
     Status,
@@ -37,10 +58,14 @@ pub enum DaemonResponse {
     Acquired {
         /// VM ID
         id: String,
-        /// CID for vsock communication
-        cid: u32,
-        /// Path to vsock UDS
-        vsock_path: String,
+        /// CID for vsock communication (Firecracker only)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cid: Option<u32>,
+        /// Path to vsock UDS (Firecracker only)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        vsock_path: Option<String>,
+        /// Backend type used
+        backend: DaemonBackend,
     },
     /// VM released successfully
     Released,
@@ -62,6 +87,8 @@ pub enum DaemonResponse {
         /// Pool configuration
         min_warm: usize,
         max_warm: usize,
+        /// Supported backends
+        backends: Vec<String>,
     },
     /// Shutdown acknowledged
     ShuttingDown,

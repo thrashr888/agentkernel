@@ -169,20 +169,44 @@ async fn handle_request(
     pool: &FirecrackerPool,
     connections: &ConnectionCache,
 ) -> DaemonResponse {
+    use super::protocol::DaemonBackend;
+
     match request {
-        DaemonRequest::Acquire { runtime } => match pool.acquire(&runtime).await {
-            Ok(vm) => DaemonResponse::Acquired {
-                id: vm.id,
-                cid: vm.cid,
-                vsock_path: vm.vsock_path.to_string_lossy().to_string(),
-            },
-            Err(e) => DaemonResponse::error(format!("Failed to acquire VM: {}", e)),
-        },
+        DaemonRequest::Acquire { runtime, backend } => {
+            // For now, only Firecracker is supported in daemon mode
+            if !matches!(backend, DaemonBackend::Firecracker) {
+                return DaemonResponse::error(format!(
+                    "Backend {:?} not yet supported in daemon mode",
+                    backend
+                ));
+            }
+
+            match pool.acquire(&runtime).await {
+                Ok(vm) => DaemonResponse::Acquired {
+                    id: vm.id,
+                    cid: Some(vm.cid),
+                    vsock_path: Some(vm.vsock_path.to_string_lossy().to_string()),
+                    backend: DaemonBackend::Firecracker,
+                },
+                Err(e) => DaemonResponse::error(format!("Failed to acquire VM: {}", e)),
+            }
+        }
         DaemonRequest::Release { id } => match pool.release(&id).await {
             Ok(_) => DaemonResponse::Released,
             Err(e) => DaemonResponse::error(format!("Failed to release VM: {}", e)),
         },
-        DaemonRequest::Exec { runtime, command } => {
+        DaemonRequest::Exec {
+            runtime,
+            command,
+            backend,
+        } => {
+            // For now, only Firecracker is supported in daemon mode
+            if !matches!(backend, DaemonBackend::Firecracker) {
+                return DaemonResponse::error(format!(
+                    "Backend {:?} not yet supported in daemon mode",
+                    backend
+                ));
+            }
             // Acquire VM from pool
             let vm = match pool.acquire(&runtime).await {
                 Ok(vm) => vm,
@@ -241,6 +265,7 @@ async fn handle_request(
                 in_use,
                 min_warm: 3, // TODO: get from config
                 max_warm: 5,
+                backends: vec!["firecracker".to_string()],
             }
         }
         DaemonRequest::Shutdown => {

@@ -1,6 +1,6 @@
 [package]
 name = "agentkernel"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 description = "Run AI coding agents in secure, isolated microVMs"
 authors = ["Paul Thrasher <thrashr888@gmail.com>"]
@@ -27,6 +27,7 @@ tokio = { version = "1.0", features = ["full", "process", "net"] }
 toml = "0.8"
 uuid = { version = "1.0", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+wat = "1.225"  # WAT to WASM compiler for WebAssembly text format support
 
 # Unix socket support for Firecracker API
 [target.'cfg(unix)'.dependencies]

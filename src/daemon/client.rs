@@ -73,8 +73,10 @@ impl DaemonClient {
     /// Acquire a VM from the pool
     #[allow(dead_code)]
     pub async fn acquire(&self, runtime: &str) -> Result<VmHandle> {
+        use super::protocol::DaemonBackend;
         let request = DaemonRequest::Acquire {
             runtime: runtime.to_string(),
+            backend: DaemonBackend::default(),
         };
 
         match self.send_request(&request).await? {
@@ -82,10 +84,11 @@ impl DaemonClient {
                 id,
                 cid,
                 vsock_path,
+                backend: _,
             } => Ok(VmHandle {
                 id,
-                cid,
-                vsock_path,
+                cid: cid.unwrap_or(0),
+                vsock_path: vsock_path.unwrap_or_default(),
             }),
             DaemonResponse::Error { message } => {
                 bail!("Daemon error: {}", message)
@@ -122,6 +125,7 @@ impl DaemonClient {
                 in_use,
                 min_warm,
                 max_warm,
+                backends: _,
             } => Ok((warm, in_use, min_warm, max_warm)),
             DaemonResponse::Error { message } => {
                 bail!("Daemon error: {}", message)
@@ -149,9 +153,11 @@ impl DaemonClient {
 
     /// Run a command in a pooled VM (single round-trip: acquire + run + release)
     pub async fn run_in_pool(&self, runtime: &str, command: &[String]) -> Result<RunResult> {
+        use super::protocol::DaemonBackend;
         let request = DaemonRequest::Exec {
             runtime: runtime.to_string(),
             command: command.to_vec(),
+            backend: DaemonBackend::default(),
         };
 
         match self.send_request(&request).await? {
