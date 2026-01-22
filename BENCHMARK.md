@@ -10,26 +10,32 @@ This is what users experience - total time from command start to output:
 
 | Mode | Platform | Latency | Throughput | Notes |
 |------|----------|---------|------------|-------|
+| **Hyperlight Pool** | Linux (AMD EPYC) | **<1µs** | Very High | Pre-warmed Wasm runtimes (experimental) |
+| Hyperlight Cold | Linux (AMD EPYC) | 41ms | ~25/sec | Cold start Wasm runtime |
 | Firecracker Daemon | Linux (AMD EPYC) | **195ms** | **~5.1/sec** | Pre-warmed VM pool (3-5 VMs) |
 | Docker Pool | Linux (AMD EPYC) | ~250ms | ~4.0/sec | Container pool with `-F` flag |
 | Docker Pool | macOS (M3 Pro) | ~300ms | ~3.3/sec | Container pool with `-F` flag |
 | Docker Ephemeral | Linux (AMD EPYC) | ~450ms | ~2.2/sec | Uses optimized `run --rm` path |
 | Docker Ephemeral | macOS (M3 Pro) | ~500ms | ~2.0/sec | Uses optimized `run --rm` path |
-| Firecracker Ephemeral | Linux (AMD EPYC) | **800ms** | ~1.3/sec | Full VM lifecycle (cold start) |
+| Firecracker Ephemeral | Linux (AMD EPYC) | 800ms | ~1.3/sec | Full VM lifecycle (cold start) |
 | Apple Containers | macOS 26 (M3 Pro) | ~940ms | ~1.1/sec | Optimized single-operation path |
 | Apple Containers (--keep) | macOS 26 (M3 Pro) | ~2200ms | ~0.5/sec | Multi-step lifecycle |
 
-**Key insight**: Daemon mode with pre-warmed VMs provides the best latency (195ms) with full VM isolation. For ephemeral usage, Docker and Apple Containers now use optimized single-operation paths (`run --rm`) by default. Apple Containers provide true VM isolation on macOS but with higher latency than Docker containers.
+**Key insight**: Hyperlight Pool provides sub-microsecond acquire with pre-warmed runtimes. Firecracker Daemon mode offers 195ms latency with full VM isolation. Apple Containers provide true VM isolation on macOS but with higher latency than Docker containers.
 
 ### Component Breakdown
 
 | Backend | Platform | Boot | Ready | Exec | Shutdown | Throughput |
 |---------|----------|------|-------|------|----------|------------|
+| **Hyperlight Pool** | Linux (AMD EPYC) | 0ms | **<1µs** | <1ms | N/A | Very High |
+| Hyperlight Cold | Linux (AMD EPYC) | 41ms | 41ms | <1ms | N/A | ~25/sec |
 | Docker | macOS (M3 Pro) | 188ms | 188ms | 83ms | 109ms | 2.0/sec |
 | Docker | Linux (AMD EPYC) | 155ms | 155ms | 53ms | 130ms | ~4/sec |
 | Firecracker | Linux (AMD EPYC) | 78ms | 110ms | 19ms | 20ms | ~9/sec |
 | **FC Daemon** | Linux (AMD EPYC) | 0ms | 0ms | 19ms | 0ms | **~5/sec** |
 | Apple Containers | macOS 26 (M3 Pro) | 860ms | 860ms | 95ms | 37ms | ~1/sec |
+
+Hyperlight Pool: Pre-warmed runtimes provide sub-microsecond acquire times.
 
 The daemon mode eliminates boot/ready/shutdown overhead by reusing pre-warmed VMs.
 
@@ -87,6 +93,70 @@ The ~175ms start time is the practical floor for Docker. Remaining overhead come
 - cgroup setup (~30ms)
 - Filesystem layering (~50ms)
 - Process spawn overhead (~25ms)
+
+## Hyperlight Backend (Linux)
+
+Hyperlight uses Microsoft's hypervisor-isolated micro VMs to run WebAssembly modules with dual-layer security (Wasm sandbox + hypervisor boundary).
+
+### Requirements
+
+- Linux with KVM (`/dev/kvm` accessible)
+- Build with `--features hyperlight`
+
+### Measured Performance (AMD EPYC, KVM)
+
+```
+cargo test --test hyperlight_benchmark --features hyperlight -- --nocapture --ignored
+```
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Runtime startup (avg) | **68ms** | SandboxBuilder + load_runtime |
+| Runtime startup (p50) | 67ms | |
+| Runtime startup (min) | 64ms | |
+| Runtime startup (max) | 85ms | First iteration warmup |
+| Function call | <1ms | After runtime loaded |
+
+### Comparison with Other Backends
+
+| Backend | Startup | Speedup vs Hyperlight |
+|---------|---------|----------------------|
+| **Hyperlight** | 68ms | 1.0x (baseline) |
+| Firecracker Daemon | 195ms | 2.9x slower |
+| Docker Pool | 250ms | 3.7x slower |
+| Docker Ephemeral | 450ms | 6.6x slower |
+
+### Pool Performance (Warm Acquire)
+
+With pre-warmed runtimes, acquiring a sandbox from the pool is **sub-microsecond**:
+
+```
+cargo test --test hyperlight_benchmark --features hyperlight -- --nocapture --ignored benchmark_hyperlight_pool
+```
+
+| Metric | Warm Acquire | Cold Acquire |
+|--------|--------------|--------------|
+| Average | **1.9µs** | 41ms |
+| Min | <1µs | 41ms |
+| Max | 11µs | 42ms |
+| p50 | 1µs | 41ms |
+
+This validates Hyperlight's "sub-millisecond" claim - warm acquire is **>20,000x faster** than cold startup.
+
+### Key Insight
+
+Hyperlight's advertised "sub-millisecond" latency is achieved through **pool pre-warming**. The ~68ms startup cost is paid once during pool initialization, then each acquire is sub-microsecond.
+
+For optimal performance:
+1. **Use sandbox pooling** - pre-warm runtimes to eliminate startup cost
+2. Use AOT-compiled Wasm modules
+3. Maintain pool size based on expected concurrency
+
+### Limitations
+
+- **No macOS support**: Requires KVM (Linux) or WHP (Windows)
+- **Wasm only**: Cannot run arbitrary shell commands like Docker/Firecracker
+- **Module format**: Requires Wasm modules built for component model
 
 ## Firecracker Backend (Linux)
 

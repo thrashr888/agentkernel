@@ -5,6 +5,7 @@ mod daemon;
 mod docker_backend;
 mod firecracker_client;
 mod http_api;
+mod hyperlight_backend;
 mod languages;
 mod mcp;
 mod permissions;
