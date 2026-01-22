@@ -20,11 +20,7 @@ use anyhow::{Result, bail};
 use anyhow::Context;
 
 #[cfg(all(target_os = "linux", feature = "hyperlight"))]
-use hyperlight_host::{
-    GuestBinary,
-    sandbox::{MultiUseSandbox, UninitializedSandbox},
-    sandbox_state::sandbox::EvolvableSandbox,
-};
+use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
 
 /// Check if Hyperlight is available on this system
 pub fn hyperlight_available() -> bool {
@@ -60,7 +56,7 @@ impl HyperlightSandbox {
     /// Initialize the sandbox with a Wasm module
     pub fn init_with_wasm(&mut self, wasm_bytes: &[u8]) -> Result<()> {
         // Create uninitialized sandbox with Wasm binary
-        let uninit = UninitializedSandbox::new(GuestBinary::Buffer(wasm_bytes.to_vec()), None)
+        let uninit = UninitializedSandbox::new(GuestBinary::Buffer(wasm_bytes), None)
             .context("Failed to create Hyperlight sandbox")?;
 
         // Evolve to multi-use sandbox
