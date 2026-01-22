@@ -240,30 +240,32 @@ impl HyperlightPool {
     ///
     /// If the pool is empty, creates a new runtime (slower path).
     /// Returns the WasmSandbox ready for module loading.
+    ///
+    /// Note: This does NOT block on pool refill. Call `refill_if_needed()`
+    /// separately if you want to maintain pool levels.
     pub fn acquire(&self) -> Result<WasmSandbox> {
         self.acquired_count.fetch_add(1, Ordering::SeqCst);
 
-        // Try to get from warm pool first
+        // Try to get from warm pool first (fast path: just lock acquisition)
         {
             let mut pool = self.warm_pool.lock().unwrap();
             if let Some(runtime) = pool.pop_front() {
-                // Trigger async refill (in a real impl, spawn a thread)
-                drop(pool); // Release lock before potentially slow operation
-
-                // Simple synchronous refill if pool is below minimum
-                let current = self.warm_pool.lock().unwrap().len();
-                if current < self.config.min_warm {
-                    // In production, this would be async
-                    let _ = self.refill_one();
-                }
-
                 return Ok(runtime.sandbox);
             }
         }
 
-        // Pool empty, create a new runtime (slow path)
+        // Pool empty, create a new runtime (slow path: ~68ms)
         let runtime = self.create_runtime()?;
         Ok(runtime.sandbox)
+    }
+
+    /// Refill the pool if below minimum (call this periodically or in background)
+    pub fn refill_if_needed(&self) -> Result<()> {
+        let current = self.warm_pool.lock().unwrap().len();
+        if current < self.config.min_warm {
+            self.refill_one()?;
+        }
+        Ok(())
     }
 
     /// Get pool statistics

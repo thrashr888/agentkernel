@@ -189,7 +189,7 @@ fn benchmark_hyperlight_pool() {
         // Create pool with custom config
         let config = HyperlightPoolConfig {
             min_warm: 3,
-            max_warm: 5,
+            max_warm: 15, // Allow enough for benchmark iterations
             ..Default::default()
         };
 
@@ -232,16 +232,18 @@ fn benchmark_hyperlight_pool() {
         let _ = pool.warm_up();
 
         // Benchmark acquire times (warm path)
+        // First, pre-warm the pool with enough runtimes for all iterations
+        println!("\nPre-warming pool with {} runtimes...", ITERATIONS);
+        for _ in 0..ITERATIONS {
+            let _ = pool.warm_up();
+        }
+        let stats = pool.stats();
+        println!("Pool now has {} warm runtimes", stats.warm_count);
+
         println!("\nBenchmarking warm acquire (pre-warmed pool)...");
         let mut warm_times_us: Vec<u128> = Vec::with_capacity(ITERATIONS);
 
         for i in 0..ITERATIONS {
-            // Re-warm if needed
-            let stats = pool.stats();
-            if stats.warm_count == 0 {
-                let _ = pool.warm_up();
-            }
-
             let start = Instant::now();
             match pool.acquire() {
                 Ok(_runtime) => {
