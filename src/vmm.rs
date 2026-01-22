@@ -3,23 +3,18 @@
 //! This module provides the interface to sandboxes via Firecracker microVMs
 //! or containers (Docker/Podman) as fallback when KVM is not available.
 
-use crate::apple_backend::{
-    AppleContainerSandbox, apple_containers_available, macos_version_supported, start_apple_system,
-};
-use crate::docker_backend::{ContainerRuntime, ContainerSandbox, detect_container_runtime};
-use crate::firecracker_client::{BootSource, Drive, FirecrackerClient, MachineConfig, VsockDevice};
+use crate::backend::{BackendType, Sandbox, SandboxConfig, create_sandbox, detect_best_backend};
+use crate::docker_backend::detect_container_runtime;
 use crate::languages::docker_image_to_firecracker_runtime;
 use crate::permissions::Permissions;
 use crate::pool::ContainerPool;
 use crate::validation;
-use crate::vsock::VsockClient;
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
-use tokio::time::{Duration, sleep};
 
 /// Global container pool for fast ephemeral runs
 static CONTAINER_POOL: OnceCell<Arc<ContainerPool>> = OnceCell::const_new();
@@ -36,17 +31,6 @@ async fn get_pool() -> Result<Arc<ContainerPool>> {
         .cloned()
 }
 
-/// Backend type for sandbox execution
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backend {
-    /// Firecracker microVM (requires KVM)
-    Firecracker,
-    /// Container (Docker or Podman)
-    Container(ContainerRuntime),
-    /// Apple containers (macOS 26+ with native hypervisor)
-    Apple,
-}
-
 /// Persisted sandbox state (saved to disk)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxState {
@@ -59,311 +43,46 @@ pub struct SandboxState {
     pub created_at: String,
 }
 
-/// Firecracker VM configuration
-#[derive(Debug, Clone)]
-pub struct VmConfig {
-    pub name: String,
-    pub kernel_path: PathBuf,
-    pub rootfs_path: PathBuf,
-    pub vcpus: u32,
-    pub memory_mb: u64,
-    pub vsock_cid: u32,
-}
-
-/// Firecracker VM instance
-pub struct FirecrackerVm {
-    pub config: VmConfig,
-    socket_path: PathBuf,
-    process: Option<Child>,
-}
-
-// Firecracker API types are now in firecracker_client module
-
-impl FirecrackerVm {
-    /// Create a new Firecracker VM instance (does not start it)
-    pub fn new(config: VmConfig) -> Result<Self> {
-        // Create socket path in /tmp
-        let socket_path = PathBuf::from(format!("/tmp/agentkernel-{}.sock", config.name));
-
-        // Clean up any existing socket
-        // Security: Use atomic remove to avoid TOCTOU race condition
-        // where an attacker could create a symlink between exists() and remove_file()
-        match std::fs::remove_file(&socket_path) {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-
-        Ok(Self {
-            config,
-            socket_path,
-            process: None,
-        })
-    }
-
-    /// Start the Firecracker process
-    pub async fn start(&mut self) -> Result<()> {
-        // Find firecracker binary
-        let firecracker_bin = Self::find_firecracker()?;
-
-        // Start firecracker process
-        let process = Command::new(&firecracker_bin)
-            .arg("--api-sock")
-            .arg(&self.socket_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!("Failed to start firecracker: {}", firecracker_bin.display())
-            })?;
-
-        self.process = Some(process);
-
-        // Wait for socket to be available
-        self.wait_for_socket().await?;
-
-        // Configure the VM
-        self.configure().await?;
-
-        // Start the VM
-        self.start_instance().await?;
-
-        // Wait for guest agent to be ready
-        self.wait_for_agent().await?;
-
-        Ok(())
-    }
-
-    /// Find the firecracker binary
-    fn find_firecracker() -> Result<PathBuf> {
-        // Check FIRECRACKER_BIN env var first
-        if let Ok(path) = std::env::var("FIRECRACKER_BIN") {
-            let path = PathBuf::from(path);
-            if path.exists() {
-                return Ok(path);
-            }
-        }
-
-        // Check agentkernel's own bin directory
-        if let Some(home) = std::env::var_os("HOME") {
-            let local_fc = PathBuf::from(home).join(".local/share/agentkernel/bin/firecracker");
-            if local_fc.exists() {
-                return Ok(local_fc);
-            }
-        }
-
-        // Check common locations
-        let locations = [
-            "/usr/local/bin/firecracker",
-            "/usr/bin/firecracker",
-            "./firecracker",
-        ];
-
-        for loc in locations {
-            let path = PathBuf::from(loc);
-            if path.exists() {
-                return Ok(path);
-            }
-        }
-
-        // Try PATH
-        if let Ok(output) = Command::new("which").arg("firecracker").output()
-            && output.status.success()
-        {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(PathBuf::from(path));
-            }
-        }
-
-        bail!(
-            "Firecracker binary not found. Run 'agentkernel setup' or set FIRECRACKER_BIN.\n\
-             Download from: https://github.com/firecracker-microvm/firecracker/releases"
-        );
-    }
-
-    /// Wait for the API socket to be available
-    async fn wait_for_socket(&self) -> Result<()> {
-        for _ in 0..50 {
-            if self.socket_path.exists() {
-                return Ok(());
-            }
-            sleep(Duration::from_millis(100)).await;
-        }
-        bail!("Firecracker API socket not available after 5 seconds");
-    }
-
-    /// Configure the VM via the Firecracker API
-    async fn configure(&self) -> Result<()> {
-        let client = FirecrackerClient::new(&self.socket_path);
-
-        // Set boot source
-        // Boot args optimized for fast startup (tested: 961ms -> 110ms = 89% faster):
-        // - quiet: reduce console output
-        // - loglevel=4: show warnings and errors only
-        // - i8042.nokbd: disable PS/2 keyboard driver (saves ~500ms)
-        // - i8042.noaux: skip PS/2 aux port probe (saves ~260ms)
-        let boot_source = BootSource {
-            kernel_image_path: self.config.kernel_path.to_string_lossy().to_string(),
-            boot_args:
-                "console=ttyS0 reboot=k panic=1 pci=off init=/init quiet loglevel=4 i8042.nokbd i8042.noaux"
-                    .to_string(),
-        };
-        client.set_boot_source(&boot_source).await?;
-
-        // Set root drive
-        let drive = Drive {
-            drive_id: "rootfs".to_string(),
-            path_on_host: self.config.rootfs_path.to_string_lossy().to_string(),
-            is_root_device: true,
-            is_read_only: false,
-        };
-        client.set_drive("rootfs", &drive).await?;
-
-        // Set machine config
-        let machine = MachineConfig {
-            vcpu_count: self.config.vcpus,
-            mem_size_mib: self.config.memory_mb,
-        };
-        client.set_machine_config(&machine).await?;
-
-        // Set vsock device
-        let vsock_uds = format!("/tmp/agentkernel-{}-vsock.sock", self.config.name);
-        let vsock = VsockDevice {
-            guest_cid: self.config.vsock_cid,
-            uds_path: vsock_uds,
-        };
-        client.set_vsock(&vsock).await?;
-
-        Ok(())
-    }
-
-    /// Start the VM instance
-    async fn start_instance(&self) -> Result<()> {
-        let client = FirecrackerClient::new(&self.socket_path);
-        client.start_instance().await
-    }
-
-    /// Wait for the guest agent to become available
-    async fn wait_for_agent(&self) -> Result<()> {
-        let vsock_path = self.vsock_path();
-        let client = crate::vsock::VsockClient::for_firecracker(&vsock_path);
-
-        // Wait up to 10 seconds for agent to be ready
-        for i in 0..100 {
-            if client.ping().await.unwrap_or(false) {
-                return Ok(());
-            }
-            if i % 20 == 0 && i > 0 {
-                eprintln!("Waiting for guest agent... ({}s)", i / 10);
-            }
-            sleep(Duration::from_millis(100)).await;
-        }
-
-        bail!("Guest agent not available after 10 seconds. VM may have failed to boot.")
-    }
-
-    /// Stop the VM
-    pub async fn stop(&mut self) -> Result<()> {
-        // Send shutdown signal via API
-        let client = FirecrackerClient::new(&self.socket_path);
-        let _ = client.send_ctrl_alt_del().await;
-
-        // Give it a moment to shutdown gracefully
-        sleep(Duration::from_millis(500)).await;
-
-        // Kill the process if still running
-        if let Some(ref mut process) = self.process {
-            let _ = process.kill();
-            let _ = process.wait();
-        }
-
-        // Clean up socket (ignore errors - best effort cleanup)
-        let _ = std::fs::remove_file(&self.socket_path);
-
-        Ok(())
-    }
-
-    /// Get the vsock path for this VM
-    pub fn vsock_path(&self) -> PathBuf {
-        PathBuf::from(format!("/tmp/agentkernel-{}-vsock.sock", self.config.name))
-    }
-
-    /// Check if the VM is running
-    pub fn is_running(&self) -> bool {
-        if let Some(ref process) = self.process {
-            // Try to get process status without blocking
-            match Command::new("ps")
-                .arg("-p")
-                .arg(process.id().to_string())
-                .output()
-            {
-                Ok(output) => output.status.success(),
-                Err(_) => false,
-            }
-        } else {
-            false
-        }
-    }
-}
-
-impl Drop for FirecrackerVm {
-    fn drop(&mut self) {
-        // Clean up on drop
-        if let Some(ref mut process) = self.process {
-            let _ = process.kill();
-        }
-        // Best effort socket cleanup (ignore errors)
-        let _ = std::fs::remove_file(&self.socket_path);
-    }
-}
-
-/// VM Manager - manages sandboxes via Firecracker or containers (Docker/Podman/Apple)
+/// VM Manager - manages sandboxes via unified Sandbox trait
+///
+/// Supports multiple backends:
+/// - Firecracker microVMs (Linux with KVM)
+/// - Docker/Podman containers
+/// - Apple Containers (macOS 26+)
 pub struct VmManager {
-    backend: Backend,
-    vms: std::collections::HashMap<String, FirecrackerVm>,
-    container_sandboxes: std::collections::HashMap<String, ContainerSandbox>,
-    apple_sandboxes: std::collections::HashMap<String, AppleContainerSandbox>,
-    sandboxes: std::collections::HashMap<String, SandboxState>,
+    /// Selected backend type
+    backend: BackendType,
+    /// Running sandboxes (unified interface)
+    running: HashMap<String, Box<dyn Sandbox>>,
+    /// Persisted sandbox configurations
+    sandboxes: HashMap<String, SandboxState>,
+    /// Data directory for persistence
     data_dir: PathBuf,
-    kernel_path: Option<PathBuf>,
+    /// Rootfs directory for Firecracker
     rootfs_dir: Option<PathBuf>,
+    /// Next vsock CID
     next_cid: u32,
 }
 
 impl VmManager {
-    /// Create a new VM manager (auto-selects backend based on KVM availability)
+    /// Create a new VM manager (auto-selects backend based on availability)
     pub fn new() -> Result<Self> {
         let data_dir = Self::data_dir();
         let sandboxes_dir = data_dir.join("sandboxes");
         std::fs::create_dir_all(&sandboxes_dir)?;
 
-        // Determine backend based on availability (priority: KVM > Apple containers > Docker)
-        let backend = if Self::check_kvm() {
-            Backend::Firecracker
-        } else if apple_containers_available() && macos_version_supported() {
-            // Auto-start Apple container system if needed
-            if let Err(e) = start_apple_system() {
-                eprintln!("Warning: Failed to start Apple container system: {}", e);
-            }
-            Backend::Apple
-        } else if let Some(runtime) = detect_container_runtime() {
-            Backend::Container(runtime)
-        } else {
-            bail!(
+        // Detect best backend
+        let backend = detect_best_backend().ok_or_else(|| {
+            anyhow::anyhow!(
                 "No sandbox backend available. Need one of: KVM (Linux), Apple containers (macOS 26+), or Docker/Podman."
-            );
-        };
+            )
+        })?;
 
-        // Find kernel and rootfs paths (only needed for Firecracker)
-        let (kernel_path, rootfs_dir) = if backend == Backend::Firecracker {
-            let base_dir = Self::find_images_dir()?;
-            let kernel = Self::find_kernel(&base_dir)?;
-            let rootfs = base_dir.join("rootfs");
-            (Some(kernel), Some(rootfs))
+        // Find rootfs path (only needed for Firecracker)
+        let rootfs_dir = if backend == BackendType::Firecracker {
+            Self::find_images_dir().ok().map(|d| d.join("rootfs"))
         } else {
-            (None, None)
+            None
         };
 
         // Load existing sandboxes
@@ -372,24 +91,13 @@ impl VmManager {
         // Find next available CID
         let max_cid = sandboxes.values().map(|s| s.vsock_cid).max().unwrap_or(2);
 
-        eprintln!(
-            "Using {} backend",
-            match backend {
-                Backend::Firecracker => "Firecracker".to_string(),
-                Backend::Container(ContainerRuntime::Docker) => "Docker".to_string(),
-                Backend::Container(ContainerRuntime::Podman) => "Podman".to_string(),
-                Backend::Apple => "Apple Containers".to_string(),
-            }
-        );
+        eprintln!("Using {} backend", backend);
 
         Ok(Self {
             backend,
-            vms: std::collections::HashMap::new(),
-            container_sandboxes: std::collections::HashMap::new(),
-            apple_sandboxes: std::collections::HashMap::new(),
+            running: HashMap::new(),
             sandboxes,
             data_dir,
-            kernel_path,
             rootfs_dir,
             next_cid: max_cid + 1,
         })
@@ -405,10 +113,8 @@ impl VmManager {
     }
 
     /// Load sandboxes from disk
-    fn load_sandboxes(
-        sandboxes_dir: &Path,
-    ) -> Result<std::collections::HashMap<String, SandboxState>> {
-        let mut sandboxes = std::collections::HashMap::new();
+    fn load_sandboxes(sandboxes_dir: &Path) -> Result<HashMap<String, SandboxState>> {
+        let mut sandboxes = HashMap::new();
 
         if sandboxes_dir.exists() {
             for entry in std::fs::read_dir(sandboxes_dir)? {
@@ -451,58 +157,25 @@ impl VmManager {
 
     /// Find the images directory
     fn find_images_dir() -> Result<PathBuf> {
-        // Check installed location first (preferred)
         if let Some(home) = std::env::var_os("HOME") {
             let home_path = PathBuf::from(home).join(".local/share/agentkernel/images");
-            // Check if it has actual content (kernel or rootfs)
             if home_path.join("kernel").exists() || home_path.join("rootfs").exists() {
                 return Ok(home_path);
             }
         }
 
-        // Check relative to current dir (development mode)
         let paths = [PathBuf::from("images"), PathBuf::from("../images")];
-
         for path in &paths {
             if path.join("kernel").exists() || path.join("rootfs").exists() {
                 return Ok(path.clone());
             }
         }
 
-        bail!(
-            "Images directory not found. Run 'agentkernel setup' first, or check ~/.local/share/agentkernel/images"
-        );
-    }
-
-    /// Find the kernel image
-    fn find_kernel(base_dir: &Path) -> Result<PathBuf> {
-        let kernel_dir = base_dir.join("kernel");
-
-        // Look for vmlinux-*-agentkernel
-        if kernel_dir.exists() {
-            for entry in std::fs::read_dir(&kernel_dir)? {
-                let entry = entry?;
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                if name_str.starts_with("vmlinux-") && name_str.ends_with("-agentkernel") {
-                    return Ok(entry.path());
-                }
-            }
-        }
-
-        bail!(
-            "Kernel not found in {}. Run 'agentkernel setup' first.",
-            kernel_dir.display()
-        );
+        bail!("Images directory not found. Run 'agentkernel setup' first.")
     }
 
     /// Get rootfs path for a runtime (Firecracker only)
-    ///
-    /// # Security
-    /// The runtime parameter is validated against an allowlist to prevent
-    /// path traversal attacks (e.g., `../../../etc/passwd`).
     pub fn rootfs_path(&self, runtime: &str) -> Result<PathBuf> {
-        // Security: Validate runtime against allowlist to prevent path traversal
         validation::validate_runtime(runtime)?;
 
         let rootfs_dir = self
@@ -532,10 +205,9 @@ impl VmManager {
         }
 
         // For Firecracker, convert Docker image names to runtime names
-        // Docker backend uses full image names, Firecracker uses runtime names
-        let effective_image = if self.backend == Backend::Firecracker {
+        let effective_image = if self.backend == BackendType::Firecracker {
             let runtime = docker_image_to_firecracker_runtime(image);
-            self.rootfs_path(runtime)?; // Validate rootfs exists
+            self.rootfs_path(runtime)?;
             runtime.to_string()
         } else {
             image.to_string()
@@ -559,33 +231,6 @@ impl VmManager {
         Ok(())
     }
 
-    /// Check if KVM is available and accessible
-    ///
-    /// Returns true only if /dev/kvm exists AND the current user has read/write access.
-    /// This prevents the confusing case where status says "KVM: available" but operations fail.
-    fn check_kvm() -> bool {
-        let kvm_path = PathBuf::from("/dev/kvm");
-        if !kvm_path.exists() {
-            return false;
-        }
-
-        // Check if we can actually access KVM (not just that it exists)
-        // Try to open with read/write to verify permissions
-        #[cfg(unix)]
-        {
-            use std::fs::OpenOptions;
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&kvm_path)
-                .is_ok()
-        }
-        #[cfg(not(unix))]
-        {
-            false
-        }
-    }
-
     /// Start a sandbox
     pub async fn start(&mut self, name: &str) -> Result<()> {
         self.start_with_permissions(name, &Permissions::default())
@@ -600,184 +245,88 @@ impl VmManager {
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?
             .clone();
 
-        match self.backend {
-            Backend::Firecracker => {
-                if self.vms.contains_key(name) {
-                    bail!("Sandbox '{}' is already running", name);
-                }
-
-                let kernel_path = self
-                    .kernel_path
-                    .clone()
-                    .ok_or_else(|| anyhow::anyhow!("Kernel path not configured"))?;
-                let rootfs_path = self.rootfs_path(&state.image)?;
-
-                let config = VmConfig {
-                    name: name.to_string(),
-                    kernel_path,
-                    rootfs_path,
-                    vcpus: state.vcpus,
-                    memory_mb: state.memory_mb,
-                    vsock_cid: state.vsock_cid,
-                };
-
-                let mut vm = FirecrackerVm::new(config)?;
-                vm.start().await?;
-                self.vms.insert(name.to_string(), vm);
-            }
-            Backend::Container(runtime) => {
-                if self.container_sandboxes.contains_key(name) {
-                    bail!("Sandbox '{}' is already running", name);
-                }
-
-                let mut sandbox = ContainerSandbox::with_runtime(name, runtime);
-                sandbox.start_with_permissions(&state.image, perms).await?;
-                self.container_sandboxes.insert(name.to_string(), sandbox);
-            }
-            Backend::Apple => {
-                if self.apple_sandboxes.contains_key(name) {
-                    bail!("Sandbox '{}' is already running", name);
-                }
-
-                let mut sandbox = AppleContainerSandbox::new(name);
-                sandbox.start_with_permissions(&state.image, perms).await?;
-                self.apple_sandboxes.insert(name.to_string(), sandbox);
-            }
+        if self.running.contains_key(name) {
+            bail!("Sandbox '{}' is already running", name);
         }
+
+        // Create sandbox using unified factory
+        let mut sandbox = create_sandbox(self.backend, name)?;
+
+        // Convert permissions to SandboxConfig
+        let work_dir = if perms.mount_cwd {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        // Build environment variables if pass_env is enabled
+        let env = if perms.pass_env {
+            ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM"]
+                .iter()
+                .filter_map(|&var| std::env::var(var).ok().map(|val| (var.to_string(), val)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let config = SandboxConfig {
+            image: state.image.clone(),
+            vcpus: state.vcpus,
+            memory_mb: perms.max_memory_mb.unwrap_or(state.memory_mb),
+            mount_cwd: perms.mount_cwd,
+            work_dir,
+            env,
+            network: perms.network,
+            read_only: perms.read_only_root,
+            mount_home: perms.mount_home,
+        };
+
+        sandbox.start(&config).await?;
+        self.running.insert(name.to_string(), sandbox);
 
         Ok(())
     }
 
     /// Execute a command in a sandbox
     pub async fn exec_cmd(&mut self, name: &str, cmd: &[String]) -> Result<String> {
-        match self.backend {
-            Backend::Firecracker => {
-                // Check if VM is running
-                if !self.vms.contains_key(name) {
-                    bail!(
-                        "Sandbox '{}' is not running. Start it with: agentkernel start {}",
-                        name,
-                        name
-                    );
-                }
+        let sandbox = self.running.get_mut(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Sandbox '{}' is not running. Start it with: agentkernel start {}",
+                name,
+                name
+            )
+        })?;
 
-                // Get the vsock UDS path for this VM
-                let vsock_path = format!("/tmp/agentkernel-{}-vsock.sock", name);
+        // Convert &[String] to &[&str]
+        let cmd_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
 
-                // Connect to guest agent via Firecracker vsock
-                let client = VsockClient::for_firecracker(&vsock_path);
-                let result = client
-                    .run_command(cmd)
-                    .await
-                    .context("Failed to execute command via vsock")?;
+        let result = sandbox.exec(&cmd_refs).await?;
 
-                // Combine stdout and stderr for output
-                let mut output = result.stdout;
-                if !result.stderr.is_empty() {
-                    if !output.is_empty() {
-                        output.push('\n');
-                    }
-                    output.push_str(&result.stderr);
-                }
-
-                if result.exit_code != 0 {
-                    bail!("Command exited with code {}: {}", result.exit_code, output);
-                }
-
-                Ok(output)
-            }
-            Backend::Container(runtime) => {
-                // Check if container is running
-                if !Self::is_container_running(name, runtime) {
-                    bail!(
-                        "Sandbox '{}' is not running. Start it with: agentkernel start {}",
-                        name,
-                        name
-                    );
-                }
-
-                // Execute directly via container exec
-                let container_name = format!("agentkernel-{}", name);
-                let mut args = vec!["exec", &container_name];
-                let cmd_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
-                args.extend(cmd_refs);
-
-                let output = std::process::Command::new(runtime.cmd())
-                    .args(&args)
-                    .output()
-                    .context("Failed to execute command in container")?;
-
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    bail!("Command failed: {}", stderr);
-                }
-
-                Ok(String::from_utf8_lossy(&output.stdout).to_string())
-            }
-            Backend::Apple => {
-                // Check if Apple container is running
-                let sandbox = self.apple_sandboxes.get(name).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Sandbox '{}' is not running. Start it with: agentkernel start {}",
-                        name,
-                        name
-                    )
-                })?;
-
-                // Execute via Apple container exec
-                sandbox.execute(cmd).await
-            }
+        if result.exit_code != 0 {
+            bail!(
+                "Command exited with code {}: {}",
+                result.exit_code,
+                result.output()
+            );
         }
+
+        Ok(result.output())
     }
 
     /// Stop a sandbox
     pub async fn stop(&mut self, name: &str) -> Result<()> {
-        match self.backend {
-            Backend::Firecracker => {
-                if let Some(mut vm) = self.vms.remove(name) {
-                    vm.stop().await?;
-                }
-            }
-            Backend::Container(runtime) => {
-                // Kill container immediately (skip graceful shutdown for speed)
-                let container_name = format!("agentkernel-{}", name);
-                let _ = std::process::Command::new(runtime.cmd())
-                    .args(["kill", &container_name])
-                    .output();
-                // Also remove from in-memory map if present
-                self.container_sandboxes.remove(name);
-            }
-            Backend::Apple => {
-                if let Some(mut sandbox) = self.apple_sandboxes.remove(name) {
-                    let _ = sandbox.stop().await;
-                }
-            }
+        if let Some(mut sandbox) = self.running.remove(name) {
+            sandbox.stop().await?;
         }
         Ok(())
     }
 
     /// Remove a sandbox
     pub async fn remove(&mut self, name: &str) -> Result<()> {
-        match self.backend {
-            Backend::Firecracker => {
-                if let Some(mut vm) = self.vms.remove(name) {
-                    let _ = vm.stop().await;
-                }
-            }
-            Backend::Container(runtime) => {
-                // Remove container directly
-                let container_name = format!("agentkernel-{}", name);
-                let _ = std::process::Command::new(runtime.cmd())
-                    .args(["rm", "-f", &container_name])
-                    .output();
-                // Also remove from in-memory map if present
-                self.container_sandboxes.remove(name);
-            }
-            Backend::Apple => {
-                if let Some(mut sandbox) = self.apple_sandboxes.remove(name) {
-                    let _ = sandbox.remove().await;
-                }
-            }
+        if let Some(mut sandbox) = self.running.remove(name) {
+            let _ = sandbox.stop().await;
         }
 
         self.delete_sandbox(name)?;
@@ -791,37 +340,14 @@ impl VmManager {
         self.sandboxes
             .keys()
             .map(|name| {
-                let running = match self.backend {
-                    Backend::Firecracker => self.vms.get(name).is_some_and(|vm| vm.is_running()),
-                    Backend::Container(runtime) => {
-                        // Check container status directly (containers persist across CLI calls)
-                        Self::is_container_running(name, runtime)
-                    }
-                    Backend::Apple => {
-                        // Check if Apple container is tracked (and running)
-                        self.apple_sandboxes
-                            .get(name)
-                            .is_some_and(|s| s.is_running())
-                    }
-                };
+                let running = self
+                    .running
+                    .get(name)
+                    .map(|s| s.is_running())
+                    .unwrap_or(false);
                 (name.as_str(), running)
             })
             .collect()
-    }
-
-    /// Check if a container is running (for a given sandbox name)
-    fn is_container_running(name: &str, runtime: ContainerRuntime) -> bool {
-        let container_name = format!("agentkernel-{}", name);
-        std::process::Command::new(runtime.cmd())
-            .args(["ps", "-q", "-f", &format!("name={}", container_name)])
-            .output()
-            .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-            .unwrap_or(false)
-    }
-
-    /// Get a VM by name (only if running, Firecracker only)
-    pub fn get(&self, name: &str) -> Option<&FirecrackerVm> {
-        self.vms.get(name)
     }
 
     /// Check if a sandbox exists
@@ -829,31 +355,26 @@ impl VmManager {
         self.sandboxes.contains_key(name)
     }
 
+    /// Check if a sandbox is currently running
+    pub fn is_running(&self, name: &str) -> bool {
+        self.running
+            .get(name)
+            .map(|s| s.is_running())
+            .unwrap_or(false)
+    }
+
     /// Get the current backend
     #[allow(dead_code)]
-    pub fn backend(&self) -> Backend {
+    pub fn backend(&self) -> BackendType {
         self.backend
     }
 
     /// Run a command using the container pool (fast path for ephemeral runs)
-    ///
-    /// This uses a pre-warmed container pool to avoid the overhead of
-    /// creating and destroying containers for each command. Typically
-    /// saves ~250ms per command on Docker.
-    ///
-    /// Returns the command output.
     pub async fn run_pooled(cmd: &[String]) -> Result<String> {
         let pool = get_pool().await?;
-
-        // Acquire a container from the pool
         let container = pool.acquire().await?;
-
-        // Run the command
         let result = container.run_command(cmd).await;
-
-        // Release container back to pool
         pool.release(container).await;
-
         result
     }
 
@@ -864,119 +385,71 @@ impl VmManager {
     }
 
     /// Run a command in an ephemeral sandbox (optimized single-operation path)
-    ///
-    /// This is faster than the create→start→exec→stop→remove cycle because:
-    /// - Docker: Uses `docker run --rm` (single operation)
-    /// - Apple: Uses `container run --rm` (~940ms vs ~2200ms)
-    /// - Firecracker: Falls back to standard cycle (no single-op equivalent)
-    ///
-    /// Returns the command output.
     pub async fn run_ephemeral(
         &mut self,
         image: &str,
         cmd: &[String],
         perms: &Permissions,
     ) -> Result<String> {
-        match self.backend {
-            Backend::Apple => {
-                // Use optimized single-operation path
-                let name = format!("ephemeral-{}", &uuid::Uuid::new_v4().to_string()[..8]);
-                let mut sandbox = AppleContainerSandbox::new(&name);
-                sandbox.run_ephemeral(image, cmd, perms).await
-            }
-            Backend::Container(runtime) => {
-                // Use docker/podman run --rm
-                let container_name = format!(
-                    "agentkernel-ephemeral-{}",
-                    &uuid::Uuid::new_v4().to_string()[..8]
-                );
+        // Generate unique name
+        let name = format!("ephemeral-{}", &uuid::Uuid::new_v4().to_string()[..8]);
 
-                let mut args = vec![
-                    "run".to_string(),
-                    "--rm".to_string(),
-                    "--name".to_string(),
-                    container_name,
-                ];
+        // Create sandbox
+        let mut sandbox = create_sandbox(self.backend, &name)?;
 
-                // Resource limits
-                if let Some(cpu) = perms.max_cpu_percent {
-                    args.push("--cpus".to_string());
-                    args.push(format!("{:.2}", cpu as f64 / 100.0));
-                }
-                if let Some(mem) = perms.max_memory_mb {
-                    args.push("--memory".to_string());
-                    args.push(format!("{}m", mem));
-                }
+        // Build config from permissions
+        let work_dir = if perms.mount_cwd {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        } else {
+            None
+        };
 
-                // Network
-                if !perms.network {
-                    args.push("--network=none".to_string());
-                }
+        let env = if perms.pass_env {
+            ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM"]
+                .iter()
+                .filter_map(|&var| std::env::var(var).ok().map(|val| (var.to_string(), val)))
+                .collect()
+        } else {
+            Vec::new()
+        };
 
-                // Volume mounts
-                if perms.mount_cwd
-                    && let Ok(cwd) = std::env::current_dir()
-                {
-                    args.push("-v".to_string());
-                    args.push(format!("{}:/app", cwd.display()));
-                    args.push("-w".to_string());
-                    args.push("/app".to_string());
-                }
+        let config = SandboxConfig {
+            image: image.to_string(),
+            vcpus: 1,
+            memory_mb: perms.max_memory_mb.unwrap_or(512),
+            mount_cwd: perms.mount_cwd,
+            work_dir,
+            env,
+            network: perms.network,
+            read_only: perms.read_only_root,
+            mount_home: perms.mount_home,
+        };
 
-                // Read-only filesystem
-                if perms.read_only_root {
-                    args.push("--read-only".to_string());
-                }
+        // Start, exec, stop
+        sandbox.start(&config).await?;
 
-                // Environment variables
-                if perms.pass_env {
-                    for var in ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM"] {
-                        if let Ok(val) = std::env::var(var) {
-                            args.push("-e".to_string());
-                            args.push(format!("{}={}", var, val));
-                        }
-                    }
-                }
+        let cmd_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
+        let result = sandbox.exec(&cmd_refs).await;
 
-                // Image and command
-                args.push(image.to_string());
-                args.extend(cmd.iter().cloned());
+        // Always stop, even on error
+        let _ = sandbox.stop().await;
 
-                let output = std::process::Command::new(runtime.cmd())
-                    .args(&args)
-                    .output()
-                    .context("Failed to run ephemeral container")?;
-
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-                if !output.status.success() && !stderr.is_empty() {
-                    bail!("Container command failed: {}", stderr);
-                }
-
-                if stderr.is_empty() {
-                    Ok(stdout)
-                } else {
-                    Ok(format!("{}{}", stdout, stderr))
-                }
-            }
-            Backend::Firecracker => {
-                // No single-operation equivalent for Firecracker
-                // Fall back to standard cycle (caller should use daemon mode for speed)
-                bail!(
-                    "Ephemeral mode not supported for Firecracker. Use daemon mode for fast execution."
-                )
-            }
+        let result = result?;
+        if !result.is_success() {
+            bail!("Command failed: {}", result.output());
         }
+
+        Ok(result.output())
     }
 
     /// Get pool statistics (for debugging/monitoring)
     #[allow(dead_code)]
     pub async fn pool_stats() -> Option<crate::pool::PoolStats> {
-        if let Some(pool) = CONTAINER_POOL.get() {
-            Some(pool.stats().await)
-        } else {
-            None
-        }
+        CONTAINER_POOL.get().map(|pool| {
+            // Use blocking because stats() is async
+            tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(pool.stats()))
+        })
     }
 }

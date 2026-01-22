@@ -71,6 +71,10 @@ pub struct SandboxConfig {
     pub env: Vec<(String, String)>,
     /// Network access enabled
     pub network: bool,
+    /// Make root filesystem read-only
+    pub read_only: bool,
+    /// Mount home directory (read-only)
+    pub mount_home: bool,
 }
 
 impl Default for SandboxConfig {
@@ -83,7 +87,45 @@ impl Default for SandboxConfig {
             work_dir: None,
             env: Vec::new(),
             network: true,
+            read_only: false,
+            mount_home: false,
         }
+    }
+}
+
+impl SandboxConfig {
+    /// Create a new config with the given image
+    pub fn with_image(image: &str) -> Self {
+        Self {
+            image: image.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Set resource limits
+    pub fn with_resources(mut self, vcpus: u32, memory_mb: u64) -> Self {
+        self.vcpus = vcpus;
+        self.memory_mb = memory_mb;
+        self
+    }
+
+    /// Enable/disable network
+    pub fn with_network(mut self, network: bool) -> Self {
+        self.network = network;
+        self
+    }
+
+    /// Mount current working directory
+    pub fn with_mount_cwd(mut self, mount: bool, work_dir: Option<String>) -> Self {
+        self.mount_cwd = mount;
+        self.work_dir = work_dir;
+        self
+    }
+
+    /// Set environment variables
+    pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
+        self.env = env;
+        self
     }
 }
 

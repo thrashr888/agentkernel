@@ -124,12 +124,21 @@ impl Sandbox for AppleSandbox {
             args.push("/workspace".to_string());
         }
 
+        // Mount home directory if requested
+        if config.mount_home
+            && let Some(home) = std::env::var_os("HOME")
+        {
+            args.push("-v".to_string());
+            args.push(format!("{}:/home/user:ro", home.to_string_lossy()));
+        }
+
         // Add environment variables
         for (key, value) in &config.env {
             args.push("-e".to_string());
             args.push(format!("{}={}", key, value));
         }
 
+        // Note: Apple containers don't support --read-only flag directly
         // Image and command to keep container running
         args.push(config.image.clone());
         args.push("sleep".to_string());

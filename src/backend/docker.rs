@@ -133,6 +133,19 @@ impl Sandbox for DockerSandbox {
             args.push("/workspace".to_string());
         }
 
+        // Mount home directory if requested
+        if config.mount_home
+            && let Some(home) = std::env::var_os("HOME")
+        {
+            args.push("-v".to_string());
+            args.push(format!("{}:/home/user:ro", home.to_string_lossy()));
+        }
+
+        // Read-only root filesystem
+        if config.read_only {
+            args.push("--read-only".to_string());
+        }
+
         // Add environment variables
         for (key, value) in &config.env {
             args.push("-e".to_string());

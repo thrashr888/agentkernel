@@ -2,6 +2,10 @@
 //!
 //! Uses Apple's native `container` CLI which provides lightweight VMs
 //! (one VM per container) with hardware isolation on Apple Silicon.
+//!
+//! NOTE: This module is deprecated - use `backend::apple` instead.
+
+#![allow(dead_code)]
 
 use anyhow::{Context, Result, bail};
 use std::process::Command;

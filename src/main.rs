@@ -310,22 +310,21 @@ memory_mb = 512
 
             let manager = VmManager::new()?;
 
-            if let Some(vm) = manager.get(&name) {
-                if !vm.is_running() {
-                    bail!(
-                        "Sandbox '{}' is not running. Start it with: agentkernel start {}",
-                        name,
-                        name
-                    );
-                }
-
-                // TODO: Connect via vsock and spawn interactive shell
-                println!("Attaching to sandbox '{}'...", name);
-                println!("(vsock communication not yet implemented)");
-                println!("\nVM vsock path: {}", vm.vsock_path().display());
-            } else {
+            if !manager.exists(&name) {
                 bail!("Sandbox '{}' not found", name);
             }
+
+            if !manager.is_running(&name) {
+                bail!(
+                    "Sandbox '{}' is not running. Start it with: agentkernel start {}",
+                    name,
+                    name
+                );
+            }
+
+            // TODO: Connect via vsock and spawn interactive shell
+            println!("Attaching to sandbox '{}'...", name);
+            println!("(Interactive shell not yet implemented)");
         }
         Commands::Exec { name, command } => {
             validation::validate_sandbox_name(&name)?;
