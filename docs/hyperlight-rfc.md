@@ -19,10 +19,13 @@ Current agentkernel latencies:
 | Docker Pool | 250-300ms | Namespaces |
 | Apple Containers | 940ms | VM (Hypervisor.framework) |
 
-**Hyperlight promises:**
-- **1-2ms startup** (targeting sub-millisecond)
+**Hyperlight measured (runtime only):**
+- **68ms startup** (not sub-millisecond as advertised)
 - **Dual-layer security**: Wasm sandbox + hypervisor boundary
-- **~10x faster** than our current best case
+- **~3x faster** than Firecracker Daemon (195ms)
+
+Note: Microsoft's sub-millisecond claim appears to be for function calls after
+runtime is loaded, not for sandbox startup.
 
 Azure team at HashiCorp QBR specifically recommended this for our sandbox use case.
 
@@ -173,14 +176,36 @@ impl HyperlightSandbox {
 - [ ] MCP tool for code evaluation
 - [ ] Benchmark against current backends
 
-## Performance Targets
+## Benchmark Results (Measured)
 
-| Metric | Firecracker Daemon | Hyperlight Target |
-|--------|-------------------|-------------------|
-| Cold start | 800ms | **<5ms** |
-| Warm start | 195ms | **<2ms** |
-| Exec latency | 19ms | **<1ms** |
-| Memory per sandbox | ~10MB | **<1MB** |
+Tested on AMD EPYC (rookery), KVM, hyperlight-wasm 0.12.0:
+
+| Metric | Measured | Notes |
+|--------|----------|-------|
+| Runtime startup | **68ms** (avg), 67ms (p50) | SandboxBuilder + load_runtime() |
+| Min/Max | 67ms / 77ms | |
+| p95/p99 | 77ms | |
+
+### Comparison
+
+| Backend | Startup | Speedup |
+|---------|---------|---------|
+| **Hyperlight** | **68ms** | baseline |
+| Firecracker Daemon | 195ms | 2.9x slower |
+| Docker Pool | 250ms | 3.7x slower |
+| Apple Containers | 940ms | 13.8x slower |
+
+### Analysis
+
+The measured 68ms is **not** the sub-millisecond advertised by Microsoft. The sub-millisecond
+claim likely refers to:
+1. **Function calls** after runtime is loaded (not startup)
+2. **AOT-compiled modules** with mmap (vs JIT compilation overhead)
+
+However, 68ms is still valuable:
+- Faster than all current agentkernel backends
+- Once loaded, function calls should be sub-millisecond
+- Good fit for code evaluation with warm sandbox reuse
 
 ## Risks and Mitigations
 
@@ -218,22 +243,19 @@ impl HyperlightSandbox {
 ## Appendix: Benchmark Comparison
 
 ```
-Current State (agentkernel run -- echo hello):
-┌────────────────────┬──────────┬─────────────┐
-│ Backend            │ Latency  │ Throughput  │
-├────────────────────┼──────────┼─────────────┤
-│ FC Daemon          │ 195ms    │ 5.1/sec     │
-│ Docker Pool        │ 250ms    │ 4.0/sec     │
-│ Apple Containers   │ 940ms    │ 1.1/sec     │
-│ FC Ephemeral       │ 800ms    │ 1.3/sec     │
-└────────────────────┴──────────┴─────────────┘
+Measured Results (agentkernel, hyperlight-wasm 0.12.0):
+┌────────────────────┬──────────┬──────────────────┐
+│ Backend            │ Latency  │ Notes            │
+├────────────────────┼──────────┼──────────────────┤
+│ Hyperlight         │ 68ms     │ Runtime startup  │
+│ FC Daemon          │ 195ms    │ Pre-warmed VM    │
+│ Docker Pool        │ 250ms    │ Container pool   │
+│ Apple Containers   │ 940ms    │ macOS 26+        │
+│ FC Ephemeral       │ 800ms    │ Cold start       │
+└────────────────────┴──────────┴──────────────────┘
 
-With Hyperlight (projected):
-┌────────────────────┬──────────┬─────────────┐
-│ Backend            │ Latency  │ Throughput  │
-├────────────────────┼──────────┼─────────────┤
-│ Hyperlight         │ <2ms     │ >500/sec    │  ← 100x improvement!
-│ FC Daemon          │ 195ms    │ 5.1/sec     │
-│ Docker Pool        │ 250ms    │ 4.0/sec     │
-└────────────────────┴──────────┴─────────────┘
+Speedups vs Hyperlight:
+- vs Firecracker Daemon: 2.9x faster
+- vs Docker Pool: 3.7x faster
+- vs Apple Containers: 13.8x faster
 ```
