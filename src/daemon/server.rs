@@ -9,8 +9,19 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 
 use super::pool::{FirecrackerPool, PoolConfig};
-use super::protocol::{DaemonRequest, DaemonResponse};
+use super::protocol::{DaemonCompatibilityMode, DaemonRequest, DaemonResponse};
+use crate::permissions::CompatibilityMode;
 use crate::vsock::{AGENT_PORT, VsockClient, VsockConnection};
+
+/// Convert daemon compatibility mode to internal compatibility mode
+fn to_internal_mode(mode: DaemonCompatibilityMode) -> CompatibilityMode {
+    match mode {
+        DaemonCompatibilityMode::Native => CompatibilityMode::Native,
+        DaemonCompatibilityMode::Claude => CompatibilityMode::ClaudeCode,
+        DaemonCompatibilityMode::Codex => CompatibilityMode::Codex,
+        DaemonCompatibilityMode::Gemini => CompatibilityMode::Gemini,
+    }
+}
 
 /// Cache for persistent vsock connections
 type ConnectionCache = Arc<Mutex<HashMap<String, VsockConnection>>>;
@@ -172,7 +183,11 @@ async fn handle_request(
     use super::protocol::DaemonBackend;
 
     match request {
-        DaemonRequest::Acquire { runtime, backend } => {
+        DaemonRequest::Acquire {
+            runtime,
+            backend,
+            compatibility_mode,
+        } => {
             // For now, only Firecracker is supported in daemon mode
             if !matches!(backend, DaemonBackend::Firecracker) {
                 return DaemonResponse::error(format!(
@@ -181,7 +196,8 @@ async fn handle_request(
                 ));
             }
 
-            match pool.acquire(&runtime).await {
+            let internal_mode = to_internal_mode(compatibility_mode);
+            match pool.acquire_with_mode(&runtime, internal_mode).await {
                 Ok(vm) => DaemonResponse::Acquired {
                     id: vm.id,
                     cid: Some(vm.cid),
@@ -199,6 +215,7 @@ async fn handle_request(
             runtime,
             command,
             backend,
+            compatibility_mode,
         } => {
             // For now, only Firecracker is supported in daemon mode
             if !matches!(backend, DaemonBackend::Firecracker) {
@@ -207,8 +224,10 @@ async fn handle_request(
                     backend
                 ));
             }
+
+            let internal_mode = to_internal_mode(compatibility_mode);
             // Acquire VM from pool
-            let vm = match pool.acquire(&runtime).await {
+            let vm = match pool.acquire_with_mode(&runtime, internal_mode).await {
                 Ok(vm) => vm,
                 Err(e) => return DaemonResponse::error(format!("Failed to acquire VM: {}", e)),
             };
@@ -258,14 +277,30 @@ async fn handle_request(
                 Err(e) => DaemonResponse::error(format!("Command failed: {}", e)),
             }
         }
+        DaemonRequest::Prewarm { compatibility_mode } => {
+            let internal_mode = to_internal_mode(compatibility_mode);
+            match pool.warm_up_for_agent(internal_mode).await {
+                Ok(_) => {
+                    // Count how many VMs we have for this mode now
+                    let (warm, _) = pool.stats().await;
+                    DaemonResponse::Prewarmed {
+                        compatibility_mode,
+                        count: warm,
+                    }
+                }
+                Err(e) => DaemonResponse::error(format!("Failed to prewarm: {}", e)),
+            }
+        }
         DaemonRequest::Status => {
             let (warm, in_use) = pool.stats().await;
+            let agent_stats = pool.stats_by_agent().await;
             DaemonResponse::Status {
                 warm,
                 in_use,
                 min_warm: 3, // TODO: get from config
                 max_warm: 5,
                 backends: vec!["firecracker".to_string()],
+                agent_stats,
             }
         }
         DaemonRequest::Shutdown => {

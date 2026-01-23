@@ -10,6 +10,7 @@ use tokio::sync::{Mutex, Semaphore};
 use tokio::time::sleep;
 
 use crate::firecracker_client::{BootSource, Drive, FirecrackerClient, MachineConfig, VsockDevice};
+use crate::permissions::CompatibilityMode;
 use crate::vsock::VsockClient;
 
 /// VM handle returned to clients (without process ownership)
@@ -23,12 +24,81 @@ pub struct VmHandle {
     pub vsock_path: PathBuf,
 }
 
+/// Per-agent pool configuration
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct AgentPoolConfig {
+    /// Minimum number of warm VMs for this agent type
+    pub min_warm: usize,
+    /// Maximum number of warm VMs for this agent type
+    pub max_warm: usize,
+    /// Preferred runtime (base, python, node, etc.)
+    pub runtime: String,
+    /// Memory allocation for this agent's VMs (MiB)
+    pub mem_size_mib: u64,
+    /// Number of vCPUs for this agent's VMs
+    pub vcpu_count: u32,
+}
+
+#[allow(dead_code)]
+impl AgentPoolConfig {
+    /// Create config for Claude Code
+    pub fn claude_code() -> Self {
+        Self {
+            min_warm: 2,
+            max_warm: 4,
+            runtime: "python".to_string(), // Claude often runs Python
+            mem_size_mib: 512,
+            vcpu_count: 1,
+        }
+    }
+
+    /// Create config for Codex
+    pub fn codex() -> Self {
+        Self {
+            min_warm: 1,
+            max_warm: 3,
+            runtime: "python".to_string(),
+            mem_size_mib: 512,
+            vcpu_count: 1,
+        }
+    }
+
+    /// Create config for Gemini
+    pub fn gemini() -> Self {
+        Self {
+            min_warm: 1,
+            max_warm: 3,
+            runtime: "python".to_string(),
+            mem_size_mib: 512,
+            vcpu_count: 1,
+        }
+    }
+
+    /// Create config for native mode
+    pub fn native() -> Self {
+        Self {
+            min_warm: 2,
+            max_warm: 5,
+            runtime: "base".to_string(),
+            mem_size_mib: 512,
+            vcpu_count: 1,
+        }
+    }
+}
+
+impl Default for AgentPoolConfig {
+    fn default() -> Self {
+        Self::native()
+    }
+}
+
 /// Pool configuration
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
-    /// Minimum number of warm VMs to maintain
+    /// Minimum number of warm VMs to maintain (global)
     pub min_warm: usize,
-    /// Maximum number of warm VMs to maintain
+    /// Maximum number of warm VMs to maintain (global)
     pub max_warm: usize,
     /// Maximum age of a VM before recycling (seconds)
     pub max_age_secs: u64,
@@ -36,6 +106,10 @@ pub struct PoolConfig {
     pub health_interval_secs: u64,
     /// Default runtime type
     pub default_runtime: String,
+    /// Per-agent configuration (overrides globals when set)
+    pub agent_configs: HashMap<CompatibilityMode, AgentPoolConfig>,
+    /// Which agents to pre-warm on startup
+    pub prewarm_agents: Vec<CompatibilityMode>,
 }
 
 impl Default for PoolConfig {
@@ -46,7 +120,39 @@ impl Default for PoolConfig {
             max_age_secs: 300, // 5 minutes
             health_interval_secs: 30,
             default_runtime: "base".to_string(),
+            agent_configs: HashMap::new(),
+            prewarm_agents: vec![],
         }
+    }
+}
+
+#[allow(dead_code)]
+impl PoolConfig {
+    /// Create a config with pre-warming for all agent types
+    pub fn with_all_agents() -> Self {
+        let mut agent_configs = HashMap::new();
+        agent_configs.insert(CompatibilityMode::Native, AgentPoolConfig::native());
+        agent_configs.insert(
+            CompatibilityMode::ClaudeCode,
+            AgentPoolConfig::claude_code(),
+        );
+        agent_configs.insert(CompatibilityMode::Codex, AgentPoolConfig::codex());
+        agent_configs.insert(CompatibilityMode::Gemini, AgentPoolConfig::gemini());
+
+        Self {
+            min_warm: 3,
+            max_warm: 10,
+            max_age_secs: 300,
+            health_interval_secs: 30,
+            default_runtime: "base".to_string(),
+            agent_configs,
+            prewarm_agents: vec![CompatibilityMode::Native], // Only pre-warm native by default
+        }
+    }
+
+    /// Get config for a specific agent type
+    pub fn get_agent_config(&self, mode: CompatibilityMode) -> AgentPoolConfig {
+        self.agent_configs.get(&mode).cloned().unwrap_or_default()
     }
 }
 
@@ -65,6 +171,8 @@ pub struct PooledVm {
     process: Child,
     /// Runtime type (base, python, etc.)
     pub runtime: String,
+    /// Compatibility mode this VM was created for
+    pub compatibility_mode: CompatibilityMode,
     /// When the VM was created
     pub created_at: Instant,
     /// When the VM was last used
@@ -136,17 +244,59 @@ impl FirecrackerPool {
         (warm, in_use)
     }
 
-    /// Acquire a VM from the pool
+    /// Get pool statistics broken down by agent compatibility mode
+    pub async fn stats_by_agent(&self) -> HashMap<String, usize> {
+        let pool = self.warm_pool.lock().await;
+        let mut stats: HashMap<String, usize> = HashMap::new();
+
+        for vm in pool.iter() {
+            let mode_str = match vm.compatibility_mode {
+                CompatibilityMode::Native => "native",
+                CompatibilityMode::ClaudeCode => "claude",
+                CompatibilityMode::Codex => "codex",
+                CompatibilityMode::Gemini => "gemini",
+            };
+            *stats.entry(mode_str.to_string()).or_insert(0) += 1;
+        }
+
+        stats
+    }
+
+    /// Acquire a VM from the pool by runtime type
+    #[allow(dead_code)]
     pub async fn acquire(&self, runtime: &str) -> Result<VmHandle> {
+        self.acquire_with_mode(runtime, CompatibilityMode::Native)
+            .await
+    }
+
+    /// Acquire a VM from the pool for a specific agent compatibility mode
+    #[allow(dead_code)]
+    pub async fn acquire_for_agent(&self, mode: CompatibilityMode) -> Result<VmHandle> {
+        let agent_config = self.config.get_agent_config(mode);
+        self.acquire_with_mode(&agent_config.runtime, mode).await
+    }
+
+    /// Acquire a VM with specific runtime and compatibility mode
+    pub async fn acquire_with_mode(
+        &self,
+        runtime: &str,
+        mode: CompatibilityMode,
+    ) -> Result<VmHandle> {
         // Try to get a VM from the warm pool
         // IMPORTANT: Release warm_pool lock before acquiring in_use lock to prevent deadlock
         let vm_opt = {
             let mut pool = self.warm_pool.lock().await;
 
-            // Find a VM with matching runtime
-            let idx = pool
-                .iter()
-                .position(|vm| vm.runtime == runtime && vm.is_alive());
+            // Find a VM with matching runtime AND compatibility mode (prefer exact match)
+            // Fall back to matching runtime only if no exact match
+            let exact_idx = pool.iter().position(|vm| {
+                vm.runtime == runtime && vm.compatibility_mode == mode && vm.is_alive()
+            });
+
+            let idx = exact_idx.or_else(|| {
+                pool.iter()
+                    .position(|vm| vm.runtime == runtime && vm.is_alive())
+            });
 
             if let Some(idx) = idx {
                 let mut vm = pool.remove(idx).unwrap();
@@ -172,7 +322,7 @@ impl FirecrackerPool {
         }
 
         // No warm VM available, start a new one
-        let vm = self.start_vm(runtime).await?;
+        let vm = self.start_vm_with_mode(runtime, mode).await?;
 
         // Create handle before moving VM
         let handle = VmHandle {
@@ -221,13 +371,28 @@ impl FirecrackerPool {
         Ok(())
     }
 
-    /// Start a new VM
+    /// Start a new VM with default compatibility mode
     async fn start_vm(&self, runtime: &str) -> Result<PooledVm> {
+        self.start_vm_with_mode(runtime, CompatibilityMode::Native)
+            .await
+    }
+
+    /// Start a new VM with specific compatibility mode
+    async fn start_vm_with_mode(&self, runtime: &str, mode: CompatibilityMode) -> Result<PooledVm> {
         // Acquire semaphore to limit concurrent starts
         let _permit = self.start_semaphore.acquire().await?;
 
+        // Get agent-specific config for memory/CPU
+        let agent_config = self.config.get_agent_config(mode);
+
         let cid = self.next_cid.fetch_add(1, Ordering::SeqCst);
-        let id = format!("pool-{}-{}", runtime, cid);
+        let mode_str = match mode {
+            CompatibilityMode::Native => "native",
+            CompatibilityMode::ClaudeCode => "claude",
+            CompatibilityMode::Codex => "codex",
+            CompatibilityMode::Gemini => "gemini",
+        };
+        let id = format!("pool-{}-{}-{}", mode_str, runtime, cid);
 
         let api_socket_path = PathBuf::from(format!("/tmp/agentkernel-{}.sock", id));
         let vsock_path = PathBuf::from(format!("/tmp/agentkernel-{}-vsock.sock", id));
@@ -287,10 +452,10 @@ impl FirecrackerPool {
         };
         client.set_drive("rootfs", &drive).await?;
 
-        // Machine config
+        // Machine config (use agent-specific settings)
         let machine = MachineConfig {
-            vcpu_count: 1,
-            mem_size_mib: 512,
+            vcpu_count: agent_config.vcpu_count,
+            mem_size_mib: agent_config.mem_size_mib,
         };
         client.set_machine_config(&machine).await?;
 
@@ -328,6 +493,7 @@ impl FirecrackerPool {
             api_socket_path,
             process,
             runtime: runtime.to_string(),
+            compatibility_mode: mode,
             created_at: now,
             last_used: now,
         })
@@ -378,8 +544,14 @@ impl FirecrackerPool {
         bail!("Firecracker binary not found")
     }
 
-    /// Pre-warm the pool to min_warm VMs
+    /// Pre-warm the pool to min_warm VMs (default behavior)
     pub async fn warm_up(&self) -> Result<()> {
+        // If agent-specific pre-warming is configured, use that
+        if !self.config.prewarm_agents.is_empty() {
+            return self.warm_up_agents().await;
+        }
+
+        // Otherwise fall back to default runtime
         let runtime = &self.config.default_runtime;
         let current = self.warm_pool.lock().await.len();
         let needed = self.config.min_warm.saturating_sub(current);
@@ -395,6 +567,98 @@ impl FirecrackerPool {
                 }
                 Err(e) => {
                     eprintln!("Failed to warm up VM: {}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Pre-warm the pool with VMs for each configured agent type
+    pub async fn warm_up_agents(&self) -> Result<()> {
+        for mode in &self.config.prewarm_agents {
+            if self.shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+
+            let agent_config = self.config.get_agent_config(*mode);
+            let mode_str = match mode {
+                CompatibilityMode::Native => "native",
+                CompatibilityMode::ClaudeCode => "claude",
+                CompatibilityMode::Codex => "codex",
+                CompatibilityMode::Gemini => "gemini",
+            };
+
+            // Count current VMs for this mode
+            let current = {
+                let pool = self.warm_pool.lock().await;
+                pool.iter()
+                    .filter(|vm| vm.compatibility_mode == *mode)
+                    .count()
+            };
+
+            let needed = agent_config.min_warm.saturating_sub(current);
+            if needed == 0 {
+                continue;
+            }
+
+            eprintln!("Pre-warming {} VMs for {} mode...", needed, mode_str);
+
+            for _ in 0..needed {
+                if self.shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                match self.start_vm_with_mode(&agent_config.runtime, *mode).await {
+                    Ok(vm) => {
+                        self.warm_pool.lock().await.push_back(vm);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to warm up {} VM: {}", mode_str, e);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Pre-warm VMs for a specific agent type
+    pub async fn warm_up_for_agent(&self, mode: CompatibilityMode) -> Result<()> {
+        let agent_config = self.config.get_agent_config(mode);
+        let mode_str = match mode {
+            CompatibilityMode::Native => "native",
+            CompatibilityMode::ClaudeCode => "claude",
+            CompatibilityMode::Codex => "codex",
+            CompatibilityMode::Gemini => "gemini",
+        };
+
+        // Count current VMs for this mode
+        let current = {
+            let pool = self.warm_pool.lock().await;
+            pool.iter()
+                .filter(|vm| vm.compatibility_mode == mode)
+                .count()
+        };
+
+        let needed = agent_config.min_warm.saturating_sub(current);
+        if needed == 0 {
+            return Ok(());
+        }
+
+        eprintln!("Pre-warming {} VMs for {} mode...", needed, mode_str);
+
+        for _ in 0..needed {
+            if self.shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+
+            match self.start_vm_with_mode(&agent_config.runtime, mode).await {
+                Ok(vm) => {
+                    self.warm_pool.lock().await.push_back(vm);
+                }
+                Err(e) => {
+                    eprintln!("Failed to warm up {} VM: {}", mode_str, e);
                 }
             }
         }

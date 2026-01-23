@@ -185,7 +185,7 @@ impl Permissions {
 ///
 /// Different AI agents have different expectations for sandbox behavior.
 /// This mode adjusts permissions and networking to match each agent's needs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CompatibilityMode {
     /// Default agentkernel behavior

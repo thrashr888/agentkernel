@@ -155,19 +155,144 @@ agentkernel remove my-sandbox
 - Host filesystem is NOT mounted by default (use `permissive` profile to enable)
 - Each sandbox gets a clean environment
 
+## Agent Compatibility Modes
+
+Agentkernel supports compatibility modes for different AI agents. Each mode configures sandbox behavior optimally for that agent's needs:
+
+```bash
+# Claude Code compatibility (default for this plugin)
+agentkernel run --compatibility-mode claude python3 script.py
+
+# Codex compatibility (stricter isolation)
+agentkernel run --compatibility-mode codex python3 script.py
+
+# Gemini compatibility (Docker-style)
+agentkernel run --compatibility-mode gemini python3 script.py
+```
+
+Or configure in `agentkernel.toml`:
+
+```toml
+[sandbox]
+name = "my-project"
+
+[agent]
+preferred = "claude"
+compatibility_mode = "claude"  # claude, codex, gemini, or native
+
+[security]
+profile = "moderate"  # Can override compatibility mode defaults
+```
+
+### Compatibility Mode Differences
+
+| Mode | Network Policy | Project Mount | API Access | Isolation |
+|------|----------------|---------------|------------|-----------|
+| Native | Allow all | No | None | Moderate |
+| Claude | Domain allowlist | Yes | Anthropic API | Moderate |
+| Codex | Domain allowlist | Yes | OpenAI API | Strict |
+| Gemini | Domain allowlist | Yes | Google API | Moderate |
+
+Claude mode allows: `api.anthropic.com`, `cdn.anthropic.com`, common package registries.
+Codex mode allows: `api.openai.com`, `cdn.openai.com`, common package registries.
+Gemini mode allows: `*.googleapis.com`, common package registries.
+
+All modes block cloud metadata endpoints (169.254.169.254, metadata.google.internal).
+
 ## MCP Server Integration
 
-This plugin also provides an MCP (Model Context Protocol) server for direct tool integration. When enabled, the following MCP tools are available:
+This plugin provides an MCP (Model Context Protocol) server for direct tool integration. When enabled, the following MCP tools are available:
+
+### Command Execution
 
 | Tool | Description |
 |------|-------------|
-| `sandbox_run` | Run a command in a temporary sandbox (auto-cleanup) |
+| `sandbox_run` | Run a command in a temporary sandbox with security profile and compatibility mode |
 | `sandbox_create` | Create a persistent sandbox |
 | `sandbox_exec` | Execute a command in an existing sandbox |
 | `sandbox_list` | List all sandboxes |
 | `sandbox_remove` | Remove a sandbox |
 
+### File Operations
+
+| Tool | Description |
+|------|-------------|
+| `sandbox_file_write` | Write a file into a running sandbox |
+| `sandbox_file_read` | Read a file from a sandbox (supports binary via base64) |
+
+### Lifecycle Management
+
+| Tool | Description |
+|------|-------------|
+| `sandbox_start` | Start a stopped sandbox |
+| `sandbox_stop` | Stop a running sandbox |
+
+### sandbox_run Options
+
+The `sandbox_run` tool accepts these parameters:
+
+- `command` (required): Command to execute (array of strings)
+- `profile`: Security profile (`restrictive`, `moderate`, `permissive`)
+- `compatibility_mode`: Agent mode (`native`, `claude`, `codex`, `gemini`)
+- `network`: Override network access (boolean)
+- `cwd`: Working directory inside sandbox
+- `env`: Environment variables (object)
+- `timeout_ms`: Command timeout in milliseconds (default: 30000)
+
+Example MCP request:
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "sandbox_run",
+    "arguments": {
+      "command": ["python3", "-c", "print('hello')"],
+      "compatibility_mode": "claude",
+      "timeout_ms": 60000
+    }
+  }
+}
+```
+
 The MCP server starts automatically when the plugin is loaded and provides these tools via JSON-RPC over stdio.
+
+## Daemon Mode (Fast Execution)
+
+For high-performance scenarios, agentkernel can run a daemon that maintains a pool of pre-warmed sandboxes:
+
+```bash
+# Start daemon with pre-warmed pool
+agentkernel daemon start
+
+# Check status
+agentkernel daemon status  # Shows warm VMs per agent type
+
+# Commands use warm pool automatically (~50ms vs ~500ms cold start)
+agentkernel run python3 script.py
+
+# Pre-warm for specific agent types
+agentkernel daemon prewarm --mode claude
+
+# Stop daemon
+agentkernel daemon stop
+```
+
+The daemon supports per-agent pool configuration for optimal warm starts:
+
+```toml
+# Example daemon config (future)
+[daemon]
+min_warm = 3
+max_warm = 5
+
+[daemon.agents.claude]
+min_warm = 2
+runtime = "python"
+
+[daemon.agents.codex]
+min_warm = 1
+runtime = "python"
+```
 
 ## Error Handling
 

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-use super::protocol::{DaemonRequest, DaemonResponse};
+use super::protocol::{DaemonCompatibilityMode, DaemonRequest, DaemonResponse};
 use super::server::DaemonServer;
 
 /// Client for connecting to the daemon
@@ -73,10 +73,22 @@ impl DaemonClient {
     /// Acquire a VM from the pool
     #[allow(dead_code)]
     pub async fn acquire(&self, runtime: &str) -> Result<VmHandle> {
+        self.acquire_with_mode(runtime, DaemonCompatibilityMode::Native)
+            .await
+    }
+
+    /// Acquire a VM from the pool with a specific compatibility mode
+    #[allow(dead_code)]
+    pub async fn acquire_with_mode(
+        &self,
+        runtime: &str,
+        compatibility_mode: DaemonCompatibilityMode,
+    ) -> Result<VmHandle> {
         use super::protocol::DaemonBackend;
         let request = DaemonRequest::Acquire {
             runtime: runtime.to_string(),
             backend: DaemonBackend::default(),
+            compatibility_mode,
         };
 
         match self.send_request(&request).await? {
@@ -125,7 +137,7 @@ impl DaemonClient {
                 in_use,
                 min_warm,
                 max_warm,
-                backends: _,
+                ..
             } => Ok((warm, in_use, min_warm, max_warm)),
             DaemonResponse::Error { message } => {
                 bail!("Daemon error: {}", message)
@@ -153,11 +165,23 @@ impl DaemonClient {
 
     /// Run a command in a pooled VM (single round-trip: acquire + run + release)
     pub async fn run_in_pool(&self, runtime: &str, command: &[String]) -> Result<RunResult> {
+        self.run_in_pool_with_mode(runtime, command, DaemonCompatibilityMode::Native)
+            .await
+    }
+
+    /// Run a command in a pooled VM with a specific compatibility mode
+    pub async fn run_in_pool_with_mode(
+        &self,
+        runtime: &str,
+        command: &[String],
+        compatibility_mode: DaemonCompatibilityMode,
+    ) -> Result<RunResult> {
         use super::protocol::DaemonBackend;
         let request = DaemonRequest::Exec {
             runtime: runtime.to_string(),
             command: command.to_vec(),
             backend: DaemonBackend::default(),
+            compatibility_mode,
         };
 
         match self.send_request(&request).await? {

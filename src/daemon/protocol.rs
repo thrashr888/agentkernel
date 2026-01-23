@@ -1,6 +1,7 @@
 //! JSON protocol for daemon communication.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Backend type for daemon requests
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
@@ -17,6 +18,21 @@ pub enum DaemonBackend {
     Apple,
 }
 
+/// Agent compatibility mode for daemon requests
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum DaemonCompatibilityMode {
+    /// Default agentkernel behavior
+    #[default]
+    Native,
+    /// Claude Code compatible
+    Claude,
+    /// OpenAI Codex compatible
+    Codex,
+    /// Gemini CLI compatible
+    Gemini,
+}
+
 /// Request from CLI to daemon
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -28,6 +44,9 @@ pub enum DaemonRequest {
         /// Backend to use (optional, defaults to Firecracker)
         #[serde(default)]
         backend: DaemonBackend,
+        /// Agent compatibility mode (optional, defaults to Native)
+        #[serde(default)]
+        compatibility_mode: DaemonCompatibilityMode,
     },
     /// Release a VM back to the pool
     Release {
@@ -43,6 +62,14 @@ pub enum DaemonRequest {
         /// Backend to use (optional, defaults to Firecracker)
         #[serde(default)]
         backend: DaemonBackend,
+        /// Agent compatibility mode (optional, defaults to Native)
+        #[serde(default)]
+        compatibility_mode: DaemonCompatibilityMode,
+    },
+    /// Pre-warm the pool for a specific agent type
+    Prewarm {
+        /// Agent compatibility mode to pre-warm for
+        compatibility_mode: DaemonCompatibilityMode,
     },
     /// Get daemon status
     Status,
@@ -89,6 +116,16 @@ pub enum DaemonResponse {
         max_warm: usize,
         /// Supported backends
         backends: Vec<String>,
+        /// Per-agent pool stats (warm count per compatibility mode)
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        agent_stats: HashMap<String, usize>,
+    },
+    /// Pool pre-warmed for agent
+    Prewarmed {
+        /// Agent mode that was pre-warmed
+        compatibility_mode: DaemonCompatibilityMode,
+        /// Number of VMs created
+        count: usize,
     },
     /// Shutdown acknowledged
     ShuttingDown,
