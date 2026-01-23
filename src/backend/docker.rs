@@ -351,6 +351,82 @@ impl Sandbox for DockerSandbox {
     }
 }
 
+impl DockerSandbox {
+    /// Run a command in a temporary container using `docker run --rm`
+    /// This is faster than create→start→exec→stop for one-shot commands
+    pub fn run_ephemeral_cmd(
+        runtime: ContainerRuntime,
+        image: &str,
+        cmd: &[String],
+        config: &SandboxConfig,
+    ) -> Result<ExecResult> {
+        let runtime_cmd = runtime.cmd();
+
+        let mut args = vec![
+            "run".to_string(),
+            "--rm".to_string(), // auto-remove after exit
+        ];
+
+        // Add resource limits
+        args.push(format!("--cpus={}", config.vcpus));
+        args.push(format!("--memory={}m", config.memory_mb));
+
+        // Network configuration
+        if !config.network {
+            args.push("--network=none".to_string());
+        }
+
+        // Mount working directory if requested
+        if config.mount_cwd
+            && let Some(ref work_dir) = config.work_dir
+        {
+            args.push("-v".to_string());
+            args.push(format!("{}:/workspace", work_dir));
+            args.push("-w".to_string());
+            args.push("/workspace".to_string());
+        }
+
+        // Mount home directory if requested (read-only)
+        if config.mount_home
+            && let Some(home) = std::env::var_os("HOME")
+        {
+            args.push("-v".to_string());
+            args.push(format!("{}:/home/user:ro", home.to_string_lossy()));
+        }
+
+        // Read-only root filesystem
+        if config.read_only {
+            args.push("--read-only".to_string());
+        }
+
+        // Add environment variables
+        for (key, value) in &config.env {
+            args.push("-e".to_string());
+            args.push(format!("{}={}", key, value));
+        }
+
+        // Image and command
+        args.push(image.to_string());
+        args.extend(cmd.iter().cloned());
+
+        // Run the container
+        let output = Command::new(runtime_cmd)
+            .args(&args)
+            .output()
+            .context("Failed to run container")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let exit_code = output.status.code().unwrap_or(-1);
+
+        Ok(ExecResult {
+            exit_code,
+            stdout,
+            stderr,
+        })
+    }
+}
+
 impl Drop for DockerSandbox {
     fn drop(&mut self) {
         if self.running {

@@ -203,6 +203,84 @@ impl ContainerSandbox {
             false
         }
     }
+
+    /// Run a command in a temporary container using `docker run --rm`
+    /// This is faster than create→start→exec→stop for one-shot commands
+    pub fn run_ephemeral_cmd(
+        runtime: ContainerRuntime,
+        image: &str,
+        cmd: &[String],
+        perms: &Permissions,
+    ) -> Result<(i32, String, String)> {
+        let runtime_cmd = runtime.cmd();
+
+        let mut args = vec![
+            "run".to_string(),
+            "--rm".to_string(), // auto-remove after exit
+        ];
+
+        // Resource limits
+        if let Some(cpu) = perms.max_cpu_percent {
+            args.push(format!("--cpus={}", cpu as f32 / 100.0));
+        }
+        if let Some(mem) = perms.max_memory_mb {
+            args.push(format!("--memory={}m", mem));
+        }
+
+        // Network configuration
+        if !perms.network {
+            args.push("--network=none".to_string());
+        }
+
+        // Mount working directory if requested
+        if perms.mount_cwd
+            && let Ok(cwd) = std::env::current_dir()
+        {
+            args.push("-v".to_string());
+            args.push(format!("{}:/workspace", cwd.display()));
+            args.push("-w".to_string());
+            args.push("/workspace".to_string());
+        }
+
+        // Mount home directory if requested (read-only)
+        if perms.mount_home
+            && let Some(home) = std::env::var_os("HOME")
+        {
+            args.push("-v".to_string());
+            args.push(format!("{}:/home/user:ro", home.to_string_lossy()));
+        }
+
+        // Read-only root filesystem
+        if perms.read_only_root {
+            args.push("--read-only".to_string());
+        }
+
+        // Environment variables
+        if perms.pass_env {
+            for var in ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM"] {
+                if let Ok(val) = std::env::var(var) {
+                    args.push("-e".to_string());
+                    args.push(format!("{}={}", var, val));
+                }
+            }
+        }
+
+        // Image and command
+        args.push(image.to_string());
+        args.extend(cmd.iter().cloned());
+
+        // Run the container
+        let output = Command::new(runtime_cmd)
+            .args(&args)
+            .output()
+            .context("Failed to run container")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let exit_code = output.status.code().unwrap_or(-1);
+
+        Ok((exit_code, stdout, stderr))
+    }
 }
 
 /// Check if Docker is available

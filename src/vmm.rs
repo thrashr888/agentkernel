@@ -407,12 +407,6 @@ impl VmManager {
         cmd: &[String],
         perms: &Permissions,
     ) -> Result<String> {
-        // Generate unique name
-        let name = format!("ephemeral-{}", &uuid::Uuid::new_v4().to_string()[..8]);
-
-        // Create sandbox
-        let mut sandbox = create_sandbox(self.backend, &name)?;
-
         // Build config from permissions
         let work_dir = if perms.mount_cwd {
             std::env::current_dir()
@@ -442,6 +436,43 @@ impl VmManager {
             read_only: perms.read_only_root,
             mount_home: perms.mount_home,
         };
+
+        // Use optimized `docker/podman run --rm` for container backends
+        match self.backend {
+            BackendType::Docker => {
+                use crate::docker_backend::{ContainerRuntime, ContainerSandbox};
+                let (exit_code, stdout, stderr) = ContainerSandbox::run_ephemeral_cmd(
+                    ContainerRuntime::Docker,
+                    image,
+                    cmd,
+                    perms,
+                )?;
+                if exit_code != 0 {
+                    bail!("Command failed (exit {}): {}{}", exit_code, stdout, stderr);
+                }
+                return Ok(format!("{}{}", stdout, stderr));
+            }
+            BackendType::Podman => {
+                use crate::docker_backend::{ContainerRuntime, ContainerSandbox};
+                let (exit_code, stdout, stderr) = ContainerSandbox::run_ephemeral_cmd(
+                    ContainerRuntime::Podman,
+                    image,
+                    cmd,
+                    perms,
+                )?;
+                if exit_code != 0 {
+                    bail!("Command failed (exit {}): {}{}", exit_code, stdout, stderr);
+                }
+                return Ok(format!("{}{}", stdout, stderr));
+            }
+            _ => {
+                // Fall through to generic start→exec→stop for other backends
+            }
+        }
+
+        // Generic path for non-container backends (Firecracker, Apple, Hyperlight)
+        let name = format!("ephemeral-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let mut sandbox = create_sandbox(self.backend, &name)?;
 
         // Start, exec, stop
         sandbox.start(&config).await?;

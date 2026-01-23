@@ -16,45 +16,9 @@
         "source": "github"
       }
     },
-    "chrome-devtools-mcp-marketplace": {
-      "source": {
-        "repo": "ChromeDevTools/chrome-devtools-mcp",
-        "source": "github"
-      }
-    },
-    "claude-code-marketplace": {
-      "source": {
-        "repo": "anthropics/claude-code",
-        "source": "github"
-      }
-    },
-    "claude-plugins-official-marketplace": {
-      "source": {
-        "repo": "anthropics/claude-plugins-official",
-        "source": "github"
-      }
-    },
     "claude-skill-marketplace": {
       "source": {
         "repo": "ast-grep/claude-skill",
-        "source": "github"
-      }
-    },
-    "prose-marketplace": {
-      "source": {
-        "repo": "openprose/prose",
-        "source": "github"
-      }
-    },
-    "repomix-marketplace": {
-      "source": {
-        "repo": "yamadashy/repomix",
-        "source": "github"
-      }
-    },
-    "skills-marketplace": {
-      "source": {
-        "repo": "anthropics/skills",
         "source": "github"
       }
     }
