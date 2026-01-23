@@ -351,6 +351,19 @@ impl VmManager {
         Ok(result.output())
     }
 
+    /// Attach to a sandbox's interactive shell
+    pub async fn attach(&mut self, name: &str) -> Result<i32> {
+        let sandbox = self.running.get_mut(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Sandbox '{}' is not running. Start it with: agentkernel start {}",
+                name,
+                name
+            )
+        })?;
+
+        sandbox.attach(None).await
+    }
+
     /// Stop a sandbox
     pub async fn stop(&mut self, name: &str) -> Result<()> {
         if let Some(mut sandbox) = self.running.remove(name) {

@@ -308,6 +308,24 @@ pub trait Sandbox: Send + Sync {
         }
         Ok(())
     }
+
+    // --- Interactive Shell/PTY Operations ---
+
+    /// Attach an interactive shell to the sandbox
+    ///
+    /// This opens a PTY session in the guest and bridges it to the host terminal.
+    /// The shell runs until the user exits (Ctrl+D or exit command).
+    ///
+    /// # Arguments
+    /// * `shell` - Shell to run (e.g., "/bin/sh", "/bin/bash"). If None, uses /bin/sh.
+    ///
+    /// # Returns
+    /// The exit code of the shell process.
+    async fn attach(&mut self, shell: Option<&str>) -> Result<i32> {
+        // Default implementation returns an error since not all backends support PTY
+        let _ = shell;
+        anyhow::bail!("Interactive shell not supported by this backend")
+    }
 }
 
 /// Validate a path for sandbox file operations

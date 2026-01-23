@@ -349,7 +349,7 @@ memory_mb = 512
         Commands::Attach { name } => {
             validation::validate_sandbox_name(&name)?;
 
-            let manager = VmManager::new()?;
+            let mut manager = VmManager::new()?;
 
             if !manager.exists(&name) {
                 bail!("Sandbox '{}' not found", name);
@@ -363,9 +363,12 @@ memory_mb = 512
                 );
             }
 
-            // TODO: Connect via vsock and spawn interactive shell
-            println!("Attaching to sandbox '{}'...", name);
-            println!("(Interactive shell not yet implemented)");
+            // Attach to the sandbox's shell
+            let exit_code = manager.attach(&name).await?;
+
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
         }
         Commands::Exec { name, command } => {
             validation::validate_sandbox_name(&name)?;

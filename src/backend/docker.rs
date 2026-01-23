@@ -349,6 +349,32 @@ impl Sandbox for DockerSandbox {
 
         Ok(())
     }
+
+    async fn attach(&mut self, shell: Option<&str>) -> Result<i32> {
+        if !self.running {
+            bail!("Container is not running");
+        }
+
+        let container_name = self.container_name();
+        let shell_cmd = shell.unwrap_or("/bin/sh");
+
+        // Use docker exec -it to attach an interactive terminal
+        // Note: this takes over stdin/stdout directly
+        let status = std::process::Command::new(self.runtime.cmd())
+            .args([
+                "exec",
+                "-it",
+                &container_name,
+                shell_cmd,
+            ])
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()
+            .context("Failed to attach to container")?;
+
+        Ok(status.code().unwrap_or(-1))
+    }
 }
 
 impl DockerSandbox {

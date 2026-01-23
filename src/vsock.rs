@@ -29,6 +29,12 @@ pub enum RequestType {
     Run,
     /// Start an interactive shell (PTY)
     Shell,
+    /// Send input to a shell session
+    ShellInput,
+    /// Resize a shell session's terminal
+    ShellResize,
+    /// Close a shell session
+    ShellClose,
     /// Health check
     Ping,
     /// Graceful shutdown
@@ -69,6 +75,19 @@ pub struct AgentRequest {
     /// Whether to create parent directories (for Mkdir)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recursive: Option<bool>,
+    // Shell-specific fields
+    /// Session ID (for ShellInput, ShellResize, ShellClose)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Terminal rows (for Shell, ShellResize)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u16>,
+    /// Terminal columns (for Shell, ShellResize)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cols: Option<u16>,
+    /// Input data as base64 (for ShellInput)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_base64: Option<String>,
 }
 
 /// Response from guest to host
@@ -91,6 +110,28 @@ pub struct AgentResponse {
     /// File content as base64 (for ReadFile)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_base64: Option<String>,
+    // Shell-specific fields
+    /// Session ID (for Shell, ShellOutput, ShellExited)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Output data as base64 (for ShellOutput)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_base64: Option<String>,
+    /// Response type for shell events (started, output, exited)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell_event: Option<ShellEvent>,
+}
+
+/// Shell event types for async shell communication
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellEvent {
+    /// Shell session started
+    Started,
+    /// Shell produced output
+    Output,
+    /// Shell session exited
+    Exited,
 }
 
 /// Result of running a command in the guest
@@ -165,6 +206,10 @@ impl VsockConnection {
             path: None,
             content_base64: None,
             recursive: None,
+            session_id: None,
+            rows: None,
+            cols: None,
+            input_base64: None,
         };
 
         let response = self.send_request(&request).await?;
@@ -233,6 +278,10 @@ impl VsockConnection {
             path: None,
             content_base64: None,
             recursive: None,
+            session_id: None,
+            rows: None,
+            cols: None,
+            input_base64: None,
         };
 
         self.send_request(&request).await.is_ok()
@@ -301,6 +350,10 @@ impl VsockClient {
             path: None,
             content_base64: None,
             recursive: None,
+            session_id: None,
+            rows: None,
+            cols: None,
+            input_base64: None,
         };
 
         let response = self.send_request(&request).await?;
@@ -334,6 +387,10 @@ impl VsockClient {
             path: None,
             content_base64: None,
             recursive: None,
+            session_id: None,
+            rows: None,
+            cols: None,
+            input_base64: None,
         };
 
         let response = self.send_request(&request).await?;
@@ -362,6 +419,10 @@ impl VsockClient {
             path: None,
             content_base64: None,
             recursive: None,
+            session_id: None,
+            rows: None,
+            cols: None,
+            input_base64: None,
         };
 
         match self.send_request(&request).await {
@@ -383,6 +444,10 @@ impl VsockClient {
             path: None,
             content_base64: None,
             recursive: None,
+            session_id: None,
+            rows: None,
+            cols: None,
+            input_base64: None,
         };
 
         // Shutdown may not get a response if the guest shuts down quickly
@@ -404,6 +469,10 @@ impl VsockClient {
             path: Some(path.to_string()),
             content_base64: Some(STANDARD.encode(content)),
             recursive: None,
+            session_id: None,
+            rows: None,
+            cols: None,
+            input_base64: None,
         };
 
         let response = self.send_request(&request).await?;
@@ -429,6 +498,10 @@ impl VsockClient {
             path: Some(path.to_string()),
             content_base64: None,
             recursive: None,
+            session_id: None,
+            rows: None,
+            cols: None,
+            input_base64: None,
         };
 
         let response = self.send_request(&request).await?;
@@ -460,6 +533,10 @@ impl VsockClient {
             path: Some(path.to_string()),
             content_base64: None,
             recursive: None,
+            session_id: None,
+            rows: None,
+            cols: None,
+            input_base64: None,
         };
 
         let response = self.send_request(&request).await?;
@@ -483,6 +560,10 @@ impl VsockClient {
             path: Some(path.to_string()),
             content_base64: None,
             recursive: Some(recursive),
+            session_id: None,
+            rows: None,
+            cols: None,
+            input_base64: None,
         };
 
         let response = self.send_request(&request).await?;
@@ -492,6 +573,130 @@ impl VsockClient {
         }
 
         Ok(())
+    }
+
+    // --- Shell/PTY Operations ---
+
+    /// Start a new shell session in the guest
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    pub async fn start_shell(
+        &self,
+        command: Option<Vec<String>>,
+        rows: u16,
+        cols: u16,
+        env: Option<HashMap<String, String>>,
+    ) -> Result<String> {
+        let request = AgentRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            request_type: RequestType::Shell,
+            command,
+            cwd: None,
+            env,
+            path: None,
+            content_base64: None,
+            recursive: None,
+            session_id: None,
+            rows: Some(rows),
+            cols: Some(cols),
+            input_base64: None,
+        };
+
+        let response = self.send_request(&request).await?;
+
+        if let Some(error) = response.error {
+            bail!("Failed to start shell: {}", error);
+        }
+
+        response
+            .session_id
+            .ok_or_else(|| anyhow::anyhow!("No session ID in shell response"))
+    }
+
+    /// Send input to a shell session
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    pub async fn shell_input(&self, session_id: &str, data: &[u8]) -> Result<()> {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+
+        let request = AgentRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            request_type: RequestType::ShellInput,
+            command: None,
+            cwd: None,
+            env: None,
+            path: None,
+            content_base64: None,
+            recursive: None,
+            session_id: Some(session_id.to_string()),
+            rows: None,
+            cols: None,
+            input_base64: Some(STANDARD.encode(data)),
+        };
+
+        let response = self.send_request(&request).await?;
+
+        if let Some(error) = response.error {
+            bail!("Failed to send shell input: {}", error);
+        }
+
+        Ok(())
+    }
+
+    /// Resize a shell session's terminal
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    pub async fn shell_resize(&self, session_id: &str, rows: u16, cols: u16) -> Result<()> {
+        let request = AgentRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            request_type: RequestType::ShellResize,
+            command: None,
+            cwd: None,
+            env: None,
+            path: None,
+            content_base64: None,
+            recursive: None,
+            session_id: Some(session_id.to_string()),
+            rows: Some(rows),
+            cols: Some(cols),
+            input_base64: None,
+        };
+
+        let response = self.send_request(&request).await?;
+
+        if let Some(error) = response.error {
+            bail!("Failed to resize shell: {}", error);
+        }
+
+        Ok(())
+    }
+
+    /// Close a shell session
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    pub async fn shell_close(&self, session_id: &str) -> Result<i32> {
+        let request = AgentRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            request_type: RequestType::ShellClose,
+            command: None,
+            cwd: None,
+            env: None,
+            path: None,
+            content_base64: None,
+            recursive: None,
+            session_id: Some(session_id.to_string()),
+            rows: None,
+            cols: None,
+            input_base64: None,
+        };
+
+        let response = self.send_request(&request).await?;
+
+        if let Some(error) = response.error {
+            bail!("Failed to close shell: {}", error);
+        }
+
+        Ok(response.exit_code.unwrap_or(-1))
     }
 
     /// Send a request to the guest agent and receive response
@@ -687,6 +892,10 @@ mod tests {
             path: None,
             content_base64: None,
             recursive: None,
+            session_id: None,
+            rows: None,
+            cols: None,
+            input_base64: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -706,6 +915,10 @@ mod tests {
             path: Some("/tmp/test.txt".to_string()),
             content_base64: Some("SGVsbG8gV29ybGQ=".to_string()), // "Hello World"
             recursive: None,
+            session_id: None,
+            rows: None,
+            cols: None,
+            input_base64: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
