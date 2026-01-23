@@ -3,7 +3,9 @@
 //! This module provides the interface to sandboxes via Firecracker microVMs
 //! or containers (Docker/Podman) as fallback when KVM is not available.
 
-use crate::backend::{BackendType, Sandbox, SandboxConfig, create_sandbox, detect_best_backend};
+use crate::backend::{
+    BackendType, FileInjection, Sandbox, SandboxConfig, create_sandbox, detect_best_backend,
+};
 use crate::docker_backend::detect_container_runtime;
 use crate::languages::docker_image_to_firecracker_runtime;
 use crate::permissions::Permissions;
@@ -255,6 +257,17 @@ impl VmManager {
 
     /// Start a sandbox with specific permissions
     pub async fn start_with_permissions(&mut self, name: &str, perms: &Permissions) -> Result<()> {
+        self.start_with_permissions_and_files(name, perms, &[])
+            .await
+    }
+
+    /// Start a sandbox with specific permissions and files to inject
+    pub async fn start_with_permissions_and_files(
+        &mut self,
+        name: &str,
+        perms: &Permissions,
+        files: &[FileInjection],
+    ) -> Result<()> {
         let state = self
             .sandboxes
             .get(name)
@@ -297,9 +310,16 @@ impl VmManager {
             network: perms.network,
             read_only: perms.read_only_root,
             mount_home: perms.mount_home,
+            files: files.to_vec(),
         };
 
         sandbox.start(&config).await?;
+
+        // Inject files if any were specified
+        if !files.is_empty() {
+            sandbox.inject_files(files).await?;
+        }
+
         self.running.insert(name.to_string(), sandbox);
 
         Ok(())
@@ -401,11 +421,23 @@ impl VmManager {
     }
 
     /// Run a command in an ephemeral sandbox (optimized single-operation path)
+    #[allow(dead_code)]
     pub async fn run_ephemeral(
         &mut self,
         image: &str,
         cmd: &[String],
         perms: &Permissions,
+    ) -> Result<String> {
+        self.run_ephemeral_with_files(image, cmd, perms, &[]).await
+    }
+
+    /// Run a command in an ephemeral sandbox with file injection
+    pub async fn run_ephemeral_with_files(
+        &mut self,
+        image: &str,
+        cmd: &[String],
+        perms: &Permissions,
+        files: &[FileInjection],
     ) -> Result<String> {
         // Build config from permissions
         let work_dir = if perms.mount_cwd {
@@ -435,47 +467,56 @@ impl VmManager {
             network: perms.network,
             read_only: perms.read_only_root,
             mount_home: perms.mount_home,
+            files: files.to_vec(),
         };
 
         // Use optimized `docker/podman run --rm` for container backends
-        match self.backend {
-            BackendType::Docker => {
-                use crate::docker_backend::{ContainerRuntime, ContainerSandbox};
-                let (exit_code, stdout, stderr) = ContainerSandbox::run_ephemeral_cmd(
-                    ContainerRuntime::Docker,
-                    image,
-                    cmd,
-                    perms,
-                )?;
-                if exit_code != 0 {
-                    bail!("Command failed (exit {}): {}{}", exit_code, stdout, stderr);
+        // Note: File injection not supported in fast path; use generic path if files specified
+        if files.is_empty() {
+            match self.backend {
+                BackendType::Docker => {
+                    use crate::docker_backend::{ContainerRuntime, ContainerSandbox};
+                    let (exit_code, stdout, stderr) = ContainerSandbox::run_ephemeral_cmd(
+                        ContainerRuntime::Docker,
+                        image,
+                        cmd,
+                        perms,
+                    )?;
+                    if exit_code != 0 {
+                        bail!("Command failed (exit {}): {}{}", exit_code, stdout, stderr);
+                    }
+                    return Ok(format!("{}{}", stdout, stderr));
                 }
-                return Ok(format!("{}{}", stdout, stderr));
-            }
-            BackendType::Podman => {
-                use crate::docker_backend::{ContainerRuntime, ContainerSandbox};
-                let (exit_code, stdout, stderr) = ContainerSandbox::run_ephemeral_cmd(
-                    ContainerRuntime::Podman,
-                    image,
-                    cmd,
-                    perms,
-                )?;
-                if exit_code != 0 {
-                    bail!("Command failed (exit {}): {}{}", exit_code, stdout, stderr);
+                BackendType::Podman => {
+                    use crate::docker_backend::{ContainerRuntime, ContainerSandbox};
+                    let (exit_code, stdout, stderr) = ContainerSandbox::run_ephemeral_cmd(
+                        ContainerRuntime::Podman,
+                        image,
+                        cmd,
+                        perms,
+                    )?;
+                    if exit_code != 0 {
+                        bail!("Command failed (exit {}): {}{}", exit_code, stdout, stderr);
+                    }
+                    return Ok(format!("{}{}", stdout, stderr));
                 }
-                return Ok(format!("{}{}", stdout, stderr));
-            }
-            _ => {
-                // Fall through to generic start→exec→stop for other backends
+                _ => {
+                    // Fall through to generic start→exec→stop for other backends
+                }
             }
         }
 
-        // Generic path for non-container backends (Firecracker, Apple, Hyperlight)
+        // Generic path for non-container backends or when files need injection
         let name = format!("ephemeral-{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let mut sandbox = create_sandbox(self.backend, &name)?;
 
-        // Start, exec, stop
+        // Start sandbox
         sandbox.start(&config).await?;
+
+        // Inject files if specified
+        if !files.is_empty() {
+            sandbox.inject_files(files).await?;
+        }
 
         let cmd_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
         let result = sandbox.exec(&cmd_refs).await;

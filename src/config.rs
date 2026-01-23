@@ -4,7 +4,24 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::backend::FileInjection;
 use crate::permissions::SecurityProfile;
+
+/// File entry for injecting files into the sandbox at startup
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileEntry {
+    /// Source path on the host (relative to config file or absolute)
+    pub source: String,
+    /// Destination path inside the sandbox (must be absolute)
+    pub dest: String,
+    /// File mode (e.g., "0644") - optional, defaults to 0644
+    #[serde(default = "default_file_mode")]
+    pub mode: String,
+}
+
+fn default_file_mode() -> String {
+    "0644".to_string()
+}
 
 /// Root configuration structure matching agentkernel.toml schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,6 +35,9 @@ pub struct Config {
     pub network: NetworkConfig,
     #[serde(default)]
     pub security: SecurityConfig,
+    /// Files to inject into the sandbox at startup
+    #[serde(default, rename = "files")]
+    pub files: Vec<FileEntry>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -125,6 +145,7 @@ impl Config {
             resources: ResourcesConfig::default(),
             network: NetworkConfig::default(),
             security: SecurityConfig::default(),
+            files: Vec::new(),
         }
     }
 
@@ -162,6 +183,38 @@ impl Config {
             "dotnet" => "mcr.microsoft.com/dotnet/sdk:8.0".to_string(),
             _ => "alpine:3.20".to_string(),
         }
+    }
+
+    /// Load and resolve files from the [[files]] section
+    ///
+    /// Resolves source paths relative to the given base directory (usually config file dir)
+    /// and reads file contents into FileInjection structs.
+    pub fn load_files(&self, base_dir: &Path) -> Result<Vec<FileInjection>> {
+        let mut injections = Vec::new();
+
+        for file in &self.files {
+            // Resolve source path relative to base_dir
+            let source_path = if Path::new(&file.source).is_absolute() {
+                Path::new(&file.source).to_path_buf()
+            } else {
+                base_dir.join(&file.source)
+            };
+
+            // Read file content
+            let content = std::fs::read(&source_path).with_context(|| {
+                format!(
+                    "Failed to read file for injection: {}",
+                    source_path.display()
+                )
+            })?;
+
+            injections.push(FileInjection {
+                content,
+                dest: file.dest.clone(),
+            });
+        }
+
+        Ok(injections)
     }
 }
 
@@ -207,5 +260,40 @@ mod tests {
         assert_eq!(config.resources.vcpus, 2);
         assert_eq!(config.resources.memory_mb, 1024);
         assert_eq!(config.network.vsock_cid, Some(5));
+    }
+
+    #[test]
+    fn test_parse_files_config() {
+        let toml = r#"
+            [sandbox]
+            name = "test-app"
+
+            [[files]]
+            source = "./config.json"
+            dest = "/app/config.json"
+
+            [[files]]
+            source = "./script.sh"
+            dest = "/app/script.sh"
+            mode = "0755"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert_eq!(config.files.len(), 2);
+        assert_eq!(config.files[0].source, "./config.json");
+        assert_eq!(config.files[0].dest, "/app/config.json");
+        assert_eq!(config.files[0].mode, "0644"); // default
+        assert_eq!(config.files[1].source, "./script.sh");
+        assert_eq!(config.files[1].dest, "/app/script.sh");
+        assert_eq!(config.files[1].mode, "0755");
+    }
+
+    #[test]
+    fn test_empty_files_config() {
+        let toml = r#"
+            [sandbox]
+            name = "test-app"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(config.files.is_empty());
     }
 }

@@ -6,7 +6,7 @@
 //! Supports both .wasm (binary) and .wat (text) format files.
 //! WAT files are automatically compiled to WASM on load.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use std::path::Path;
 #[cfg(all(target_os = "linux", feature = "hyperlight"))]

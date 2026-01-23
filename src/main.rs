@@ -549,15 +549,29 @@ memory_mb = 512
                 perms.network = false;
             }
 
-            // Apply config overrides if present
-            if let Some(ref config_path) = config {
+            // Apply config overrides if present and load files
+            let files = if let Some(ref config_path) = config {
                 let cfg = Config::from_file(config_path)?;
                 let cfg_perms = cfg.get_permissions();
                 // Config overrides take precedence over CLI profile
                 if cfg.security.network.is_some() {
                     perms.network = cfg_perms.network;
                 }
-            }
+                // Load files relative to config file directory
+                let config_dir = config_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."));
+                cfg.load_files(config_dir)?
+            } else {
+                // Check for default config file and load files if present
+                let default_config = PathBuf::from("agentkernel.toml");
+                if default_config.exists() {
+                    let cfg = Config::from_file(&default_config)?;
+                    cfg.load_files(std::path::Path::new("."))?
+                } else {
+                    Vec::new()
+                }
+            };
 
             // Parse backend option if provided
             let backend_type = if let Some(ref b) = backend {
@@ -576,7 +590,10 @@ memory_mb = 512
             // - Apple containers: single `container run --rm` (~940ms vs ~2200ms)
             // Only used when --keep is not specified
             if !keep {
-                match manager.run_ephemeral(&docker_image, &command, &perms).await {
+                match manager
+                    .run_ephemeral_with_files(&docker_image, &command, &perms, &files)
+                    .await
+                {
                     Ok(output) => {
                         print!("{}", output);
                         return Ok(());
@@ -600,8 +617,11 @@ memory_mb = 512
             // Create
             manager.create(&sandbox_name, &docker_image, 1, 512).await?;
 
-            // Start with permissions
-            if let Err(e) = manager.start_with_permissions(&sandbox_name, &perms).await {
+            // Start with permissions and inject files
+            if let Err(e) = manager
+                .start_with_permissions_and_files(&sandbox_name, &perms, &files)
+                .await
+            {
                 // Cleanup on failure
                 let _ = manager.remove(&sandbox_name).await;
                 bail!("Failed to start sandbox: {}", e);

@@ -72,6 +72,15 @@ impl std::str::FromStr for BackendType {
     }
 }
 
+/// File to inject into sandbox at startup
+#[derive(Debug, Clone)]
+pub struct FileInjection {
+    /// Content to write
+    pub content: Vec<u8>,
+    /// Destination path inside the sandbox (absolute)
+    pub dest: String,
+}
+
 /// Configuration for starting a sandbox
 #[derive(Debug, Clone)]
 pub struct SandboxConfig {
@@ -93,6 +102,8 @@ pub struct SandboxConfig {
     pub read_only: bool,
     /// Mount home directory (read-only)
     pub mount_home: bool,
+    /// Files to inject after sandbox starts
+    pub files: Vec<FileInjection>,
 }
 
 impl Default for SandboxConfig {
@@ -107,6 +118,7 @@ impl Default for SandboxConfig {
             network: true,
             read_only: false,
             mount_home: false,
+            files: Vec::new(),
         }
     }
 }
@@ -143,6 +155,12 @@ impl SandboxConfig {
     /// Set environment variables
     pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
         self.env = env;
+        self
+    }
+
+    /// Add files to inject after sandbox starts
+    pub fn with_files(mut self, files: Vec<FileInjection>) -> Self {
+        self.files = files;
         self
     }
 }
@@ -271,6 +289,25 @@ pub trait Sandbox: Send + Sync {
 
     /// Internal mkdir implementation
     async fn mkdir_unchecked(&mut self, path: &str, recursive: bool) -> Result<()>;
+
+    /// Inject files from config into the sandbox
+    ///
+    /// Called automatically after start() when files are specified in config.
+    /// Creates parent directories as needed.
+    async fn inject_files(&mut self, files: &[FileInjection]) -> Result<()> {
+        for file in files {
+            // Create parent directory if needed
+            if let Some(parent) = std::path::Path::new(&file.dest).parent() {
+                let parent_str = parent.to_string_lossy();
+                if parent_str != "/" {
+                    self.mkdir(&parent_str, true).await?;
+                }
+            }
+            // Write the file
+            self.write_file(&file.dest, &file.content).await?;
+        }
+        Ok(())
+    }
 }
 
 /// Validate a path for sandbox file operations
