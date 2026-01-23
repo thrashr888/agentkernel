@@ -181,6 +181,229 @@ impl Permissions {
     }
 }
 
+/// Compatibility mode for agent-specific behavior
+///
+/// Different AI agents have different expectations for sandbox behavior.
+/// This mode adjusts permissions and networking to match each agent's needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompatibilityMode {
+    /// Default agentkernel behavior
+    #[default]
+    Native,
+    /// Claude Code compatible (proxy-style network, domain allowlist)
+    ClaudeCode,
+    /// OpenAI Codex compatible (Landlock-style, strict isolation)
+    Codex,
+    /// Gemini CLI compatible (Docker-style, project directory focus)
+    Gemini,
+}
+
+impl CompatibilityMode {
+    /// Parse from string
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "native" | "default" => Some(Self::Native),
+            "claude" | "claude-code" | "claudecode" => Some(Self::ClaudeCode),
+            "codex" | "openai-codex" => Some(Self::Codex),
+            "gemini" | "gemini-cli" => Some(Self::Gemini),
+            _ => None,
+        }
+    }
+
+    /// Get the agent profile for this compatibility mode
+    pub fn profile(&self) -> AgentProfile {
+        match self {
+            Self::Native => AgentProfile::native(),
+            Self::ClaudeCode => AgentProfile::claude_code(),
+            Self::Codex => AgentProfile::codex(),
+            Self::Gemini => AgentProfile::gemini(),
+        }
+    }
+}
+
+/// Network policy with domain allowlisting
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NetworkPolicy {
+    /// Enable network access
+    pub enabled: bool,
+    /// Always allowed domains (e.g., API endpoints)
+    pub always_allow: Vec<String>,
+    /// Allowed domains (e.g., package registries)
+    pub allow: Vec<String>,
+    /// Blocked domains (e.g., cloud metadata)
+    pub block: Vec<String>,
+}
+
+impl NetworkPolicy {
+    /// Create a policy that allows all network access
+    pub fn allow_all() -> Self {
+        Self {
+            enabled: true,
+            always_allow: Vec::new(),
+            allow: Vec::new(),
+            block: Vec::new(),
+        }
+    }
+
+    /// Create a policy that blocks all network access
+    #[allow(dead_code)]
+    pub fn deny_all() -> Self {
+        Self {
+            enabled: false,
+            always_allow: Vec::new(),
+            allow: Vec::new(),
+            block: Vec::new(),
+        }
+    }
+
+    /// Create a policy for Claude Code (Anthropic API + common registries)
+    pub fn claude_code() -> Self {
+        Self {
+            enabled: true,
+            always_allow: vec![
+                "api.anthropic.com".to_string(),
+                "cdn.anthropic.com".to_string(),
+            ],
+            allow: vec![
+                "*.pypi.org".to_string(),
+                "*.npmjs.com".to_string(),
+                "*.github.com".to_string(),
+                "*.githubusercontent.com".to_string(),
+                "*.crates.io".to_string(),
+            ],
+            block: vec![
+                "169.254.169.254".to_string(), // Cloud metadata
+                "metadata.google.internal".to_string(),
+            ],
+        }
+    }
+
+    /// Create a policy for Codex (OpenAI API + strict isolation)
+    pub fn codex() -> Self {
+        Self {
+            enabled: true,
+            always_allow: vec!["api.openai.com".to_string(), "cdn.openai.com".to_string()],
+            allow: vec!["*.pypi.org".to_string(), "*.npmjs.com".to_string()],
+            block: vec![
+                "169.254.169.254".to_string(),
+                "metadata.google.internal".to_string(),
+                "*.internal".to_string(),
+            ],
+        }
+    }
+
+    /// Create a policy for Gemini (Google API + Docker-style)
+    pub fn gemini() -> Self {
+        Self {
+            enabled: true,
+            always_allow: vec![
+                "generativelanguage.googleapis.com".to_string(),
+                "*.googleapis.com".to_string(),
+            ],
+            allow: vec![
+                "*.pypi.org".to_string(),
+                "*.npmjs.com".to_string(),
+                "*.github.com".to_string(),
+            ],
+            block: vec!["169.254.169.254".to_string()],
+        }
+    }
+}
+
+/// Agent-specific profile combining permissions and network policy
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentProfile {
+    /// Compatibility mode name
+    pub mode: CompatibilityMode,
+    /// Base permissions
+    pub permissions: Permissions,
+    /// Network policy with domain control
+    pub network_policy: NetworkPolicy,
+    /// API key environment variable name (if any)
+    pub api_key_env: Option<String>,
+    /// Additional environment variables to set
+    pub env_vars: Vec<(String, String)>,
+}
+
+impl AgentProfile {
+    /// Native agentkernel profile
+    pub fn native() -> Self {
+        Self {
+            mode: CompatibilityMode::Native,
+            permissions: SecurityProfile::Moderate.permissions(),
+            network_policy: NetworkPolicy::allow_all(),
+            api_key_env: None,
+            env_vars: Vec::new(),
+        }
+    }
+
+    /// Claude Code profile
+    pub fn claude_code() -> Self {
+        let mut perms = SecurityProfile::Moderate.permissions();
+        perms.mount_cwd = true; // Claude needs project access
+        perms.pass_env = false; // Controlled env passthrough
+
+        Self {
+            mode: CompatibilityMode::ClaudeCode,
+            permissions: perms,
+            network_policy: NetworkPolicy::claude_code(),
+            api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
+            env_vars: vec![("CLAUDE_CODE_SANDBOX".to_string(), "agentkernel".to_string())],
+        }
+    }
+
+    /// Codex profile (strict isolation)
+    pub fn codex() -> Self {
+        let mut perms = SecurityProfile::Restrictive.permissions();
+        perms.network = true; // Codex needs API access
+        perms.mount_cwd = true; // Codex needs project access
+
+        Self {
+            mode: CompatibilityMode::Codex,
+            permissions: perms,
+            network_policy: NetworkPolicy::codex(),
+            api_key_env: Some("OPENAI_API_KEY".to_string()),
+            env_vars: Vec::new(),
+        }
+    }
+
+    /// Gemini profile (Docker-style)
+    pub fn gemini() -> Self {
+        let mut perms = SecurityProfile::Moderate.permissions();
+        perms.mount_cwd = true; // Gemini focuses on project directory
+
+        Self {
+            mode: CompatibilityMode::Gemini,
+            permissions: perms,
+            network_policy: NetworkPolicy::gemini(),
+            api_key_env: Some("GOOGLE_API_KEY".to_string()),
+            env_vars: Vec::new(),
+        }
+    }
+
+    /// Get Docker network arguments based on network policy
+    #[allow(dead_code)]
+    pub fn network_docker_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+
+        if !self.network_policy.enabled {
+            args.push("--network=none".to_string());
+        }
+        // Note: Domain-level filtering requires a proxy; Docker only supports on/off
+        // For full domain control, use the proxy architecture from plan/06-agent-in-sandbox.md
+
+        args
+    }
+}
+
+impl Default for AgentProfile {
+    fn default() -> Self {
+        Self::native()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +431,66 @@ mod tests {
 
         assert!(args.contains(&"--network=none".to_string()));
         assert!(args.contains(&"--read-only".to_string()));
+    }
+
+    #[test]
+    fn test_compatibility_modes() {
+        assert_eq!(
+            CompatibilityMode::from_str("claude"),
+            Some(CompatibilityMode::ClaudeCode)
+        );
+        assert_eq!(
+            CompatibilityMode::from_str("codex"),
+            Some(CompatibilityMode::Codex)
+        );
+        assert_eq!(
+            CompatibilityMode::from_str("gemini"),
+            Some(CompatibilityMode::Gemini)
+        );
+        assert_eq!(
+            CompatibilityMode::from_str("native"),
+            Some(CompatibilityMode::Native)
+        );
+        assert_eq!(CompatibilityMode::from_str("unknown"), None);
+    }
+
+    #[test]
+    fn test_agent_profiles() {
+        let claude = AgentProfile::claude_code();
+        assert!(claude.permissions.mount_cwd);
+        assert!(claude.network_policy.enabled);
+        assert!(
+            claude
+                .network_policy
+                .always_allow
+                .contains(&"api.anthropic.com".to_string())
+        );
+        assert_eq!(claude.api_key_env, Some("ANTHROPIC_API_KEY".to_string()));
+
+        let codex = AgentProfile::codex();
+        assert!(codex.permissions.read_only_root); // Stricter than Claude
+        assert_eq!(codex.api_key_env, Some("OPENAI_API_KEY".to_string()));
+
+        let gemini = AgentProfile::gemini();
+        assert!(
+            gemini
+                .network_policy
+                .always_allow
+                .iter()
+                .any(|d| d.contains("googleapis.com"))
+        );
+    }
+
+    #[test]
+    fn test_network_policy() {
+        let allow_all = NetworkPolicy::allow_all();
+        assert!(allow_all.enabled);
+        assert!(allow_all.always_allow.is_empty());
+
+        let deny_all = NetworkPolicy::deny_all();
+        assert!(!deny_all.enabled);
+
+        let claude_net = NetworkPolicy::claude_code();
+        assert!(claude_net.block.contains(&"169.254.169.254".to_string()));
     }
 }

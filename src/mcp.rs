@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader, Write};
 use tokio::runtime::Handle;
 
 use crate::languages;
-use crate::permissions::SecurityProfile;
+use crate::permissions::{CompatibilityMode, SecurityProfile};
 use crate::vmm::VmManager;
 
 /// MCP server for agentkernel
@@ -202,6 +202,12 @@ impl McpServer {
                             "network": {
                                 "type": "boolean",
                                 "description": "Enable network access (default: depends on profile). Only when fast=false."
+                            },
+                            "compatibility_mode": {
+                                "type": "string",
+                                "enum": ["native", "claude", "codex", "gemini"],
+                                "description": "Agent compatibility mode with preset permissions and network policies. Only when fast=false.",
+                                "default": "native"
                             }
                         },
                         "required": ["command"]
@@ -425,17 +431,29 @@ impl McpServer {
             .map(String::from)
             .unwrap_or_else(|| languages::detect_image(&command));
 
-        // Parse security profile
-        let profile_str = args
-            .get("profile")
-            .and_then(|v| v.as_str())
-            .unwrap_or("moderate");
+        // Check for compatibility mode first (takes precedence over profile)
+        let mut perms =
+            if let Some(mode_str) = args.get("compatibility_mode").and_then(|v| v.as_str()) {
+                let mode = CompatibilityMode::from_str(mode_str).unwrap_or_default();
+                let profile = mode.profile();
+                eprintln!(
+                    "Using {} compatibility mode (API: {:?})",
+                    mode_str, profile.api_key_env
+                );
+                profile.permissions
+            } else {
+                // Fall back to security profile
+                let profile_str = args
+                    .get("profile")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("moderate");
 
-        let mut perms = SecurityProfile::from_str(profile_str)
-            .unwrap_or_default()
-            .permissions();
+                SecurityProfile::from_str(profile_str)
+                    .unwrap_or_default()
+                    .permissions()
+            };
 
-        // Apply network override if specified
+        // Apply network override if specified (overrides both mode and profile)
         if let Some(network) = args.get("network").and_then(|v| v.as_bool()) {
             perms.network = network;
         }
