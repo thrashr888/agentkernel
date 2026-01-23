@@ -27,6 +27,14 @@ pub enum RequestType {
     Ping,
     /// Graceful shutdown
     Shutdown,
+    /// Write a file to the guest filesystem
+    WriteFile,
+    /// Read a file from the guest filesystem
+    ReadFile,
+    /// Remove a file from the guest filesystem
+    RemoveFile,
+    /// Create a directory in the guest filesystem
+    Mkdir,
 }
 
 /// Request from host
@@ -41,6 +49,15 @@ pub struct AgentRequest {
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<HashMap<String, String>>,
+    /// File path (for file operations)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// File content as base64 (for WriteFile)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_base64: Option<String>,
+    /// Whether to create parent directories (for Mkdir)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recursive: Option<bool>,
 }
 
 /// Response to host
@@ -55,6 +72,9 @@ pub struct AgentResponse {
     pub stderr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// File content as base64 (for ReadFile)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_base64: Option<String>,
 }
 
 impl AgentResponse {
@@ -65,6 +85,7 @@ impl AgentResponse {
             stdout: None,
             stderr: None,
             error: None,
+            content_base64: None,
         }
     }
 
@@ -75,6 +96,7 @@ impl AgentResponse {
             stdout: None,
             stderr: None,
             error: Some(msg.to_string()),
+            content_base64: None,
         }
     }
 
@@ -85,12 +107,44 @@ impl AgentResponse {
             stdout: Some(stdout),
             stderr: Some(stderr),
             error: None,
+            content_base64: None,
+        }
+    }
+
+    fn with_content(id: &str, content_base64: String) -> Self {
+        Self {
+            id: id.to_string(),
+            exit_code: Some(0),
+            stdout: None,
+            stderr: None,
+            error: None,
+            content_base64: Some(content_base64),
         }
     }
 }
 
+/// Validate a path is safe (no traversal, absolute path)
+fn validate_path(path: &str) -> Result<(), String> {
+    if !path.starts_with('/') {
+        return Err("Path must be absolute".to_string());
+    }
+    if path.contains("..") {
+        return Err("Path traversal not allowed".to_string());
+    }
+    // Block sensitive system paths
+    let blocked = ["/proc", "/sys", "/dev", "/etc/passwd", "/etc/shadow"];
+    for b in blocked {
+        if path.starts_with(b) {
+            return Err(format!("Cannot access system path: {}", b));
+        }
+    }
+    Ok(())
+}
+
 /// Handle a single request
 async fn handle_request(request: AgentRequest) -> AgentResponse {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
     match request.request_type {
         RequestType::Ping => AgentResponse::success(&request.id),
 
@@ -143,6 +197,103 @@ async fn handle_request(request: AgentRequest) -> AgentResponse {
                 }
                 Err(e) => {
                     AgentResponse::error(&request.id, &format!("Failed to run command: {}", e))
+                }
+            }
+        }
+
+        RequestType::WriteFile => {
+            let Some(path) = request.path else {
+                return AgentResponse::error(&request.id, "No path specified");
+            };
+
+            if let Err(e) = validate_path(&path) {
+                return AgentResponse::error(&request.id, &e);
+            }
+
+            let Some(content_base64) = request.content_base64 else {
+                return AgentResponse::error(&request.id, "No content specified");
+            };
+
+            let content = match STANDARD.decode(&content_base64) {
+                Ok(c) => c,
+                Err(e) => {
+                    return AgentResponse::error(&request.id, &format!("Invalid base64: {}", e));
+                }
+            };
+
+            // Ensure parent directory exists
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                    return AgentResponse::error(
+                        &request.id,
+                        &format!("Failed to create parent directory: {}", e),
+                    );
+                }
+            }
+
+            match tokio::fs::write(&path, &content).await {
+                Ok(_) => AgentResponse::success(&request.id),
+                Err(e) => {
+                    AgentResponse::error(&request.id, &format!("Failed to write file: {}", e))
+                }
+            }
+        }
+
+        RequestType::ReadFile => {
+            let Some(path) = request.path else {
+                return AgentResponse::error(&request.id, "No path specified");
+            };
+
+            if let Err(e) = validate_path(&path) {
+                return AgentResponse::error(&request.id, &e);
+            }
+
+            match tokio::fs::read(&path).await {
+                Ok(content) => {
+                    let content_base64 = STANDARD.encode(&content);
+                    AgentResponse::with_content(&request.id, content_base64)
+                }
+                Err(e) => AgentResponse::error(&request.id, &format!("Failed to read file: {}", e)),
+            }
+        }
+
+        RequestType::RemoveFile => {
+            let Some(path) = request.path else {
+                return AgentResponse::error(&request.id, "No path specified");
+            };
+
+            if let Err(e) = validate_path(&path) {
+                return AgentResponse::error(&request.id, &e);
+            }
+
+            match tokio::fs::remove_file(&path).await {
+                Ok(_) => AgentResponse::success(&request.id),
+                Err(e) => {
+                    AgentResponse::error(&request.id, &format!("Failed to remove file: {}", e))
+                }
+            }
+        }
+
+        RequestType::Mkdir => {
+            let Some(path) = request.path else {
+                return AgentResponse::error(&request.id, "No path specified");
+            };
+
+            if let Err(e) = validate_path(&path) {
+                return AgentResponse::error(&request.id, &e);
+            }
+
+            let recursive = request.recursive.unwrap_or(false);
+            let result = if recursive {
+                tokio::fs::create_dir_all(&path).await
+            } else {
+                tokio::fs::create_dir(&path).await
+            };
+
+            match result {
+                Ok(_) => AgentResponse::success(&request.id),
+                Err(e) => {
+                    AgentResponse::error(&request.id, &format!("Failed to create directory: {}", e))
                 }
             }
         }

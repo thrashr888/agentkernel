@@ -332,32 +332,24 @@ impl Sandbox for FirecrackerSandbox {
         }
     }
 
-    async fn write_file_unchecked(&mut self, _path: &str, _content: &[u8]) -> anyhow::Result<()> {
-        // TODO: Implement via vsock guest agent WriteFile command
-        bail!(
-            "File operations not yet implemented for Firecracker backend. Guest agent extension required."
-        )
+    async fn write_file_unchecked(&mut self, path: &str, content: &[u8]) -> anyhow::Result<()> {
+        let client = VsockClient::for_firecracker(&self.vsock_path);
+        client.write_file(path, content).await
     }
 
-    async fn read_file_unchecked(&mut self, _path: &str) -> anyhow::Result<Vec<u8>> {
-        // TODO: Implement via vsock guest agent ReadFile command
-        bail!(
-            "File operations not yet implemented for Firecracker backend. Guest agent extension required."
-        )
+    async fn read_file_unchecked(&mut self, path: &str) -> anyhow::Result<Vec<u8>> {
+        let client = VsockClient::for_firecracker(&self.vsock_path);
+        client.read_file(path).await
     }
 
-    async fn remove_file_unchecked(&mut self, _path: &str) -> anyhow::Result<()> {
-        // TODO: Implement via vsock guest agent RemoveFile command
-        bail!(
-            "File operations not yet implemented for Firecracker backend. Guest agent extension required."
-        )
+    async fn remove_file_unchecked(&mut self, path: &str) -> anyhow::Result<()> {
+        let client = VsockClient::for_firecracker(&self.vsock_path);
+        client.remove_file(path).await
     }
 
-    async fn mkdir_unchecked(&mut self, _path: &str, _recursive: bool) -> anyhow::Result<()> {
-        // TODO: Implement via vsock guest agent Mkdir command
-        bail!(
-            "File operations not yet implemented for Firecracker backend. Guest agent extension required."
-        )
+    async fn mkdir_unchecked(&mut self, path: &str, recursive: bool) -> anyhow::Result<()> {
+        let client = VsockClient::for_firecracker(&self.vsock_path);
+        client.mkdir(path, recursive).await
     }
 }
 

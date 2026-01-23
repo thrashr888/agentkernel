@@ -33,6 +33,14 @@ pub enum RequestType {
     Ping,
     /// Graceful shutdown
     Shutdown,
+    /// Write a file to the guest filesystem
+    WriteFile,
+    /// Read a file from the guest filesystem
+    ReadFile,
+    /// Remove a file from the guest filesystem
+    RemoveFile,
+    /// Create a directory in the guest filesystem
+    Mkdir,
 }
 
 /// Request sent from host to guest
@@ -52,6 +60,15 @@ pub struct AgentRequest {
     /// Environment variables
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<HashMap<String, String>>,
+    /// File path (for file operations)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// File content as base64 (for WriteFile)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_base64: Option<String>,
+    /// Whether to create parent directories (for Mkdir)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recursive: Option<bool>,
 }
 
 /// Response from guest to host
@@ -71,6 +88,9 @@ pub struct AgentResponse {
     /// Error message if request failed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// File content as base64 (for ReadFile)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_base64: Option<String>,
 }
 
 /// Result of running a command in the guest
@@ -142,6 +162,9 @@ impl VsockConnection {
             command: Some(command.to_vec()),
             cwd: None,
             env: None,
+            path: None,
+            content_base64: None,
+            recursive: None,
         };
 
         let response = self.send_request(&request).await?;
@@ -207,6 +230,9 @@ impl VsockConnection {
             command: None,
             cwd: None,
             env: None,
+            path: None,
+            content_base64: None,
+            recursive: None,
         };
 
         self.send_request(&request).await.is_ok()
@@ -272,6 +298,9 @@ impl VsockClient {
             command: Some(command.to_vec()),
             cwd: None,
             env: None,
+            path: None,
+            content_base64: None,
+            recursive: None,
         };
 
         let response = self.send_request(&request).await?;
@@ -302,6 +331,9 @@ impl VsockClient {
             command: Some(command.to_vec()),
             cwd: cwd.map(|s| s.to_string()),
             env,
+            path: None,
+            content_base64: None,
+            recursive: None,
         };
 
         let response = self.send_request(&request).await?;
@@ -327,6 +359,9 @@ impl VsockClient {
             command: None,
             cwd: None,
             env: None,
+            path: None,
+            content_base64: None,
+            recursive: None,
         };
 
         match self.send_request(&request).await {
@@ -345,10 +380,117 @@ impl VsockClient {
             command: None,
             cwd: None,
             env: None,
+            path: None,
+            content_base64: None,
+            recursive: None,
         };
 
         // Shutdown may not get a response if the guest shuts down quickly
         let _ = self.send_request(&request).await;
+        Ok(())
+    }
+
+    /// Write a file to the guest filesystem
+    #[cfg(unix)]
+    pub async fn write_file(&self, path: &str, content: &[u8]) -> Result<()> {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+
+        let request = AgentRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            request_type: RequestType::WriteFile,
+            command: None,
+            cwd: None,
+            env: None,
+            path: Some(path.to_string()),
+            content_base64: Some(STANDARD.encode(content)),
+            recursive: None,
+        };
+
+        let response = self.send_request(&request).await?;
+
+        if let Some(error) = response.error {
+            bail!("Failed to write file: {}", error);
+        }
+
+        Ok(())
+    }
+
+    /// Read a file from the guest filesystem
+    #[cfg(unix)]
+    pub async fn read_file(&self, path: &str) -> Result<Vec<u8>> {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+
+        let request = AgentRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            request_type: RequestType::ReadFile,
+            command: None,
+            cwd: None,
+            env: None,
+            path: Some(path.to_string()),
+            content_base64: None,
+            recursive: None,
+        };
+
+        let response = self.send_request(&request).await?;
+
+        if let Some(error) = response.error {
+            bail!("Failed to read file: {}", error);
+        }
+
+        let content_base64 = response
+            .content_base64
+            .ok_or_else(|| anyhow::anyhow!("No content in response"))?;
+
+        let content = STANDARD
+            .decode(&content_base64)
+            .context("Failed to decode file content")?;
+
+        Ok(content)
+    }
+
+    /// Remove a file from the guest filesystem
+    #[cfg(unix)]
+    pub async fn remove_file(&self, path: &str) -> Result<()> {
+        let request = AgentRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            request_type: RequestType::RemoveFile,
+            command: None,
+            cwd: None,
+            env: None,
+            path: Some(path.to_string()),
+            content_base64: None,
+            recursive: None,
+        };
+
+        let response = self.send_request(&request).await?;
+
+        if let Some(error) = response.error {
+            bail!("Failed to remove file: {}", error);
+        }
+
+        Ok(())
+    }
+
+    /// Create a directory in the guest filesystem
+    #[cfg(unix)]
+    pub async fn mkdir(&self, path: &str, recursive: bool) -> Result<()> {
+        let request = AgentRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            request_type: RequestType::Mkdir,
+            command: None,
+            cwd: None,
+            env: None,
+            path: Some(path.to_string()),
+            content_base64: None,
+            recursive: Some(recursive),
+        };
+
+        let response = self.send_request(&request).await?;
+
+        if let Some(error) = response.error {
+            bail!("Failed to create directory: {}", error);
+        }
+
         Ok(())
     }
 
@@ -542,12 +684,34 @@ mod tests {
             command: Some(vec!["ls".to_string(), "-la".to_string()]),
             cwd: Some("/app".to_string()),
             env: None,
+            path: None,
+            content_base64: None,
+            recursive: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"type\":\"run\""));
         assert!(json.contains("\"command\":[\"ls\",\"-la\"]"));
         assert!(json.contains("\"cwd\":\"/app\""));
+    }
+
+    #[test]
+    fn test_write_file_request_serialize() {
+        let request = AgentRequest {
+            id: "test-456".to_string(),
+            request_type: RequestType::WriteFile,
+            command: None,
+            cwd: None,
+            env: None,
+            path: Some("/tmp/test.txt".to_string()),
+            content_base64: Some("SGVsbG8gV29ybGQ=".to_string()), // "Hello World"
+            recursive: None,
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"type\":\"write_file\""));
+        assert!(json.contains("\"path\":\"/tmp/test.txt\""));
+        assert!(json.contains("\"content_base64\":\"SGVsbG8gV29ybGQ=\""));
     }
 
     #[test]

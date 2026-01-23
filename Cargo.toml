@@ -16,6 +16,7 @@ hyperlight = ["dep:hyperlight-wasm"]
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+base64 = "0.22"
 bytes = "1.0"
 clap = { version = "4.0", features = ["derive"] }
 hyper = { version = "1.5", features = ["client", "http1", "server"] }
