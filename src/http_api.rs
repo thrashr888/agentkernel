@@ -1,6 +1,17 @@
 //! HTTP API server for agentkernel.
 //!
 //! Provides RESTful endpoints for sandbox management.
+//!
+//! ## Authentication
+//!
+//! API key authentication is optional. To enable:
+//! - Set `AGENTKERNEL_API_KEY` environment variable
+//! - Or configure `api_key` in the config file
+//!
+//! When enabled, requests must include the API key in the Authorization header:
+//! ```
+//! Authorization: Bearer <api_key>
+//! ```
 
 use anyhow::Result;
 use http_body_util::{BodyExt, Full};
@@ -97,15 +108,70 @@ struct RunResponse {
 }
 
 /// Shared state for the HTTP server
-struct AppState {}
+struct AppState {
+    /// Optional API key for authentication
+    api_key: Option<String>,
+}
 
 impl AppState {
     fn new() -> Self {
-        Self {}
+        // Load API key from environment variable
+        let api_key = std::env::var("AGENTKERNEL_API_KEY").ok();
+        if api_key.is_some() {
+            eprintln!("API key authentication enabled");
+        }
+        Self { api_key }
+    }
+
+    /// Create state with explicit API key
+    #[allow(dead_code)]
+    fn with_api_key(api_key: Option<String>) -> Self {
+        if api_key.is_some() {
+            eprintln!("API key authentication enabled");
+        }
+        Self { api_key }
     }
 
     async fn get_manager(&self) -> Result<VmManager> {
         VmManager::new()
+    }
+
+    /// Check if a request is authenticated
+    #[allow(clippy::result_large_err)]
+    fn check_auth(&self, req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
+        // If no API key is configured, allow all requests
+        let api_key = match &self.api_key {
+            Some(key) => key,
+            None => return Ok(()),
+        };
+
+        // Get Authorization header
+        let auth_header = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok());
+
+        match auth_header {
+            Some(header) if header.starts_with("Bearer ") => {
+                let token = &header[7..];
+                if token == api_key {
+                    Ok(())
+                } else {
+                    Err(json_response(
+                        StatusCode::UNAUTHORIZED,
+                        &ApiResponse::<()>::error("Invalid API key"),
+                    ))
+                }
+            }
+            Some(_) => Err(json_response(
+                StatusCode::UNAUTHORIZED,
+                &ApiResponse::<()>::error("Invalid authorization format. Use: Bearer <api_key>"),
+            )),
+            None => Err(json_response(
+                StatusCode::UNAUTHORIZED,
+                &ApiResponse::<()>::error("Missing Authorization header"),
+            )),
+        }
     }
 }
 
@@ -120,10 +186,17 @@ async fn handle_request(
     // Parse path segments
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
-    let response = match (method, segments.as_slice()) {
-        // Health check
-        (Method::GET, ["health"]) => json_response(StatusCode::OK, &ApiResponse::success("ok")),
+    // Health check doesn't require authentication
+    if method == Method::GET && segments.as_slice() == ["health"] {
+        return Ok(json_response(StatusCode::OK, &ApiResponse::success("ok")));
+    }
 
+    // Check authentication for all other endpoints
+    if let Err(resp) = state.check_auth(&req) {
+        return Ok(resp);
+    }
+
+    let response = match (method, segments.as_slice()) {
         // Run a command in a temporary sandbox
         (Method::POST, ["run"]) => handle_run(req, state).await,
 

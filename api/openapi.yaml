@@ -1,0 +1,416 @@
+openapi: 3.1.0
+info:
+  title: agentkernel API
+  description: |
+    HTTP REST API for managing isolated sandboxes. All commands run in secure,
+    isolated containers (Docker/Podman) or microVMs (Firecracker).
+
+    ## Security Model
+
+    - All code execution happens in isolated sandboxes
+    - Sandboxes cannot access the host filesystem by default
+    - Network access can be restricted per security profile
+    - Three security profiles: permissive, moderate (default), restrictive
+
+    ## Authentication
+
+    Authentication is optional. When enabled, use Bearer token in the
+    Authorization header.
+  version: 0.2.0
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  contact:
+    name: agentkernel
+    url: https://github.com/thrashr888/agentkernel
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: Health
+    description: Health check endpoint
+  - name: Run
+    description: One-shot command execution
+  - name: Sandboxes
+    description: Persistent sandbox management
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: Returns 200 if the server is healthy.
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /run:
+    post:
+      tags: [Run]
+      summary: Run a command in a temporary sandbox
+      description: |
+        Executes a command in an isolated sandbox and returns the output.
+        The sandbox is automatically cleaned up after execution.
+
+        By default, uses a pre-warmed container pool for fast execution (~50ms).
+        Set `fast: false` for custom images or advanced options (~500ms).
+      operationId: runCommand
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunRequest'
+            examples:
+              simple:
+                summary: Simple echo command
+                value:
+                  command: ["echo", "hello world"]
+              python:
+                summary: Run Python code
+                value:
+                  command: ["python3", "-c", "print('Hello from Python!')"]
+              custom_image:
+                summary: Custom image (slow path)
+                value:
+                  command: ["node", "--version"]
+                  image: "node:22-alpine"
+                  fast: false
+      responses:
+        '200':
+          description: Command executed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /sandboxes:
+    get:
+      tags: [Sandboxes]
+      summary: List all sandboxes
+      description: Returns a list of all sandboxes and their current status.
+      operationId: listSandboxes
+      responses:
+        '200':
+          description: List of sandboxes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxListResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [Sandboxes]
+      summary: Create a new sandbox
+      description: |
+        Creates a new persistent sandbox. The sandbox starts automatically
+        after creation. Use this for workflows that require multiple commands.
+      operationId: createSandbox
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSandboxRequest'
+            examples:
+              default:
+                summary: Default Alpine sandbox
+                value:
+                  name: "my-sandbox"
+              python:
+                summary: Python sandbox
+                value:
+                  name: "python-sandbox"
+                  image: "python:3.12-alpine"
+      responses:
+        '201':
+          description: Sandbox created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /sandboxes/{name}:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+
+    get:
+      tags: [Sandboxes]
+      summary: Get sandbox details
+      description: Returns details about a specific sandbox.
+      operationId: getSandbox
+      responses:
+        '200':
+          description: Sandbox details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [Sandboxes]
+      summary: Delete a sandbox
+      description: Stops and removes a sandbox.
+      operationId: deleteSandbox
+      responses:
+        '200':
+          description: Sandbox deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /sandboxes/{name}/exec:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+
+    post:
+      tags: [Sandboxes]
+      summary: Execute command in sandbox
+      description: Executes a command in an existing running sandbox.
+      operationId: execInSandbox
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecRequest'
+            examples:
+              simple:
+                summary: List files
+                value:
+                  command: ["ls", "-la"]
+              python:
+                summary: Run Python
+                value:
+                  command: ["python3", "-c", "import sys; print(sys.version)"]
+      responses:
+        '200':
+          description: Command executed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  schemas:
+    RunRequest:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: array
+          items:
+            type: string
+          description: Command and arguments to execute
+          example: ["echo", "hello"]
+        image:
+          type: string
+          description: |
+            Docker image to use (only when fast=false).
+            If not specified, auto-detected from command.
+          example: "python:3.12-alpine"
+        profile:
+          type: string
+          enum: [permissive, moderate, restrictive]
+          default: moderate
+          description: |
+            Security profile (only when fast=false).
+            - permissive: network, mounts, env passthrough
+            - moderate: network enabled, no mounts
+            - restrictive: no network, read-only filesystem
+        fast:
+          type: boolean
+          default: true
+          description: |
+            Use container pool for fast execution (~50ms).
+            Set to false for custom images or profiles (~500ms).
+
+    CreateSandboxRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]*$'
+          maxLength: 64
+          description: Unique name for the sandbox
+          example: "my-sandbox"
+        image:
+          type: string
+          default: "alpine:3.20"
+          description: Docker image to use
+          example: "python:3.12-alpine"
+
+    ExecRequest:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: array
+          items:
+            type: string
+          description: Command and arguments to execute
+          example: ["ls", "-la"]
+
+    HealthResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: string
+          example: "ok"
+
+    RunResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            output:
+              type: string
+              description: Combined stdout/stderr from command
+              example: "hello world\n"
+
+    SandboxInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "my-sandbox"
+        status:
+          type: string
+          enum: [running, stopped]
+          example: "running"
+
+    SandboxResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/SandboxInfo'
+
+    SandboxListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SandboxInfo'
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: string
+          example: "Sandbox removed"
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          example: "Sandbox not found"
+
+  parameters:
+    SandboxName:
+      name: name
+      in: path
+      required: true
+      description: Name of the sandbox
+      schema:
+        type: string
+        pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]*$'
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "command is required"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Sandbox not found"
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Failed to start container"
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Optional API key authentication. When enabled, include the
+        API key in the Authorization header as a Bearer token.
+
+# Security is optional - uncomment to require authentication
+# security:
+#   - BearerAuth: []
