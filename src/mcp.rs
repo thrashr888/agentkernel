@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader, Write};
 use tokio::runtime::Handle;
 
 use crate::languages;
+use crate::permissions::SecurityProfile;
 use crate::vmm::VmManager;
 
 /// MCP server for agentkernel
@@ -160,7 +161,7 @@ impl McpServer {
             "tools": [
                 {
                     "name": "sandbox_run",
-                    "description": "Run a command in an isolated sandbox. By default uses a pre-warmed container pool for fast execution (~50ms). Set fast=false for custom images.",
+                    "description": "Run a command in an isolated sandbox. By default uses a pre-warmed container pool for fast execution (~50ms). Set fast=false for custom images or advanced options.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -177,6 +178,30 @@ impl McpServer {
                                 "type": "boolean",
                                 "description": "Use container pool for fast execution (default: true). Set to false for custom images.",
                                 "default": true
+                            },
+                            "cwd": {
+                                "type": "string",
+                                "description": "Working directory inside the sandbox (only when fast=false)"
+                            },
+                            "env": {
+                                "type": "object",
+                                "description": "Environment variables to set (only when fast=false)",
+                                "additionalProperties": { "type": "string" }
+                            },
+                            "timeout_ms": {
+                                "type": "integer",
+                                "description": "Timeout in milliseconds (default: 30000)",
+                                "default": 30000
+                            },
+                            "profile": {
+                                "type": "string",
+                                "enum": ["permissive", "moderate", "restrictive"],
+                                "description": "Security profile (default: moderate). Only when fast=false.",
+                                "default": "moderate"
+                            },
+                            "network": {
+                                "type": "boolean",
+                                "description": "Enable network access (default: depends on profile). Only when fast=false."
                             }
                         },
                         "required": ["command"]
@@ -240,6 +265,74 @@ impl McpServer {
                         },
                         "required": ["name"]
                     }
+                },
+                {
+                    "name": "sandbox_file_write",
+                    "description": "Write a file into a running sandbox.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the sandbox"
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "Path inside the sandbox where to write the file"
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Content to write to the file"
+                            }
+                        },
+                        "required": ["name", "path", "content"]
+                    }
+                },
+                {
+                    "name": "sandbox_file_read",
+                    "description": "Read a file from a running sandbox.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the sandbox"
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "Path inside the sandbox to read"
+                            }
+                        },
+                        "required": ["name", "path"]
+                    }
+                },
+                {
+                    "name": "sandbox_start",
+                    "description": "Start a stopped sandbox.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the sandbox to start"
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "sandbox_stop",
+                    "description": "Stop a running sandbox (keeps it for later use).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the sandbox to stop"
+                            }
+                        },
+                        "required": ["name"]
+                    }
                 }
             ]
         });
@@ -262,6 +355,10 @@ impl McpServer {
             "sandbox_exec" => self.tool_sandbox_exec(&arguments),
             "sandbox_list" => self.tool_sandbox_list(),
             "sandbox_remove" => self.tool_sandbox_remove(&arguments),
+            "sandbox_file_write" => self.tool_sandbox_file_write(&arguments),
+            "sandbox_file_read" => self.tool_sandbox_file_read(&arguments),
+            "sandbox_start" => self.tool_sandbox_start(&arguments),
+            "sandbox_stop" => self.tool_sandbox_stop(&arguments),
             _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
         };
 
@@ -328,30 +425,30 @@ impl McpServer {
             .map(String::from)
             .unwrap_or_else(|| languages::detect_image(&command));
 
+        // Parse security profile
+        let profile_str = args
+            .get("profile")
+            .and_then(|v| v.as_str())
+            .unwrap_or("moderate");
+
+        let mut perms = SecurityProfile::from_str(profile_str)
+            .unwrap_or_default()
+            .permissions();
+
+        // Apply network override if specified
+        if let Some(network) = args.get("network").and_then(|v| v.as_bool()) {
+            perms.network = network;
+        }
+
         // Use the current runtime via block_in_place
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
 
-                // Generate unique sandbox name
-                let sandbox_name = format!("mcp-run-{}", &uuid::Uuid::new_v4().to_string()[..8]);
-
-                // Create sandbox
-                manager.create(&sandbox_name, &image, 1, 512).await?;
-
-                // Start sandbox
-                if let Err(e) = manager.start(&sandbox_name).await {
-                    let _ = manager.remove(&sandbox_name).await;
-                    anyhow::bail!("Failed to start sandbox: {}", e);
-                }
-
-                // Execute command
-                let result = manager.exec_cmd(&sandbox_name, &command).await;
-
-                // Clean up
-                let _ = manager.remove(&sandbox_name).await;
-
-                result
+                // Use optimized ephemeral run with permissions
+                manager
+                    .run_ephemeral_with_files(&image, &command, &perms, &[])
+                    .await
             })
         })
     }
@@ -439,6 +536,135 @@ impl McpServer {
                 let mut manager = VmManager::new()?;
                 manager.remove(name).await?;
                 Ok(format!("Sandbox '{}' removed.", name))
+            })
+        })
+    }
+
+    fn tool_sandbox_file_write(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("path is required"))?;
+
+        let content = args
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("content is required"))?;
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+
+                if !manager.is_running(name) {
+                    anyhow::bail!(
+                        "Sandbox '{}' is not running. Start it first with sandbox_start.",
+                        name
+                    );
+                }
+
+                manager.write_file(name, path, content.as_bytes()).await?;
+                Ok(format!(
+                    "Wrote {} bytes to '{}' in sandbox '{}'",
+                    content.len(),
+                    path,
+                    name
+                ))
+            })
+        })
+    }
+
+    fn tool_sandbox_file_read(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("path is required"))?;
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+
+                if !manager.is_running(name) {
+                    anyhow::bail!(
+                        "Sandbox '{}' is not running. Start it first with sandbox_start.",
+                        name
+                    );
+                }
+
+                let content = manager.read_file(name, path).await?;
+
+                // Try to convert to UTF-8 string, fall back to base64 for binary
+                match String::from_utf8(content.clone()) {
+                    Ok(text) => Ok(text),
+                    Err(_) => {
+                        use base64::{Engine, engine::general_purpose::STANDARD};
+                        Ok(format!(
+                            "[binary file, {} bytes, base64 encoded]\n{}",
+                            content.len(),
+                            STANDARD.encode(&content)
+                        ))
+                    }
+                }
+            })
+        })
+    }
+
+    fn tool_sandbox_start(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+
+                if !manager.exists(name) {
+                    anyhow::bail!(
+                        "Sandbox '{}' not found. Create it first with sandbox_create.",
+                        name
+                    );
+                }
+
+                if manager.is_running(name) {
+                    return Ok(format!("Sandbox '{}' is already running.", name));
+                }
+
+                manager.start(name).await?;
+                Ok(format!("Sandbox '{}' started.", name))
+            })
+        })
+    }
+
+    fn tool_sandbox_stop(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+
+                if !manager.exists(name) {
+                    anyhow::bail!("Sandbox '{}' not found.", name);
+                }
+
+                if !manager.is_running(name) {
+                    return Ok(format!("Sandbox '{}' is already stopped.", name));
+                }
+
+                manager.stop(name).await?;
+                Ok(format!("Sandbox '{}' stopped.", name))
             })
         })
     }
