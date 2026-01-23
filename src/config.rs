@@ -94,12 +94,17 @@ pub struct AgentConfig {
     /// Preferred AI agent: claude, gemini, codex, opencode
     #[serde(default = "default_agent")]
     pub preferred: String,
+    /// Compatibility mode: native, claude, codex, gemini
+    /// Sets agent-specific permissions and network policies
+    #[serde(default)]
+    pub compatibility_mode: Option<String>,
 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             preferred: default_agent(),
+            compatibility_mode: None,
         }
     }
 }
@@ -165,6 +170,7 @@ impl Config {
             },
             agent: AgentConfig {
                 preferred: agent.to_string(),
+                compatibility_mode: None,
             },
             resources: ResourcesConfig::default(),
             network: NetworkConfig::default(),
@@ -175,7 +181,28 @@ impl Config {
     }
 
     /// Get the effective permissions based on config
+    ///
+    /// If a compatibility_mode is set in [agent], uses that profile's permissions.
+    /// Otherwise falls back to the [security] profile with overrides.
     pub fn get_permissions(&self) -> crate::permissions::Permissions {
+        // Check for compatibility mode first
+        if let Some(ref mode_str) = self.agent.compatibility_mode
+            && let Some(mode) = crate::permissions::CompatibilityMode::from_str(mode_str)
+        {
+            let mut perms = mode.profile().permissions;
+
+            // Still apply explicit overrides from [security]
+            if let Some(network) = self.security.network {
+                perms.network = network;
+            }
+            if let Some(mount_cwd) = self.security.mount_cwd {
+                perms.mount_cwd = mount_cwd;
+            }
+
+            return perms;
+        }
+
+        // Fall back to security profile
         let mut perms = self.security.profile.permissions();
 
         // Apply overrides
@@ -187,6 +214,16 @@ impl Config {
         }
 
         perms
+    }
+
+    /// Get the agent profile if a compatibility mode is configured
+    #[allow(dead_code)]
+    pub fn get_agent_profile(&self) -> Option<crate::permissions::AgentProfile> {
+        self.agent
+            .compatibility_mode
+            .as_ref()
+            .and_then(|mode_str| crate::permissions::CompatibilityMode::from_str(mode_str))
+            .map(|mode| mode.profile())
     }
 
     /// Get the effective Docker image for this config
@@ -406,5 +443,52 @@ mod tests {
         assert!(config.build.target.is_none());
         assert!(!config.build.no_cache);
         assert!(config.build.args.is_empty());
+    }
+
+    #[test]
+    fn test_agent_compatibility_mode() {
+        let toml = r#"
+            [sandbox]
+            name = "claude-project"
+
+            [agent]
+            preferred = "claude"
+            compatibility_mode = "claude"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert_eq!(config.agent.preferred, "claude");
+        assert_eq!(config.agent.compatibility_mode, Some("claude".to_string()));
+
+        // Should get Claude-specific permissions
+        let profile = config.get_agent_profile();
+        assert!(profile.is_some());
+        let profile = profile.unwrap();
+        assert!(profile.permissions.mount_cwd); // Claude needs project access
+        assert!(
+            profile
+                .network_policy
+                .always_allow
+                .contains(&"api.anthropic.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_agent_compatibility_mode_with_overrides() {
+        let toml = r#"
+            [sandbox]
+            name = "claude-no-network"
+
+            [agent]
+            compatibility_mode = "claude"
+
+            [security]
+            network = false
+        "#;
+        let config = Config::from_str(toml).unwrap();
+
+        // Should have Claude permissions but with network disabled
+        let perms = config.get_permissions();
+        assert!(perms.mount_cwd); // From Claude profile
+        assert!(!perms.network); // Overridden by [security]
     }
 }
