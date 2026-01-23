@@ -1,6 +1,7 @@
 mod agents;
 mod apple_backend;
 mod backend;
+mod build;
 mod config;
 mod daemon;
 mod docker_backend;
@@ -516,26 +517,55 @@ memory_mb = 512
                 // Daemon not available or failed, fall through to ephemeral mode
             }
 
-            // Determine Docker image: --image > --config > command > ./agentkernel.toml > project files > default
+            // Determine Docker image: --image > --config > Dockerfile > command > ./agentkernel.toml > project files > default
             // For `run`, command detection has higher priority than project files
             // because user is explicitly specifying what to run
-            let docker_image = if let Some(img) = image {
-                img
+            let (docker_image, cfg_for_build) = if let Some(img) = image {
+                (img, None)
             } else if let Some(ref config_path) = config {
                 let cfg = Config::from_file(config_path)?;
-                cfg.docker_image()
+                (cfg.docker_image(), Some(cfg))
             } else if let Some(img) = languages::detect_from_command(&command) {
                 // Command-based detection first for `run`
-                img
+                (img, None)
             } else {
                 // Try current directory config
                 let default_config = PathBuf::from("agentkernel.toml");
                 if default_config.exists() {
                     let cfg = Config::from_file(&default_config)?;
-                    cfg.docker_image()
+                    (cfg.docker_image(), Some(cfg))
                 } else {
                     // Fall back to project file detection or default
-                    languages::detect_image(&command)
+                    (languages::detect_image(&command), None)
+                }
+            };
+
+            // Check for Dockerfile and build if present
+            let current_dir = std::env::current_dir()?;
+            let docker_image = if let Some(ref cfg) = cfg_for_build {
+                // Use config's build settings
+                if cfg.requires_build(&current_dir) {
+                    let project_name = &cfg.sandbox.name;
+                    build::build_or_use_image(project_name, &docker_image, &current_dir, cfg)?
+                } else {
+                    docker_image
+                }
+            } else {
+                // Auto-detect Dockerfile in current directory
+                if languages::detect_dockerfile(&current_dir).is_some() {
+                    let project_name = current_dir
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "project".to_string());
+                    let default_cfg = Config::minimal(&project_name, "claude");
+                    build::build_or_use_image(
+                        &project_name,
+                        &docker_image,
+                        &current_dir,
+                        &default_cfg,
+                    )?
+                } else {
+                    docker_image
                 }
             };
 

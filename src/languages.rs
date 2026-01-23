@@ -136,6 +136,16 @@ const RUNTIMES: &[Runtime] = &[
 /// Default image when nothing is detected
 const DEFAULT_IMAGE: &str = "alpine:3.20";
 
+/// Common Dockerfile names to detect
+const DOCKERFILE_NAMES: &[&str] = &[
+    "Dockerfile",
+    "dockerfile",
+    "Dockerfile.dev",
+    "Dockerfile.development",
+    "Dockerfile.prod",
+    "Dockerfile.production",
+];
+
 /// Detect Docker image from a Procfile by parsing its commands
 /// Procfile format: `process_type: command`
 fn detect_from_procfile(dir: &Path) -> Option<String> {
@@ -164,6 +174,53 @@ fn detect_from_procfile(dir: &Path) -> Option<String> {
         }
     }
     None
+}
+
+/// Detect if a Dockerfile exists in the given directory
+///
+/// Returns the path to the Dockerfile if found, preferring exact "Dockerfile" name.
+/// Checks common variations like Dockerfile.dev, Dockerfile.prod, etc.
+pub fn detect_dockerfile(dir: &Path) -> Option<std::path::PathBuf> {
+    for name in DOCKERFILE_NAMES {
+        let path = dir.join(name);
+        if path.exists() && path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Calculate a content hash for a Dockerfile (for caching)
+///
+/// Uses the first 12 characters of a SHA256-like hash of the content.
+pub fn dockerfile_content_hash(dockerfile_path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(dockerfile_path).ok()?;
+    // Simple hash: sum of bytes mod large prime, formatted as hex
+    let hash: u64 = content
+        .bytes()
+        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+    // Truncate to 12 hex characters for shorter, readable image tags
+    let full_hash = format!("{:016x}", hash);
+    Some(full_hash[..12].to_string())
+}
+
+/// Generate a deterministic image name for a built Dockerfile
+///
+/// Format: agentkernel-{project}:{content-hash}
+pub fn dockerfile_image_name(project_name: &str, dockerfile_path: &Path) -> String {
+    let hash = dockerfile_content_hash(dockerfile_path).unwrap_or_else(|| "unknown".to_string());
+    // Sanitize project name for Docker image naming
+    let safe_name: String = project_name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("agentkernel-{}:{}", safe_name, hash)
 }
 
 /// Detect Docker image based on project files in the given directory
@@ -332,5 +389,63 @@ mod tests {
 
         let result = detect_from_procfile(dir.path());
         assert_eq!(result, Some("python:3.12-alpine".to_string()));
+    }
+
+    #[test]
+    fn test_detect_dockerfile() {
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+
+        // No Dockerfile initially
+        assert!(detect_dockerfile(dir.path()).is_none());
+
+        // Create a Dockerfile
+        let dockerfile_path = dir.path().join("Dockerfile");
+        let mut file = std::fs::File::create(&dockerfile_path).unwrap();
+        writeln!(file, "FROM alpine:3.20").unwrap();
+        writeln!(file, "RUN apk add --no-cache python3").unwrap();
+
+        let result = detect_dockerfile(dir.path());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().file_name().unwrap(), "Dockerfile");
+    }
+
+    #[test]
+    fn test_dockerfile_content_hash() {
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let dockerfile_path = dir.path().join("Dockerfile");
+
+        // Create a Dockerfile
+        let mut file = std::fs::File::create(&dockerfile_path).unwrap();
+        writeln!(file, "FROM alpine:3.20").unwrap();
+
+        let hash = dockerfile_content_hash(&dockerfile_path);
+        assert!(hash.is_some());
+        assert_eq!(hash.as_ref().unwrap().len(), 12);
+
+        // Same content should produce same hash
+        let hash2 = dockerfile_content_hash(&dockerfile_path);
+        assert_eq!(hash, hash2);
+    }
+
+    #[test]
+    fn test_dockerfile_image_name() {
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let dockerfile_path = dir.path().join("Dockerfile");
+
+        let mut file = std::fs::File::create(&dockerfile_path).unwrap();
+        writeln!(file, "FROM alpine:3.20").unwrap();
+
+        let name = dockerfile_image_name("my-project", &dockerfile_path);
+        assert!(name.starts_with("agentkernel-my-project:"));
+        assert_eq!(name.split(':').count(), 2);
     }
 }

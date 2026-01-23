@@ -23,6 +23,26 @@ fn default_file_mode() -> String {
     "0644".to_string()
 }
 
+/// Build configuration for custom Dockerfiles
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BuildConfig {
+    /// Path to Dockerfile (relative to config file or absolute)
+    #[serde(default)]
+    pub dockerfile: Option<String>,
+    /// Build context directory (defaults to Dockerfile directory)
+    #[serde(default)]
+    pub context: Option<String>,
+    /// Multi-stage build target (optional)
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Build arguments
+    #[serde(default)]
+    pub args: std::collections::HashMap<String, String>,
+    /// Disable build cache
+    #[serde(default)]
+    pub no_cache: bool,
+}
+
 /// Root configuration structure matching agentkernel.toml schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -35,6 +55,9 @@ pub struct Config {
     pub network: NetworkConfig,
     #[serde(default)]
     pub security: SecurityConfig,
+    /// Build configuration for custom Dockerfiles
+    #[serde(default)]
+    pub build: BuildConfig,
     /// Files to inject into the sandbox at startup
     #[serde(default, rename = "files")]
     pub files: Vec<FileEntry>,
@@ -127,6 +150,7 @@ impl Config {
     }
 
     /// Parse configuration from a TOML string.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(content: &str) -> Result<Self> {
         toml::from_str(content).context("Failed to parse TOML configuration")
     }
@@ -145,6 +169,7 @@ impl Config {
             resources: ResourcesConfig::default(),
             network: NetworkConfig::default(),
             security: SecurityConfig::default(),
+            build: BuildConfig::default(),
             files: Vec::new(),
         }
     }
@@ -183,6 +208,47 @@ impl Config {
             "dotnet" => "mcr.microsoft.com/dotnet/sdk:8.0".to_string(),
             _ => "alpine:3.20".to_string(),
         }
+    }
+
+    /// Get the Dockerfile path if one is configured or auto-detected
+    ///
+    /// Returns the resolved path relative to the given base directory.
+    pub fn dockerfile_path(&self, base_dir: &Path) -> Option<std::path::PathBuf> {
+        // Explicit dockerfile in config takes priority
+        if let Some(ref dockerfile) = self.build.dockerfile {
+            let path = if Path::new(dockerfile).is_absolute() {
+                Path::new(dockerfile).to_path_buf()
+            } else {
+                base_dir.join(dockerfile)
+            };
+            if path.exists() {
+                return Some(path);
+            }
+        }
+
+        // Auto-detect Dockerfile in base directory
+        crate::languages::detect_dockerfile(base_dir)
+    }
+
+    /// Get the build context directory
+    ///
+    /// Defaults to the Dockerfile's directory if not explicitly set.
+    pub fn build_context(&self, base_dir: &Path, dockerfile_path: &Path) -> std::path::PathBuf {
+        if let Some(ref context) = self.build.context {
+            if Path::new(context).is_absolute() {
+                Path::new(context).to_path_buf()
+            } else {
+                base_dir.join(context)
+            }
+        } else {
+            // Default to Dockerfile's directory
+            dockerfile_path.parent().unwrap_or(base_dir).to_path_buf()
+        }
+    }
+
+    /// Check if this config requires building from a Dockerfile
+    pub fn requires_build(&self, base_dir: &Path) -> bool {
+        self.dockerfile_path(base_dir).is_some()
     }
 
     /// Load and resolve files from the [[files]] section
@@ -295,5 +361,50 @@ mod tests {
         "#;
         let config = Config::from_str(toml).unwrap();
         assert!(config.files.is_empty());
+    }
+
+    #[test]
+    fn test_parse_build_config() {
+        let toml = r#"
+            [sandbox]
+            name = "custom-app"
+
+            [build]
+            dockerfile = "./Dockerfile.dev"
+            context = "./app"
+            target = "runtime"
+            no_cache = true
+
+            [build.args]
+            PYTHON_VERSION = "3.12"
+            DEBUG = "true"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert_eq!(
+            config.build.dockerfile,
+            Some("./Dockerfile.dev".to_string())
+        );
+        assert_eq!(config.build.context, Some("./app".to_string()));
+        assert_eq!(config.build.target, Some("runtime".to_string()));
+        assert!(config.build.no_cache);
+        assert_eq!(
+            config.build.args.get("PYTHON_VERSION"),
+            Some(&"3.12".to_string())
+        );
+        assert_eq!(config.build.args.get("DEBUG"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn test_default_build_config() {
+        let toml = r#"
+            [sandbox]
+            name = "test-app"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(config.build.dockerfile.is_none());
+        assert!(config.build.context.is_none());
+        assert!(config.build.target.is_none());
+        assert!(!config.build.no_cache);
+        assert!(config.build.args.is_empty());
     }
 }
