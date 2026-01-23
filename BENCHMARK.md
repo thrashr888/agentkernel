@@ -17,6 +17,7 @@ This is what users experience - total time from command start to output:
 | Docker Pool | Linux (AMD EPYC) | ~250ms | ~4.0/sec | Container pool with `-F` flag |
 | Podman Ephemeral | macOS (M3 Pro) | ~300ms | ~3.3/sec | Uses optimized `run --rm` path |
 | Docker Pool | macOS (M3 Pro) | ~300ms | ~3.3/sec | Container pool with `-F` flag |
+| Podman Ephemeral | Linux (AMD EPYC) | ~310ms | ~3.2/sec | Daemonless - slightly faster |
 | Docker Ephemeral | Linux (AMD EPYC) | ~350ms | ~2.9/sec | Uses optimized `run --rm` path |
 | Firecracker Ephemeral | Linux (AMD EPYC) | 800ms | ~1.3/sec | Full VM lifecycle (cold start) |
 | Apple Containers | macOS 26 (M3 Pro) | ~940ms | ~1.1/sec | Optimized single-operation path |
@@ -32,6 +33,7 @@ This is what users experience - total time from command start to output:
 | Hyperlight Cold | Linux (AMD EPYC) | 41ms | 41ms | <1ms | N/A | ~25/sec |
 | Docker | macOS (M3 Pro) | N/A | ~220ms | N/A | N/A | ~4.5/sec |
 | Podman | macOS (M3 Pro) | N/A | ~300ms | N/A | N/A | ~3.3/sec |
+| Podman | Linux (AMD EPYC) | N/A | ~310ms | N/A | N/A | ~3.2/sec |
 | Docker | Linux (AMD EPYC) | N/A | ~350ms | N/A | N/A | ~2.9/sec |
 | Firecracker | Linux (AMD EPYC) | 78ms | 110ms | 19ms | 20ms | ~9/sec |
 | **FC Daemon** | Linux (AMD EPYC) | 0ms | 0ms | 19ms | 0ms | **~5/sec** |
@@ -98,17 +100,18 @@ The ~175ms start time is the practical floor for Docker. Remaining overhead come
 
 ## Podman Backend (macOS/Linux)
 
-Podman is a daemonless, rootless container runtime. On macOS, it runs containers inside a lightweight VM (similar to Docker Desktop).
+Podman is a daemonless, rootless container runtime. On macOS, it runs containers inside a lightweight VM (similar to Docker Desktop). On Linux, it runs natively without a daemon.
 
-### Measured Performance (macOS M3 Pro)
+### Measured Performance
 
 Using the optimized `podman run --rm` path:
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Cold start | ~730ms | First run after machine start |
-| Warm run | ~300ms | Subsequent runs |
-| Throughput | ~3.3/sec | Warm containers |
+| Platform | Cold Start | Warm Run | Throughput |
+|----------|------------|----------|------------|
+| macOS (M3 Pro) | ~730ms | ~300ms | ~3.3/sec |
+| Linux (AMD EPYC) | ~350ms | ~310ms | ~3.2/sec |
+
+On Linux, Podman is ~10-15% faster than Docker due to being daemonless.
 
 ### Comparison: Docker vs Podman (macOS)
 
@@ -118,6 +121,17 @@ Using the optimized `podman run --rm` path:
 | Cold start | ~270ms | ~730ms | **Docker** |
 | Daemonless | No | Yes | **Podman** |
 | Rootless | Via config | Default | **Podman** |
+
+### Comparison: Docker vs Podman (Linux)
+
+| Metric | Docker | Podman | Winner |
+|--------|--------|--------|--------|
+| Warm latency | ~350ms | ~310ms | **Podman** |
+| Cold start | ~550ms | ~350ms | **Podman** |
+| Daemonless | No | Yes | **Podman** |
+| Rootless | Via config | Default | **Podman** |
+
+On Linux, Podman outperforms Docker because it doesn't have daemon overhead.
 
 ### Optimization Applied
 
@@ -172,6 +186,7 @@ cargo test --test hyperlight_benchmark --features hyperlight -- --nocapture --ig
 | Firecracker Daemon | 195ms | 2.9x slower |
 | Docker (macOS) | 220ms | 3.2x slower |
 | Podman (macOS) | 300ms | 4.4x slower |
+| Podman (Linux) | 310ms | 4.6x slower |
 | Docker (Linux) | 350ms | 5.1x slower |
 
 ### Pool Performance (Warm Acquire)

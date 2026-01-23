@@ -283,6 +283,7 @@ Once installed, Claude will automatically use agentkernel for isolated execution
 | Daemon (warm pool) | Linux | 195ms | API/interactive - fast with full VM isolation |
 | Docker | macOS | ~220ms | macOS development (fastest) |
 | Podman | macOS | ~300ms | macOS development (rootless) |
+| Podman | Linux | ~310ms | Linux without KVM (fastest, daemonless) |
 | Docker | Linux | ~350ms | Linux without KVM |
 | Firecracker (cold) | Linux | ~800ms | One-off commands |
 
