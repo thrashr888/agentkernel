@@ -10,7 +10,7 @@ This is what users experience - total time from command start to output:
 
 | Mode | Platform | Latency | Throughput | Notes |
 |------|----------|---------|------------|-------|
-| **Hyperlight Pool** | Linux (AMD EPYC) | **<1µs** | Very High | Pre-warmed Wasm runtimes (experimental) |
+| **Hyperlight Pool** | Linux (AMD EPYC) | **<1µs** | **~3,300 RPS** | Pre-warmed Wasm runtimes (experimental) |
 | Hyperlight Cold | Linux (AMD EPYC) | 41ms | ~25/sec | Cold start Wasm runtime |
 | Firecracker Daemon | Linux (AMD EPYC) | **195ms** | **~5.1/sec** | Pre-warmed VM pool (3-5 VMs) |
 | Docker Ephemeral | macOS (M3 Pro) | ~220ms | ~4.5/sec | Uses optimized `run --rm` path |
@@ -29,7 +29,7 @@ This is what users experience - total time from command start to output:
 
 | Backend | Platform | Boot | Ready | Exec | Shutdown | Throughput |
 |---------|----------|------|-------|------|----------|------------|
-| **Hyperlight Pool** | Linux (AMD EPYC) | 0ms | **<1µs** | <1ms | N/A | Very High |
+| **Hyperlight Pool** | Linux (AMD EPYC) | 0ms | **<1µs** | <1ms | N/A | **~3,300/sec** |
 | Hyperlight Cold | Linux (AMD EPYC) | 41ms | 41ms | <1ms | N/A | ~25/sec |
 | Docker | macOS (M3 Pro) | N/A | ~220ms | N/A | N/A | ~4.5/sec |
 | Podman | macOS (M3 Pro) | N/A | ~300ms | N/A | N/A | ~3.3/sec |
@@ -199,12 +199,24 @@ cargo test --test hyperlight_benchmark --features hyperlight -- --nocapture --ig
 
 | Metric | Warm Acquire | Cold Acquire |
 |--------|--------------|--------------|
-| Average | **1.9µs** | 41ms |
-| Min | <1µs | 41ms |
-| Max | 11µs | 42ms |
-| p50 | 1µs | 41ms |
+| Average | **0.2µs** | 10ms |
+| Min | <1µs | 9ms |
+| Max | 1µs | 13ms |
+| p50 | <1µs | 9ms |
 
-This validates Hyperlight's "sub-millisecond" claim - warm acquire is **>20,000x faster** than cold startup.
+This validates Hyperlight's "sub-millisecond" claim - warm acquire is **>50,000x faster** than cold startup.
+
+### Throughput (Concurrent Workloads)
+
+Stress testing with 100 concurrent requests (Linux, AMD EPYC):
+
+| Backend | 100 Concurrent Runs | RPS | vs Hyperlight |
+|---------|---------------------|-----|---------------|
+| **Hyperlight** | 0.03s | **~3,333 RPS** | 1.0x (baseline) |
+| Docker | 8.4s | ~12 RPS | 280x slower |
+| Podman | 18.2s | ~5.5 RPS | 600x slower |
+
+Hyperlight achieves **~3,300+ RPS** for Wasm workloads, making it ideal for high-throughput serverless scenarios.
 
 ### Key Insight
 
