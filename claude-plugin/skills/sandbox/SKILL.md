@@ -294,6 +294,84 @@ min_warm = 1
 runtime = "python"
 ```
 
+## Claude Code Permission Configuration
+
+Agentkernel MCP tools are designed to run safely in isolated sandboxes. You can configure Claude Code's approval behavior for these tools in your project's `.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__agentkernel__sandbox_run",
+      "mcp__agentkernel__sandbox_exec",
+      "mcp__agentkernel__sandbox_list",
+      "mcp__agentkernel__sandbox_file_read"
+    ],
+    "ask": [
+      "mcp__agentkernel__sandbox_file_write",
+      "mcp__agentkernel__sandbox_create"
+    ],
+    "deny": []
+  }
+}
+```
+
+### Tool Risk Levels
+
+| Tool | Risk Level | Recommendation |
+|------|------------|----------------|
+| `sandbox_list` | Low | Auto-approve (read-only) |
+| `sandbox_file_read` | Low | Auto-approve (read from sandbox only) |
+| `sandbox_run` | Medium | Auto-approve (sandboxed execution) |
+| `sandbox_exec` | Medium | Auto-approve (sandboxed execution) |
+| `sandbox_file_write` | Medium | Ask (writes files into sandbox) |
+| `sandbox_create` | Medium | Ask (creates persistent resources) |
+| `sandbox_start` | Medium | Auto-approve (starts existing sandbox) |
+| `sandbox_stop` | Medium | Auto-approve (stops sandbox) |
+| `sandbox_remove` | Medium | Ask (removes sandbox) |
+
+All tools run in isolated sandboxes, so even "medium" risk tools cannot affect the host system. The `ask` recommendations are for visibility, not security.
+
+### MCP Server Configuration
+
+Add agentkernel to your Claude Code MCP servers:
+
+```json
+// .mcp.json (project-level)
+{
+  "mcpServers": {
+    "agentkernel": {
+      "command": "agentkernel",
+      "args": ["mcp", "server"],
+      "env": {}
+    }
+  }
+}
+```
+
+Or globally in `~/.claude/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "agentkernel": {
+      "command": "agentkernel",
+      "args": ["mcp", "server"]
+    }
+  }
+}
+```
+
+### Headless/Automation Mode
+
+For CI/CD or automated workflows, use the `--allowedTools` flag:
+
+```bash
+claude --allowedTools "mcp__agentkernel__*" "Run tests in sandbox"
+```
+
+Or configure in settings for persistent auto-approval of all agentkernel tools.
+
 ## Error Handling
 
 If a command fails, the sandbox is automatically cleaned up. Use `--keep` to preserve it for debugging:

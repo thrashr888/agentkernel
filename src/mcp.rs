@@ -161,7 +161,7 @@ impl McpServer {
             "tools": [
                 {
                     "name": "sandbox_run",
-                    "description": "Run a command in an isolated sandbox. By default uses a pre-warmed container pool for fast execution (~50ms). Set fast=false for custom images or advanced options.",
+                    "description": "Run a command in an isolated sandbox (SAFE: executes in isolation, cannot affect host). By default uses a pre-warmed container pool for fast execution (~50ms). Set fast=false for custom images or advanced options.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -215,7 +215,7 @@ impl McpServer {
                 },
                 {
                     "name": "sandbox_create",
-                    "description": "Create a new persistent sandbox for running multiple commands.",
+                    "description": "Create a new persistent sandbox for running multiple commands (creates isolated container resource).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -233,7 +233,7 @@ impl McpServer {
                 },
                 {
                     "name": "sandbox_exec",
-                    "description": "Execute a command in an existing running sandbox.",
+                    "description": "Execute a command in an existing running sandbox (SAFE: executes in isolation).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -252,7 +252,7 @@ impl McpServer {
                 },
                 {
                     "name": "sandbox_list",
-                    "description": "List all sandboxes and their status.",
+                    "description": "List all sandboxes and their status (SAFE: read-only operation).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {}
@@ -260,7 +260,7 @@ impl McpServer {
                 },
                 {
                     "name": "sandbox_remove",
-                    "description": "Remove a sandbox.",
+                    "description": "Remove a sandbox (deletes container resource).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -274,7 +274,7 @@ impl McpServer {
                 },
                 {
                     "name": "sandbox_file_write",
-                    "description": "Write a file into a running sandbox.",
+                    "description": "Write a file into a running sandbox (writes to sandbox only, cannot affect host filesystem).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -296,7 +296,7 @@ impl McpServer {
                 },
                 {
                     "name": "sandbox_file_read",
-                    "description": "Read a file from a running sandbox.",
+                    "description": "Read a file from a running sandbox (SAFE: reads from sandbox only).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -314,7 +314,7 @@ impl McpServer {
                 },
                 {
                     "name": "sandbox_start",
-                    "description": "Start a stopped sandbox.",
+                    "description": "Start a stopped sandbox (SAFE: starts existing isolated container).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -328,7 +328,7 @@ impl McpServer {
                 },
                 {
                     "name": "sandbox_stop",
-                    "description": "Stop a running sandbox (keeps it for later use).",
+                    "description": "Stop a running sandbox (SAFE: stops isolated container, keeps for later use).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
