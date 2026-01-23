@@ -235,9 +235,16 @@ agentkernel uses **Firecracker microVMs** (the same tech behind AWS Lambda) to p
 |----------|---------|--------|
 | Linux (x86_64, aarch64) | Firecracker microVMs | Full support |
 | Linux (x86_64, aarch64) | Hyperlight Wasm | Experimental |
-| macOS (Apple Silicon, Intel) | Docker or Podman | Full support |
+| macOS 26+ (Apple Silicon) | Apple Containers | Full support (VM isolation) |
+| macOS (Apple Silicon, Intel) | Docker | Full support (~220ms) |
+| macOS (Apple Silicon, Intel) | Podman | Full support (~300ms) |
 
-On macOS, agentkernel automatically falls back to containers since Firecracker and Hyperlight require KVM (Linux only). Podman is preferred if available (rootless, daemonless), otherwise Docker is used.
+On macOS, agentkernel automatically selects the best available backend:
+1. **Apple Containers** (macOS 26+) - True VM isolation, ~940ms
+2. **Docker** - Fastest container option, ~220ms
+3. **Podman** - Rootless/daemonless, ~300ms
+
+Firecracker and Hyperlight require KVM (Linux only).
 
 ## Claude Code Integration
 
@@ -274,7 +281,9 @@ Once installed, Claude will automatically use agentkernel for isolated execution
 | **Hyperlight Pool** | Linux | **<1µs** | Sub-microsecond with pre-warmed runtimes (experimental) |
 | Hyperlight (cold) | Linux | ~41ms | Cold start Wasm runtime |
 | Daemon (warm pool) | Linux | 195ms | API/interactive - fast with full VM isolation |
-| Docker | macOS | ~300ms | macOS development |
+| Docker | macOS | ~220ms | macOS development (fastest) |
+| Podman | macOS | ~300ms | macOS development (rootless) |
+| Docker | Linux | ~350ms | Linux without KVM |
 | Firecracker (cold) | Linux | ~800ms | One-off commands |
 
 See [BENCHMARK.md](BENCHMARK.md) for detailed benchmarks and methodology.

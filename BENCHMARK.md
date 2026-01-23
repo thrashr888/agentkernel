@@ -13,10 +13,11 @@ This is what users experience - total time from command start to output:
 | **Hyperlight Pool** | Linux (AMD EPYC) | **<1µs** | Very High | Pre-warmed Wasm runtimes (experimental) |
 | Hyperlight Cold | Linux (AMD EPYC) | 41ms | ~25/sec | Cold start Wasm runtime |
 | Firecracker Daemon | Linux (AMD EPYC) | **195ms** | **~5.1/sec** | Pre-warmed VM pool (3-5 VMs) |
+| Docker Ephemeral | macOS (M3 Pro) | ~220ms | ~4.5/sec | Uses optimized `run --rm` path |
 | Docker Pool | Linux (AMD EPYC) | ~250ms | ~4.0/sec | Container pool with `-F` flag |
+| Podman Ephemeral | macOS (M3 Pro) | ~300ms | ~3.3/sec | Uses optimized `run --rm` path |
 | Docker Pool | macOS (M3 Pro) | ~300ms | ~3.3/sec | Container pool with `-F` flag |
-| Docker Ephemeral | Linux (AMD EPYC) | ~450ms | ~2.2/sec | Uses optimized `run --rm` path |
-| Docker Ephemeral | macOS (M3 Pro) | ~500ms | ~2.0/sec | Uses optimized `run --rm` path |
+| Docker Ephemeral | Linux (AMD EPYC) | ~350ms | ~2.9/sec | Uses optimized `run --rm` path |
 | Firecracker Ephemeral | Linux (AMD EPYC) | 800ms | ~1.3/sec | Full VM lifecycle (cold start) |
 | Apple Containers | macOS 26 (M3 Pro) | ~940ms | ~1.1/sec | Optimized single-operation path |
 | Apple Containers (--keep) | macOS 26 (M3 Pro) | ~2200ms | ~0.5/sec | Multi-step lifecycle |
@@ -29,8 +30,9 @@ This is what users experience - total time from command start to output:
 |---------|----------|------|-------|------|----------|------------|
 | **Hyperlight Pool** | Linux (AMD EPYC) | 0ms | **<1µs** | <1ms | N/A | Very High |
 | Hyperlight Cold | Linux (AMD EPYC) | 41ms | 41ms | <1ms | N/A | ~25/sec |
-| Docker | macOS (M3 Pro) | 188ms | 188ms | 83ms | 109ms | 2.0/sec |
-| Docker | Linux (AMD EPYC) | 155ms | 155ms | 53ms | 130ms | ~4/sec |
+| Docker | macOS (M3 Pro) | N/A | ~220ms | N/A | N/A | ~4.5/sec |
+| Podman | macOS (M3 Pro) | N/A | ~300ms | N/A | N/A | ~3.3/sec |
+| Docker | Linux (AMD EPYC) | N/A | ~350ms | N/A | N/A | ~2.9/sec |
 | Firecracker | Linux (AMD EPYC) | 78ms | 110ms | 19ms | 20ms | ~9/sec |
 | **FC Daemon** | Linux (AMD EPYC) | 0ms | 0ms | 19ms | 0ms | **~5/sec** |
 | Apple Containers | macOS 26 (M3 Pro) | 860ms | 860ms | 95ms | 37ms | ~1/sec |
@@ -94,6 +96,51 @@ The ~175ms start time is the practical floor for Docker. Remaining overhead come
 - Filesystem layering (~50ms)
 - Process spawn overhead (~25ms)
 
+## Podman Backend (macOS/Linux)
+
+Podman is a daemonless, rootless container runtime. On macOS, it runs containers inside a lightweight VM (similar to Docker Desktop).
+
+### Measured Performance (macOS M3 Pro)
+
+Using the optimized `podman run --rm` path:
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Cold start | ~730ms | First run after machine start |
+| Warm run | ~300ms | Subsequent runs |
+| Throughput | ~3.3/sec | Warm containers |
+
+### Comparison: Docker vs Podman (macOS)
+
+| Metric | Docker | Podman | Winner |
+|--------|--------|--------|--------|
+| Warm latency | ~220ms | ~300ms | **Docker** |
+| Cold start | ~270ms | ~730ms | **Docker** |
+| Daemonless | No | Yes | **Podman** |
+| Rootless | Via config | Default | **Podman** |
+
+### Optimization Applied
+
+The key optimization is using `podman run --rm` directly instead of the start→exec→stop cycle:
+
+- **Before optimization**: ~10.5s (start→exec→stop cycle)
+- **After optimization**: ~300ms (direct `run --rm`)
+- **Speedup**: 35x
+
+This is the same optimization applied to Docker, ensuring both container backends use the fast ephemeral path.
+
+### When to Use Podman
+
+**Use Podman when:**
+- You prefer daemonless/rootless operation
+- Docker is not available
+- Security policies require rootless containers
+
+**Use Docker when:**
+- Speed is the priority (~30% faster on macOS)
+- You need Docker-specific features
+- Better tooling ecosystem needed
+
 ## Hyperlight Backend (Linux)
 
 Hyperlight uses Microsoft's hypervisor-isolated micro VMs to run WebAssembly modules with dual-layer security (Wasm sandbox + hypervisor boundary).
@@ -123,8 +170,9 @@ cargo test --test hyperlight_benchmark --features hyperlight -- --nocapture --ig
 |---------|---------|----------------------|
 | **Hyperlight** | 68ms | 1.0x (baseline) |
 | Firecracker Daemon | 195ms | 2.9x slower |
-| Docker Pool | 250ms | 3.7x slower |
-| Docker Ephemeral | 450ms | 6.6x slower |
+| Docker (macOS) | 220ms | 3.2x slower |
+| Podman (macOS) | 300ms | 4.4x slower |
+| Docker (Linux) | 350ms | 5.1x slower |
 
 ### Pool Performance (Warm Acquire)
 
@@ -441,10 +489,10 @@ cat benchmark-results/stress_*_details.json | jq '[.[].start_time] | add / lengt
 
 ## Environment Notes
 
-- **macOS 26+**: Auto-selects Apple Containers for VM isolation (~1s boot). Falls back to Docker if not available.
-- **macOS <26**: Uses Docker or Podman (no KVM). Expect 150-250ms boot times.
+- **macOS 26+**: Auto-selects Apple Containers for VM isolation (~1s boot). Falls back to Docker/Podman if not available.
+- **macOS <26**: Uses Docker (~220ms) or Podman (~300ms). Podman preferred if available (rootless).
 - **Linux with KVM**: Uses Firecracker. Achieves **110ms boot times** (beat <125ms target).
-- **Linux without KVM**: Falls back to Docker. Similar to macOS performance.
+- **Linux without KVM**: Falls back to Docker (~350ms). Similar to macOS performance.
 - **CI/CD**: GitHub Actions runners don't have KVM. Use Docker backend.
 
 ## Contributing Benchmarks
