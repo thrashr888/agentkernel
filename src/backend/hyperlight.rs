@@ -6,9 +6,11 @@
 //! Supports both .wasm (binary) and .wat (text) format files.
 //! WAT files are automatically compiled to WASM on load.
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use async_trait::async_trait;
 use std::path::Path;
+#[cfg(all(target_os = "linux", feature = "hyperlight"))]
+use std::sync::Mutex;
 
 use super::{BackendType, ExecResult, Sandbox, SandboxConfig};
 
@@ -59,7 +61,7 @@ pub fn hyperlight_available() -> bool {
 pub struct HyperlightSandbox {
     name: String,
     #[cfg(all(target_os = "linux", feature = "hyperlight"))]
-    sandbox: Option<hyperlight_wasm::LoadedWasmSandbox>,
+    sandbox: Mutex<Option<hyperlight_wasm::LoadedWasmSandbox>>,
     running: bool,
 }
 
@@ -69,7 +71,7 @@ impl HyperlightSandbox {
         Self {
             name: name.to_string(),
             #[cfg(all(target_os = "linux", feature = "hyperlight"))]
-            sandbox: None,
+            sandbox: Mutex::new(None),
             running: false,
         }
     }
@@ -94,7 +96,7 @@ impl HyperlightSandbox {
             .load_module_from_buffer(wasm_bytes)
             .context("Failed to load Wasm module")?;
 
-        self.sandbox = Some(loaded);
+        *self.sandbox.lock().unwrap() = Some(loaded);
         self.running = true;
         Ok(())
     }
@@ -136,8 +138,8 @@ impl Sandbox for HyperlightSandbox {
     async fn exec(&mut self, cmd: &[&str]) -> Result<ExecResult> {
         #[cfg(all(target_os = "linux", feature = "hyperlight"))]
         {
-            let sandbox = self
-                .sandbox
+            let mut guard = self.sandbox.lock().unwrap();
+            let sandbox = guard
                 .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized with Wasm module"))?;
 
@@ -163,7 +165,7 @@ impl Sandbox for HyperlightSandbox {
     async fn stop(&mut self) -> Result<()> {
         #[cfg(all(target_os = "linux", feature = "hyperlight"))]
         {
-            self.sandbox = None;
+            *self.sandbox.lock().unwrap() = None;
         }
         self.running = false;
         Ok(())
@@ -180,7 +182,7 @@ impl Sandbox for HyperlightSandbox {
     fn is_running(&self) -> bool {
         #[cfg(all(target_os = "linux", feature = "hyperlight"))]
         {
-            self.running && self.sandbox.is_some()
+            self.running && self.sandbox.lock().unwrap().is_some()
         }
 
         #[cfg(not(all(target_os = "linux", feature = "hyperlight")))]
