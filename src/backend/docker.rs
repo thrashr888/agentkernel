@@ -66,6 +66,8 @@ pub struct DockerSandbox {
     runtime: ContainerRuntime,
     container_id: Option<String>,
     running: bool,
+    /// If true, don't clean up container in Drop (for persistent sandboxes)
+    persistent: bool,
 }
 
 impl DockerSandbox {
@@ -76,7 +78,24 @@ impl DockerSandbox {
             runtime,
             container_id: None,
             running: false,
+            persistent: false,
         }
+    }
+
+    /// Create a persistent Docker sandbox (won't be cleaned up in Drop)
+    pub fn new_persistent(name: &str, runtime: ContainerRuntime) -> Self {
+        Self {
+            name: name.to_string(),
+            runtime,
+            container_id: None,
+            running: false,
+            persistent: true,
+        }
+    }
+
+    /// Mark this sandbox as persistent (won't be cleaned up in Drop)
+    pub fn set_persistent(&mut self, persistent: bool) {
+        self.persistent = persistent;
     }
 
     /// Create a new Docker sandbox with auto-detected runtime
@@ -174,10 +193,11 @@ impl Sandbox for DockerSandbox {
             .output();
 
         // Build container arguments
+        // Note: We use --rm for ephemeral containers but persistent sandboxes
+        // will have their containers survive because Drop cleanup is skipped
         let mut args = vec![
             "run".to_string(),
             "-d".to_string(),
-            "--rm".to_string(),
             "--name".to_string(),
             container_name.clone(),
             "--hostname".to_string(),
@@ -294,10 +314,8 @@ impl Sandbox for DockerSandbox {
     }
 
     fn is_running(&self) -> bool {
-        if !self.running {
-            return false;
-        }
-
+        // Check Docker directly - don't rely on internal state since
+        // we might be reconnecting to an existing container
         let container_name = self.container_name();
         Command::new(self.runtime.cmd())
             .args(["ps", "-q", "-f", &format!("name={}", container_name)])
@@ -351,7 +369,8 @@ impl Sandbox for DockerSandbox {
     }
 
     async fn attach(&mut self, shell: Option<&str>) -> Result<i32> {
-        if !self.running {
+        // Check Docker directly since we might be reconnecting to an existing container
+        if !self.is_running() {
             bail!("Container is not running");
         }
 
@@ -361,12 +380,7 @@ impl Sandbox for DockerSandbox {
         // Use docker exec -it to attach an interactive terminal
         // Note: this takes over stdin/stdout directly
         let status = std::process::Command::new(self.runtime.cmd())
-            .args([
-                "exec",
-                "-it",
-                &container_name,
-                shell_cmd,
-            ])
+            .args(["exec", "-it", &container_name, shell_cmd])
             .stdin(std::process::Stdio::inherit())
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit())
@@ -455,7 +469,8 @@ impl DockerSandbox {
 
 impl Drop for DockerSandbox {
     fn drop(&mut self) {
-        if self.running {
+        // Only clean up if running and not marked as persistent
+        if self.running && !self.persistent {
             let container_name = self.container_name();
             let _ = Command::new(self.runtime.cmd())
                 .args(["rm", "-f", &container_name])

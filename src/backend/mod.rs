@@ -414,10 +414,21 @@ pub fn backend_available(backend: BackendType) -> bool {
 }
 
 /// Create a sandbox for the specified backend
+///
+/// For Docker/Podman, creates persistent sandboxes that survive CLI exit.
+/// This is needed because the Sandbox trait workflow (create/start/stop/attach)
+/// expects containers to persist between CLI invocations.
 pub fn create_sandbox(backend: BackendType, name: &str) -> Result<Box<dyn Sandbox>> {
     match backend {
-        BackendType::Docker => Ok(Box::new(DockerSandbox::new(name, ContainerRuntime::Docker))),
-        BackendType::Podman => Ok(Box::new(DockerSandbox::new(name, ContainerRuntime::Podman))),
+        // Use new_persistent for Docker/Podman so containers survive CLI exit
+        BackendType::Docker => Ok(Box::new(DockerSandbox::new_persistent(
+            name,
+            ContainerRuntime::Docker,
+        ))),
+        BackendType::Podman => Ok(Box::new(DockerSandbox::new_persistent(
+            name,
+            ContainerRuntime::Podman,
+        ))),
         BackendType::Firecracker => Ok(Box::new(FirecrackerSandbox::new(name)?)),
         #[cfg(target_os = "macos")]
         BackendType::Apple => Ok(Box::new(AppleSandbox::new(name))),

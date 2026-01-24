@@ -43,6 +43,9 @@ pub struct SandboxState {
     pub memory_mb: u64,
     pub vsock_cid: u32,
     pub created_at: String,
+    /// Backend type used to create this sandbox
+    #[serde(default)]
+    pub backend: Option<BackendType>,
 }
 
 /// VM Manager - manages sandboxes via unified Sandbox trait
@@ -111,14 +114,66 @@ impl VmManager {
 
         eprintln!("Using {} backend", backend);
 
-        Ok(Self {
+        let mut manager = Self {
             backend,
             running: HashMap::new(),
             sandboxes,
             data_dir,
             rootfs_dir,
             next_cid: max_cid + 1,
-        })
+        };
+
+        // Detect already-running sandboxes
+        manager.detect_running_sandboxes();
+
+        Ok(manager)
+    }
+
+    /// Detect sandboxes that are already running (e.g., Docker containers)
+    fn detect_running_sandboxes(&mut self) {
+        // Need to collect names first to avoid borrow checker issues
+        let sandboxes_to_check: Vec<_> = self
+            .sandboxes
+            .iter()
+            .map(|(name, state)| (name.clone(), state.backend.unwrap_or(self.backend)))
+            .collect();
+
+        for (name, sandbox_backend) in sandboxes_to_check {
+            // Check if the sandbox is running
+            let is_running = match sandbox_backend {
+                BackendType::Docker | BackendType::Podman => {
+                    self.detect_docker_sandbox_running(&name, sandbox_backend)
+                }
+                _ => false, // Other backends need more complex detection
+            };
+
+            if is_running {
+                // Recreate the sandbox object for the running container
+                // Note: DockerSandbox::is_running() checks Docker directly
+                if let Ok(sandbox) = create_sandbox(sandbox_backend, &name) {
+                    self.running.insert(name.clone(), sandbox);
+                }
+            }
+        }
+    }
+
+    /// Check if a Docker/Podman sandbox is currently running
+    fn detect_docker_sandbox_running(&self, name: &str, backend: BackendType) -> bool {
+        use std::process::Command;
+
+        let cmd = match backend {
+            BackendType::Docker => "docker",
+            BackendType::Podman => "podman",
+            _ => return false,
+        };
+
+        let container_name = format!("agentkernel-{}", name);
+
+        Command::new(cmd)
+            .args(["ps", "-q", "-f", &format!("name={}", container_name)])
+            .output()
+            .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+            .unwrap_or(false)
     }
 
     /// Get the data directory
@@ -241,6 +296,7 @@ impl VmManager {
             memory_mb,
             vsock_cid,
             created_at: chrono::Utc::now().to_rfc3339(),
+            backend: Some(self.backend),
         };
 
         self.save_sandbox(&state)?;
@@ -278,8 +334,11 @@ impl VmManager {
             bail!("Sandbox '{}' is already running", name);
         }
 
+        // Use the backend from stored state, or fall back to current backend
+        let backend = state.backend.unwrap_or(self.backend);
+
         // Create sandbox using unified factory
-        let mut sandbox = create_sandbox(self.backend, name)?;
+        let mut sandbox = create_sandbox(backend, name)?;
 
         // Convert permissions to SandboxConfig
         let work_dir = if perms.mount_cwd {
@@ -404,6 +463,7 @@ impl VmManager {
         self.sandboxes.contains_key(name)
     }
 
+    /// Get the backend type for a sandbox (from stored state or current default)
     /// Check if a sandbox is currently running
     pub fn is_running(&self, name: &str) -> bool {
         self.running
