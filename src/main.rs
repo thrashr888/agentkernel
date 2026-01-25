@@ -254,10 +254,13 @@ memory_mb = 512
                 );
             }
 
-            let cfg = if let Some(config_path) = config {
-                Config::from_file(&config_path)?
+            // Load config and track the base directory for Dockerfile resolution
+            let (cfg, config_base_dir) = if let Some(ref config_path) = config {
+                let cfg = Config::from_file(config_path)?;
+                let base_dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+                (cfg, Some(base_dir))
             } else {
-                Config::minimal(&name, &agent)
+                (Config::minimal(&name, &agent), None)
             };
 
             // Parse backend option if provided
@@ -271,7 +274,14 @@ memory_mb = 512
             };
             let mut manager = VmManager::with_backend(backend_type)?;
 
-            let docker_image = cfg.docker_image();
+            // Build from Dockerfile if configured, otherwise use base image
+            let docker_image = if let Some(ref base_dir) = config_base_dir {
+                let base_image = cfg.docker_image();
+                build::build_or_use_image(&name, &base_image, base_dir, &cfg)?
+            } else {
+                cfg.docker_image()
+            };
+
             println!(
                 "Creating sandbox '{}' with image '{}'...",
                 name, docker_image

@@ -5,7 +5,10 @@
 
 [sandbox]
 name = "codex-sandbox"
-base_image = "agentkernel/codex"
+
+[build]
+# Build from Dockerfile in this directory
+dockerfile = "Dockerfile"
 
 [agent]
 preferred = "codex"

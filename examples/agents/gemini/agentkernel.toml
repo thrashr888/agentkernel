@@ -5,7 +5,10 @@
 
 [sandbox]
 name = "gemini-sandbox"
-base_image = "agentkernel/gemini"
+
+[build]
+# Build from Dockerfile in this directory
+dockerfile = "Dockerfile"
 
 [agent]
 preferred = "gemini"

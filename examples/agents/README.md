@@ -1,42 +1,31 @@
 # Agent Images for Agentkernel
 
-Pre-built Docker images for running AI coding agents in isolated sandboxes.
+Docker images for running AI coding agents in isolated sandboxes.
+Images are built automatically from Dockerfiles when you create a sandbox.
 
 ## Available Agents
 
-| Agent | Directory | Image | API Key Env |
-|-------|-----------|-------|-------------|
-| Claude Code | `claude-code/` | `agentkernel/claude-code` | `ANTHROPIC_API_KEY` |
-| OpenAI Codex | `codex/` | `agentkernel/codex` | `OPENAI_API_KEY` |
-| Google Gemini | `gemini/` | `agentkernel/gemini` | `GEMINI_API_KEY` |
+| Agent | Directory | API Key Env |
+|-------|-----------|-------------|
+| Claude Code | `claude-code/` | `ANTHROPIC_API_KEY` |
+| OpenAI Codex | `codex/` | `OPENAI_API_KEY` |
+| Google Gemini | `gemini/` | `GEMINI_API_KEY` |
 
 ## Quick Start
 
 ```bash
-# 1. Build an agent image
-cd claude-code
-docker build -t agentkernel/claude-code .
+# 1. Create a sandbox (builds image automatically from Dockerfile)
+agentkernel create my-project --config examples/agents/claude-code/agentkernel.toml --backend docker
 
-# 2. Create a sandbox with the image
-agentkernel create my-project --config agentkernel.toml --dir /path/to/project
-
-# 3. Start and attach
-agentkernel start my-project
+# 2. Start and attach
+agentkernel start my-project --backend docker
 agentkernel attach my-project
 
-# 4. Run the agent inside the sandbox
+# 3. Run the agent inside the sandbox
 claude  # or codex, gemini
 ```
 
-## Building All Images
-
-```bash
-# Build all agent images
-for agent in claude-code codex gemini; do
-  echo "Building $agent..."
-  docker build -t agentkernel/$agent $agent/
-done
-```
+No separate `docker build` step needed - agentkernel automatically builds from the Dockerfile specified in `agentkernel.toml`. Images are cached based on content hash, so subsequent creates reuse the cached image.
 
 ## Common Features
 

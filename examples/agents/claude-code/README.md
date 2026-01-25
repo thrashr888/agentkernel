@@ -5,13 +5,8 @@ A Docker image with Claude Code CLI pre-installed for use with agentkernel.
 ## Quick Start
 
 ```bash
-# Build the image
-docker build -t agentkernel/claude-code .
-
-# Create a sandbox with this image
-agentkernel create my-project \
-  --image agentkernel/claude-code \
-  --dir /path/to/your/project
+# Create a sandbox (builds the image automatically)
+agentkernel create my-project --config agentkernel.toml --dir /path/to/your/project
 
 # Start and attach
 agentkernel start my-project
@@ -20,6 +15,8 @@ agentkernel attach my-project
 # Inside the sandbox, run Claude Code
 claude
 ```
+
+The Dockerfile is built automatically when you use the config file.
 
 ## Environment Variables
 

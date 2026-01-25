@@ -8,7 +8,10 @@
 
 [sandbox]
 name = "claude-code-sandbox"
-base_image = "agentkernel/claude-code"
+
+[build]
+# Build from Dockerfile in this directory
+dockerfile = "Dockerfile"
 
 [agent]
 preferred = "claude"
@@ -22,6 +25,3 @@ memory_mb = 1024
 profile = "moderate"
 network = true      # Claude Code needs network for API calls
 mount_cwd = true    # Mount project directory
-
-[network]
-# Network is enabled for API access
