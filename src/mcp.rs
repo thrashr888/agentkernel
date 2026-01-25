@@ -699,3 +699,340 @@ pub async fn run_server() -> Result<()> {
     let mut server = McpServer::new();
     server.run()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === McpServer tests ===
+
+    #[test]
+    fn test_mcp_server_new() {
+        let server = McpServer::new();
+        assert!(!server.initialized);
+    }
+
+    #[test]
+    fn test_mcp_server_default() {
+        let server = McpServer::default();
+        assert!(!server.initialized);
+    }
+
+    // === JsonRpcResponse tests ===
+
+    #[test]
+    fn test_json_rpc_response_serialize_result() {
+        let response = JsonRpcResponse {
+            jsonrpc: "2.0",
+            id: Value::Number(1.into()),
+            result: Some(json!({"key": "value"})),
+            error: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"jsonrpc\":\"2.0\""));
+        assert!(json.contains("\"id\":1"));
+        assert!(json.contains("\"result\":{\"key\":\"value\"}"));
+        assert!(!json.contains("\"error\"")); // error skipped when None
+    }
+
+    #[test]
+    fn test_json_rpc_response_serialize_error() {
+        let response = JsonRpcResponse {
+            jsonrpc: "2.0",
+            id: Value::Null,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32700,
+                message: "Parse error".to_string(),
+                data: None,
+            }),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"jsonrpc\":\"2.0\""));
+        assert!(json.contains("\"error\""));
+        assert!(json.contains("\"code\":-32700"));
+        assert!(json.contains("\"message\":\"Parse error\""));
+        assert!(!json.contains("\"result\"")); // result skipped when None
+    }
+
+    // === JsonRpcError tests ===
+
+    #[test]
+    fn test_json_rpc_error_serialize() {
+        let error = JsonRpcError {
+            code: -32601,
+            message: "Method not found".to_string(),
+            data: Some(json!({"method": "unknown"})),
+        };
+        let json = serde_json::to_string(&error).unwrap();
+        assert!(json.contains("\"code\":-32601"));
+        assert!(json.contains("\"message\":\"Method not found\""));
+        assert!(json.contains("\"data\":{\"method\":\"unknown\"}"));
+    }
+
+    #[test]
+    fn test_json_rpc_error_serialize_no_data() {
+        let error = JsonRpcError {
+            code: -32600,
+            message: "Invalid request".to_string(),
+            data: None,
+        };
+        let json = serde_json::to_string(&error).unwrap();
+        assert!(json.contains("\"code\":-32600"));
+        assert!(!json.contains("\"data\"")); // data skipped when None
+    }
+
+    // === JsonRpcRequest tests ===
+
+    #[test]
+    fn test_json_rpc_request_deserialize() {
+        let json = r#"{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}"#;
+        let req: JsonRpcRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.method, "initialize");
+        assert_eq!(req.id, Some(Value::Number(1.into())));
+    }
+
+    #[test]
+    fn test_json_rpc_request_deserialize_without_params() {
+        let json = r#"{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}"#;
+        let req: JsonRpcRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.method, "tools/list");
+        assert_eq!(req.params, Value::Null); // defaults to Null
+    }
+
+    #[test]
+    fn test_json_rpc_request_deserialize_notification() {
+        let json = r#"{"jsonrpc": "2.0", "method": "initialized"}"#;
+        let req: JsonRpcRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.method, "initialized");
+        assert!(req.id.is_none());
+    }
+
+    // === handle_initialize tests ===
+
+    #[test]
+    fn test_handle_initialize() {
+        let mut server = McpServer::new();
+        assert!(!server.initialized);
+
+        let response = server.handle_initialize(Value::Number(1.into()), &json!({}));
+
+        assert!(server.initialized);
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
+
+        let result = response.result.unwrap();
+        assert!(result.get("protocolVersion").is_some());
+        assert!(result.get("capabilities").is_some());
+        assert!(result.get("serverInfo").is_some());
+    }
+
+    // === handle_tools_list tests ===
+
+    #[test]
+    fn test_handle_tools_list() {
+        let server = McpServer::new();
+        let response = server.handle_tools_list(Value::Number(1.into()));
+
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
+
+        let result = response.result.unwrap();
+        let tools = result.get("tools").and_then(|t| t.as_array()).unwrap();
+
+        // Check that all expected tools are present
+        let tool_names: Vec<&str> = tools
+            .iter()
+            .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
+            .collect();
+
+        assert!(tool_names.contains(&"sandbox_run"));
+        assert!(tool_names.contains(&"sandbox_create"));
+        assert!(tool_names.contains(&"sandbox_exec"));
+        assert!(tool_names.contains(&"sandbox_list"));
+        assert!(tool_names.contains(&"sandbox_remove"));
+        assert!(tool_names.contains(&"sandbox_file_write"));
+        assert!(tool_names.contains(&"sandbox_file_read"));
+        assert!(tool_names.contains(&"sandbox_start"));
+        assert!(tool_names.contains(&"sandbox_stop"));
+    }
+
+    // === handle_request tests ===
+
+    #[test]
+    fn test_handle_request_method_not_found() {
+        let mut server = McpServer::new();
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "unknown_method".to_string(),
+            params: Value::Null,
+        };
+
+        let response = server.handle_request(&request);
+        assert!(response.error.is_some());
+
+        let error = response.error.unwrap();
+        assert_eq!(error.code, -32601);
+        assert!(error.message.contains("Method not found"));
+    }
+
+    #[test]
+    fn test_handle_request_shutdown() {
+        let mut server = McpServer::new();
+        server.initialized = true;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "shutdown".to_string(),
+            params: Value::Null,
+        };
+
+        let response = server.handle_request(&request);
+
+        assert!(!server.initialized);
+        assert!(response.error.is_none());
+        assert_eq!(response.result, Some(Value::Null));
+    }
+
+    #[test]
+    fn test_handle_request_initialized_notification() {
+        let mut server = McpServer::new();
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "initialized".to_string(),
+            params: Value::Null,
+        };
+
+        let response = server.handle_request(&request);
+        assert!(response.error.is_none());
+    }
+
+    // === Tool parameter validation tests ===
+
+    #[test]
+    fn test_tool_sandbox_run_missing_command() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_run(&json!({}));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("command is required")
+        );
+    }
+
+    #[test]
+    fn test_tool_sandbox_run_empty_command() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_run(&json!({"command": []}));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("command is required")
+        );
+    }
+
+    #[test]
+    fn test_tool_sandbox_create_missing_name() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_create(&json!({}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[test]
+    fn test_tool_sandbox_exec_missing_name() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_exec(&json!({"command": ["ls"]}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[test]
+    fn test_tool_sandbox_exec_missing_command() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_exec(&json!({"name": "test"}));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("command is required")
+        );
+    }
+
+    #[test]
+    fn test_tool_sandbox_remove_missing_name() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_remove(&json!({}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[test]
+    fn test_tool_sandbox_file_write_missing_name() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_file_write(&json!({"path": "/test", "content": "x"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[test]
+    fn test_tool_sandbox_file_write_missing_path() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_file_write(&json!({"name": "test", "content": "x"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("path is required"));
+    }
+
+    #[test]
+    fn test_tool_sandbox_file_write_missing_content() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_file_write(&json!({"name": "test", "path": "/test"}));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("content is required")
+        );
+    }
+
+    #[test]
+    fn test_tool_sandbox_file_read_missing_name() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_file_read(&json!({"path": "/test"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[test]
+    fn test_tool_sandbox_file_read_missing_path() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_file_read(&json!({"name": "test"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("path is required"));
+    }
+
+    #[test]
+    fn test_tool_sandbox_start_missing_name() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_start(&json!({}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[test]
+    fn test_tool_sandbox_stop_missing_name() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_stop(&json!({}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+}

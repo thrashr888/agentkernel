@@ -579,3 +579,208 @@ pub async fn run_server(addr: SocketAddr) -> Result<()> {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === ApiResponse tests ===
+
+    #[test]
+    fn test_api_response_success() {
+        let response = ApiResponse::success("test data");
+        assert!(response.success);
+        assert_eq!(response.data, Some("test data"));
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn test_api_response_error() {
+        let response = ApiResponse::<()>::error("test error");
+        assert!(!response.success);
+        assert!(response.data.is_none());
+        assert_eq!(response.error, Some("test error".to_string()));
+    }
+
+    #[test]
+    fn test_api_response_success_serialization() {
+        let response = ApiResponse::success("data");
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"success\":true"));
+        assert!(json.contains("\"data\":\"data\""));
+        assert!(!json.contains("\"error\"")); // error is skipped when None
+    }
+
+    #[test]
+    fn test_api_response_error_serialization() {
+        let response = ApiResponse::<()>::error("failed");
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"success\":false"));
+        assert!(!json.contains("\"data\"")); // data is skipped when None
+        assert!(json.contains("\"error\":\"failed\""));
+    }
+
+    // === Request deserialization tests ===
+
+    #[test]
+    fn test_run_request_deserialize() {
+        let json = r#"{"command": ["echo", "hello"], "image": "alpine:3.20"}"#;
+        let req: RunRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.command, vec!["echo", "hello"]);
+        assert_eq!(req.image, Some("alpine:3.20".to_string()));
+        assert!(req.fast); // default is true
+    }
+
+    #[test]
+    fn test_run_request_deserialize_minimal() {
+        let json = r#"{"command": ["ls"]}"#;
+        let req: RunRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.command, vec!["ls"]);
+        assert!(req.image.is_none());
+        assert!(req.profile.is_none());
+        assert!(req.fast);
+    }
+
+    #[test]
+    fn test_run_request_deserialize_fast_false() {
+        let json = r#"{"command": ["ls"], "fast": false}"#;
+        let req: RunRequest = serde_json::from_str(json).unwrap();
+        assert!(!req.fast);
+    }
+
+    #[test]
+    fn test_create_request_deserialize() {
+        let json = r#"{"name": "my-sandbox", "image": "python:3.12"}"#;
+        let req: CreateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "my-sandbox");
+        assert_eq!(req.image, Some("python:3.12".to_string()));
+    }
+
+    #[test]
+    fn test_create_request_deserialize_minimal() {
+        let json = r#"{"name": "my-sandbox"}"#;
+        let req: CreateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "my-sandbox");
+        assert!(req.image.is_none());
+    }
+
+    #[test]
+    fn test_exec_request_deserialize() {
+        let json = r#"{"command": ["npm", "test"]}"#;
+        let req: ExecRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.command, vec!["npm", "test"]);
+    }
+
+    // === SandboxInfo tests ===
+
+    #[test]
+    fn test_sandbox_info_serialize() {
+        let info = SandboxInfo {
+            name: "test-sandbox".to_string(),
+            status: "running".to_string(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"name\":\"test-sandbox\""));
+        assert!(json.contains("\"status\":\"running\""));
+    }
+
+    // === RunResponse tests ===
+
+    #[test]
+    fn test_run_response_serialize() {
+        let response = RunResponse {
+            output: "hello world".to_string(),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"output\":\"hello world\""));
+    }
+
+    // === AppState tests ===
+
+    #[test]
+    fn test_app_state_with_api_key() {
+        let state = AppState::with_api_key(Some("secret123".to_string()));
+        assert_eq!(state.api_key, Some("secret123".to_string()));
+    }
+
+    #[test]
+    fn test_app_state_without_api_key() {
+        let state = AppState::with_api_key(None);
+        assert!(state.api_key.is_none());
+    }
+
+    // === default_fast tests ===
+
+    #[test]
+    fn test_default_fast_returns_true() {
+        assert!(default_fast());
+    }
+
+    // === json_response tests ===
+
+    #[test]
+    fn test_json_response_ok() {
+        let response = json_response(StatusCode::OK, &ApiResponse::success("data"));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("Content-Type").unwrap(),
+            "application/json"
+        );
+    }
+
+    #[test]
+    fn test_json_response_not_found() {
+        let response = json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("not found"),
+        );
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_json_response_created() {
+        let info = SandboxInfo {
+            name: "test".to_string(),
+            status: "running".to_string(),
+        };
+        let response = json_response(StatusCode::CREATED, &ApiResponse::success(info));
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    // === Path parsing tests (unit test the segment logic) ===
+
+    #[test]
+    fn test_path_segments_parsing() {
+        let path = "/sandboxes/my-sandbox/exec";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["sandboxes", "my-sandbox", "exec"]);
+    }
+
+    #[test]
+    fn test_path_segments_health() {
+        let path = "/health";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["health"]);
+    }
+
+    #[test]
+    fn test_path_segments_run() {
+        let path = "/run";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["run"]);
+    }
+
+    #[test]
+    fn test_path_segments_sandboxes() {
+        let path = "/sandboxes";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["sandboxes"]);
+    }
+
+    #[test]
+    fn test_path_segments_sandbox_by_name() {
+        let path = "/sandboxes/test-123";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["sandboxes", "test-123"]);
+    }
+}
