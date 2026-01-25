@@ -408,3 +408,227 @@ pub fn create_sandbox(backend: BackendType, name: &str) -> Result<Box<dyn Sandbo
         BackendType::Hyperlight => Ok(Box::new(HyperlightSandbox::new(name))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === BackendType tests ===
+
+    #[test]
+    fn test_backend_type_display() {
+        assert_eq!(format!("{}", BackendType::Docker), "docker");
+        assert_eq!(format!("{}", BackendType::Podman), "podman");
+        assert_eq!(format!("{}", BackendType::Firecracker), "firecracker");
+        assert_eq!(format!("{}", BackendType::Apple), "apple");
+        assert_eq!(format!("{}", BackendType::Hyperlight), "hyperlight");
+    }
+
+    #[test]
+    fn test_backend_type_from_str() {
+        assert_eq!("docker".parse::<BackendType>().unwrap(), BackendType::Docker);
+        assert_eq!("podman".parse::<BackendType>().unwrap(), BackendType::Podman);
+        assert_eq!(
+            "firecracker".parse::<BackendType>().unwrap(),
+            BackendType::Firecracker
+        );
+        assert_eq!("apple".parse::<BackendType>().unwrap(), BackendType::Apple);
+        assert_eq!(
+            "hyperlight".parse::<BackendType>().unwrap(),
+            BackendType::Hyperlight
+        );
+    }
+
+    #[test]
+    fn test_backend_type_from_str_case_insensitive() {
+        assert_eq!("DOCKER".parse::<BackendType>().unwrap(), BackendType::Docker);
+        assert_eq!("Docker".parse::<BackendType>().unwrap(), BackendType::Docker);
+        assert_eq!("PODMAN".parse::<BackendType>().unwrap(), BackendType::Podman);
+    }
+
+    #[test]
+    fn test_backend_type_from_str_invalid() {
+        assert!("invalid".parse::<BackendType>().is_err());
+        assert!("".parse::<BackendType>().is_err());
+        assert!("dock".parse::<BackendType>().is_err());
+    }
+
+    #[test]
+    fn test_backend_type_serialize() {
+        let backend = BackendType::Docker;
+        let json = serde_json::to_string(&backend).unwrap();
+        assert_eq!(json, "\"Docker\"");
+    }
+
+    #[test]
+    fn test_backend_type_deserialize() {
+        let backend: BackendType = serde_json::from_str("\"Podman\"").unwrap();
+        assert_eq!(backend, BackendType::Podman);
+    }
+
+    // === SandboxConfig tests ===
+
+    #[test]
+    fn test_sandbox_config_default() {
+        let config = SandboxConfig::default();
+        assert_eq!(config.image, "alpine:3.20");
+        assert_eq!(config.vcpus, 1);
+        assert_eq!(config.memory_mb, 512);
+        assert!(!config.mount_cwd);
+        assert!(config.work_dir.is_none());
+        assert!(config.env.is_empty());
+        assert!(config.network);
+        assert!(!config.read_only);
+        assert!(!config.mount_home);
+        assert!(config.files.is_empty());
+    }
+
+    #[test]
+    fn test_sandbox_config_with_image() {
+        let config = SandboxConfig::with_image("python:3.12-alpine");
+        assert_eq!(config.image, "python:3.12-alpine");
+        // Other fields should be default
+        assert_eq!(config.vcpus, 1);
+        assert_eq!(config.memory_mb, 512);
+    }
+
+    #[test]
+    fn test_sandbox_config_builder() {
+        let config = SandboxConfig::with_image("node:20")
+            .with_resources(4, 2048)
+            .with_network(false)
+            .with_mount_cwd(true, Some("/workspace".to_string()))
+            .with_env(vec![("NODE_ENV".to_string(), "production".to_string())]);
+
+        assert_eq!(config.image, "node:20");
+        assert_eq!(config.vcpus, 4);
+        assert_eq!(config.memory_mb, 2048);
+        assert!(!config.network);
+        assert!(config.mount_cwd);
+        assert_eq!(config.work_dir, Some("/workspace".to_string()));
+        assert_eq!(config.env.len(), 1);
+        assert_eq!(config.env[0], ("NODE_ENV".to_string(), "production".to_string()));
+    }
+
+    // === ExecResult tests ===
+
+    #[test]
+    fn test_exec_result_success() {
+        let result = ExecResult::success("hello world".to_string());
+        assert!(result.is_success());
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout, "hello world");
+        assert!(result.stderr.is_empty());
+    }
+
+    #[test]
+    fn test_exec_result_failure() {
+        let result = ExecResult::failure(1, "error message".to_string());
+        assert!(!result.is_success());
+        assert_eq!(result.exit_code, 1);
+        assert!(result.stdout.is_empty());
+        assert_eq!(result.stderr, "error message");
+    }
+
+    #[test]
+    fn test_exec_result_output_stdout_only() {
+        let result = ExecResult {
+            exit_code: 0,
+            stdout: "stdout output".to_string(),
+            stderr: String::new(),
+        };
+        assert_eq!(result.output(), "stdout output");
+    }
+
+    #[test]
+    fn test_exec_result_output_stderr_only() {
+        let result = ExecResult {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "stderr output".to_string(),
+        };
+        assert_eq!(result.output(), "stderr output");
+    }
+
+    #[test]
+    fn test_exec_result_output_combined() {
+        let result = ExecResult {
+            exit_code: 0,
+            stdout: "stdout".to_string(),
+            stderr: "stderr".to_string(),
+        };
+        assert_eq!(result.output(), "stdout\nstderr");
+    }
+
+    // === Path validation tests ===
+
+    #[test]
+    fn test_validate_sandbox_path_valid() {
+        assert!(validate_sandbox_path("/home/user/file.txt").is_ok());
+        assert!(validate_sandbox_path("/workspace/project/src/main.rs").is_ok());
+        assert!(validate_sandbox_path("/tmp/test").is_ok());
+        assert!(validate_sandbox_path("/app/data.json").is_ok());
+    }
+
+    #[test]
+    fn test_validate_sandbox_path_relative() {
+        assert!(validate_sandbox_path("relative/path").is_err());
+        assert!(validate_sandbox_path("./file.txt").is_err());
+        assert!(validate_sandbox_path("file.txt").is_err());
+    }
+
+    #[test]
+    fn test_validate_sandbox_path_traversal() {
+        assert!(validate_sandbox_path("/home/../etc/passwd").is_err());
+        assert!(validate_sandbox_path("/workspace/..").is_err());
+        assert!(validate_sandbox_path("/../root").is_err());
+    }
+
+    #[test]
+    fn test_validate_sandbox_path_blocked_paths() {
+        assert!(validate_sandbox_path("/proc/1/cmdline").is_err());
+        assert!(validate_sandbox_path("/sys/kernel").is_err());
+        assert!(validate_sandbox_path("/dev/null").is_err());
+        assert!(validate_sandbox_path("/etc/passwd").is_err());
+        assert!(validate_sandbox_path("/etc/shadow").is_err());
+        assert!(validate_sandbox_path("/etc/sudoers").is_err());
+        assert!(validate_sandbox_path("/root/.ssh/id_rsa").is_err());
+    }
+
+    #[test]
+    fn test_validate_sandbox_path_similar_but_allowed() {
+        // These look similar to blocked paths but should be allowed
+        assert!(validate_sandbox_path("/etc/hosts").is_ok());
+        assert!(validate_sandbox_path("/home/root/.ssh").is_ok());
+        assert!(validate_sandbox_path("/myproc/data").is_ok());
+    }
+
+    // === FileInjection tests ===
+
+    #[test]
+    fn test_file_injection_creation() {
+        let injection = FileInjection {
+            content: b"hello world".to_vec(),
+            dest: "/app/config.txt".to_string(),
+        };
+        assert_eq!(injection.content, b"hello world");
+        assert_eq!(injection.dest, "/app/config.txt");
+    }
+
+    #[test]
+    fn test_sandbox_config_with_files() {
+        let files = vec![
+            FileInjection {
+                content: b"content1".to_vec(),
+                dest: "/app/file1.txt".to_string(),
+            },
+            FileInjection {
+                content: b"content2".to_vec(),
+                dest: "/app/file2.txt".to_string(),
+            },
+        ];
+
+        let config = SandboxConfig::default().with_files(files);
+        assert_eq!(config.files.len(), 2);
+    }
+}

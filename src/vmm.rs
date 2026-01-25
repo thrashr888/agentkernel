@@ -567,3 +567,153 @@ impl VmManager {
         sandbox.read_file(path).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_sandbox_state_serialize() {
+        let state = SandboxState {
+            name: "test-sandbox".to_string(),
+            image: "alpine:3.20".to_string(),
+            vcpus: 2,
+            memory_mb: 1024,
+            vsock_cid: 5,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains("test-sandbox"));
+        assert!(json.contains("alpine:3.20"));
+        assert!(json.contains("1024"));
+    }
+
+    #[test]
+    fn test_sandbox_state_deserialize() {
+        let json = r#"{
+            "name": "my-sandbox",
+            "image": "python:3.12-alpine",
+            "vcpus": 4,
+            "memory_mb": 2048,
+            "vsock_cid": 10,
+            "created_at": "2024-01-01T00:00:00Z"
+        }"#;
+
+        let state: SandboxState = serde_json::from_str(json).unwrap();
+        assert_eq!(state.name, "my-sandbox");
+        assert_eq!(state.image, "python:3.12-alpine");
+        assert_eq!(state.vcpus, 4);
+        assert_eq!(state.memory_mb, 2048);
+        assert_eq!(state.vsock_cid, 10);
+    }
+
+    #[test]
+    fn test_sandbox_state_roundtrip() {
+        let original = SandboxState {
+            name: "roundtrip-test".to_string(),
+            image: "node:20-alpine".to_string(),
+            vcpus: 1,
+            memory_mb: 512,
+            vsock_cid: 3,
+            created_at: "2024-06-15T12:30:00Z".to_string(),
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: SandboxState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(original.name, restored.name);
+        assert_eq!(original.image, restored.image);
+        assert_eq!(original.vcpus, restored.vcpus);
+        assert_eq!(original.memory_mb, restored.memory_mb);
+        assert_eq!(original.vsock_cid, restored.vsock_cid);
+        assert_eq!(original.created_at, restored.created_at);
+    }
+
+    #[test]
+    fn test_data_dir_uses_home() {
+        // data_dir should use HOME when available
+        let data_dir = VmManager::data_dir();
+        if std::env::var_os("HOME").is_some() {
+            assert!(data_dir.to_string_lossy().contains(".local/share/agentkernel"));
+        }
+    }
+
+    #[test]
+    fn test_load_sandboxes_empty_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let sandboxes = VmManager::load_sandboxes(temp_dir.path()).unwrap();
+        assert!(sandboxes.is_empty());
+    }
+
+    #[test]
+    fn test_load_sandboxes_with_files() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a valid sandbox JSON file
+        let state = SandboxState {
+            name: "loaded-sandbox".to_string(),
+            image: "alpine:3.20".to_string(),
+            vcpus: 1,
+            memory_mb: 256,
+            vsock_cid: 4,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
+
+        // Create an invalid file that should be ignored
+        std::fs::write(temp_dir.path().join("invalid.json"), "not valid json").unwrap();
+
+        // Create a non-json file that should be ignored
+        std::fs::write(temp_dir.path().join("readme.txt"), "hello").unwrap();
+
+        let sandboxes = VmManager::load_sandboxes(temp_dir.path()).unwrap();
+        assert_eq!(sandboxes.len(), 1);
+        assert!(sandboxes.contains_key("loaded-sandbox"));
+
+        let loaded = &sandboxes["loaded-sandbox"];
+        assert_eq!(loaded.image, "alpine:3.20");
+        assert_eq!(loaded.memory_mb, 256);
+    }
+
+    #[test]
+    fn test_load_sandboxes_nonexistent_dir() {
+        let sandboxes = VmManager::load_sandboxes(Path::new("/nonexistent/path")).unwrap();
+        assert!(sandboxes.is_empty());
+    }
+
+    #[test]
+    fn test_next_cid_calculation() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create sandboxes with various CIDs
+        for (name, cid) in [("sb1", 5), ("sb2", 10), ("sb3", 3)] {
+            let state = SandboxState {
+                name: name.to_string(),
+                image: "alpine".to_string(),
+                vcpus: 1,
+                memory_mb: 256,
+                vsock_cid: cid,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+            };
+            let json = serde_json::to_string(&state).unwrap();
+            std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();
+        }
+
+        let sandboxes = VmManager::load_sandboxes(temp_dir.path()).unwrap();
+        let max_cid = sandboxes.values().map(|s| s.vsock_cid).max().unwrap_or(2);
+
+        // Next CID should be max + 1 = 11
+        assert_eq!(max_cid, 10);
+    }
+
+    #[test]
+    fn test_sandbox_state_default_values() {
+        // Test that missing fields in JSON cause parse failures (strict)
+        let incomplete_json = r#"{"name": "test"}"#;
+        let result: Result<SandboxState, _> = serde_json::from_str(incomplete_json);
+        assert!(result.is_err());
+    }
+}
