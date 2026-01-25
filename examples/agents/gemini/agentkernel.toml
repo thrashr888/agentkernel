@@ -1,0 +1,21 @@
+# Google Gemini CLI Agent Configuration
+#
+# Use this config to create a sandbox with Gemini CLI pre-installed:
+#   agentkernel create my-project --config examples/agents/gemini/agentkernel.toml
+
+[sandbox]
+name = "gemini-sandbox"
+base_image = "agentkernel/gemini"
+
+[agent]
+preferred = "gemini"
+compatibility_mode = "gemini"
+
+[resources]
+vcpus = 2
+memory_mb = 1024
+
+[security]
+profile = "moderate"
+network = true      # Gemini needs network for API calls
+mount_cwd = true    # Mount project directory

@@ -1,0 +1,21 @@
+# OpenAI Codex Agent Configuration
+#
+# Use this config to create a sandbox with Codex pre-installed:
+#   agentkernel create my-project --config examples/agents/codex/agentkernel.toml
+
+[sandbox]
+name = "codex-sandbox"
+base_image = "agentkernel/codex"
+
+[agent]
+preferred = "codex"
+compatibility_mode = "codex"
+
+[resources]
+vcpus = 2
+memory_mb = 1024
+
+[security]
+profile = "moderate"
+network = true      # Codex needs network for API calls
+mount_cwd = true    # Mount project directory
