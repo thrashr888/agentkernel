@@ -426,8 +426,14 @@ mod tests {
 
     #[test]
     fn test_backend_type_from_str() {
-        assert_eq!("docker".parse::<BackendType>().unwrap(), BackendType::Docker);
-        assert_eq!("podman".parse::<BackendType>().unwrap(), BackendType::Podman);
+        assert_eq!(
+            "docker".parse::<BackendType>().unwrap(),
+            BackendType::Docker
+        );
+        assert_eq!(
+            "podman".parse::<BackendType>().unwrap(),
+            BackendType::Podman
+        );
         assert_eq!(
             "firecracker".parse::<BackendType>().unwrap(),
             BackendType::Firecracker
@@ -441,9 +447,18 @@ mod tests {
 
     #[test]
     fn test_backend_type_from_str_case_insensitive() {
-        assert_eq!("DOCKER".parse::<BackendType>().unwrap(), BackendType::Docker);
-        assert_eq!("Docker".parse::<BackendType>().unwrap(), BackendType::Docker);
-        assert_eq!("PODMAN".parse::<BackendType>().unwrap(), BackendType::Podman);
+        assert_eq!(
+            "DOCKER".parse::<BackendType>().unwrap(),
+            BackendType::Docker
+        );
+        assert_eq!(
+            "Docker".parse::<BackendType>().unwrap(),
+            BackendType::Docker
+        );
+        assert_eq!(
+            "PODMAN".parse::<BackendType>().unwrap(),
+            BackendType::Podman
+        );
     }
 
     #[test]
@@ -507,7 +522,10 @@ mod tests {
         assert!(config.mount_cwd);
         assert_eq!(config.work_dir, Some("/workspace".to_string()));
         assert_eq!(config.env.len(), 1);
-        assert_eq!(config.env[0], ("NODE_ENV".to_string(), "production".to_string()));
+        assert_eq!(
+            config.env[0],
+            ("NODE_ENV".to_string(), "production".to_string())
+        );
     }
 
     // === ExecResult tests ===

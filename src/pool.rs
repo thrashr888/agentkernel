@@ -623,6 +623,115 @@ impl std::fmt::Display for PoolStats {
 mod tests {
     use super::*;
 
+    // === PoolStats tests ===
+
+    #[test]
+    fn test_pool_stats_display() {
+        let stats = PoolStats {
+            warm_count: 5,
+            cleanup_pending: 2,
+            target_size: 10,
+            max_size: 50,
+        };
+        let display = format!("{}", stats);
+        assert!(display.contains("5/10 warm"));
+        assert!(display.contains("2 pending cleanup"));
+    }
+
+    #[test]
+    fn test_pool_stats_display_zero() {
+        let stats = PoolStats {
+            warm_count: 0,
+            cleanup_pending: 0,
+            target_size: 5,
+            max_size: 20,
+        };
+        let display = format!("{}", stats);
+        assert!(display.contains("0/5 warm"));
+        assert!(display.contains("0 pending cleanup"));
+    }
+
+    #[test]
+    fn test_pool_stats_debug() {
+        let stats = PoolStats {
+            warm_count: 3,
+            cleanup_pending: 1,
+            target_size: 5,
+            max_size: 10,
+        };
+        let debug = format!("{:?}", stats);
+        assert!(debug.contains("warm_count: 3"));
+        assert!(debug.contains("cleanup_pending: 1"));
+        assert!(debug.contains("target_size: 5"));
+        assert!(debug.contains("max_size: 10"));
+    }
+
+    #[test]
+    fn test_pool_stats_clone() {
+        let stats = PoolStats {
+            warm_count: 5,
+            cleanup_pending: 2,
+            target_size: 10,
+            max_size: 50,
+        };
+        let cloned = stats.clone();
+        assert_eq!(cloned.warm_count, 5);
+        assert_eq!(cloned.cleanup_pending, 2);
+        assert_eq!(cloned.target_size, 10);
+        assert_eq!(cloned.max_size, 50);
+    }
+
+    // === Constants tests ===
+
+    #[test]
+    fn test_default_constants() {
+        assert_eq!(DEFAULT_POOL_SIZE, 10);
+        assert_eq!(DEFAULT_MAX_POOL_SIZE, 50);
+        assert_eq!(DEFAULT_IMAGE, "alpine:3.20");
+        assert_eq!(GC_INTERVAL_MS, 1000);
+        assert_eq!(GC_BATCH_SIZE, 10);
+    }
+
+    #[test]
+    fn test_output_sentinel_is_unique() {
+        // Sentinel should be unique enough to not appear in normal output
+        assert!(OUTPUT_SENTINEL.starts_with("___"));
+        assert!(OUTPUT_SENTINEL.ends_with("___"));
+        assert!(OUTPUT_SENTINEL.contains("AGENTKERNEL"));
+    }
+
+    // === ContainerPool construction tests (without starting) ===
+
+    #[test]
+    fn test_container_pool_with_config_values() {
+        // Note: This test will fail if no container runtime is available,
+        // which is expected in CI without Docker
+        if detect_container_runtime().is_none() {
+            eprintln!("Skipping test: No container runtime available");
+            return;
+        }
+
+        let pool = ContainerPool::with_config(3, 15, "python:3.12-alpine").unwrap();
+        assert_eq!(pool.target_size, 3);
+        assert_eq!(pool.max_size, 15);
+        assert_eq!(pool.image, "python:3.12-alpine");
+    }
+
+    #[test]
+    fn test_container_pool_default_values() {
+        if detect_container_runtime().is_none() {
+            eprintln!("Skipping test: No container runtime available");
+            return;
+        }
+
+        let pool = ContainerPool::new().unwrap();
+        assert_eq!(pool.target_size, DEFAULT_POOL_SIZE);
+        assert_eq!(pool.max_size, DEFAULT_MAX_POOL_SIZE);
+        assert_eq!(pool.image, DEFAULT_IMAGE);
+    }
+
+    // === Integration test (requires Docker) ===
+
     #[tokio::test]
     #[ignore] // Requires Docker
     async fn test_pool_basic() {
@@ -646,6 +755,48 @@ mod tests {
         // Check stats
         let stats = pool.stats().await;
         assert!(stats.warm_count >= 1);
+
+        pool.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Docker
+    async fn test_pool_acquire_release_cycle() {
+        let pool = ContainerPool::with_config(2, 5, "alpine:3.20").unwrap();
+        pool.start().await.unwrap();
+
+        // Acquire and release multiple times
+        for i in 0..3 {
+            let container = pool.acquire().await.unwrap();
+            let output = container
+                .run_command(&["echo".into(), format!("iteration-{}", i)])
+                .await
+                .unwrap();
+            assert!(output.contains(&format!("iteration-{}", i)));
+            pool.release(container).await;
+        }
+
+        pool.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Docker
+    async fn test_pool_stats_after_operations() {
+        let pool = ContainerPool::with_config(2, 5, "alpine:3.20").unwrap();
+        pool.start().await.unwrap();
+
+        // Initial stats
+        let initial = pool.stats().await;
+        assert_eq!(initial.target_size, 2);
+        assert_eq!(initial.max_size, 5);
+
+        // Acquire should reduce warm count
+        let container = pool.acquire().await.unwrap();
+
+        // Release should increase it back
+        pool.release(container).await;
+        let after_release = pool.stats().await;
+        assert!(after_release.warm_count >= 1);
 
         pool.stop().await.unwrap();
     }

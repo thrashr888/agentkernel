@@ -120,7 +120,10 @@ fn test_full_lifecycle_docker() {
     // Verify removed from list
     let (exit_code, stdout, _stderr) = run_cmd(&["list"]);
     assert_eq!(exit_code, 0);
-    assert!(!stdout.contains(&name), "Sandbox still in list after removal");
+    assert!(
+        !stdout.contains(&name),
+        "Sandbox still in list after removal"
+    );
 }
 
 #[test]

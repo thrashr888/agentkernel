@@ -636,7 +636,11 @@ mod tests {
         // data_dir should use HOME when available
         let data_dir = VmManager::data_dir();
         if std::env::var_os("HOME").is_some() {
-            assert!(data_dir.to_string_lossy().contains(".local/share/agentkernel"));
+            assert!(
+                data_dir
+                    .to_string_lossy()
+                    .contains(".local/share/agentkernel")
+            );
         }
     }
 
