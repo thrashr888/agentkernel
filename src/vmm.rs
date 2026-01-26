@@ -386,6 +386,16 @@ impl VmManager {
 
     /// Execute a command in a sandbox
     pub async fn exec_cmd(&mut self, name: &str, cmd: &[String]) -> Result<String> {
+        self.exec_cmd_with_env(name, cmd, &[]).await
+    }
+
+    /// Execute a command in a sandbox with environment variables
+    pub async fn exec_cmd_with_env(
+        &mut self,
+        name: &str,
+        cmd: &[String],
+        env: &[String],
+    ) -> Result<String> {
         let sandbox = self.running.get_mut(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Sandbox '{}' is not running. Start it with: agentkernel start {}",
@@ -397,7 +407,7 @@ impl VmManager {
         // Convert &[String] to &[&str]
         let cmd_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
 
-        let result = sandbox.exec(&cmd_refs).await?;
+        let result = sandbox.exec_with_env(&cmd_refs, env).await?;
 
         if result.exit_code != 0 {
             bail!(
@@ -410,8 +420,8 @@ impl VmManager {
         Ok(result.output())
     }
 
-    /// Attach to a sandbox's interactive shell
-    pub async fn attach(&mut self, name: &str) -> Result<i32> {
+    /// Attach to a sandbox's interactive shell with optional environment variables
+    pub async fn attach_with_env(&mut self, name: &str, env: &[String]) -> Result<i32> {
         let sandbox = self.running.get_mut(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Sandbox '{}' is not running. Start it with: agentkernel start {}",
@@ -420,7 +430,7 @@ impl VmManager {
             )
         })?;
 
-        sandbox.attach(None).await
+        sandbox.attach_with_env(None, env).await
     }
 
     /// Stop a sandbox

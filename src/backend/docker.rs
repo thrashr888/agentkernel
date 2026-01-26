@@ -270,11 +270,23 @@ impl Sandbox for DockerSandbox {
     }
 
     async fn exec(&mut self, cmd: &[&str]) -> Result<ExecResult> {
+        self.exec_with_env(cmd, &[]).await
+    }
+
+    async fn exec_with_env(&mut self, cmd: &[&str], env: &[String]) -> Result<ExecResult> {
         let runtime_cmd = self.runtime.cmd();
         let container_name = self.container_name();
 
-        let mut args = vec!["exec", &container_name];
-        args.extend(cmd);
+        let mut args = vec!["exec".to_string()];
+
+        // Add environment variables
+        for e in env {
+            args.push("-e".to_string());
+            args.push(e.clone());
+        }
+
+        args.push(container_name);
+        args.extend(cmd.iter().map(|s| s.to_string()));
 
         let output = Command::new(runtime_cmd)
             .args(&args)
@@ -369,6 +381,10 @@ impl Sandbox for DockerSandbox {
     }
 
     async fn attach(&mut self, shell: Option<&str>) -> Result<i32> {
+        self.attach_with_env(shell, &[]).await
+    }
+
+    async fn attach_with_env(&mut self, shell: Option<&str>, env: &[String]) -> Result<i32> {
         // Check Docker directly since we might be reconnecting to an existing container
         if !self.is_running() {
             bail!("Container is not running");
@@ -377,10 +393,19 @@ impl Sandbox for DockerSandbox {
         let container_name = self.container_name();
         let shell_cmd = shell.unwrap_or("/bin/sh");
 
+        // Build args with environment variables
+        let mut args = vec!["exec".to_string(), "-it".to_string()];
+        for e in env {
+            args.push("-e".to_string());
+            args.push(e.clone());
+        }
+        args.push(container_name);
+        args.push(shell_cmd.to_string());
+
         // Use docker exec -it to attach an interactive terminal
         // Note: this takes over stdin/stdout directly
         let status = std::process::Command::new(self.runtime.cmd())
-            .args(["exec", "-it", &container_name, shell_cmd])
+            .args(&args)
             .stdin(std::process::Stdio::inherit())
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit())

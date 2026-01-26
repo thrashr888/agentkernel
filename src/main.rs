@@ -94,11 +94,17 @@ enum Commands {
     Attach {
         /// Name of the sandbox to attach to
         name: String,
+        /// Environment variables to set (KEY=VALUE format, can be repeated)
+        #[arg(short, long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
     },
     /// Execute a command in a running sandbox
     Exec {
         /// Name of the sandbox
         name: String,
+        /// Environment variables to set (KEY=VALUE format, can be repeated)
+        #[arg(short, long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
         /// Command to execute
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -356,7 +362,7 @@ memory_mb = 512
             manager.remove(&name).await?;
             println!("Sandbox '{}' removed.", name);
         }
-        Commands::Attach { name } => {
+        Commands::Attach { name, env } => {
             validation::validate_sandbox_name(&name)?;
 
             let mut manager = VmManager::new()?;
@@ -373,14 +379,14 @@ memory_mb = 512
                 );
             }
 
-            // Attach to the sandbox's shell
-            let exit_code = manager.attach(&name).await?;
+            // Attach to the sandbox's shell with environment variables
+            let exit_code = manager.attach_with_env(&name, &env).await?;
 
             if exit_code != 0 {
                 std::process::exit(exit_code);
             }
         }
-        Commands::Exec { name, command } => {
+        Commands::Exec { name, env, command } => {
             validation::validate_sandbox_name(&name)?;
 
             if command.is_empty() {
@@ -393,7 +399,7 @@ memory_mb = 512
                 bail!("Sandbox '{}' not found", name);
             }
 
-            let output = manager.exec_cmd(&name, &command).await?;
+            let output = manager.exec_cmd_with_env(&name, &command, &env).await?;
             print!("{}", output);
         }
         Commands::Cp { source, dest } => {

@@ -227,6 +227,22 @@ pub trait Sandbox: Send + Sync {
     /// Execute a command in the sandbox
     async fn exec(&mut self, cmd: &[&str]) -> Result<ExecResult>;
 
+    /// Execute a command in the sandbox with environment variables
+    ///
+    /// # Arguments
+    /// * `cmd` - Command and arguments to execute
+    /// * `env` - Environment variables as KEY=VALUE pairs
+    async fn exec_with_env(&mut self, cmd: &[&str], env: &[String]) -> Result<ExecResult> {
+        // Default implementation ignores env vars (for backends that don't support it)
+        if !env.is_empty() {
+            eprintln!(
+                "Warning: This backend doesn't support environment variables, ignoring {} var(s)",
+                env.len()
+            );
+        }
+        self.exec(cmd).await
+    }
+
     /// Stop the sandbox and clean up resources
     async fn stop(&mut self) -> Result<()>;
 
@@ -325,6 +341,25 @@ pub trait Sandbox: Send + Sync {
         // Default implementation returns an error since not all backends support PTY
         let _ = shell;
         anyhow::bail!("Interactive shell not supported by this backend")
+    }
+
+    /// Attach to the sandbox with an interactive shell and environment variables
+    ///
+    /// # Arguments
+    /// * `shell` - Shell to run (e.g., "/bin/sh", "/bin/bash"). If None, uses /bin/sh.
+    /// * `env` - Environment variables as KEY=VALUE pairs
+    ///
+    /// # Returns
+    /// The exit code of the shell process.
+    async fn attach_with_env(&mut self, shell: Option<&str>, env: &[String]) -> Result<i32> {
+        // Default implementation ignores env vars
+        if !env.is_empty() {
+            eprintln!(
+                "Warning: This backend doesn't support environment variables, ignoring {} var(s)",
+                env.len()
+            );
+        }
+        self.attach(shell).await
     }
 }
 
