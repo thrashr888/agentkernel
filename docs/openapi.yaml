@@ -103,6 +103,65 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /run/stream:
+    post:
+      summary: Run command with SSE streaming
+      description: |
+        Execute a command in an ephemeral sandbox with Server-Sent Events (SSE) streaming output.
+
+        Returns a stream of events:
+        - `started` - Command execution began
+        - `progress` - Status updates (sandbox created, started, etc.)
+        - `output` - Command output data
+        - `done` - Execution completed successfully
+        - `error` - An error occurred
+
+        **Example SSE response:**
+        ```
+        event: started
+        data: {"command":["echo","hello"],"fast":true,"timestamp":"2024-01-15T10:30:00Z"}
+
+        event: output
+        data: {"data":"hello\n","stream":"stdout"}
+
+        event: done
+        data: {"exit_code":0,"success":true}
+        ```
+      operationId: runCommandStream
+      tags:
+        - streaming
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunRequest'
+      responses:
+        '200':
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Server-Sent Events stream
+              example: |
+                event: started
+                data: {"command":["echo","hello"],"fast":true}
+
+                event: output
+                data: {"data":"hello\n","stream":"stdout"}
+
+                event: done
+                data: {"exit_code":0,"success":true}
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /sandboxes:
     get:
       summary: List sandboxes

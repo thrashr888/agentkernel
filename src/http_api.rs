@@ -201,6 +201,9 @@ async fn handle_request(
         // Run a command in a temporary sandbox
         (Method::POST, ["run"]) => handle_run(req, state).await,
 
+        // Run a command with SSE streaming output
+        (Method::POST, ["run", "stream"]) => handle_run_stream(req, state).await,
+
         // List sandboxes
         (Method::GET, ["sandboxes"]) => handle_list_sandboxes(state).await,
 
@@ -358,6 +361,168 @@ async fn handle_run(req: Request<Incoming>, state: Arc<AppState>) -> Response<Bo
             &ApiResponse::<()>::error(e.to_string()),
         ),
     }
+}
+
+/// Server-Sent Events response for streaming command output
+fn sse_response(events: Vec<(&str, serde_json::Value)>) -> Response<BoxBody> {
+    let mut body = String::new();
+    for (event_type, data) in events {
+        body.push_str(&format!(
+            "event: {}\ndata: {}\n\n",
+            event_type,
+            serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_string())
+        ));
+    }
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .body(full(body))
+        .unwrap()
+}
+
+/// Handle /run/stream - runs command with SSE streaming output
+async fn handle_run_stream(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    let body: RunRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    if body.command.is_empty() {
+        return sse_response(vec![(
+            "error",
+            serde_json::json!({"message": "command is required"}),
+        )]);
+    }
+
+    let mut events = vec![];
+
+    // Send started event
+    events.push((
+        "started",
+        serde_json::json!({
+            "command": body.command,
+            "fast": body.fast,
+            "timestamp": chrono::Utc::now().to_rfc3339()
+        }),
+    ));
+
+    // Fast path: use container pool (default for HTTP API)
+    if body.fast {
+        match VmManager::run_pooled(&body.command).await {
+            Ok(output) => {
+                events.push((
+                    "output",
+                    serde_json::json!({
+                        "data": output,
+                        "stream": "stdout"
+                    }),
+                ));
+                events.push((
+                    "done",
+                    serde_json::json!({
+                        "exit_code": 0,
+                        "success": true
+                    }),
+                ));
+            }
+            Err(e) => {
+                events.push((
+                    "error",
+                    serde_json::json!({
+                        "message": e.to_string()
+                    }),
+                ));
+            }
+        }
+        return sse_response(events);
+    }
+
+    // Slow path: full sandbox lifecycle
+    let profile = body.profile.as_deref().unwrap_or("moderate");
+    let perms = SecurityProfile::from_str(profile)
+        .unwrap_or_default()
+        .permissions();
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            events.push(("error", serde_json::json!({"message": e.to_string()})));
+            return sse_response(events);
+        }
+    };
+
+    let image = body
+        .image
+        .clone()
+        .unwrap_or_else(|| languages::detect_image(&body.command));
+
+    let sandbox_name = format!("api-stream-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+
+    // Create
+    if let Err(e) = manager.create(&sandbox_name, &image, 1, 512).await {
+        events.push(("error", serde_json::json!({"message": e.to_string()})));
+        return sse_response(events);
+    }
+
+    events.push((
+        "progress",
+        serde_json::json!({
+            "stage": "sandbox_created",
+            "sandbox": sandbox_name
+        }),
+    ));
+
+    // Start
+    if let Err(e) = manager.start_with_permissions(&sandbox_name, &perms).await {
+        let _ = manager.remove(&sandbox_name).await;
+        events.push(("error", serde_json::json!({"message": e.to_string()})));
+        return sse_response(events);
+    }
+
+    events.push((
+        "progress",
+        serde_json::json!({
+            "stage": "sandbox_started"
+        }),
+    ));
+
+    // Execute
+    let result = manager.exec_cmd(&sandbox_name, &body.command).await;
+
+    // Cleanup
+    let _ = manager.remove(&sandbox_name).await;
+
+    match result {
+        Ok(output) => {
+            events.push((
+                "output",
+                serde_json::json!({
+                    "data": output,
+                    "stream": "stdout"
+                }),
+            ));
+            events.push((
+                "done",
+                serde_json::json!({
+                    "exit_code": 0,
+                    "success": true
+                }),
+            ));
+        }
+        Err(e) => {
+            events.push((
+                "error",
+                serde_json::json!({
+                    "message": e.to_string()
+                }),
+            ));
+        }
+    }
+
+    sse_response(events)
 }
 
 async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
