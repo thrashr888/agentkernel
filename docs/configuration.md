@@ -45,6 +45,6 @@ mount_cwd = true
 
 ## Sections
 
-- [agentkernel.toml](agentkernel-toml) - Full config file reference
-- [Security Profiles](security-profiles) - Permission presets
-- [Backends](backends) - Backend-specific configuration
+- [agentkernel.toml](config-toml) - Full config file reference
+- [Security Profiles](config-security) - Permission presets
+- [Backends](config-backends) - Backend-specific configuration

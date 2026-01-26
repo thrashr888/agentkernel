@@ -3,11 +3,7 @@ description: Run AI coding agents in secure, isolated microVMs
 baseurl: "/agentkernel"
 url: "https://thrashr888.github.io"
 
-theme: just-the-docs
-
-# Navigation structure
-nav_order: 1
-nav_enabled: true
+remote_theme: just-the-docs/just-the-docs
 
 # Search
 search_enabled: true
@@ -23,38 +19,16 @@ aux_links:
   "GitHub":
     - "https://github.com/thrashr888/agentkernel"
 
-# Collections for organizing docs
-collections:
-  commands:
-    output: true
-    permalink: /commands/:name/
-  configuration:
-    output: true
-    permalink: /configuration/:name/
-  agents:
-    output: true
-    permalink: /agents/:name/
-
-# Defaults
-defaults:
-  - scope:
-      path: "commands"
-    values:
-      layout: default
-      parent: Commands
-  - scope:
-      path: "configuration"
-    values:
-      layout: default
-      parent: Configuration
-  - scope:
-      path: "agents"
-    values:
-      layout: default
-      parent: Agents
+# Back to top link
+back_to_top: true
+back_to_top_text: "Back to top"
 
 # Code highlighting
 highlighter: rouge
 markdown: kramdown
 kramdown:
   syntax_highlighter: rouge
+
+# Exclude from build
+exclude:
+  - Gemfile.lock
