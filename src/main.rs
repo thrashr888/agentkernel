@@ -1,5 +1,6 @@
 mod agents;
 mod apple_backend;
+mod asciicast;
 mod audit;
 mod backend;
 mod build;
@@ -98,6 +99,9 @@ enum Commands {
         /// Environment variables to set (KEY=VALUE format, can be repeated)
         #[arg(short, long = "env", value_name = "KEY=VALUE")]
         env: Vec<String>,
+        /// Record session to asciicast v2 file (for replay with asciinema)
+        #[arg(long)]
+        record: Option<PathBuf>,
     },
     /// Execute a command in a running sandbox
     Exec {
@@ -378,7 +382,7 @@ memory_mb = 512
             manager.remove(&name).await?;
             println!("Sandbox '{}' removed.", name);
         }
-        Commands::Attach { name, env } => {
+        Commands::Attach { name, env, record } => {
             validation::validate_sandbox_name(&name)?;
 
             let mut manager = VmManager::new()?;
@@ -393,6 +397,37 @@ memory_mb = 512
                     name,
                     name
                 );
+            }
+
+            // Set up recording if requested
+            let record_path = record.map(|p| {
+                if p.is_dir() {
+                    p.join(asciicast::generate_recording_name(&name))
+                } else {
+                    p
+                }
+            });
+
+            if let Some(ref path) = record_path {
+                eprintln!("Recording session to: {}", path.display());
+                eprintln!(
+                    "Note: Full PTY recording not yet implemented; recording placeholder created."
+                );
+
+                // Create the recordings directory if needed
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+
+                // Create a basic recording file with header
+                let mut recorder = asciicast::AsciicastRecorder::with_header(
+                    path,
+                    asciicast::AsciicastHeader::with_size(80, 24)
+                        .with_title(format!("agentkernel attach {}", name))
+                        .with_command(format!("agentkernel attach {}", name)),
+                );
+                recorder.record_output("Session started\r\n");
+                recorder.save()?;
             }
 
             // Attach to the sandbox's shell with environment variables
