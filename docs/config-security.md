@@ -120,3 +120,84 @@ agentkernel exec my-sandbox -e API_KEY=$API_KEY -- ./script.sh
 ```
 
 This is more secure than `pass_env = true` because you control exactly which variables are passed.
+
+## Domain Filtering
+
+Control which network domains the sandbox can access.
+
+```toml
+[security.domains]
+# Only allow specific domains (allowlist mode)
+allow = ["api.anthropic.com", "*.github.com", "pypi.org"]
+allowlist_only = true
+
+# Or block specific domains (blocklist mode)
+block = ["evil.com", "*.malware.net"]
+allowlist_only = false  # default
+```
+
+| Setting | Description |
+|---------|-------------|
+| `allow` | List of allowed domains (supports `*.domain.com` wildcards) |
+| `block` | List of blocked domains (supports `*.domain.com` wildcards) |
+| `allowlist_only` | If true, only domains in `allow` list are permitted |
+
+**Examples:**
+
+```toml
+# Allow only AI API endpoints
+[security.domains]
+allow = ["api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com"]
+allowlist_only = true
+
+# Block known malicious domains
+[security.domains]
+block = ["*.ru", "*.cn", "malware-c2.com"]
+```
+
+## Command Filtering
+
+Control which commands and binaries can be executed inside the sandbox.
+
+```toml
+[security.commands]
+# Only allow specific commands (allowlist mode)
+allow = ["python3", "pip", "git", "node", "npm"]
+allowlist_only = true
+
+# Or block specific commands (blocklist mode)
+block = ["curl", "wget", "nc", "ncat"]
+allowlist_only = false  # default
+```
+
+| Setting | Description |
+|---------|-------------|
+| `allow` | List of allowed commands/binaries |
+| `block` | List of blocked commands/binaries |
+| `allowlist_only` | If true, only commands in `allow` list can be executed |
+
+**Examples:**
+
+```toml
+# Minimal Python environment
+[security.commands]
+allow = ["python3", "pip", "git"]
+allowlist_only = true
+
+# Block network tools
+[security.commands]
+block = ["curl", "wget", "nc", "ncat", "ssh", "scp"]
+```
+
+## Seccomp Profiles
+
+Apply custom seccomp profiles for syscall filtering.
+
+```toml
+[security]
+seccomp = "default"  # or path to custom profile
+```
+
+Available built-in profiles:
+- `default` - Standard Docker seccomp profile
+- `strict` - More restrictive syscall filtering

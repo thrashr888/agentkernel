@@ -70,12 +70,17 @@ agentkernel attach [OPTIONS] <NAME>
 | Option | Description |
 |--------|-------------|
 | `-e, --env <KEY=VALUE>` | Set environment variable (can be repeated) |
+| `--record` | Record the session in asciicast v2 format |
 
 ### Examples
 
 ```bash
 # Attach to a sandbox
 agentkernel attach my-sandbox
+
+# Record the session
+agentkernel attach my-sandbox --record
+# Recording saved to ~/.agentkernel/recordings/my-sandbox-YYYYMMDD-HHMMSS.cast
 
 # Attach with environment variables
 agentkernel attach my-sandbox -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY

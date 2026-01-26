@@ -70,6 +70,62 @@ curl -X POST http://localhost:8080/run \
 | `profile` | string | No | Security profile |
 | `fast` | bool | No | Use container pool (default: true) |
 
+### Run Command (Streaming)
+
+Execute a command with Server-Sent Events (SSE) streaming.
+
+```
+POST /run/stream
+```
+
+```bash
+curl -X POST http://localhost:8080/run/stream \
+  -H "Content-Type: application/json" \
+  -d '{"command": ["python3", "long_script.py"]}'
+```
+
+**Response (SSE stream):**
+
+```
+event: started
+data: {"sandbox":"sandbox-abc123"}
+
+event: progress
+data: {"stage":"creating"}
+
+event: progress
+data: {"stage":"starting"}
+
+event: progress
+data: {"stage":"executing"}
+
+event: output
+data: {"content":"Processing step 1...\n"}
+
+event: output
+data: {"content":"Processing step 2...\n"}
+
+event: done
+data: {"exit_code":0}
+```
+
+**Event types:**
+
+| Event | Data | Description |
+|-------|------|-------------|
+| `started` | `{"sandbox": "name"}` | Command execution started |
+| `progress` | `{"stage": "..."}` | Execution stage (creating, starting, executing) |
+| `output` | `{"content": "..."}` | Command output (stdout/stderr) |
+| `done` | `{"exit_code": 0}` | Command completed successfully |
+| `error` | `{"message": "..."}` | Error occurred |
+
+**Request body:** Same as `/run`
+
+**Use cases:**
+- Long-running commands
+- Real-time output display
+- Progress tracking
+
 ### List Sandboxes
 
 ```

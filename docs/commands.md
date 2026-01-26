@@ -18,6 +18,8 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 | `cp` | Copy files to/from a sandbox |
 | `setup` | Configure agentkernel and backends |
 | `daemon` | Manage the VM pool daemon |
+| `audit` | View and manage audit logs |
+| `replay` | Replay a recorded session |
 
 ## Global Options
 
@@ -46,4 +48,28 @@ agentkernel stop my-sandbox
 agentkernel create dev --config agentkernel.toml
 agentkernel start dev
 agentkernel attach dev
+```
+
+### Session recording and playback
+```bash
+# Record a session (saves to ~/.agentkernel/recordings/)
+agentkernel attach my-sandbox --record
+
+# Replay a recorded session
+agentkernel replay ~/.agentkernel/recordings/my-sandbox-20260126-120000.cast
+
+# Replay at 2x speed with max 1s idle time
+agentkernel replay session.cast --speed 2.0 --max-idle 1.0
+```
+
+### Audit logging
+```bash
+# List recent audit events
+agentkernel audit list
+
+# Show audit entries for a specific sandbox
+agentkernel audit list --sandbox my-sandbox
+
+# Show audit log file path
+agentkernel audit path
 ```
