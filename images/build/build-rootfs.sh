@@ -28,6 +28,7 @@ AGENT_LOCAL="$ROOTFS_DIR/agent"
 echo "    Cross-compiling guest-agent..."
 
 # Build in Docker and copy out the binary
+# Note: We copy source to /build since cargo needs to write to target/
 docker run --rm \
     -v "$PROJECT_ROOT/guest-agent:/src:ro" \
     -v "$ROOTFS_DIR:/output" \
@@ -35,9 +36,10 @@ docker run --rm \
     sh -c '
         apk add --no-cache musl-dev
         rustup target add x86_64-unknown-linux-musl
-        cd /src
+        cp -r /src /build
+        cd /build
         cargo build --release --target x86_64-unknown-linux-musl
-        cp /src/target/x86_64-unknown-linux-musl/release/agent /output/agent
+        cp /build/target/x86_64-unknown-linux-musl/release/agent /output/agent
         chmod +x /output/agent
     '
 
