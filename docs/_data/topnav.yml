@@ -1,0 +1,15 @@
+topnav:
+  - title: Topnav
+    items:
+      - title: GitHub
+        external_url: https://github.com/thrashr888/agentkernel
+
+topnav_dropdowns:
+  - title: Topnav dropdowns
+    folders:
+      - title: Resources
+        folderitems:
+          - title: GitHub Issues
+            external_url: https://github.com/thrashr888/agentkernel/issues
+          - title: Releases
+            external_url: https://github.com/thrashr888/agentkernel/releases

@@ -1,8 +1,8 @@
 ---
-layout: default
 title: exec / attach
-parent: Commands
-nav_order: 4
+permalink: /cmd-exec-attach.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # agentkernel exec / attach

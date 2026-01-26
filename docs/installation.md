@@ -1,125 +1,79 @@
 ---
-layout: default
 title: Installation
-nav_order: 2
+permalink: /installation.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # Installation
 
-## Requirements
+## Prerequisites
 
-- **macOS** (Intel or Apple Silicon) or **Linux** (x86_64)
-- One of:
-  - Docker Desktop (macOS/Linux)
-  - Podman (Linux/macOS)
-  - KVM support (Linux, for Firecracker backend)
+- **Linux**: KVM-enabled host (most cloud VMs, bare metal)
+- **macOS**: Docker Desktop or Apple Containers (macOS 26+)
+- **Windows**: WSL2 with Docker (untested)
 
 ## Quick Install
 
 ```bash
-# Download and install
 curl -fsSL https://raw.githubusercontent.com/thrashr888/agentkernel/main/install.sh | sh
-
-# Run setup to configure backends and download components
-agentkernel setup
 ```
 
-## Install with Cargo
+This installs the `agentkernel` binary to `~/.local/bin/`.
+
+## Manual Install
+
+### From Source
 
 ```bash
-cargo install agentkernel
-agentkernel setup
-```
-
-## Install from Source
-
-```bash
-git clone https://github.com/thrashr888/agentkernel.git
+git clone https://github.com/thrashr888/agentkernel
 cd agentkernel
 cargo build --release
-./target/release/agentkernel setup
+cp target/release/agentkernel ~/.local/bin/
 ```
 
-## Setup Command
+### From Releases
 
-After installing, run `agentkernel setup` to:
+Download the latest release from [GitHub Releases](https://github.com/thrashr888/agentkernel/releases).
 
-1. Detect available backends (Docker, Podman, Firecracker, Apple Containers)
-2. Download required kernel and rootfs images (for Firecracker)
-3. Configure default settings
+## Setup
+
+After installation, run setup to configure your backend:
 
 ```bash
-$ agentkernel setup
-
-Checking system requirements...
-  Docker: available (24.0.7)
-  Podman: not found
-  KVM: not available (macOS)
-  Apple Containers: available (macOS 26+)
-
-Selected backend: docker
-
-Setup complete! Run 'agentkernel run echo hello' to test.
+agentkernel setup
 ```
+
+This will:
+1. Detect available backends (Firecracker, Docker, Podman, Apple Containers)
+2. Download required images
+3. Configure default settings
 
 ## Backend-Specific Setup
 
-### Docker (Recommended for macOS)
+### Linux (Firecracker)
+
+Requires KVM access:
+
+```bash
+# Add user to kvm group
+sudo usermod -aG kvm $USER
+
+# Verify KVM access
+ls -la /dev/kvm
+```
+
+### macOS (Docker Desktop)
 
 Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) and ensure it's running.
 
-```bash
-docker --version  # Verify installation
-agentkernel setup
-```
+### macOS 26+ (Apple Containers)
 
-### Podman (Linux alternative)
-
-```bash
-# Fedora/RHEL
-sudo dnf install podman
-
-# Ubuntu/Debian
-sudo apt install podman
-
-agentkernel setup
-```
-
-### Firecracker (Linux with KVM)
-
-Requires Linux with KVM support. Provides the fastest and most isolated sandboxes.
-
-```bash
-# Check KVM support
-ls /dev/kvm
-
-# Install Firecracker (setup does this automatically)
-agentkernel setup
-```
-
-### Apple Containers (macOS 26+)
-
-Native container support on macOS Tahoe (26+). Automatically detected by setup.
+Apple Containers is built-in to macOS 26+. No additional setup required.
 
 ## Verify Installation
 
 ```bash
-# Check version
 agentkernel --version
-
-# Run a test command
 agentkernel run echo "Hello from sandbox!"
-
-# List available backends
-agentkernel setup --check
-```
-
-## Uninstall
-
-```bash
-# Remove binary
-rm $(which agentkernel)
-
-# Remove data directory (sandboxes, images, config)
-rm -rf ~/.local/share/agentkernel
 ```

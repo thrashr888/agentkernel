@@ -1,7 +1,8 @@
 ---
-layout: default
 title: Home
-nav_order: 1
+permalink: /index.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # agentkernel
@@ -49,13 +50,15 @@ AI coding agents need to execute arbitrary code. Running them directly on your m
 | Platform | Backend | Status |
 |----------|---------|--------|
 | Linux | Firecracker (KVM) | Full support |
+| Linux | Podman | Full support |
 | macOS | Docker Desktop | Full support |
+| macOS | Podman | Full support |
 | macOS 26+ | Apple Containers | Beta |
 | Windows | WSL2 + Docker | Untested |
 
 ## Next Steps
 
-- [Installation](installation) - Detailed setup instructions
-- [Getting Started](getting-started) - Your first sandbox
-- [Commands](commands/) - CLI reference
-- [Configuration](configuration/) - Config file format
+- [Installation](installation.html) - Detailed setup instructions
+- [Getting Started](getting-started.html) - Your first sandbox
+- [Commands](commands.html) - CLI reference
+- [Configuration](configuration.html) - Config file format

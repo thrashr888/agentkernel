@@ -1,8 +1,8 @@
 ---
-layout: default
 title: start / stop
-parent: Commands
-nav_order: 3
+permalink: /cmd-start-stop.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # agentkernel start / stop

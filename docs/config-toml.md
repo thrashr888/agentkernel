@@ -1,8 +1,8 @@
 ---
-layout: default
 title: agentkernel.toml
-parent: Configuration
-nav_order: 1
+permalink: /config-toml.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # agentkernel.toml

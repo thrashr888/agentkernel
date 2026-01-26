@@ -1,8 +1,8 @@
 ---
-layout: default
 title: Backends
-parent: Configuration
-nav_order: 3
+permalink: /config-backends.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # Backends

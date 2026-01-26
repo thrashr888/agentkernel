@@ -1,8 +1,8 @@
 ---
-layout: default
 title: HTTP API
-parent: API
-nav_order: 1
+permalink: /api-http.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # HTTP API

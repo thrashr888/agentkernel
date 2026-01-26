@@ -1,8 +1,8 @@
 ---
-layout: default
 title: Claude Code
-parent: Agents
-nav_order: 1
+permalink: /agent-claude.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # Claude Code

@@ -1,8 +1,8 @@
 ---
-layout: default
-title: Commands
-nav_order: 4
-has_children: true
+title: Commands Overview
+permalink: /commands.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # Commands

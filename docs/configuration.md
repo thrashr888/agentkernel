@@ -1,8 +1,8 @@
 ---
-layout: default
-title: Configuration
-nav_order: 5
-has_children: true
+title: Configuration Overview
+permalink: /configuration.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # Configuration

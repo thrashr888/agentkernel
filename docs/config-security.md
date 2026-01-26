@@ -1,8 +1,8 @@
 ---
-layout: default
 title: Security Profiles
-parent: Configuration
-nav_order: 2
+permalink: /config-security.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # Security Profiles

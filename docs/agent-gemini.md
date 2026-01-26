@@ -1,8 +1,8 @@
 ---
-layout: default
 title: Google Gemini
-parent: Agents
-nav_order: 3
+permalink: /agent-gemini.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # Google Gemini CLI

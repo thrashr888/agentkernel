@@ -1,8 +1,8 @@
 ---
-layout: default
 title: run
-parent: Commands
-nav_order: 1
+permalink: /cmd-run.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # agentkernel run

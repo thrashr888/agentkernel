@@ -1,8 +1,8 @@
 ---
-layout: default
-title: API
-nav_order: 7
-has_children: true
+title: API Overview
+permalink: /api.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # API

@@ -1,138 +1,95 @@
 ---
-layout: default
-title: Getting Started
-nav_order: 3
+title: Quick Start
+permalink: /getting-started.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
-# Getting Started
+# Quick Start
 
-This guide walks you through your first sandbox and basic workflows.
+This guide walks you through your first sandbox.
 
-## Your First Sandbox
+## One-Shot Commands
 
-The fastest way to run isolated code is the `run` command:
+Run a command in a temporary, isolated sandbox:
 
 ```bash
-# Run a Python command
+# Python
 agentkernel run python3 -c "print('Hello from sandbox!')"
 
-# Run a Node.js command
-agentkernel run node -e "console.log('Isolated!')"
+# Node.js
+agentkernel run node -e "console.log('Hello from sandbox!')"
 
-# Run a shell command
-agentkernel run sh -c "whoami && pwd"
+# Shell
+agentkernel run sh -c "uname -a"
 ```
 
-The `run` command:
-1. Creates a temporary sandbox
-2. Auto-detects the right container image from your command
-3. Executes the command
-4. Cleans up automatically
+The sandbox is automatically created, the command runs, and cleanup happens.
 
 ## Persistent Sandboxes
 
-For ongoing work, create a persistent sandbox:
+For longer sessions, create a named sandbox:
 
 ```bash
 # Create a sandbox
-agentkernel create my-project
+agentkernel create my-sandbox --image python:3.12-alpine
 
 # Start it
-agentkernel start my-project
+agentkernel start my-sandbox
 
 # Run commands
-agentkernel exec my-project -- ls -la
-agentkernel exec my-project -- python3 --version
+agentkernel exec my-sandbox -- python3 --version
+agentkernel exec my-sandbox -- pip install requests
 
-# Open an interactive shell
-agentkernel attach my-project
+# Attach for interactive shell
+agentkernel attach my-sandbox
 
 # Stop when done
-agentkernel stop my-project
+agentkernel stop my-sandbox
 
-# Remove when finished
-agentkernel remove my-project
+# Remove the sandbox
+agentkernel remove my-sandbox
 ```
 
-## Running AI Agents
+## Using Config Files
 
-agentkernel includes pre-configured images for AI coding agents.
-
-### Claude Code
-
-```bash
-# Create a sandbox with Claude Code pre-installed
-agentkernel create claude-sandbox \
-  --config examples/agents/claude-code/agentkernel.toml
-
-# Start and attach with your API key
-agentkernel start claude-sandbox
-agentkernel attach claude-sandbox -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
-
-# Inside the sandbox, run Claude
-claude
-```
-
-### Running Commands with Environment Variables
-
-Pass environment variables (like API keys) with `-e`:
-
-```bash
-# Single variable
-agentkernel exec my-sandbox -e API_KEY=secret -- my-command
-
-# Multiple variables
-agentkernel exec my-sandbox \
-  -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
-  -e DEBUG=true \
-  -- claude -p "Hello"
-```
-
-## Working with Projects
-
-Mount your project directory into the sandbox:
-
-```bash
-# Create with project config that mounts current directory
-agentkernel create my-project --config agentkernel.toml --dir .
-
-# Your files are available at /workspace inside the sandbox
-agentkernel exec my-project -- ls /workspace
-```
-
-Example `agentkernel.toml`:
+For complex setups, use `agentkernel.toml`:
 
 ```toml
 [sandbox]
-name = "my-project"
+name = "dev"
 
-[security]
-mount_cwd = true    # Mount current directory to /workspace
-network = true      # Allow network access
+[build]
+dockerfile = "Dockerfile"
 
 [resources]
 vcpus = 2
 memory_mb = 1024
+
+[security]
+profile = "moderate"
+network = true
 ```
 
-## Listing and Managing Sandboxes
+Then reference it:
 
 ```bash
-# List all sandboxes
-agentkernel list
+agentkernel create dev --config agentkernel.toml
+```
 
-# Output:
-# NAME                 STATUS     BACKEND
-# my-project           running    docker
-# claude-sandbox       stopped    docker
+## Running AI Agents
 
-# Check a specific sandbox
-agentkernel exec my-project -- echo "Still running!"
+See the [Agents](agents.html) section for running Claude Code, Codex, and Gemini in sandboxes.
+
+```bash
+# Quick example with Claude Code
+agentkernel create claude-sandbox --config examples/agents/claude-code/agentkernel.toml
+agentkernel start claude-sandbox
+agentkernel attach claude-sandbox -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
 ```
 
 ## Next Steps
 
-- [Commands Reference](commands/) - Full CLI documentation
-- [Configuration](configuration/agentkernel-toml) - Config file options
-- [Security Profiles](configuration/security-profiles) - Control sandbox permissions
-- [Running Claude Code](agents/claude-code) - Detailed agent setup
+- [Commands Reference](commands.html) - Full CLI documentation
+- [Configuration](configuration.html) - Config file format
+- [Security Profiles](config-security.html) - Permission presets

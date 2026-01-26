@@ -1,8 +1,8 @@
 ---
-layout: default
 title: MCP Server
-parent: API
-nav_order: 2
+permalink: /api-mcp.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # MCP Server

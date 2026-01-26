@@ -1,8 +1,8 @@
 ---
-layout: default
 title: list
-parent: Commands
-nav_order: 5
+permalink: /cmd-list.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # agentkernel list

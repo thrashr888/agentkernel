@@ -1,8 +1,8 @@
 ---
-layout: default
-title: Agents
-nav_order: 6
-has_children: true
+title: Agents Overview
+permalink: /agents.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # AI Agents

@@ -1,8 +1,8 @@
 ---
-layout: default
 title: OpenAI Codex
-parent: Agents
-nav_order: 2
+permalink: /agent-codex.html
+sidebar: agentkernel_sidebar
+topnav: topnav
 ---
 
 # OpenAI Codex

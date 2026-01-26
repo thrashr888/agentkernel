@@ -1,39 +1,41 @@
-title: agentkernel
-description: Run AI coding agents in secure, isolated microVMs
-baseurl: "/agentkernel"
-url: "https://thrashr888.github.io"
+output: web
 
-remote_theme: just-the-docs/just-the-docs
+topnav_title: agentkernel
+site_title: agentkernel - Secure AI Agent Sandboxes
+company_name: MIT License
 
-# Enable plugins
-plugins:
-  - jekyll-remote-theme
-  - jekyll-seo-tag
+github_editme_path: thrashr888/agentkernel/blob/main/docs/
 
-# Search
-search_enabled: true
-search:
-  heading_level: 2
-  previews: 3
-
-# Footer
-footer_content: "agentkernel is open source under the MIT license."
-
-# Aux links (top right)
-aux_links:
-  "GitHub":
-    - "https://github.com/thrashr888/agentkernel"
-
-# Back to top link
-back_to_top: true
-back_to_top_text: "Back to top"
-
-# Code highlighting
 highlighter: rouge
 markdown: kramdown
 kramdown:
+  input: GFM
+  auto_ids: true
+  hard_wrap: false
   syntax_highlighter: rouge
 
-# Exclude from build
 exclude:
+  - .gitignore
   - Gemfile.lock
+  - vendor
+
+defaults:
+  - scope:
+      path: ""
+      type: "pages"
+    values:
+      layout: "page"
+      comments: false
+      search: true
+      sidebar: agentkernel_sidebar
+      topnav: topnav
+
+sidebars:
+  - agentkernel_sidebar
+
+description: "Run AI coding agents in secure, isolated microVMs with sub-125ms boot times."
+
+url: https://thrashr888.github.io
+baseurl: /agentkernel
+
+github: [metadata]
