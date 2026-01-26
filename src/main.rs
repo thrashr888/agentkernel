@@ -624,9 +624,16 @@ memory_mb = 512
                 }
             };
 
-            // Check for Dockerfile and build if present
+            // Check for Dockerfile and build if present (only for Docker backend)
+            // Firecracker uses rootfs images, not Dockerfiles
             let current_dir = std::env::current_dir()?;
-            let docker_image = if let Some(ref cfg) = cfg_for_build {
+            let is_firecracker_backend = backend
+                .as_ref()
+                .is_some_and(|b| b == "firecracker" || b == "fc");
+            let docker_image = if is_firecracker_backend {
+                // Skip Dockerfile build for Firecracker - use the base image directly
+                docker_image
+            } else if let Some(ref cfg) = cfg_for_build {
                 // Use config's build settings
                 if cfg.requires_build(&current_dir) {
                     let project_name = &cfg.sandbox.name;
