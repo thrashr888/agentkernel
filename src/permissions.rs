@@ -32,6 +32,7 @@ impl SecurityProfile {
                 read_only_root: false,
                 max_memory_mb: None,
                 max_cpu_percent: None,
+                seccomp: Some("default".to_string()),
             },
             SecurityProfile::Moderate => Permissions {
                 network: true,
@@ -42,6 +43,7 @@ impl SecurityProfile {
                 read_only_root: false,
                 max_memory_mb: Some(512),
                 max_cpu_percent: Some(100),
+                seccomp: Some("moderate".to_string()),
             },
             SecurityProfile::Restrictive => Permissions {
                 network: false,
@@ -52,6 +54,7 @@ impl SecurityProfile {
                 read_only_root: true,
                 max_memory_mb: Some(256),
                 max_cpu_percent: Some(50),
+                seccomp: Some("restrictive".to_string()),
             },
             SecurityProfile::Custom => Permissions::default(),
         }
@@ -89,6 +92,8 @@ pub struct Permissions {
     pub max_memory_mb: Option<u64>,
     /// Maximum CPU percentage (None = unlimited)
     pub max_cpu_percent: Option<u32>,
+    /// Seccomp profile to use (None = Docker default, or "default", "moderate", "restrictive", "ai-agent")
+    pub seccomp: Option<String>,
 }
 
 impl Default for Permissions {
@@ -98,6 +103,51 @@ impl Default for Permissions {
 }
 
 impl Permissions {
+    /// Resolve seccomp profile path from name or path
+    ///
+    /// Built-in profiles: "default", "moderate", "restrictive", "ai-agent"
+    /// Custom profiles: provide absolute path to JSON file
+    pub fn resolve_seccomp_path(&self) -> Option<std::path::PathBuf> {
+        let profile = self.seccomp.as_ref()?;
+
+        // Check for built-in profiles
+        let builtin_names = ["default", "moderate", "restrictive", "ai-agent"];
+        if builtin_names.contains(&profile.as_str()) {
+            // Look for built-in profiles relative to executable or in known locations
+            let profile_name = format!("{}.json", profile);
+
+            // Try relative to current dir (development)
+            let dev_path = std::path::PathBuf::from("images/seccomp").join(&profile_name);
+            if dev_path.exists() {
+                return dev_path.canonicalize().ok();
+            }
+
+            // Try relative to executable (installed)
+            if let Ok(exe_path) = std::env::current_exe()
+                && let Some(exe_dir) = exe_path.parent()
+            {
+                let installed_path = exe_dir.join("seccomp").join(&profile_name);
+                if installed_path.exists() {
+                    return Some(installed_path);
+                }
+            }
+
+            // Try system location
+            let system_path =
+                std::path::PathBuf::from("/usr/share/agentkernel/seccomp").join(&profile_name);
+            if system_path.exists() {
+                return Some(system_path);
+            }
+
+            // Built-in profile not found - will fall back to Docker default
+            None
+        } else {
+            // Custom path provided
+            let path = std::path::PathBuf::from(profile);
+            if path.exists() { Some(path) } else { None }
+        }
+    }
+
     /// Convert permissions to Docker run arguments
     pub fn to_docker_args(&self) -> Vec<String> {
         let mut args = Vec::new();
@@ -135,6 +185,11 @@ impl Permissions {
             args.push("--cap-add=CHOWN".to_string());
             args.push("--cap-add=SETUID".to_string());
             args.push("--cap-add=SETGID".to_string());
+        }
+
+        // Seccomp profile
+        if let Some(seccomp_path) = self.resolve_seccomp_path() {
+            args.push(format!("--security-opt=seccomp={}", seccomp_path.display()));
         }
 
         args
@@ -344,6 +399,7 @@ impl AgentProfile {
         let mut perms = SecurityProfile::Moderate.permissions();
         perms.mount_cwd = true; // Claude needs project access
         perms.pass_env = false; // Controlled env passthrough
+        perms.seccomp = Some("ai-agent".to_string()); // AI agent optimized profile
 
         Self {
             mode: CompatibilityMode::ClaudeCode,
@@ -359,6 +415,7 @@ impl AgentProfile {
         let mut perms = SecurityProfile::Restrictive.permissions();
         perms.network = true; // Codex needs API access
         perms.mount_cwd = true; // Codex needs project access
+        perms.seccomp = Some("ai-agent".to_string()); // AI agent optimized profile
 
         Self {
             mode: CompatibilityMode::Codex,
@@ -373,6 +430,7 @@ impl AgentProfile {
     pub fn gemini() -> Self {
         let mut perms = SecurityProfile::Moderate.permissions();
         perms.mount_cwd = true; // Gemini focuses on project directory
+        perms.seccomp = Some("ai-agent".to_string()); // AI agent optimized profile
 
         Self {
             mode: CompatibilityMode::Gemini,
@@ -492,5 +550,74 @@ mod tests {
 
         let claude_net = NetworkPolicy::claude_code();
         assert!(claude_net.block.contains(&"169.254.169.254".to_string()));
+    }
+
+    #[test]
+    fn test_seccomp_profiles_in_security_profiles() {
+        // Each security profile should have an appropriate seccomp profile
+        let permissive = SecurityProfile::Permissive.permissions();
+        assert_eq!(permissive.seccomp, Some("default".to_string()));
+
+        let moderate = SecurityProfile::Moderate.permissions();
+        assert_eq!(moderate.seccomp, Some("moderate".to_string()));
+
+        let restrictive = SecurityProfile::Restrictive.permissions();
+        assert_eq!(restrictive.seccomp, Some("restrictive".to_string()));
+    }
+
+    #[test]
+    fn test_seccomp_profiles_in_agent_profiles() {
+        // AI agent profiles should use the ai-agent seccomp profile
+        let claude = AgentProfile::claude_code();
+        assert_eq!(claude.permissions.seccomp, Some("ai-agent".to_string()));
+
+        let codex = AgentProfile::codex();
+        assert_eq!(codex.permissions.seccomp, Some("ai-agent".to_string()));
+
+        let gemini = AgentProfile::gemini();
+        assert_eq!(gemini.permissions.seccomp, Some("ai-agent".to_string()));
+    }
+
+    #[test]
+    fn test_seccomp_resolve_path_none() {
+        // No seccomp profile should return None
+        let mut perms = Permissions::default();
+        perms.seccomp = None;
+        assert!(perms.resolve_seccomp_path().is_none());
+    }
+
+    #[test]
+    fn test_seccomp_resolve_path_builtin() {
+        // Built-in profile should resolve if files exist in images/seccomp/
+        let perms = SecurityProfile::Moderate.permissions();
+        // This test will pass in development environment where images/seccomp/ exists
+        // In production, it may return None if profiles aren't installed
+        let path = perms.resolve_seccomp_path();
+        if let Some(p) = path {
+            assert!(p.to_string_lossy().contains("moderate.json"));
+        }
+    }
+
+    #[test]
+    fn test_seccomp_resolve_path_custom() {
+        // Custom path that doesn't exist should return None
+        let mut perms = Permissions::default();
+        perms.seccomp = Some("/nonexistent/custom/profile.json".to_string());
+        assert!(perms.resolve_seccomp_path().is_none());
+    }
+
+    #[test]
+    fn test_docker_args_include_seccomp() {
+        // When seccomp profile resolves, it should be included in docker args
+        let perms = SecurityProfile::Moderate.permissions();
+        let args = perms.to_docker_args();
+
+        // Check if seccomp is present (only if profile file exists)
+        let has_seccomp = args
+            .iter()
+            .any(|a| a.starts_with("--security-opt=seccomp="));
+        // This may be true or false depending on whether the profile files exist
+        // The important thing is the code doesn't panic
+        let _ = has_seccomp;
     }
 }

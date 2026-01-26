@@ -191,13 +191,49 @@ block = ["curl", "wget", "nc", "ncat", "ssh", "scp"]
 
 ## Seccomp Profiles
 
-Apply custom seccomp profiles for syscall filtering.
+Apply seccomp profiles for syscall filtering. Seccomp (Secure Computing Mode) restricts which system calls a process can make, providing an additional layer of defense.
 
 ```toml
 [security]
-seccomp = "default"  # or path to custom profile
+seccomp = "moderate"  # or path to custom profile
 ```
 
-Available built-in profiles:
-- `default` - Standard Docker seccomp profile
-- `strict` - More restrictive syscall filtering
+### Built-in Profiles
+
+| Profile | Description | Use Case |
+|---------|-------------|----------|
+| `default` | Allow most syscalls, block dangerous ones (mount, reboot, etc.) | Permissive environments |
+| `moderate` | Block dangerous syscalls + ptrace | Balanced security (default for moderate profile) |
+| `restrictive` | Allowlist-only with minimal syscalls | High-security environments |
+| `ai-agent` | Optimized for AI coding agents with file/network/process syscalls | Claude, Codex, Gemini agents |
+
+### Profile Mapping
+
+Each security profile automatically uses an appropriate seccomp profile:
+
+| Security Profile | Default Seccomp |
+|-----------------|-----------------|
+| `permissive` | `default` |
+| `moderate` | `moderate` |
+| `restrictive` | `restrictive` |
+
+AI agent compatibility modes (Claude, Codex, Gemini) use the `ai-agent` profile.
+
+### Custom Profiles
+
+You can provide a path to a custom seccomp profile JSON file:
+
+```toml
+[security]
+seccomp = "/path/to/custom-seccomp.json"
+```
+
+Custom profiles should follow the [Docker seccomp profile format](https://docs.docker.com/engine/security/seccomp/).
+
+### Profile Locations
+
+Built-in profiles are searched in the following locations:
+
+1. `./images/seccomp/` (development)
+2. `<executable-dir>/seccomp/` (installed)
+3. `/usr/share/agentkernel/seccomp/` (system)

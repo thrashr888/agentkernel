@@ -265,6 +265,11 @@ impl ContainerSandbox {
             }
         }
 
+        // Seccomp profile
+        if let Some(seccomp_path) = perms.resolve_seccomp_path() {
+            args.push(format!("--security-opt=seccomp={}", seccomp_path.display()));
+        }
+
         // Image and command
         args.push(image.to_string());
         args.extend(cmd.iter().cloned());
