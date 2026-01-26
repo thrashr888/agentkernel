@@ -1,0 +1,415 @@
+openapi: 3.1.0
+info:
+  title: agentkernel API
+  description: |
+    REST API for managing sandboxes in agentkernel.
+
+    ## Authentication
+
+    API key authentication is optional. When enabled, include the API key in the Authorization header:
+    ```
+    Authorization: Bearer <api_key>
+    ```
+
+    Set `AGENTKERNEL_API_KEY` environment variable to enable authentication.
+  version: 0.1.0
+  license:
+    name: MIT
+    url: https://github.com/thrashr888/agentkernel/blob/main/LICENSE
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Check if the API server is running. Does not require authentication.
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+              example:
+                success: true
+                data: "ok"
+
+  /run:
+    post:
+      summary: Run a command
+      description: |
+        Run a command in a temporary sandbox. The sandbox is created,
+        the command executed, and then cleaned up automatically.
+
+        By default, uses the container pool for fast execution (~50ms).
+        Set `fast: false` to use a dedicated sandbox with custom image.
+      operationId: runCommand
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunRequest'
+            examples:
+              simple:
+                summary: Simple command
+                value:
+                  command: ["echo", "hello"]
+              python:
+                summary: Python with custom image
+                value:
+                  command: ["python3", "-c", "print('hello')"]
+                  image: "python:3.12-alpine"
+                  fast: false
+              restrictive:
+                summary: Restrictive security profile
+                value:
+                  command: ["cat", "/etc/passwd"]
+                  profile: "restrictive"
+                  fast: false
+      responses:
+        '200':
+          description: Command executed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunResponse'
+              example:
+                success: true
+                data:
+                  output: "hello\n"
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /sandboxes:
+    get:
+      summary: List sandboxes
+      description: List all sandboxes across all backends.
+      operationId: listSandboxes
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of sandboxes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxListResponse'
+              example:
+                success: true
+                data:
+                  - name: "my-sandbox"
+                    status: "running"
+                    backend: "docker"
+                  - name: "test-env"
+                    status: "stopped"
+                    backend: "podman"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    post:
+      summary: Create a sandbox
+      description: Create and start a new sandbox.
+      operationId: createSandbox
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRequest'
+            examples:
+              simple:
+                summary: Simple sandbox
+                value:
+                  name: "my-sandbox"
+              python:
+                summary: Python sandbox
+                value:
+                  name: "python-dev"
+                  image: "python:3.12-alpine"
+      responses:
+        '201':
+          description: Sandbox created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxResponse'
+              example:
+                success: true
+                data:
+                  name: "my-sandbox"
+                  status: "running"
+                  backend: "docker"
+        '400':
+          description: Bad request (invalid name or image)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /sandboxes/{name}:
+    get:
+      summary: Get sandbox info
+      description: Get information about a specific sandbox.
+      operationId: getSandbox
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Sandbox name
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]*$'
+      responses:
+        '200':
+          description: Sandbox info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxResponse'
+        '404':
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      summary: Remove a sandbox
+      description: Stop and remove a sandbox.
+      operationId: removeSandbox
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Sandbox name
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sandbox removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+              example:
+                success: true
+                data: "Sandbox removed"
+        '404':
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /sandboxes/{name}/exec:
+    post:
+      summary: Execute command in sandbox
+      description: Execute a command in a running sandbox.
+      operationId: execInSandbox
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Sandbox name
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecRequest'
+            example:
+              command: ["npm", "test"]
+      responses:
+        '200':
+          description: Command executed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunResponse'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: API key authentication (optional)
+
+  schemas:
+    RunRequest:
+      type: object
+      required:
+        - command
+      properties:
+        command:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: Command and arguments to execute
+          example: ["echo", "hello"]
+        image:
+          type: string
+          description: Docker image to use (auto-detected if not specified)
+          example: "python:3.12-alpine"
+        profile:
+          type: string
+          enum: [permissive, moderate, restrictive]
+          description: Security profile
+          default: moderate
+        fast:
+          type: boolean
+          description: Use container pool for faster execution
+          default: true
+
+    CreateRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]*$'
+          description: Sandbox name (alphanumeric, hyphens, underscores)
+          example: "my-sandbox"
+        image:
+          type: string
+          description: Docker image to use
+          default: "alpine:3.20"
+          example: "python:3.12-alpine"
+
+    ExecRequest:
+      type: object
+      required:
+        - command
+      properties:
+        command:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: Command and arguments to execute
+          example: ["npm", "test"]
+
+    SandboxInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Sandbox name
+        status:
+          type: string
+          enum: [running, stopped]
+          description: Sandbox status
+        backend:
+          type: string
+          description: Backend type (docker, podman, firecracker, apple)
+
+    RunOutput:
+      type: object
+      properties:
+        output:
+          type: string
+          description: Command output (stdout + stderr)
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          description: Response data
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          description: Error message
+
+    RunResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/RunOutput'
+
+    SandboxResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/SandboxInfo'
+
+    SandboxListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SandboxInfo'

@@ -63,6 +63,7 @@ nav:
   - API:
     - Overview: api.md
     - HTTP API: api-http.md
+    - OpenAPI Spec: api-openapi.md
     - MCP Server: api-mcp.md
 
 extra:
