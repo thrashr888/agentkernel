@@ -50,6 +50,7 @@ AI coding agents need to execute arbitrary code. Running them directly on your m
 | Platform | Backend | Status |
 |----------|---------|--------|
 | Linux | Firecracker (KVM) | Full support |
+| Linux | Docker | Full support |
 | Linux | Podman | Full support |
 | macOS | Docker Desktop | Full support |
 | macOS | Podman | Full support |
