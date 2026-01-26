@@ -1,9 +1,3 @@
----
-title: Configuration Overview
-permalink: /configuration.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # Configuration
 

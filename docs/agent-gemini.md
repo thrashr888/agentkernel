@@ -1,9 +1,3 @@
----
-title: Google Gemini
-permalink: /agent-gemini.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # Google Gemini CLI
 

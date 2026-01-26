@@ -1,9 +1,3 @@
----
-title: HTTP API
-permalink: /api-http.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # HTTP API
 

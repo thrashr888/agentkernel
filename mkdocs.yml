@@ -1,0 +1,71 @@
+site_name: agentkernel
+site_url: https://thrashr888.github.io/agentkernel/
+site_description: Run AI coding agents in secure, isolated microVMs
+repo_url: https://github.com/thrashr888/agentkernel
+repo_name: thrashr888/agentkernel
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.code.copy
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - admonition
+  - pymdownx.details
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Getting Started: getting-started.md
+  - Commands:
+    - Overview: commands.md
+    - run: cmd-run.md
+    - create: cmd-create.md
+    - start / stop: cmd-start-stop.md
+    - exec / attach: cmd-exec-attach.md
+    - list: cmd-list.md
+  - Configuration:
+    - Overview: configuration.md
+    - agentkernel.toml: config-toml.md
+    - Security Profiles: config-security.md
+    - Backends: config-backends.md
+  - AI Agents:
+    - Overview: agents.md
+    - Claude Code: agent-claude.md
+    - OpenAI Codex: agent-codex.md
+    - Google Gemini: agent-gemini.md
+  - API:
+    - Overview: api.md
+    - HTTP API: api-http.md
+    - MCP Server: api-mcp.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/thrashr888/agentkernel

@@ -1,9 +1,3 @@
----
-title: start / stop
-permalink: /cmd-start-stop.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # agentkernel start / stop
 

@@ -1,9 +1,3 @@
----
-title: Installation
-permalink: /installation.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # Installation
 

@@ -1,9 +1,3 @@
----
-title: run
-permalink: /cmd-run.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # agentkernel run
 

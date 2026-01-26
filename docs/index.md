@@ -1,9 +1,3 @@
----
-title: Home
-permalink: /index.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # agentkernel
 

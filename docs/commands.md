@@ -1,9 +1,3 @@
----
-title: Commands Overview
-permalink: /commands.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # Commands
 

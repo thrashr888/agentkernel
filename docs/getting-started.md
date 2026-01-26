@@ -1,9 +1,3 @@
----
-title: Quick Start
-permalink: /getting-started.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # Quick Start
 

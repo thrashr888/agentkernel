@@ -1,9 +1,3 @@
----
-title: Security Profiles
-permalink: /config-security.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # Security Profiles
 

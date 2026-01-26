@@ -1,9 +1,3 @@
----
-title: Backends
-permalink: /config-backends.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # Backends
 

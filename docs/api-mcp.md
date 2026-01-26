@@ -1,9 +1,3 @@
----
-title: MCP Server
-permalink: /api-mcp.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # MCP Server
 

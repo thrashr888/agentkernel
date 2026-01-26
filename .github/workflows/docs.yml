@@ -5,6 +5,7 @@ on:
     branches: ["main"]
     paths:
       - "docs/**"
+      - "mkdocs.yml"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -24,22 +25,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Ruby
-        uses: ruby/setup-ruby@v1
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          ruby-version: "3.2"
-          bundler-cache: true
-          working-directory: docs
+          python-version: "3.12"
+
+      - name: Install MkDocs and theme
+        run: |
+          pip install mkdocs mkdocs-material
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
-      - name: Build with Jekyll
-        run: |
-          cd docs
-          bundle exec jekyll build --baseurl "/agentkernel"
-        env:
-          JEKYLL_ENV: production
+      - name: Build with MkDocs
+        run: mkdocs build --site-dir docs/_site
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

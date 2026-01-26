@@ -1,9 +1,3 @@
----
-title: exec / attach
-permalink: /cmd-exec-attach.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # agentkernel exec / attach
 

@@ -1,9 +1,3 @@
----
-title: create
-permalink: /cmd-create.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # agentkernel create
 

@@ -1,9 +1,3 @@
----
-title: list
-permalink: /cmd-list.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # agentkernel list
 

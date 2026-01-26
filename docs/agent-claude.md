@@ -1,9 +1,3 @@
----
-title: Claude Code
-permalink: /agent-claude.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # Claude Code
 

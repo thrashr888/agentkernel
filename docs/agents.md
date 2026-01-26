@@ -1,9 +1,3 @@
----
-title: Agents Overview
-permalink: /agents.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # AI Agents
 

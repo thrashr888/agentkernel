@@ -1,9 +1,3 @@
----
-title: OpenAI Codex
-permalink: /agent-codex.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # OpenAI Codex
 

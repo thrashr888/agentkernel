@@ -1,9 +1,3 @@
----
-title: API Overview
-permalink: /api.html
-sidebar: agentkernel_sidebar
-topnav: topnav
----
 
 # API
 
