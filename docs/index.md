@@ -45,6 +45,25 @@ AI coding agents need to execute arbitrary code. Running them directly on your m
 | Memory overhead | ~50MB | ~10MB |
 | Security | Container escape possible | Hardware-enforced |
 
+## Supported Languages
+
+agentkernel auto-detects the runtime from your command or project files:
+
+| Language | Project Files | Commands | Docker Image |
+|----------|--------------|----------|--------------|
+| JavaScript/TypeScript | `package.json`, `yarn.lock` | `node`, `npm`, `npx`, `yarn`, `bun` | `node:22-alpine` |
+| Python | `pyproject.toml`, `requirements.txt` | `python`, `python3`, `pip`, `poetry`, `uv` | `python:3.12-alpine` |
+| Rust | `Cargo.toml` | `cargo`, `rustc` | `rust:1.85-alpine` |
+| Go | `go.mod` | `go`, `gofmt` | `golang:1.23-alpine` |
+| Ruby | `Gemfile` | `ruby`, `bundle`, `rails` | `ruby:3.3-alpine` |
+| Java | `pom.xml`, `build.gradle` | `java`, `mvn`, `gradle` | `eclipse-temurin:21-alpine` |
+| C# / .NET | `*.csproj`, `*.sln` | `dotnet` | `mcr.microsoft.com/dotnet/sdk:8.0` |
+| C/C++ | `Makefile`, `CMakeLists.txt` | `gcc`, `g++`, `make`, `cmake` | `gcc:14-bookworm` |
+| PHP | `composer.json` | `php`, `composer` | `php:8.3-alpine` |
+| Elixir | `mix.exs` | `elixir`, `mix` | `elixir:1.16-alpine` |
+| HCL/Terraform | `*.tf` | `terraform` | `hashicorp/terraform:1.10` |
+| Shell | `*.sh` | `bash`, `sh`, `zsh` | `alpine:3.20` |
+
 ## Supported Platforms
 
 | Platform | Backend | Status |
