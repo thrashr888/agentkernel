@@ -686,6 +686,7 @@ mod tests {
         let info = SandboxInfo {
             name: "test-sandbox".to_string(),
             status: "running".to_string(),
+            backend: "docker".to_string(),
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"name\":\"test-sandbox\""));
@@ -750,6 +751,7 @@ mod tests {
         let info = SandboxInfo {
             name: "test".to_string(),
             status: "running".to_string(),
+            backend: "docker".to_string(),
         };
         let response = json_response(StatusCode::CREATED, &ApiResponse::success(info));
         assert_eq!(response.status(), StatusCode::CREATED);

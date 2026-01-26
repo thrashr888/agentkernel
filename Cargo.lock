@@ -12,6 +12,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "dirs",
  "http-body-util",
  "hyper",
  "hyper-util",

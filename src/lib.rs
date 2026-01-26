@@ -2,6 +2,7 @@
 //!
 //! Run AI coding agents in secure, isolated microVMs.
 
+pub mod audit;
 pub mod backend;
 pub mod build;
 pub mod config;

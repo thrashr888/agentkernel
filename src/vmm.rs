@@ -3,6 +3,7 @@
 //! This module provides the interface to sandboxes via Firecracker microVMs
 //! or containers (Docker/Podman) as fallback when KVM is not available.
 
+use crate::audit::{AuditEvent, log_event};
 use crate::backend::{
     BackendType, FileInjection, Sandbox, SandboxConfig, create_sandbox, detect_best_backend,
 };
@@ -289,7 +290,7 @@ impl VmManager {
 
         let state = SandboxState {
             name: name.to_string(),
-            image: effective_image,
+            image: effective_image.clone(),
             vcpus,
             memory_mb,
             vsock_cid,
@@ -299,6 +300,12 @@ impl VmManager {
 
         self.save_sandbox(&state)?;
         self.sandboxes.insert(name.to_string(), state);
+
+        log_event(AuditEvent::SandboxCreated {
+            name: name.to_string(),
+            image: effective_image,
+            backend: self.backend.to_string(),
+        });
 
         Ok(())
     }
@@ -379,6 +386,11 @@ impl VmManager {
 
         self.running.insert(name.to_string(), sandbox);
 
+        log_event(AuditEvent::SandboxStarted {
+            name: name.to_string(),
+            profile: Some(format!("{:?}", perms)),
+        });
+
         Ok(())
     }
 
@@ -407,6 +419,12 @@ impl VmManager {
 
         let result = sandbox.exec_with_env(&cmd_refs, env).await?;
 
+        log_event(AuditEvent::CommandExecuted {
+            sandbox: name.to_string(),
+            command: cmd.to_vec(),
+            exit_code: Some(result.exit_code),
+        });
+
         if result.exit_code != 0 {
             bail!(
                 "Command exited with code {}: {}",
@@ -428,6 +446,10 @@ impl VmManager {
             )
         })?;
 
+        log_event(AuditEvent::SessionAttached {
+            sandbox: name.to_string(),
+        });
+
         sandbox.attach_with_env(None, env).await
     }
 
@@ -435,6 +457,9 @@ impl VmManager {
     pub async fn stop(&mut self, name: &str) -> Result<()> {
         if let Some(mut sandbox) = self.running.remove(name) {
             sandbox.stop().await?;
+            log_event(AuditEvent::SandboxStopped {
+                name: name.to_string(),
+            });
         }
         Ok(())
     }
@@ -447,6 +472,10 @@ impl VmManager {
 
         self.delete_sandbox(name)?;
         self.sandboxes.remove(name);
+
+        log_event(AuditEvent::SandboxRemoved {
+            name: name.to_string(),
+        });
 
         Ok(())
     }
@@ -632,7 +661,14 @@ impl VmManager {
             )
         })?;
 
-        sandbox.write_file(path, content).await
+        sandbox.write_file(path, content).await?;
+
+        log_event(AuditEvent::FileWritten {
+            sandbox: name.to_string(),
+            path: path.to_string(),
+        });
+
+        Ok(())
     }
 
     /// Read a file from a running sandbox
@@ -645,7 +681,14 @@ impl VmManager {
             )
         })?;
 
-        sandbox.read_file(path).await
+        let content = sandbox.read_file(path).await?;
+
+        log_event(AuditEvent::FileRead {
+            sandbox: name.to_string(),
+            path: path.to_string(),
+        });
+
+        Ok(content)
     }
 }
 
@@ -663,6 +706,7 @@ mod tests {
             memory_mb: 1024,
             vsock_cid: 5,
             created_at: "2024-01-01T00:00:00Z".to_string(),
+            backend: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -699,6 +743,7 @@ mod tests {
             memory_mb: 512,
             vsock_cid: 3,
             created_at: "2024-06-15T12:30:00Z".to_string(),
+            backend: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -744,6 +789,7 @@ mod tests {
             memory_mb: 256,
             vsock_cid: 4,
             created_at: "2024-01-01T00:00:00Z".to_string(),
+            backend: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -782,6 +828,7 @@ mod tests {
                 memory_mb: 256,
                 vsock_cid: cid,
                 created_at: "2024-01-01T00:00:00Z".to_string(),
+                backend: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();

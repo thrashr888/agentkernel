@@ -1,5 +1,6 @@
 mod agents;
 mod apple_backend;
+mod audit;
 mod backend;
 mod build;
 mod config;
@@ -166,6 +167,21 @@ enum Commands {
     Daemon {
         #[command(subcommand)]
         action: DaemonAction,
+    },
+    /// View audit log
+    Audit {
+        /// Show only events for this sandbox
+        #[arg(short, long)]
+        sandbox: Option<String>,
+        /// Show last N entries (default: 20)
+        #[arg(short, long, default_value = "20")]
+        last: usize,
+        /// Show full log path
+        #[arg(long)]
+        path: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -796,6 +812,106 @@ memory_mb = 512
                     println!("  Warm VMs:    {}", warm);
                     println!("  In use:      {}", in_use);
                     println!("  Min/Max:     {}/{}", min_warm, max_warm);
+                }
+            }
+        }
+        Commands::Audit {
+            sandbox,
+            last,
+            path,
+            json,
+        } => {
+            let audit_log = audit::AuditLog::new();
+
+            if path {
+                println!("{}", audit_log.path().display());
+                return Ok(());
+            }
+
+            let entries = if let Some(ref name) = sandbox {
+                audit_log.read_by_sandbox(name)?
+            } else {
+                audit_log.read_last(last)?
+            };
+
+            if entries.is_empty() {
+                if let Some(ref name) = sandbox {
+                    println!("No audit entries for sandbox '{}'", name);
+                } else {
+                    println!("No audit entries found");
+                }
+                println!("Audit log: {}", audit_log.path().display());
+                return Ok(());
+            }
+
+            if json {
+                for entry in &entries {
+                    println!("{}", serde_json::to_string(entry)?);
+                }
+            } else {
+                println!(
+                    "{:<24} {:<20} {:<15} DETAILS",
+                    "TIMESTAMP", "EVENT", "SANDBOX"
+                );
+                println!("{}", "-".repeat(80));
+                for entry in &entries {
+                    let (event_type, sandbox_name, details) = match &entry.event {
+                        audit::AuditEvent::SandboxCreated { name, image, .. } => {
+                            ("sandbox_created", name.as_str(), format!("image={}", image))
+                        }
+                        audit::AuditEvent::SandboxStarted { name, profile } => (
+                            "sandbox_started",
+                            name.as_str(),
+                            profile
+                                .as_ref()
+                                .map(|p| format!("profile={}", p))
+                                .unwrap_or_default(),
+                        ),
+                        audit::AuditEvent::SandboxStopped { name } => {
+                            ("sandbox_stopped", name.as_str(), String::new())
+                        }
+                        audit::AuditEvent::SandboxRemoved { name } => {
+                            ("sandbox_removed", name.as_str(), String::new())
+                        }
+                        audit::AuditEvent::CommandExecuted {
+                            sandbox,
+                            command,
+                            exit_code,
+                        } => (
+                            "command_executed",
+                            sandbox.as_str(),
+                            format!(
+                                "cmd={} exit={}",
+                                command.join(" "),
+                                exit_code.map(|c| c.to_string()).unwrap_or("?".to_string())
+                            ),
+                        ),
+                        audit::AuditEvent::FileWritten { sandbox, path } => {
+                            ("file_written", sandbox.as_str(), format!("path={}", path))
+                        }
+                        audit::AuditEvent::FileRead { sandbox, path } => {
+                            ("file_read", sandbox.as_str(), format!("path={}", path))
+                        }
+                        audit::AuditEvent::SessionAttached { sandbox } => {
+                            ("session_attached", sandbox.as_str(), String::new())
+                        }
+                        audit::AuditEvent::PolicyViolation {
+                            sandbox,
+                            policy,
+                            details,
+                        } => (
+                            "policy_violation",
+                            sandbox.as_str(),
+                            format!("{}: {}", policy, details),
+                        ),
+                    };
+                    println!(
+                        "{:<24} {:<20} {:<15} {}",
+                        entry.timestamp.format("%Y-%m-%d %H:%M:%S UTC"),
+                        event_type,
+                        sandbox_name,
+                        details
+                    );
                 }
             }
         }
