@@ -183,13 +183,25 @@ impl Sandbox for AppleSandbox {
     }
 
     async fn exec(&mut self, cmd: &[&str]) -> Result<ExecResult> {
+        self.exec_with_env(cmd, &[]).await
+    }
+
+    async fn exec_with_env(&mut self, cmd: &[&str], env: &[String]) -> Result<ExecResult> {
         let container_id = self
             .container_id
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Container not started"))?;
 
-        let mut args = vec!["exec", container_id.as_str()];
-        args.extend(cmd);
+        let mut args = vec!["exec".to_string()];
+
+        // Add environment variables
+        for e in env {
+            args.push("-e".to_string());
+            args.push(e.clone());
+        }
+
+        args.push(container_id.clone());
+        args.extend(cmd.iter().map(|s| s.to_string()));
 
         let output = Command::new("container")
             .args(&args)

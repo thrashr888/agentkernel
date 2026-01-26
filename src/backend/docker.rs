@@ -66,6 +66,8 @@ pub struct DockerSandbox {
     runtime: ContainerRuntime,
     container_id: Option<String>,
     running: bool,
+    /// If true, don't clean up container in Drop (for persistent sandboxes)
+    persistent: bool,
 }
 
 impl DockerSandbox {
@@ -76,7 +78,24 @@ impl DockerSandbox {
             runtime,
             container_id: None,
             running: false,
+            persistent: false,
         }
+    }
+
+    /// Create a persistent Docker sandbox (won't be cleaned up in Drop)
+    pub fn new_persistent(name: &str, runtime: ContainerRuntime) -> Self {
+        Self {
+            name: name.to_string(),
+            runtime,
+            container_id: None,
+            running: false,
+            persistent: true,
+        }
+    }
+
+    /// Mark this sandbox as persistent (won't be cleaned up in Drop)
+    pub fn set_persistent(&mut self, persistent: bool) {
+        self.persistent = persistent;
     }
 
     /// Create a new Docker sandbox with auto-detected runtime
@@ -174,10 +193,11 @@ impl Sandbox for DockerSandbox {
             .output();
 
         // Build container arguments
+        // Note: We use --rm for ephemeral containers but persistent sandboxes
+        // will have their containers survive because Drop cleanup is skipped
         let mut args = vec![
             "run".to_string(),
             "-d".to_string(),
-            "--rm".to_string(),
             "--name".to_string(),
             container_name.clone(),
             "--hostname".to_string(),
@@ -250,11 +270,23 @@ impl Sandbox for DockerSandbox {
     }
 
     async fn exec(&mut self, cmd: &[&str]) -> Result<ExecResult> {
+        self.exec_with_env(cmd, &[]).await
+    }
+
+    async fn exec_with_env(&mut self, cmd: &[&str], env: &[String]) -> Result<ExecResult> {
         let runtime_cmd = self.runtime.cmd();
         let container_name = self.container_name();
 
-        let mut args = vec!["exec", &container_name];
-        args.extend(cmd);
+        let mut args = vec!["exec".to_string()];
+
+        // Add environment variables
+        for e in env {
+            args.push("-e".to_string());
+            args.push(e.clone());
+        }
+
+        args.push(container_name);
+        args.extend(cmd.iter().map(|s| s.to_string()));
 
         let output = Command::new(runtime_cmd)
             .args(&args)
@@ -294,10 +326,8 @@ impl Sandbox for DockerSandbox {
     }
 
     fn is_running(&self) -> bool {
-        if !self.running {
-            return false;
-        }
-
+        // Check Docker directly - don't rely on internal state since
+        // we might be reconnecting to an existing container
         let container_name = self.container_name();
         Command::new(self.runtime.cmd())
             .args(["ps", "-q", "-f", &format!("name={}", container_name)])
@@ -348,6 +378,41 @@ impl Sandbox for DockerSandbox {
         }
 
         Ok(())
+    }
+
+    async fn attach(&mut self, shell: Option<&str>) -> Result<i32> {
+        self.attach_with_env(shell, &[]).await
+    }
+
+    async fn attach_with_env(&mut self, shell: Option<&str>, env: &[String]) -> Result<i32> {
+        // Check Docker directly since we might be reconnecting to an existing container
+        if !self.is_running() {
+            bail!("Container is not running");
+        }
+
+        let container_name = self.container_name();
+        let shell_cmd = shell.unwrap_or("/bin/sh");
+
+        // Build args with environment variables
+        let mut args = vec!["exec".to_string(), "-it".to_string()];
+        for e in env {
+            args.push("-e".to_string());
+            args.push(e.clone());
+        }
+        args.push(container_name);
+        args.push(shell_cmd.to_string());
+
+        // Use docker exec -it to attach an interactive terminal
+        // Note: this takes over stdin/stdout directly
+        let status = std::process::Command::new(self.runtime.cmd())
+            .args(&args)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()
+            .context("Failed to attach to container")?;
+
+        Ok(status.code().unwrap_or(-1))
     }
 }
 
@@ -429,7 +494,8 @@ impl DockerSandbox {
 
 impl Drop for DockerSandbox {
     fn drop(&mut self) {
-        if self.running {
+        // Only clean up if running and not marked as persistent
+        if self.running && !self.persistent {
             let container_name = self.container_name();
             let _ = Command::new(self.runtime.cmd())
                 .args(["rm", "-f", &container_name])

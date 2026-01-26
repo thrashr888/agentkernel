@@ -1,0 +1,27 @@
+# Claude Code Agent Configuration
+#
+# Use this config to create a sandbox with Claude Code pre-installed:
+#   agentkernel create my-project --config examples/agents/claude-code/agentkernel.toml
+#
+# Or copy to your project directory and run:
+#   agentkernel create my-project --config agentkernel.toml
+
+[sandbox]
+name = "claude-code-sandbox"
+
+[build]
+# Build from Dockerfile in this directory
+dockerfile = "Dockerfile"
+
+[agent]
+preferred = "claude"
+compatibility_mode = "claude"
+
+[resources]
+vcpus = 2
+memory_mb = 1024
+
+[security]
+profile = "moderate"
+network = true      # Claude Code needs network for API calls
+mount_cwd = true    # Mount project directory

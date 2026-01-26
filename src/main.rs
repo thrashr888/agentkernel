@@ -94,11 +94,17 @@ enum Commands {
     Attach {
         /// Name of the sandbox to attach to
         name: String,
+        /// Environment variables to set (KEY=VALUE format, can be repeated)
+        #[arg(short, long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
     },
     /// Execute a command in a running sandbox
     Exec {
         /// Name of the sandbox
         name: String,
+        /// Environment variables to set (KEY=VALUE format, can be repeated)
+        #[arg(short, long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
         /// Command to execute
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -254,10 +260,13 @@ memory_mb = 512
                 );
             }
 
-            let cfg = if let Some(config_path) = config {
-                Config::from_file(&config_path)?
+            // Load config and track the base directory for Dockerfile resolution
+            let (cfg, config_base_dir) = if let Some(ref config_path) = config {
+                let cfg = Config::from_file(config_path)?;
+                let base_dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+                (cfg, Some(base_dir))
             } else {
-                Config::minimal(&name, &agent)
+                (Config::minimal(&name, &agent), None)
             };
 
             // Parse backend option if provided
@@ -271,7 +280,14 @@ memory_mb = 512
             };
             let mut manager = VmManager::with_backend(backend_type)?;
 
-            let docker_image = cfg.docker_image();
+            // Build from Dockerfile if configured, otherwise use base image
+            let docker_image = if let Some(ref base_dir) = config_base_dir {
+                let base_image = cfg.docker_image();
+                build::build_or_use_image(&name, &base_image, base_dir, &cfg)?
+            } else {
+                cfg.docker_image()
+            };
+
             println!(
                 "Creating sandbox '{}' with image '{}'...",
                 name, docker_image
@@ -346,10 +362,10 @@ memory_mb = 512
             manager.remove(&name).await?;
             println!("Sandbox '{}' removed.", name);
         }
-        Commands::Attach { name } => {
+        Commands::Attach { name, env } => {
             validation::validate_sandbox_name(&name)?;
 
-            let manager = VmManager::new()?;
+            let mut manager = VmManager::new()?;
 
             if !manager.exists(&name) {
                 bail!("Sandbox '{}' not found", name);
@@ -363,11 +379,14 @@ memory_mb = 512
                 );
             }
 
-            // TODO: Connect via vsock and spawn interactive shell
-            println!("Attaching to sandbox '{}'...", name);
-            println!("(Interactive shell not yet implemented)");
+            // Attach to the sandbox's shell with environment variables
+            let exit_code = manager.attach_with_env(&name, &env).await?;
+
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
         }
-        Commands::Exec { name, command } => {
+        Commands::Exec { name, env, command } => {
             validation::validate_sandbox_name(&name)?;
 
             if command.is_empty() {
@@ -380,7 +399,7 @@ memory_mb = 512
                 bail!("Sandbox '{}' not found", name);
             }
 
-            let output = manager.exec_cmd(&name, &command).await?;
+            let output = manager.exec_cmd_with_env(&name, &command, &env).await?;
             print!("{}", output);
         }
         Commands::Cp { source, dest } => {
@@ -450,10 +469,13 @@ memory_mb = 512
                 println!("No sandboxes found.");
                 println!("\nCreate one with: agentkernel create <name>");
             } else {
-                println!("{:<20} {:<10}", "NAME", "STATUS");
-                for (name, running) in vms {
+                println!("{:<20} {:<10} {:<10}", "NAME", "STATUS", "BACKEND");
+                for (name, running, backend) in vms {
                     let status = if running { "running" } else { "stopped" };
-                    println!("{:<20} {:<10}", name, status);
+                    let backend_str = backend
+                        .map(|b| format!("{}", b))
+                        .unwrap_or_else(|| "unknown".to_string());
+                    println!("{:<20} {:<10} {:<10}", name, status, backend_str);
                 }
             }
         }

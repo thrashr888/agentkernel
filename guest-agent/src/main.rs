@@ -2,11 +2,21 @@
 //!
 //! Lightweight agent that runs inside microVMs to handle commands from the host.
 //! Communicates over virtio-vsock using a JSON-RPC protocol.
+//!
+//! Supports:
+//! - Command execution (Run)
+//! - Interactive shell sessions (Shell, ShellInput, ShellResize, ShellClose)
+//! - File operations (WriteFile, ReadFile, RemoveFile, Mkdir)
+//! - Health check (Ping) and shutdown (Shutdown)
+
+mod pty;
 
 use anyhow::{Context, Result};
+use pty::SessionManager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio_vsock::{VsockAddr, VsockListener};
@@ -23,6 +33,14 @@ const VMADDR_CID_ANY: u32 = u32::MAX;
 pub enum RequestType {
     /// Run a command and return output
     Run,
+    /// Start an interactive shell session (PTY)
+    Shell,
+    /// Send input to a shell session
+    ShellInput,
+    /// Resize a shell session's terminal
+    ShellResize,
+    /// Close a shell session
+    ShellClose,
     /// Health check
     Ping,
     /// Graceful shutdown
@@ -35,6 +53,18 @@ pub enum RequestType {
     RemoveFile,
     /// Create a directory in the guest filesystem
     Mkdir,
+}
+
+/// Shell event types for async shell communication
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellEvent {
+    /// Shell session started
+    Started,
+    /// Shell produced output
+    Output,
+    /// Shell session exited
+    Exited,
 }
 
 /// Request from host
@@ -58,6 +88,19 @@ pub struct AgentRequest {
     /// Whether to create parent directories (for Mkdir)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recursive: Option<bool>,
+    // Shell-specific fields
+    /// Session ID (for ShellInput, ShellResize, ShellClose)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Terminal rows (for Shell, ShellResize)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u16>,
+    /// Terminal columns (for Shell, ShellResize)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cols: Option<u16>,
+    /// Input data as base64 (for ShellInput)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_base64: Option<String>,
 }
 
 /// Response to host
@@ -75,6 +118,16 @@ pub struct AgentResponse {
     /// File content as base64 (for ReadFile)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_base64: Option<String>,
+    // Shell-specific fields
+    /// Session ID (for Shell, ShellOutput, ShellExited)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Output data as base64 (for ShellOutput)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_base64: Option<String>,
+    /// Response type for shell events (started, output, exited)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell_event: Option<ShellEvent>,
 }
 
 impl AgentResponse {
@@ -86,6 +139,9 @@ impl AgentResponse {
             stderr: None,
             error: None,
             content_base64: None,
+            session_id: None,
+            output_base64: None,
+            shell_event: None,
         }
     }
 
@@ -97,6 +153,9 @@ impl AgentResponse {
             stderr: None,
             error: Some(msg.to_string()),
             content_base64: None,
+            session_id: None,
+            output_base64: None,
+            shell_event: None,
         }
     }
 
@@ -108,6 +167,9 @@ impl AgentResponse {
             stderr: Some(stderr),
             error: None,
             content_base64: None,
+            session_id: None,
+            output_base64: None,
+            shell_event: None,
         }
     }
 
@@ -119,6 +181,51 @@ impl AgentResponse {
             stderr: None,
             error: None,
             content_base64: Some(content_base64),
+            session_id: None,
+            output_base64: None,
+            shell_event: None,
+        }
+    }
+
+    fn shell_started(id: &str, session_id: String) -> Self {
+        Self {
+            id: id.to_string(),
+            exit_code: None,
+            stdout: None,
+            stderr: None,
+            error: None,
+            content_base64: None,
+            session_id: Some(session_id),
+            output_base64: None,
+            shell_event: Some(ShellEvent::Started),
+        }
+    }
+
+    fn shell_output(id: &str, session_id: &str, output_base64: String) -> Self {
+        Self {
+            id: id.to_string(),
+            exit_code: None,
+            stdout: None,
+            stderr: None,
+            error: None,
+            content_base64: None,
+            session_id: Some(session_id.to_string()),
+            output_base64: Some(output_base64),
+            shell_event: Some(ShellEvent::Output),
+        }
+    }
+
+    fn shell_exited(id: &str, session_id: &str, exit_code: i32) -> Self {
+        Self {
+            id: id.to_string(),
+            exit_code: Some(exit_code),
+            stdout: None,
+            stderr: None,
+            error: None,
+            content_base64: None,
+            session_id: Some(session_id.to_string()),
+            output_base64: None,
+            shell_event: Some(ShellEvent::Exited),
         }
     }
 }
@@ -142,7 +249,10 @@ fn validate_path(path: &str) -> Result<(), String> {
 }
 
 /// Handle a single request
-async fn handle_request(request: AgentRequest) -> AgentResponse {
+async fn handle_request(
+    request: AgentRequest,
+    session_manager: Arc<SessionManager>,
+) -> AgentResponse {
     use base64::{engine::general_purpose::STANDARD, Engine};
 
     match request.request_type {
@@ -156,6 +266,85 @@ async fn handle_request(request: AgentRequest) -> AgentResponse {
                 std::process::exit(0);
             });
             AgentResponse::success(&request.id)
+        }
+
+        RequestType::Shell => {
+            // Start a new PTY shell session
+            let command = request
+                .command
+                .as_ref()
+                .and_then(|c| c.first())
+                .map(|s| s.as_str())
+                .unwrap_or("/bin/sh");
+            let args: Vec<String> = request
+                .command
+                .as_ref()
+                .map(|c| c.iter().skip(1).cloned().collect())
+                .unwrap_or_default();
+            let rows = request.rows.unwrap_or(24);
+            let cols = request.cols.unwrap_or(80);
+
+            match session_manager
+                .create_session(command, &args, rows, cols, request.env.as_ref())
+                .await
+            {
+                Ok(session_id) => {
+                    eprintln!("Shell session started: {}", session_id);
+                    AgentResponse::shell_started(&request.id, session_id)
+                }
+                Err(e) => AgentResponse::error(&request.id, &format!("Failed to start shell: {}", e)),
+            }
+        }
+
+        RequestType::ShellInput => {
+            // Send input to an existing shell session
+            let Some(session_id) = request.session_id else {
+                return AgentResponse::error(&request.id, "No session_id specified");
+            };
+            let Some(input_base64) = request.input_base64 else {
+                return AgentResponse::error(&request.id, "No input specified");
+            };
+
+            let input = match STANDARD.decode(&input_base64) {
+                Ok(data) => data,
+                Err(e) => {
+                    return AgentResponse::error(&request.id, &format!("Invalid base64: {}", e));
+                }
+            };
+
+            match session_manager.write_to_session(&session_id, &input).await {
+                Ok(()) => AgentResponse::success(&request.id),
+                Err(e) => AgentResponse::error(&request.id, &format!("Failed to write to session: {}", e)),
+            }
+        }
+
+        RequestType::ShellResize => {
+            // Resize a shell session's terminal
+            let Some(session_id) = request.session_id else {
+                return AgentResponse::error(&request.id, "No session_id specified");
+            };
+            let rows = request.rows.unwrap_or(24);
+            let cols = request.cols.unwrap_or(80);
+
+            match session_manager.resize_session(&session_id, rows, cols).await {
+                Ok(()) => AgentResponse::success(&request.id),
+                Err(e) => AgentResponse::error(&request.id, &format!("Failed to resize session: {}", e)),
+            }
+        }
+
+        RequestType::ShellClose => {
+            // Close a shell session
+            let Some(session_id) = request.session_id else {
+                return AgentResponse::error(&request.id, "No session_id specified");
+            };
+
+            match session_manager.close_session(&session_id).await {
+                Ok(exit_code) => {
+                    eprintln!("Shell session closed: {} (exit: {:?})", session_id, exit_code);
+                    AgentResponse::shell_exited(&request.id, &session_id, exit_code.unwrap_or(-1))
+                }
+                Err(e) => AgentResponse::error(&request.id, &format!("Failed to close session: {}", e)),
+            }
         }
 
         RequestType::Run => {
@@ -301,7 +490,10 @@ async fn handle_request(request: AgentRequest) -> AgentResponse {
 }
 
 /// Handle a single connection
-async fn handle_connection(mut stream: tokio_vsock::VsockStream) -> Result<()> {
+async fn handle_connection(
+    mut stream: tokio_vsock::VsockStream,
+    session_manager: Arc<SessionManager>,
+) -> Result<()> {
     loop {
         // Read length prefix
         let mut len_bytes = [0u8; 4];
@@ -337,7 +529,7 @@ async fn handle_connection(mut stream: tokio_vsock::VsockStream) -> Result<()> {
         };
 
         // Handle request
-        let response = handle_request(request).await;
+        let response = handle_request(request, session_manager.clone()).await;
 
         // Serialize response
         let response_bytes = serde_json::to_vec(&response)?;
@@ -355,17 +547,21 @@ async fn main() -> Result<()> {
     eprintln!("Agentkernel guest agent starting...");
     eprintln!("Listening on vsock port {}", AGENT_PORT);
 
+    // Create the session manager for PTY sessions
+    let session_manager = Arc::new(SessionManager::new());
+
     let addr = VsockAddr::new(VMADDR_CID_ANY, AGENT_PORT);
     let mut listener = VsockListener::bind(addr).context("Failed to bind vsock listener")?;
 
-    eprintln!("Agent ready");
+    eprintln!("Agent ready (with PTY support)");
 
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
                 eprintln!("Connection from CID {}", peer.cid());
+                let session_manager = session_manager.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream).await {
+                    if let Err(e) = handle_connection(stream, session_manager).await {
                         eprintln!("Connection error: {}", e);
                     }
                 });

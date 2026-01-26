@@ -227,6 +227,22 @@ pub trait Sandbox: Send + Sync {
     /// Execute a command in the sandbox
     async fn exec(&mut self, cmd: &[&str]) -> Result<ExecResult>;
 
+    /// Execute a command in the sandbox with environment variables
+    ///
+    /// # Arguments
+    /// * `cmd` - Command and arguments to execute
+    /// * `env` - Environment variables as KEY=VALUE pairs
+    async fn exec_with_env(&mut self, cmd: &[&str], env: &[String]) -> Result<ExecResult> {
+        // Default implementation ignores env vars (for backends that don't support it)
+        if !env.is_empty() {
+            eprintln!(
+                "Warning: This backend doesn't support environment variables, ignoring {} var(s)",
+                env.len()
+            );
+        }
+        self.exec(cmd).await
+    }
+
     /// Stop the sandbox and clean up resources
     async fn stop(&mut self) -> Result<()>;
 
@@ -307,6 +323,43 @@ pub trait Sandbox: Send + Sync {
             self.write_file(&file.dest, &file.content).await?;
         }
         Ok(())
+    }
+
+    // --- Interactive Shell/PTY Operations ---
+
+    /// Attach an interactive shell to the sandbox
+    ///
+    /// This opens a PTY session in the guest and bridges it to the host terminal.
+    /// The shell runs until the user exits (Ctrl+D or exit command).
+    ///
+    /// # Arguments
+    /// * `shell` - Shell to run (e.g., "/bin/sh", "/bin/bash"). If None, uses /bin/sh.
+    ///
+    /// # Returns
+    /// The exit code of the shell process.
+    async fn attach(&mut self, shell: Option<&str>) -> Result<i32> {
+        // Default implementation returns an error since not all backends support PTY
+        let _ = shell;
+        anyhow::bail!("Interactive shell not supported by this backend")
+    }
+
+    /// Attach to the sandbox with an interactive shell and environment variables
+    ///
+    /// # Arguments
+    /// * `shell` - Shell to run (e.g., "/bin/sh", "/bin/bash"). If None, uses /bin/sh.
+    /// * `env` - Environment variables as KEY=VALUE pairs
+    ///
+    /// # Returns
+    /// The exit code of the shell process.
+    async fn attach_with_env(&mut self, shell: Option<&str>, env: &[String]) -> Result<i32> {
+        // Default implementation ignores env vars
+        if !env.is_empty() {
+            eprintln!(
+                "Warning: This backend doesn't support environment variables, ignoring {} var(s)",
+                env.len()
+            );
+        }
+        self.attach(shell).await
     }
 }
 
@@ -396,10 +449,21 @@ pub fn backend_available(backend: BackendType) -> bool {
 }
 
 /// Create a sandbox for the specified backend
+///
+/// For Docker/Podman, creates persistent sandboxes that survive CLI exit.
+/// This is needed because the Sandbox trait workflow (create/start/stop/attach)
+/// expects containers to persist between CLI invocations.
 pub fn create_sandbox(backend: BackendType, name: &str) -> Result<Box<dyn Sandbox>> {
     match backend {
-        BackendType::Docker => Ok(Box::new(DockerSandbox::new(name, ContainerRuntime::Docker))),
-        BackendType::Podman => Ok(Box::new(DockerSandbox::new(name, ContainerRuntime::Podman))),
+        // Use new_persistent for Docker/Podman so containers survive CLI exit
+        BackendType::Docker => Ok(Box::new(DockerSandbox::new_persistent(
+            name,
+            ContainerRuntime::Docker,
+        ))),
+        BackendType::Podman => Ok(Box::new(DockerSandbox::new_persistent(
+            name,
+            ContainerRuntime::Podman,
+        ))),
         BackendType::Firecracker => Ok(Box::new(FirecrackerSandbox::new(name)?)),
         #[cfg(target_os = "macos")]
         BackendType::Apple => Ok(Box::new(AppleSandbox::new(name))),
