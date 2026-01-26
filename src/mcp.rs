@@ -533,10 +533,13 @@ impl McpServer {
                     return Ok("No sandboxes found.".to_string());
                 }
 
-                let mut output = String::from("NAME\tSTATUS\n");
-                for (name, running) in sandboxes {
+                let mut output = String::from("NAME\tSTATUS\tBACKEND\n");
+                for (name, running, backend) in sandboxes {
                     let status = if running { "running" } else { "stopped" };
-                    output.push_str(&format!("{}\t{}\n", name, status));
+                    let backend_str = backend
+                        .map(|b| format!("{}", b))
+                        .unwrap_or_else(|| "unknown".to_string());
+                    output.push_str(&format!("{}\t{}\t{}\n", name, status, backend_str));
                 }
                 Ok(output)
             })

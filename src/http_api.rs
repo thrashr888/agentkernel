@@ -99,6 +99,7 @@ impl<T: Serialize> ApiResponse<T> {
 struct SandboxInfo {
     name: String,
     status: String,
+    backend: String,
 }
 
 /// Run command response
@@ -373,9 +374,12 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
     let sandboxes: Vec<SandboxInfo> = manager
         .list()
         .into_iter()
-        .map(|(name, running)| SandboxInfo {
+        .map(|(name, running, backend)| SandboxInfo {
             name: name.to_string(),
             status: if running { "running" } else { "stopped" }.to_string(),
+            backend: backend
+                .map(|b| format!("{}", b))
+                .unwrap_or_else(|| "unknown".to_string()),
         })
         .collect();
 
@@ -438,6 +442,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         &ApiResponse::success(SandboxInfo {
             name: body.name,
             status: "running".to_string(),
+            backend: format!("{}", manager.backend()),
         }),
     )
 }
@@ -462,13 +467,16 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
     };
 
     let sandboxes = manager.list();
-    for (sandbox_name, running) in sandboxes {
+    for (sandbox_name, running, backend) in sandboxes {
         if sandbox_name == name {
             return json_response(
                 StatusCode::OK,
                 &ApiResponse::success(SandboxInfo {
                     name: sandbox_name.to_string(),
                     status: if running { "running" } else { "stopped" }.to_string(),
+                    backend: backend
+                        .map(|b| format!("{}", b))
+                        .unwrap_or_else(|| "unknown".to_string()),
                 }),
             );
         }

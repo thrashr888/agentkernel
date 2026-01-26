@@ -469,10 +469,13 @@ memory_mb = 512
                 println!("No sandboxes found.");
                 println!("\nCreate one with: agentkernel create <name>");
             } else {
-                println!("{:<20} {:<10}", "NAME", "STATUS");
-                for (name, running) in vms {
+                println!("{:<20} {:<10} {:<10}", "NAME", "STATUS", "BACKEND");
+                for (name, running, backend) in vms {
                     let status = if running { "running" } else { "stopped" };
-                    println!("{:<20} {:<10}", name, status);
+                    let backend_str = backend
+                        .map(|b| format!("{}", b))
+                        .unwrap_or_else(|| "unknown".to_string());
+                    println!("{:<20} {:<10} {:<10}", name, status, backend_str);
                 }
             }
         }

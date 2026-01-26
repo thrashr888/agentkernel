@@ -112,8 +112,6 @@ impl VmManager {
         // Find next available CID
         let max_cid = sandboxes.values().map(|s| s.vsock_cid).max().unwrap_or(2);
 
-        eprintln!("Using {} backend", backend);
-
         let mut manager = Self {
             backend,
             running: HashMap::new(),
@@ -453,17 +451,17 @@ impl VmManager {
         Ok(())
     }
 
-    /// List all sandboxes (persisted, with running status)
-    pub fn list(&self) -> Vec<(&str, bool)> {
+    /// List all sandboxes (persisted, with running status and backend)
+    pub fn list(&self) -> Vec<(&str, bool, Option<BackendType>)> {
         self.sandboxes
-            .keys()
-            .map(|name| {
+            .iter()
+            .map(|(name, state)| {
                 let running = self
                     .running
                     .get(name)
                     .map(|s| s.is_running())
                     .unwrap_or(false);
-                (name.as_str(), running)
+                (name.as_str(), running, state.backend)
             })
             .collect()
     }
