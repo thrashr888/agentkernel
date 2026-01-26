@@ -72,6 +72,101 @@ pub struct SecurityConfig {
     pub network: Option<bool>,
     /// Mount current directory (overrides profile)
     pub mount_cwd: Option<bool>,
+    /// Network domain filtering rules
+    #[serde(default)]
+    pub domains: DomainConfig,
+    /// Command/binary execution rules
+    #[serde(default)]
+    pub commands: CommandConfig,
+    /// Seccomp profile name or path
+    #[serde(default)]
+    pub seccomp: Option<String>,
+}
+
+/// Domain filtering configuration for network access control
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DomainConfig {
+    /// Domains that are always allowed (API endpoints, etc.)
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Domains that are always blocked (cloud metadata, etc.)
+    #[serde(default)]
+    pub block: Vec<String>,
+    /// Block all domains except those in allow list
+    #[serde(default)]
+    pub allowlist_only: bool,
+}
+
+impl DomainConfig {
+    /// Check if a domain is allowed
+    #[allow(dead_code)]
+    pub fn is_allowed(&self, domain: &str) -> bool {
+        // First check blocklist
+        for pattern in &self.block {
+            if Self::matches_pattern(domain, pattern) {
+                return false;
+            }
+        }
+
+        // If allowlist_only mode, must be in allow list
+        if self.allowlist_only {
+            return self.allow.iter().any(|p| Self::matches_pattern(domain, p));
+        }
+
+        // Otherwise allow by default
+        true
+    }
+
+    /// Check if domain matches a pattern (supports * wildcard prefix)
+    #[allow(dead_code)]
+    fn matches_pattern(domain: &str, pattern: &str) -> bool {
+        if pattern.starts_with("*.") {
+            let suffix = &pattern[1..]; // ".example.com"
+            domain.ends_with(suffix) || domain == &pattern[2..]
+        } else {
+            domain == pattern
+        }
+    }
+}
+
+/// Command/binary execution restrictions
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CommandConfig {
+    /// Commands/binaries that are allowed (if allowlist_only is true)
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Commands/binaries that are explicitly blocked
+    #[serde(default)]
+    pub block: Vec<String>,
+    /// Block all commands except those in allow list
+    #[serde(default)]
+    pub allowlist_only: bool,
+}
+
+impl CommandConfig {
+    /// Check if a command is allowed
+    #[allow(dead_code)]
+    pub fn is_allowed(&self, command: &str) -> bool {
+        // Extract the binary name (first part of command)
+        let binary = command.split_whitespace().next().unwrap_or(command);
+        let binary_name = std::path::Path::new(binary)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(binary);
+
+        // Check blocklist
+        if self.block.iter().any(|b| b == binary_name || b == binary) {
+            return false;
+        }
+
+        // If allowlist_only mode, must be in allow list
+        if self.allowlist_only {
+            return self.allow.iter().any(|a| a == binary_name || a == binary);
+        }
+
+        // Otherwise allow by default
+        true
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -490,5 +585,136 @@ mod tests {
         let perms = config.get_permissions();
         assert!(perms.mount_cwd); // From Claude profile
         assert!(!perms.network); // Overridden by [security]
+    }
+
+    #[test]
+    fn test_domain_config_allow() {
+        let config = DomainConfig {
+            allow: vec!["api.example.com".to_string(), "*.pypi.org".to_string()],
+            block: vec!["169.254.169.254".to_string()],
+            allowlist_only: false,
+        };
+
+        assert!(config.is_allowed("api.example.com"));
+        assert!(config.is_allowed("pypi.org")); // Matches *.pypi.org
+        assert!(config.is_allowed("files.pypi.org")); // Matches *.pypi.org
+        assert!(config.is_allowed("random.com")); // Not blocked, not allowlist_only
+        assert!(!config.is_allowed("169.254.169.254")); // Blocked
+    }
+
+    #[test]
+    fn test_domain_config_allowlist_only() {
+        let config = DomainConfig {
+            allow: vec!["api.example.com".to_string(), "*.pypi.org".to_string()],
+            block: vec![],
+            allowlist_only: true,
+        };
+
+        assert!(config.is_allowed("api.example.com"));
+        assert!(config.is_allowed("pypi.org"));
+        assert!(!config.is_allowed("random.com")); // Not in allowlist
+    }
+
+    #[test]
+    fn test_command_config_allow() {
+        let config = CommandConfig {
+            allow: vec!["python".to_string(), "node".to_string()],
+            block: vec!["rm".to_string(), "sudo".to_string()],
+            allowlist_only: false,
+        };
+
+        assert!(config.is_allowed("python script.py"));
+        assert!(config.is_allowed("/usr/bin/python script.py"));
+        assert!(config.is_allowed("echo hello")); // Not blocked
+        assert!(!config.is_allowed("rm -rf /"));
+        assert!(!config.is_allowed("sudo apt install"));
+    }
+
+    #[test]
+    fn test_command_config_allowlist_only() {
+        let config = CommandConfig {
+            allow: vec!["python".to_string(), "node".to_string()],
+            block: vec![],
+            allowlist_only: true,
+        };
+
+        assert!(config.is_allowed("python"));
+        assert!(config.is_allowed("node index.js"));
+        assert!(!config.is_allowed("bash")); // Not in allowlist
+    }
+
+    #[test]
+    fn test_security_config_with_domains() {
+        let toml = r#"
+            [sandbox]
+            name = "restricted-app"
+
+            [security]
+            profile = "restrictive"
+
+            [security.domains]
+            allow = ["api.example.com", "*.pypi.org"]
+            block = ["169.254.169.254"]
+            allowlist_only = false
+        "#;
+        let config = Config::from_str(toml).unwrap();
+
+        assert!(
+            config
+                .security
+                .domains
+                .allow
+                .contains(&"api.example.com".to_string())
+        );
+        assert!(
+            config
+                .security
+                .domains
+                .block
+                .contains(&"169.254.169.254".to_string())
+        );
+        assert!(!config.security.domains.allowlist_only);
+    }
+
+    #[test]
+    fn test_security_config_with_commands() {
+        let toml = r#"
+            [sandbox]
+            name = "restricted-app"
+
+            [security]
+            profile = "restrictive"
+
+            [security.commands]
+            allow = ["python", "node", "npm"]
+            block = ["rm", "sudo", "chmod"]
+            allowlist_only = true
+        "#;
+        let config = Config::from_str(toml).unwrap();
+
+        assert!(
+            config
+                .security
+                .commands
+                .allow
+                .contains(&"python".to_string())
+        );
+        assert!(config.security.commands.block.contains(&"sudo".to_string()));
+        assert!(config.security.commands.allowlist_only);
+    }
+
+    #[test]
+    fn test_security_config_with_seccomp() {
+        let toml = r#"
+            [sandbox]
+            name = "hardened-app"
+
+            [security]
+            profile = "restrictive"
+            seccomp = "default"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+
+        assert_eq!(config.security.seccomp, Some("default".to_string()));
     }
 }
