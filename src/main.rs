@@ -187,6 +187,17 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Replay a recorded session (asciicast v2 format)
+    Replay {
+        /// Path to the asciicast file
+        file: PathBuf,
+        /// Playback speed multiplier (1.0 = realtime, 2.0 = 2x speed)
+        #[arg(short, long, default_value = "1.0")]
+        speed: f64,
+        /// Maximum time between frames in seconds (for idle time)
+        #[arg(long, default_value = "2.0")]
+        max_idle: f64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -949,6 +960,48 @@ memory_mb = 512
                     );
                 }
             }
+        }
+        Commands::Replay {
+            file,
+            speed,
+            max_idle,
+        } => {
+            if !file.exists() {
+                bail!("Recording file not found: {}", file.display());
+            }
+
+            let (header, events) = asciicast::read_asciicast(&file)?;
+
+            println!("Playing: {}", file.display());
+            println!(
+                "Terminal: {}x{}, Duration: {:.1}s, Speed: {}x",
+                header.width,
+                header.height,
+                header.duration.unwrap_or(0.0),
+                speed
+            );
+            println!("{}", "-".repeat(40));
+
+            // Play back the events
+            let mut last_time = 0.0;
+            for event in &events {
+                // Calculate delay (accounting for speed and max_idle)
+                let delay = ((event.time - last_time) / speed).min(max_idle);
+                if delay > 0.0 {
+                    std::thread::sleep(std::time::Duration::from_secs_f64(delay));
+                }
+                last_time = event.time;
+
+                // Print output events
+                if event.event_type == asciicast::EventType::Output {
+                    print!("{}", event.data);
+                    std::io::Write::flush(&mut std::io::stdout())?;
+                }
+            }
+
+            println!();
+            println!("{}", "-".repeat(40));
+            println!("Playback complete.");
         }
     }
 
