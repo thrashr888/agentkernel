@@ -26,15 +26,24 @@ fn find_firecracker() -> Result<PathBuf> {
         }
     }
 
-    // Check agentkernel's own bin directory
+    // Check user's local bin directories
     if let Some(home) = std::env::var_os("HOME") {
-        let local_fc = PathBuf::from(home).join(".local/share/agentkernel/bin/firecracker");
-        if local_fc.exists() {
-            return Ok(local_fc);
+        let home = PathBuf::from(home);
+
+        // ~/.local/bin/firecracker (common user install location)
+        let local_bin = home.join(".local/bin/firecracker");
+        if local_bin.exists() {
+            return Ok(local_bin);
+        }
+
+        // ~/.local/share/agentkernel/bin/firecracker (agentkernel managed)
+        let agentkernel_bin = home.join(".local/share/agentkernel/bin/firecracker");
+        if agentkernel_bin.exists() {
+            return Ok(agentkernel_bin);
         }
     }
 
-    // Check common locations
+    // Check common system locations
     let locations = [
         "/usr/local/bin/firecracker",
         "/usr/bin/firecracker",
@@ -117,32 +126,58 @@ impl FirecrackerSandbox {
 
     /// Find kernel path
     fn find_kernel() -> Result<PathBuf> {
-        if let Some(home) = std::env::var_os("HOME") {
-            let kernel_dir = PathBuf::from(home).join(".local/share/agentkernel/kernel");
-            if kernel_dir.exists() {
-                // Find first vmlinux file
-                for entry in std::fs::read_dir(&kernel_dir)? {
-                    let entry = entry?;
+        // Helper to find first vmlinux in a directory
+        fn find_vmlinux_in(dir: &PathBuf) -> Option<PathBuf> {
+            if dir.exists()
+                && let Ok(entries) = std::fs::read_dir(dir)
+            {
+                for entry in entries.flatten() {
                     let name = entry.file_name();
                     if name.to_string_lossy().starts_with("vmlinux") {
-                        return Ok(entry.path());
+                        return Some(entry.path());
                     }
                 }
             }
+            None
         }
+
+        // Check local images/kernel/ (development)
+        let local_kernel = PathBuf::from("images/kernel");
+        if let Some(path) = find_vmlinux_in(&local_kernel) {
+            return Ok(path);
+        }
+
+        // Check ~/.local/share/agentkernel/kernel (installed)
+        if let Some(home) = std::env::var_os("HOME") {
+            let kernel_dir = PathBuf::from(home).join(".local/share/agentkernel/kernel");
+            if let Some(path) = find_vmlinux_in(&kernel_dir) {
+                return Ok(path);
+            }
+        }
+
         bail!("Kernel not found. Run 'agentkernel setup' to install.")
     }
 
     /// Find rootfs path for an image
     fn find_rootfs(image: &str) -> Result<PathBuf> {
         let runtime = docker_image_to_firecracker_runtime(image);
+        let rootfs_name = format!("{}.ext4", runtime);
+
+        // Check local images/rootfs/ (development)
+        let local_rootfs = PathBuf::from("images/rootfs").join(&rootfs_name);
+        if local_rootfs.exists() {
+            return Ok(local_rootfs);
+        }
+
+        // Check ~/.local/share/agentkernel/rootfs (installed)
         if let Some(home) = std::env::var_os("HOME") {
             let rootfs_dir = PathBuf::from(home).join(".local/share/agentkernel/rootfs");
-            let rootfs_path = rootfs_dir.join(format!("{}.ext4", runtime));
+            let rootfs_path = rootfs_dir.join(&rootfs_name);
             if rootfs_path.exists() {
                 return Ok(rootfs_path);
             }
         }
+
         bail!(
             "Rootfs for '{}' not found. Run 'agentkernel setup'.",
             runtime
@@ -180,7 +215,7 @@ impl FirecrackerSandbox {
         // Set boot source with optimized boot args
         let boot_source = BootSource {
             kernel_image_path: kernel_path.to_string_lossy().to_string(),
-            boot_args: "console=ttyS0 reboot=k panic=1 pci=off init=/init quiet loglevel=4 i8042.nokbd i8042.noaux".to_string(),
+            boot_args: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/init quiet loglevel=4 i8042.nokbd i8042.noaux".to_string(),
         };
         client.set_boot_source(&boot_source).await?;
 
