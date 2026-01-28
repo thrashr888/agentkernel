@@ -181,26 +181,24 @@ mkdir -p /tmp/image
 cd /tmp/image
 tar xf /input/image.tar
 
-# Find and extract layers in order (from manifest.json)
-if [ -f manifest.json ]; then
-    # Parse layers from manifest
-    LAYERS=$(cat manifest.json | grep -o '"Layers":\[[^]]*\]' | grep -o '[^"]*\.tar' || true)
-    for layer in $LAYERS; do
-        if [ -f "$layer" ]; then
-            tar xf "$layer" -C /mnt/rootfs 2>/dev/null || true
-        fi
-    done
-else
-    # Fallback: extract all layer.tar files
-    for layer in */layer.tar; do
-        if [ -f "$layer" ]; then
-            tar xf "$layer" -C /mnt/rootfs 2>/dev/null || true
-        fi
+# Extract all layer tarballs (Docker OCI format uses blobs/sha256/* or */layer.tar)
+# First try the OCI blob format
+if [ -d "blobs/sha256" ]; then
+    for blob in blobs/sha256/*; do
+        # Try to extract if it's a tarball (file command not always available, just try)
+        tar xf "$blob" -C /mnt/rootfs 2>/dev/null || true
     done
 fi
 
-# Create essential directories
-mkdir -p /mnt/rootfs/dev /mnt/rootfs/proc /mnt/rootfs/sys /mnt/rootfs/tmp /mnt/rootfs/run /mnt/rootfs/root /mnt/rootfs/app /mnt/rootfs/usr/bin
+# Also try the traditional Docker format with manifest.json
+for layer in */layer.tar; do
+    if [ -f "$layer" ]; then
+        tar xf "$layer" -C /mnt/rootfs 2>/dev/null || true
+    fi
+done
+
+# Create essential directories (must come after layer extraction to avoid overwrite)
+mkdir -p /mnt/rootfs/dev /mnt/rootfs/proc /mnt/rootfs/sys /mnt/rootfs/tmp /mnt/rootfs/run /mnt/rootfs/root /mnt/rootfs/app /mnt/rootfs/usr/bin /mnt/rootfs/etc
 chmod 1777 /mnt/rootfs/tmp
 
 # Create device nodes
