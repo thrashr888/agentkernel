@@ -258,12 +258,16 @@ echo "Conversion complete"
     );
 
     // Get the current user's UID and GID for ownership fix
-    let uid = std::process::id();
+    let uid = Command::new("id")
+        .arg("-u")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "1000".to_string());
     let gid = Command::new("id")
         .arg("-g")
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|_| uid.to_string());
+        .unwrap_or_else(|_| uid.clone());
 
     // Get absolute paths for mounts
     let image_tar_abs = image_tar
