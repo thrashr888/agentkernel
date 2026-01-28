@@ -200,7 +200,7 @@ else
 fi
 
 # Create essential directories
-mkdir -p /mnt/rootfs/{{dev,proc,sys,tmp,run,root,app}}
+mkdir -p /mnt/rootfs/dev /mnt/rootfs/proc /mnt/rootfs/sys /mnt/rootfs/tmp /mnt/rootfs/run /mnt/rootfs/root /mnt/rootfs/app /mnt/rootfs/usr/bin
 chmod 1777 /mnt/rootfs/tmp
 
 # Create device nodes
