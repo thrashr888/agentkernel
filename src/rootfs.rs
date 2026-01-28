@@ -247,10 +247,23 @@ fi
 # Unmount
 umount /mnt/rootfs
 
+# Fix ownership to match the calling user
+if [ -n "$HOST_UID" ] && [ -n "$HOST_GID" ]; then
+    chown "$HOST_UID:$HOST_GID" /output/rootfs.ext4
+fi
+
 echo "Conversion complete"
 "#,
         size_mb = size_mb
     );
+
+    // Get the current user's UID and GID for ownership fix
+    let uid = std::process::id();
+    let gid = Command::new("id")
+        .arg("-g")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| uid.to_string());
 
     // Get absolute paths for mounts
     let image_tar_abs = image_tar
@@ -275,6 +288,10 @@ echo "Conversion complete"
             "run",
             "--rm",
             "--privileged",
+            "-e",
+            &format!("HOST_UID={}", uid),
+            "-e",
+            &format!("HOST_GID={}", gid),
             "-v",
             &format!("{}:/input/image.tar:ro", image_tar_abs.display()),
             "-v",
