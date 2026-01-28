@@ -160,6 +160,16 @@ impl FirecrackerSandbox {
 
     /// Find rootfs path for an image
     fn find_rootfs(image: &str) -> Result<PathBuf> {
+        // Check for explicit rootfs path (from Dockerfile conversion)
+        if let Some(path) = image.strip_prefix("rootfs:") {
+            let rootfs_path = PathBuf::from(path);
+            if rootfs_path.exists() {
+                return Ok(rootfs_path);
+            }
+            bail!("Converted rootfs not found: {}", path);
+        }
+
+        // Map Docker image name to Firecracker runtime
         let runtime = docker_image_to_firecracker_runtime(image);
         let rootfs_name = format!("{}.ext4", runtime);
 

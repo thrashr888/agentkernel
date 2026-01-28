@@ -29,6 +29,7 @@ toml = "0.8"
 uuid = { version = "1.0", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 wat = "1.225"  # WAT to WASM compiler for WebAssembly text format support
+tempfile = "3.0"  # Temporary directories for rootfs conversion
 dirs = "6.0.0"
 
 # Unix socket support for Firecracker API

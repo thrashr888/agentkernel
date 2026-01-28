@@ -14,6 +14,7 @@ mod languages;
 mod mcp;
 mod permissions;
 mod pool;
+mod rootfs;
 mod sandbox_pool;
 mod seatbelt;
 mod setup;
@@ -624,16 +625,14 @@ memory_mb = 512
                 }
             };
 
-            // Check for Dockerfile and build if present (only for Docker backend)
-            // Firecracker uses rootfs images, not Dockerfiles
+            // Check for Dockerfile and build if present
             let current_dir = std::env::current_dir()?;
             let is_firecracker_backend = backend
                 .as_ref()
                 .is_some_and(|b| b == "firecracker" || b == "fc");
-            let docker_image = if is_firecracker_backend {
-                // Skip Dockerfile build for Firecracker - use the base image directly
-                docker_image
-            } else if let Some(ref cfg) = cfg_for_build {
+
+            // Build from Dockerfile if configured or auto-detected
+            let docker_image = if let Some(ref cfg) = cfg_for_build {
                 // Use config's build settings
                 if cfg.requires_build(&current_dir) {
                     let project_name = &cfg.sandbox.name;
@@ -658,6 +657,18 @@ memory_mb = 512
                 } else {
                     docker_image
                 }
+            };
+
+            // For Firecracker backend with custom images, convert to rootfs
+            let docker_image = if is_firecracker_backend && docker_image.starts_with("agentkernel-")
+            {
+                // This is a custom-built image, convert to ext4 rootfs
+                let rootfs_dir = current_dir.join("images/rootfs");
+                let result = rootfs::convert_image_to_rootfs(&docker_image, &rootfs_dir, None)?;
+                // Return a special marker that the Firecracker backend will recognize
+                format!("rootfs:{}", result.rootfs_path.display())
+            } else {
+                docker_image
             };
 
             // Get permissions from profile
