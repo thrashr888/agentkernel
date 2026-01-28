@@ -165,6 +165,9 @@ fn run_conversion_container(
         r#"
 set -euo pipefail
 
+# Install required tools
+apk add --no-cache e2fsprogs >/dev/null 2>&1
+
 # Create ext4 image
 dd if=/dev/zero of=/output/rootfs.ext4 bs=1M count={size_mb} status=none
 mkfs.ext4 -F -q /output/rootfs.ext4
