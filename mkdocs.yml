@@ -65,6 +65,12 @@ nav:
     - HTTP API: api-http.md
     - OpenAPI Spec: api-openapi.md
     - MCP Server: api-mcp.md
+  - SDKs:
+    - Overview: sdks.md
+    - Node.js: sdk-nodejs.md
+    - Python: sdk-python.md
+    - Rust: sdk-rust.md
+    - Swift: sdk-swift.md
   - Benchmarks: benchmarks.md
   - Comparisons: comparisons.md
 
