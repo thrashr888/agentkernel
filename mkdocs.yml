@@ -69,6 +69,7 @@ nav:
     - Overview: sdks.md
     - Node.js: sdk-nodejs.md
     - Python: sdk-python.md
+    - Go: sdk-golang.md
     - Rust: sdk-rust.md
     - Swift: sdk-swift.md
   - Benchmarks: benchmarks.md

@@ -1,7 +1,7 @@
 
 # SDKs
 
-agentkernel provides official SDK clients in four languages. Each SDK wraps the [HTTP API](api-http.html) with idiomatic language bindings.
+agentkernel provides official SDK clients in five languages. Each SDK wraps the [HTTP API](api-http.html) with idiomatic language bindings.
 
 ## Quick Comparison
 
@@ -9,6 +9,7 @@ agentkernel provides official SDK clients in four languages. Each SDK wraps the 
 |-----|---------|---------|-------|-----------|------------------|
 | [Node.js](sdk-nodejs.html) | `agentkernel` | `npm install agentkernel` | Native (Promise) | `AsyncGenerator` | `await using` (auto-cleanup) |
 | [Python](sdk-python.html) | `agentkernel` | `pip install agentkernel` | Sync + Async | `Iterator` / `AsyncIterator` | Context manager |
+| [Go](sdk-golang.html) | `agentkernel` | `go get github.com/thrashr888/agentkernel/sdk/golang` | `context.Context` | `<-chan StreamEvent` | Callback with `WithSandbox` |
 | [Rust](sdk-rust.html) | `agentkernel-sdk` | `cargo add agentkernel-sdk` | `async`/`await` | `Stream` | Closure with `with_sandbox` |
 | [Swift](sdk-swift.html) | `AgentKernel` | Swift Package Manager | `async`/`await` | `AsyncThrowingStream` | Closure with `withSandbox` |
 
@@ -68,6 +69,16 @@ async fn main() -> agentkernel_sdk::Result<()> {
 }
 ```
 
+### Go
+
+```go
+import agentkernel "github.com/thrashr888/agentkernel/sdk/golang"
+
+client := agentkernel.New(nil)
+output, _ := client.Run(context.Background(), []string{"echo", "hello"}, nil)
+fmt.Print(output.Output)
+```
+
 ### Swift
 
 ```swift
@@ -86,6 +97,7 @@ All SDKs live in the [`sdk/`](https://github.com/thrashr888/agentkernel/tree/mai
 sdk/
   nodejs/     → npm (agentkernel)
   python/     → PyPI (agentkernel)
+  golang/     → Go module (github.com/thrashr888/agentkernel/sdk/golang)
   rust/       → crates.io (agentkernel-sdk)
   swift/      → Swift Package Manager (AgentKernel)
 ```

@@ -221,6 +221,7 @@ Official client libraries for the agentkernel HTTP API:
 |-----|---------|---------|
 | **Node.js** | [`agentkernel`](https://www.npmjs.com/package/agentkernel) | `npm install agentkernel` |
 | **Python** | [`agentkernel`](https://pypi.org/project/agentkernel/) | `pip install agentkernel` |
+| **Go** | [`agentkernel`](https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang) | `go get github.com/thrashr888/agentkernel/sdk/golang` |
 | **Rust** | [`agentkernel-sdk`](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` |
 | **Swift** | `AgentKernel` | Swift Package Manager |
 
@@ -236,6 +237,12 @@ const result = await client.run(["echo", "hello"]);
 from agentkernel import AgentKernel
 with AgentKernel() as client:
     result = client.run(["echo", "hello"])
+```
+
+```go
+// Go
+client := agentkernel.New(nil)
+output, _ := client.Run(context.Background(), []string{"echo", "hello"}, nil)
 ```
 
 ```rust
