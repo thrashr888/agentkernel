@@ -146,4 +146,5 @@ agentkernel run python3 -c "print('Hello from sandbox!')"
 - [Configuration](configuration.html) - Config file format
 - [Agents](agents.html) - Running Claude Code, Codex, Gemini CLI
 - [HTTP API](api.html) - Programmatic access
+- [Benchmarks](benchmarks.html) - Performance numbers for every backend
 - [Comparisons](comparisons.html) - How agentkernel compares to E2B, Daytona, Docker, and others
