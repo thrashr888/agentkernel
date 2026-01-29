@@ -1,0 +1,137 @@
+name: SDK Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # ── Node.js: npm + GitHub Packages ──────────────────────────────────
+  publish-nodejs:
+    name: Publish Node.js SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/nodejs
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+      # Extract version from tag
+      - name: Set version from tag
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: npm version "${TAG_NAME#v}" --no-git-tag-version
+
+      # Publish to npm
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Publish to GitHub Packages
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://npm.pkg.github.com
+
+      - name: Publish to GitHub Packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # GitHub Packages requires scoped name
+          node -e "
+            const pkg = require('./package.json');
+            pkg.name = '@thrashr888/agentkernel';
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          "
+          npm publish --access public
+          git checkout package.json
+
+  # ── Python: PyPI via OIDC trusted publisher ─────────────────────────
+  publish-python:
+    name: Publish Python SDK
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Set version from tag
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG_NAME#v}"
+          sed -i "s/^version = .*/version = \"$VERSION\"/" pyproject.toml
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sdk/python/dist/
+
+  # ── Rust: crates.io ─────────────────────────────────────────────────
+  publish-rust:
+    name: Publish Rust SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Set version from tag
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG_NAME#v}"
+          sed -i "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+
+      - run: cargo test
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --token "$CARGO_REGISTRY_TOKEN"
+
+  # ── Swift: verify only (SPM uses Git tags) ──────────────────────────
+  verify-swift:
+    name: Verify Swift SDK
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: sdk/swift
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
