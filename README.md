@@ -213,6 +213,45 @@ Codex           installed       set
 OpenCode        installed       set
 ```
 
+## SDKs
+
+Official client libraries for the agentkernel HTTP API:
+
+| SDK | Package | Install |
+|-----|---------|---------|
+| **Node.js** | [`agentkernel`](https://www.npmjs.com/package/agentkernel) | `npm install agentkernel` |
+| **Python** | [`agentkernel`](https://pypi.org/project/agentkernel/) | `pip install agentkernel` |
+| **Rust** | [`agentkernel-sdk`](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` |
+| **Swift** | `AgentKernel` | Swift Package Manager |
+
+```typescript
+// Node.js
+import { AgentKernel } from "agentkernel";
+const client = new AgentKernel();
+const result = await client.run(["echo", "hello"]);
+```
+
+```python
+# Python
+from agentkernel import AgentKernel
+with AgentKernel() as client:
+    result = client.run(["echo", "hello"])
+```
+
+```rust
+// Rust
+let client = agentkernel_sdk::AgentKernel::builder().build()?;
+let output = client.run(&["echo", "hello"], None).await?;
+```
+
+```swift
+// Swift
+let client = AgentKernel()
+let output = try await client.run(["echo", "hello"])
+```
+
+All SDKs support sandbox sessions with automatic cleanup, streaming output (SSE), and configuration via environment variables or explicit options. See [`sdk/`](sdk/) for full documentation.
+
 ## Why agentkernel?
 
 AI coding agents execute arbitrary code. Running them directly on your machine is risky:
