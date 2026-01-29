@@ -8,8 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Rust 1.85+ required for edition 2024
-  RUST_VERSION: "1.85"
+  # Rust 1.87+ required for let-chains (edition 2024)
+  RUST_VERSION: "1.87"
 
 jobs:
   check:
@@ -98,7 +98,7 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: agentkernel-darwin-arm64
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             artifact: agentkernel-darwin-x64
     steps:
