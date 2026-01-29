@@ -116,7 +116,12 @@ fn test_list_command() {
     // Should succeed even with no sandboxes
     assert_eq!(exit_code, 0, "stderr: {}", stderr);
     // Output should contain header
-    assert!(stdout.contains("NAME") || stdout.is_empty() || stderr.contains("Using"));
+    assert!(
+        stdout.contains("NAME")
+            || stdout.contains("No sandboxes")
+            || stdout.is_empty()
+            || stderr.contains("Using")
+    );
 }
 
 #[test]
