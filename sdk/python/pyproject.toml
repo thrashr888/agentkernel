@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentkernel"
+version = "0.1.0"
+description = "Python SDK for agentkernel — run AI coding agents in secure, isolated microVMs"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Paul Thrasher", email = "thrashr888@gmail.com" }]
+keywords = ["agentkernel", "sandbox", "microvm", "ai", "agent", "firecracker"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+dependencies = ["httpx>=0.27", "httpx-sse>=0.4", "pydantic>=2.0"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-httpx>=0.34",
+    "mypy>=1.13",
+    "ruff>=0.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/thrashr888/agentkernel"
+Repository = "https://github.com/thrashr888/agentkernel/tree/main/sdk/python"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentkernel"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = ["integration: requires running agentkernel server"]

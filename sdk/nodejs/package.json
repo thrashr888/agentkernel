@@ -1,0 +1,63 @@
+{
+  "name": "agentkernel",
+  "version": "0.1.0",
+  "description": "Node.js SDK for agentkernel — run AI coding agents in secure, isolated microVMs",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "agentkernel",
+    "sandbox",
+    "microvm",
+    "ai",
+    "agent",
+    "firecracker",
+    "isolation"
+  ],
+  "author": "Paul Thrasher <thrashr888@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thrashr888/agentkernel.git",
+    "directory": "sdk/nodejs"
+  },
+  "homepage": "https://thrashr888.github.io/agentkernel/",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "eventsource-parser": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.1.0",
+    "msw": "^2.7.0",
+    "tsup": "^8.4.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
