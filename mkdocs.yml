@@ -65,6 +65,8 @@ nav:
     - HTTP API: api-http.md
     - OpenAPI Spec: api-openapi.md
     - MCP Server: api-mcp.md
+  - Benchmarks: benchmarks.md
+  - Comparisons: comparisons.md
 
 extra:
   social:
