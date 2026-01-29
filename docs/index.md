@@ -1,78 +1,149 @@
 
 # agentkernel
 
-Run AI coding agents in secure, isolated microVMs. Sub-125ms boot times, real hardware isolation.
+**Run AI coding agents in secure, isolated microVMs.**
 
-## What is agentkernel?
+AI coding agents execute arbitrary code on your machine. They install packages, modify files, run scripts, and shell out to system commands. That's what makes them useful -- and dangerous. A single hallucinated `rm -rf` or a compromised dependency runs with your full permissions, your credentials, your SSH keys.
 
-agentkernel is a sandbox runtime for AI coding agents. It provides:
+Docker helps, but it shares the host kernel. Container escapes are not theoretical -- they're documented CVEs. When the threat model is "an AI is running arbitrary code," you need stronger isolation than a namespace boundary.
 
-- **True isolation** - Each sandbox runs in its own microVM with a dedicated kernel
-- **Fast startup** - Sub-125ms boot times with pre-warmed VM pools
-- **Multi-agent support** - Run Claude Code, Codex, Gemini CLI, and more
-- **Simple CLI** - Familiar Docker-like commands
+agentkernel gives each sandbox its own virtual machine with a dedicated Linux kernel. Hardware-enforced memory boundaries via KVM. No shared kernel, no container escapes, no attack surface beyond the hypervisor. The same isolation model behind AWS Lambda (Firecracker), now available as a single binary for your dev machine.
 
-## Quick Start
+## It's fast
+
+The usual knock on VMs is startup time. agentkernel sidesteps this entirely:
+
+| Mode | Latency |
+|------|---------|
+| Hyperlight pool (pre-warmed) | **<1&micro;s** |
+| Hyperlight (cold start) | ~41ms |
+| Firecracker daemon (warm pool) | ~195ms |
+| Docker (macOS) | ~220ms |
+| Podman (macOS) | ~300ms |
+
+Pre-warmed VM pools make execution feel instant. Cold starts are still faster than most container runtimes. The daemon maintains 3-5 pre-booted Firecracker VMs so commands execute in ~195ms vs ~800ms for cold starts -- a 4x speedup.
+
+## It's simple
+
+If you've used Docker, you already know the CLI:
 
 ```bash
 # Install
 curl -fsSL https://raw.githubusercontent.com/thrashr888/agentkernel/main/install.sh | sh
 agentkernel setup
 
-# Run a command in isolation
+# Run any command in an isolated sandbox
 agentkernel run python3 -c "print('Hello from sandbox!')"
+agentkernel run npm test
+agentkernel run cargo build
 
-# Create a persistent sandbox with Claude Code
+# Create a persistent sandbox for longer work
+agentkernel create my-project --dir .
+agentkernel start my-project
+agentkernel exec my-project pytest
+```
+
+agentkernel auto-detects the runtime from your command or project files. Run `python3` and it pulls `python:3.12-alpine`. Run `cargo build` and it pulls `rust:1.85-alpine`. No configuration needed for 12+ languages -- JavaScript, Python, Rust, Go, Ruby, Java, C#, C/C++, PHP, Elixir, Terraform, and Shell.
+
+## It works with every agent
+
+Claude Code, Codex, Gemini CLI, OpenCode -- agentkernel runs them all. Each agent gets its own isolated sandbox with configurable security profiles.
+
+```bash
+# Check which agents are available
+agentkernel agents
+
+# Run Claude Code in a sandbox
 agentkernel create my-project --config examples/agents/claude-code/agentkernel.toml
 agentkernel start my-project
 agentkernel attach my-project -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
 ```
 
-## Why agentkernel?
+For Claude Code specifically, agentkernel ships as a plugin. Install it and Claude automatically sandboxes risky operations:
 
-AI coding agents need to execute arbitrary code. Running them directly on your machine is risky. Docker provides some isolation, but shares the host kernel. agentkernel provides **real hardware isolation** via microVMs while keeping startup times fast.
+```bash
+# In Claude Code
+/plugin install sandbox@thrashr888/agentkernel
+/sandbox npm test
+/sandbox cargo build
+```
 
-| Feature | Docker | agentkernel |
-|---------|--------|-------------|
-| Kernel isolation | Shared | Dedicated |
-| Boot time | ~200ms | <125ms |
-| Memory overhead | ~50MB | ~10MB |
-| Security | Container escape possible | Hardware-enforced |
+## Security is configurable
 
-## Supported Languages
+Not every task needs maximum lockdown. agentkernel provides three security profiles that control network access, filesystem mounts, and environment passthrough:
 
-agentkernel auto-detects the runtime from your command or project files:
+| Profile | Network | Mount CWD | Mount Home | Pass Env | Read-only |
+|---------|---------|-----------|------------|----------|-----------|
+| **permissive** | Yes | Yes | Yes | Yes | No |
+| **moderate** (default) | Yes | No | No | No | No |
+| **restrictive** | No | No | No | No | Yes |
 
-| Language | Project Files | Commands | Docker Image |
-|----------|--------------|----------|--------------|
-| JavaScript/TypeScript | `package.json`, `yarn.lock` | `node`, `npm`, `npx`, `yarn`, `bun` | `node:22-alpine` |
-| Python | `pyproject.toml`, `requirements.txt` | `python`, `python3`, `pip`, `poetry`, `uv` | `python:3.12-alpine` |
-| Rust | `Cargo.toml` | `cargo`, `rustc` | `rust:1.85-alpine` |
-| Go | `go.mod` | `go`, `gofmt` | `golang:1.23-alpine` |
-| Ruby | `Gemfile` | `ruby`, `bundle`, `rails` | `ruby:3.3-alpine` |
-| Java | `pom.xml`, `build.gradle` | `java`, `mvn`, `gradle` | `eclipse-temurin:21-alpine` |
-| C# / .NET | `*.csproj`, `*.sln` | `dotnet` | `mcr.microsoft.com/dotnet/sdk:8.0` |
-| C/C++ | `Makefile`, `CMakeLists.txt` | `gcc`, `g++`, `make`, `cmake` | `gcc:14-bookworm` |
-| PHP | `composer.json` | `php`, `composer` | `php:8.3-alpine` |
-| Elixir | `mix.exs` | `elixir`, `mix` | `elixir:1.16-alpine` |
-| HCL/Terraform | `*.tf` | `terraform` | `hashicorp/terraform:1.10` |
-| Shell | `*.sh` | `bash`, `sh`, `zsh` | `alpine:3.20` |
+```bash
+# Run with no network access and read-only filesystem
+agentkernel run --profile restrictive python3 script.py
 
-## Supported Platforms
+# Or toggle individual settings
+agentkernel run --no-network curl example.com  # Will fail
+```
 
-| Platform | Backend | Status |
-|----------|---------|--------|
-| Linux | Firecracker (KVM) | Full support |
-| Linux | Docker | Full support |
-| Linux | Podman | Full support |
-| macOS | Docker Desktop | Full support |
-| macOS | Podman | Full support |
-| macOS 26+ | Apple Containers | Beta |
-| Windows | WSL2 + Docker | Untested |
+## It runs everywhere
 
-## Next Steps
+agentkernel picks the best available backend automatically:
+
+| Platform | Backend | Isolation |
+|----------|---------|-----------|
+| Linux (x86_64, aarch64) | Firecracker microVMs | Full VM isolation via KVM |
+| Linux (x86_64, aarch64) | Hyperlight Wasm | Hypervisor + Wasm sandbox (experimental) |
+| macOS 26+ (Apple Silicon) | Apple Containers | Full VM isolation |
+| macOS (Apple Silicon, Intel) | Docker / Podman | Container isolation |
+
+On Linux with KVM, you get Firecracker -- the same microVM technology that powers AWS Lambda and Fargate. On macOS 26+, Apple Containers provide native VM isolation. On older macOS or systems without KVM, Docker and Podman provide container-level isolation as a fallback.
+
+## It's programmable
+
+Run agentkernel as an HTTP server for programmatic sandbox management:
+
+```bash
+agentkernel serve --host 127.0.0.1 --port 8080
+```
+
+```bash
+# Run a command via the API
+curl -X POST http://localhost:8080/run \
+  -H "Content-Type: application/json" \
+  -d '{"command": ["python3", "-c", "print(1+1)"], "profile": "restrictive"}'
+
+# Response: {"success": true, "data": {"output": "2\n"}}
+```
+
+Full REST API for creating, managing, and executing commands in sandboxes. Build agent orchestration systems, CI/CD pipelines, or interactive coding environments on top of agentkernel.
+
+## Docker vs. agentkernel
+
+The comparison people ask about most:
+
+| | Docker | agentkernel |
+|--|--------|-------------|
+| **Kernel** | Shared with host | Dedicated per sandbox |
+| **Escape risk** | Container escapes documented | Hardware-enforced isolation |
+| **Boot time** | 1-5 seconds | <1&micro;s (warm pool) to ~220ms |
+| **Memory overhead** | 50-100MB | <10MB |
+| **Setup** | Docker Desktop or daemon | Single binary, no daemon required |
+
+Docker is a great tool for packaging and deploying applications. agentkernel is purpose-built for running untrusted code. Different tools for different threat models.
+
+## Get started
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thrashr888/agentkernel/main/install.sh | sh
+agentkernel setup
+agentkernel run python3 -c "print('Hello from sandbox!')"
+```
 
 - [Installation](installation.html) - Detailed setup instructions
 - [Getting Started](getting-started.html) - Your first sandbox
-- [Commands](commands.html) - CLI reference
+- [Commands](commands.html) - Full CLI reference
 - [Configuration](configuration.html) - Config file format
+- [Agents](agents.html) - Running Claude Code, Codex, Gemini CLI
+- [HTTP API](api.html) - Programmatic access
+- [Comparisons](comparisons.html) - How agentkernel compares to E2B, Daytona, Docker, and others
