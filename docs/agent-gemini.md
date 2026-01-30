@@ -1,9 +1,29 @@
 
 # Google Gemini CLI
 
-Run Google's Gemini CLI in an isolated sandbox.
+Use Google's Gemini CLI with agentkernel for isolated code execution.
 
-## Quick Start
+## Plugin Mode (Recommended)
+
+Gemini runs locally, code execution is sandboxed via MCP:
+
+```bash
+# Install the MCP config into your project
+agentkernel plugin install gemini
+
+# This adds the agentkernel MCP server to .gemini/settings.json
+# Gemini will have access to: run_command, create_sandbox, exec_in_sandbox, list_sandboxes, remove_sandbox
+```
+
+For global installation:
+
+```bash
+agentkernel plugin install gemini --global
+```
+
+## Sandbox Mode
+
+Run Gemini CLI itself inside an isolated sandbox:
 
 ```bash
 # Create sandbox with Gemini pre-installed

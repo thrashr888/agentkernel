@@ -9,9 +9,8 @@ use std::path::{Path, PathBuf};
 
 // --- Embedded plugin files ---
 
-const CLAUDE_PLUGIN_JSON: &str = include_str!("../claude-plugin/.claude-plugin/plugin.json");
-const CLAUDE_COMMAND_SANDBOX_MD: &str = include_str!("../claude-plugin/commands/sandbox.md");
-const CLAUDE_SKILL_SANDBOX_MD: &str = include_str!("../claude-plugin/skills/sandbox/SKILL.md");
+const CLAUDE_SKILL_MD: &str = include_str!("../claude-plugin/.claude/skills/agentkernel/SKILL.md");
+const CLAUDE_COMMAND_MD: &str = include_str!("../claude-plugin/.claude/commands/sandbox.md");
 const CODEX_MCP_JSON: &str = include_str!("../plugins/codex/mcp.json");
 const GEMINI_MCP_JSON: &str = include_str!("../plugins/gemini/mcp.json");
 const MCP_GENERIC_JSON: &str = include_str!("../plugins/mcp/mcp.json");
@@ -53,7 +52,7 @@ impl PluginTarget {
 
     fn description(&self) -> &'static str {
         match self {
-            Self::Claude => "Claude Code plugin + /sandbox command",
+            Self::Claude => "Claude Code skill + MCP server config",
             Self::Codex => "Codex MCP server config",
             Self::Gemini => "Gemini CLI MCP server config",
             Self::OpenCode => "OpenCode TypeScript plugin",
@@ -72,7 +71,7 @@ impl PluginTarget {
     }
 
     fn supports_global(&self) -> bool {
-        matches!(self, Self::Codex | Self::Gemini | Self::Mcp)
+        matches!(self, Self::Claude | Self::Codex | Self::Gemini | Self::Mcp)
     }
 }
 
@@ -112,19 +111,19 @@ fn plugin_files(target: PluginTarget) -> Vec<PluginFile> {
     match target {
         PluginTarget::Claude => vec![
             PluginFile {
-                rel_path: ".claude-plugin/plugin.json",
-                content: CLAUDE_PLUGIN_JSON,
+                rel_path: ".claude/skills/agentkernel/SKILL.md",
+                content: CLAUDE_SKILL_MD,
                 strategy: WriteStrategy::Create,
             },
             PluginFile {
-                rel_path: "commands/sandbox.md",
-                content: CLAUDE_COMMAND_SANDBOX_MD,
+                rel_path: ".claude/commands/sandbox.md",
+                content: CLAUDE_COMMAND_MD,
                 strategy: WriteStrategy::Create,
             },
             PluginFile {
-                rel_path: "skills/sandbox/SKILL.md",
-                content: CLAUDE_SKILL_SANDBOX_MD,
-                strategy: WriteStrategy::Create,
+                rel_path: ".mcp.json",
+                content: MCP_GENERIC_JSON,
+                strategy: WriteStrategy::MergeJsonMcpServer,
             },
         ],
         PluginTarget::Codex => vec![PluginFile {
@@ -232,8 +231,9 @@ fn global_root(target: PluginTarget) -> Result<PathBuf> {
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
 
     match target {
-        PluginTarget::Gemini => Ok(home),
-        PluginTarget::Codex | PluginTarget::Mcp => Ok(home),
+        PluginTarget::Claude | PluginTarget::Codex | PluginTarget::Gemini | PluginTarget::Mcp => {
+            Ok(home)
+        }
         _ => bail!("{} plugins are per-project only", target.name()),
     }
 }
@@ -354,7 +354,24 @@ fn install_merge_mcp(dest: &Path, mcp_content: &str, opts: &InstallOptions) -> I
 /// Check if a plugin is installed in the given directory.
 fn check_installed(target: PluginTarget, cwd: &Path) -> bool {
     let files = plugin_files(target);
-    files.iter().all(|f| cwd.join(f.rel_path).exists())
+    files.iter().all(|f| {
+        let path = cwd.join(f.rel_path);
+        match f.strategy {
+            WriteStrategy::Create => path.exists(),
+            WriteStrategy::MergeJsonMcpServer => {
+                // Check that the file exists AND contains the agentkernel entry
+                if let Ok(content) = std::fs::read_to_string(&path)
+                    && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
+                {
+                    return json
+                        .get("mcpServers")
+                        .and_then(|s| s.get("agentkernel"))
+                        .is_some();
+                }
+                false
+            }
+        }
+    })
 }
 
 /// Print file-level results.
@@ -442,8 +459,6 @@ mod tests {
     #[test]
     fn test_embedded_json_files_parse() {
         let _: serde_json::Value =
-            serde_json::from_str(CLAUDE_PLUGIN_JSON).expect("Claude plugin.json should parse");
-        let _: serde_json::Value =
             serde_json::from_str(CODEX_MCP_JSON).expect("Codex mcp.json should parse");
         let _: serde_json::Value =
             serde_json::from_str(GEMINI_MCP_JSON).expect("Gemini mcp.json should parse");
@@ -455,9 +470,8 @@ mod tests {
 
     #[test]
     fn test_embedded_files_not_empty() {
-        assert!(!CLAUDE_PLUGIN_JSON.is_empty());
-        assert!(!CLAUDE_COMMAND_SANDBOX_MD.is_empty());
-        assert!(!CLAUDE_SKILL_SANDBOX_MD.is_empty());
+        assert!(!CLAUDE_SKILL_MD.is_empty());
+        assert!(!CLAUDE_COMMAND_MD.is_empty());
         assert!(!CODEX_MCP_JSON.is_empty());
         assert!(!GEMINI_MCP_JSON.is_empty());
         assert!(!MCP_GENERIC_JSON.is_empty());
@@ -643,20 +657,24 @@ mod tests {
     #[test]
     fn test_check_installed_true_when_present() {
         let tmp = tempfile::TempDir::new().unwrap();
-        // Create all Claude plugin files
-        std::fs::create_dir_all(tmp.path().join(".claude-plugin")).unwrap();
-        std::fs::create_dir_all(tmp.path().join("commands")).unwrap();
-        std::fs::create_dir_all(tmp.path().join("skills/sandbox")).unwrap();
-        std::fs::write(tmp.path().join(".claude-plugin/plugin.json"), "{}").unwrap();
-        std::fs::write(tmp.path().join("commands/sandbox.md"), "").unwrap();
-        std::fs::write(tmp.path().join("skills/sandbox/SKILL.md"), "").unwrap();
+        // Create all Claude plugin files at new paths
+        std::fs::create_dir_all(tmp.path().join(".claude/skills/agentkernel")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".claude/commands")).unwrap();
+        std::fs::write(tmp.path().join(".claude/skills/agentkernel/SKILL.md"), "").unwrap();
+        std::fs::write(tmp.path().join(".claude/commands/sandbox.md"), "").unwrap();
+        // Also need .mcp.json with agentkernel entry for check_installed
+        std::fs::write(
+            tmp.path().join(".mcp.json"),
+            r#"{"mcpServers":{"agentkernel":{}}}"#,
+        )
+        .unwrap();
         assert!(check_installed(PluginTarget::Claude, tmp.path()));
     }
 
     #[test]
-    fn test_global_not_supported_for_claude() {
+    fn test_global_supported_for_claude() {
         let result = global_root(PluginTarget::Claude);
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[test]

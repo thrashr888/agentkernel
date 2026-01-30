@@ -7,10 +7,11 @@ agentkernel supports multiple isolation backends. Each provides different tradeo
 
 | Backend | Isolation | Boot Time | Platform | Status |
 |---------|-----------|-----------|----------|--------|
-| Docker | Container | ~200ms | All | Stable |
-| Podman | Container | ~200ms | Linux, macOS | Stable |
+| Docker | Container | ~220ms | All | Stable |
+| Podman | Container | ~300ms | Linux, macOS | Stable |
 | Firecracker | MicroVM | <125ms | Linux (KVM) | Stable |
-| Apple | Container | ~150ms | macOS 26+ | Beta |
+| Hyperlight | Wasm + Hypervisor | ~68ms | Linux (KVM) | Experimental |
+| Apple | Container | ~940ms | macOS 26+ | Beta |
 
 ## Docker
 
@@ -69,6 +70,33 @@ agentkernel create my-sandbox --backend firecracker
 - Linux only
 - Requires KVM
 
+## Hyperlight (Wasm)
+
+Microsoft's Hyperlight runs WebAssembly modules inside hypervisor-isolated micro VMs. Dual-layer security: Wasm sandbox + hardware boundary.
+
+```bash
+# Build with Hyperlight support
+cargo build --features hyperlight
+
+# Run a Wasm module
+agentkernel run --backend hyperlight module.wasm
+```
+
+**Requirements:**
+- Linux with KVM support (`/dev/kvm`)
+- Build with `--features hyperlight`
+- AOT-compiled Wasm modules for best performance
+
+**Pros:**
+- Dual-layer isolation (Wasm + hypervisor)
+- ~68ms cold start, sub-microsecond with pre-warmed pool
+- Smallest attack surface
+
+**Cons:**
+- Runs WebAssembly modules only (not arbitrary shell commands)
+- Linux only, requires KVM
+- Experimental
+
 ## Apple Containers
 
 Native container support on macOS Tahoe (26+).
@@ -90,10 +118,11 @@ agentkernel create my-sandbox --backend apple
 
 By default, agentkernel selects the best available backend:
 
-1. **Firecracker** - If KVM is available (Linux)
-2. **Apple** - If Apple Containers available (macOS 26+)
-3. **Docker** - If Docker is installed
-4. **Podman** - If Podman is installed
+1. **Hyperlight** - If KVM available and `--features hyperlight` built (Linux, Wasm only)
+2. **Firecracker** - If KVM is available (Linux)
+3. **Apple** - If Apple Containers available (macOS 26+)
+4. **Docker** - If Docker is installed
+5. **Podman** - If Podman is installed
 
 ```bash
 # Check which backend is selected

@@ -1,9 +1,29 @@
 
 # OpenAI Codex
 
-Run OpenAI's Codex CLI in an isolated sandbox.
+Use OpenAI's Codex CLI with agentkernel for isolated code execution.
 
-## Quick Start
+## Plugin Mode (Recommended)
+
+Codex runs locally, code execution is sandboxed via MCP:
+
+```bash
+# Install the MCP config into your project
+agentkernel plugin install codex
+
+# This adds the agentkernel MCP server to .mcp.json
+# Codex will have access to: run_command, create_sandbox, exec_in_sandbox, list_sandboxes, remove_sandbox
+```
+
+For global installation:
+
+```bash
+agentkernel plugin install codex --global
+```
+
+## Sandbox Mode
+
+Run Codex itself inside an isolated sandbox:
 
 ```bash
 # Create sandbox with Codex pre-installed

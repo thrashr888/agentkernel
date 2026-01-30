@@ -1,7 +1,7 @@
 # RFC: Hyperlight WebAssembly Backend for Agentkernel
 
 **Status**: Draft
-**Author**: Paul Shortcut (@thrashr888)
+**Author**: Paul Thrasher (@thrashr888)
 **Date**: 2026-01-21
 **Branch**: `pault/hyperlight-wasm`
 

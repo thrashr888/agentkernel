@@ -1,9 +1,39 @@
 
 # Claude Code
 
-Run [Claude Code](https://claude.ai/code) in an isolated sandbox.
+Use [Claude Code](https://claude.ai/code) with agentkernel for isolated code execution.
 
-## Quick Start
+## Plugin Mode (Recommended)
+
+Claude runs locally, code execution is sandboxed via MCP:
+
+```bash
+# Install the plugin into your project
+agentkernel plugin install claude
+
+# This creates:
+#   .claude/skills/agentkernel/SKILL.md   — teaches Claude when/how to use sandboxes
+#   .claude/commands/sandbox.md           — adds /sandbox command
+#   .mcp.json                             — registers the agentkernel MCP server
+```
+
+Once installed, Claude can use sandboxed execution automatically via the skill, or you can invoke it explicitly:
+
+```
+/sandbox python3 -c "print('Hello from sandbox!')"
+/sandbox npm test
+/sandbox --profile restrictive python3 untrusted.py
+```
+
+For global installation (available in all projects):
+
+```bash
+agentkernel plugin install claude --global
+```
+
+## Sandbox Mode
+
+Run Claude Code itself inside an isolated sandbox:
 
 ```bash
 # Create sandbox with Claude Code pre-installed
