@@ -1,17 +1,17 @@
 
 # SDKs
 
-agentkernel provides official SDK clients in five languages. Each SDK wraps the [HTTP API](api-http.html) with idiomatic language bindings.
+agentkernel provides official SDK clients in five languages. Each SDK wraps the [HTTP API](api-http.md) with idiomatic language bindings.
 
 ## Quick Comparison
 
 | SDK | Package | Install | Async | Streaming | Sandbox Sessions |
 |-----|---------|---------|-------|-----------|------------------|
-| [Node.js](sdk-nodejs.html) | `agentkernel` | `npm install agentkernel` | Native (Promise) | `AsyncGenerator` | `await using` (auto-cleanup) |
-| [Python](sdk-python.html) | `agentkernel` | `pip install agentkernel` | Sync + Async | `Iterator` / `AsyncIterator` | Context manager |
-| [Go](sdk-golang.html) | `agentkernel` | `go get github.com/thrashr888/agentkernel/sdk/golang` | `context.Context` | `<-chan StreamEvent` | Callback with `WithSandbox` |
-| [Rust](sdk-rust.html) | `agentkernel-sdk` | `cargo add agentkernel-sdk` | `async`/`await` | `Stream` | Closure with `with_sandbox` |
-| [Swift](sdk-swift.html) | `AgentKernel` | Swift Package Manager | `async`/`await` | `AsyncThrowingStream` | Closure with `withSandbox` |
+| [Node.js](sdk-nodejs.md) | `agentkernel` | `npm install agentkernel` | Native (Promise) | `AsyncGenerator` | `await using` (auto-cleanup) |
+| [Python](sdk-python.md) | `agentkernel` | `pip install agentkernel` | Sync + Async | `Iterator` / `AsyncIterator` | Context manager |
+| [Go](sdk-golang.md) | `agentkernel` | `go get github.com/thrashr888/agentkernel/sdk/golang` | `context.Context` | `<-chan StreamEvent` | Callback with `WithSandbox` |
+| [Rust](sdk-rust.md) | `agentkernel-sdk` | `cargo add agentkernel-sdk` | `async`/`await` | `Stream` | Closure with `with_sandbox` |
+| [Swift](sdk-swift.md) | `AgentKernel` | Swift Package Manager | `async`/`await` | `AsyncThrowingStream` | Closure with `withSandbox` |
 
 All SDKs share the same API surface:
 

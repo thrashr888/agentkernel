@@ -146,12 +146,12 @@ agentkernel setup
 agentkernel run python3 -c "print('Hello from sandbox!')"
 ```
 
-- [Installation](installation.html) - Detailed setup instructions
-- [Getting Started](getting-started.html) - Your first sandbox
-- [Commands](commands.html) - Full CLI reference
-- [Configuration](configuration.html) - Config file format
-- [Agents](agents.html) - Running Claude Code, Codex, Gemini CLI
-- [HTTP API](api.html) - Programmatic access
-- [SDKs](sdks.html) - Client libraries for [Node.js](sdk-nodejs.html), [Python](sdk-python.html), [Go](sdk-golang.html), [Rust](sdk-rust.html), [Swift](sdk-swift.html)
-- [Benchmarks](benchmarks.html) - Performance numbers for every backend
-- [Comparisons](comparisons.html) - How agentkernel compares to E2B, Daytona, Docker, and others
+- [Installation](installation.md) - Detailed setup instructions
+- [Getting Started](getting-started.md) - Your first sandbox
+- [Commands](commands.md) - Full CLI reference
+- [Configuration](configuration.md) - Config file format
+- [Agents](agents.md) - Running Claude Code, Codex, Gemini CLI
+- [HTTP API](api.md) - Programmatic access
+- [SDKs](sdks.md) - Client libraries for [Node.js](sdk-nodejs.md), [Python](sdk-python.md), [Go](sdk-golang.md), [Rust](sdk-rust.md), [Swift](sdk-swift.md)
+- [Benchmarks](benchmarks.md) - Performance numbers for every backend
+- [Comparisons](comparisons.md) - How agentkernel compares to E2B, Daytona, Docker, and others

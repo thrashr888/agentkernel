@@ -3,9 +3,9 @@
 
 agentkernel provides two API interfaces for programmatic access, plus official SDK clients in four languages:
 
-- **[HTTP API](api-http.html)** - REST API for managing sandboxes
-- **[MCP Server](api-mcp.html)** - Model Context Protocol for AI assistant integration
-- **[SDKs](sdks.html)** - Client libraries for Node.js, Python, Rust, and Swift
+- **[HTTP API](api-http.md)** - REST API for managing sandboxes
+- **[MCP Server](api-mcp.md)** - Model Context Protocol for AI assistant integration
+- **[SDKs](sdks.md)** - Client libraries for Node.js, Python, Rust, and Swift
 
 ## Quick Comparison
 

@@ -73,7 +73,7 @@ agentkernel create dev --config agentkernel.toml
 
 ## Running AI Agents
 
-See the [Agents](agents.html) section for running Claude Code, Codex, and Gemini in sandboxes.
+See the [Agents](agents.md) section for running Claude Code, Codex, and Gemini in sandboxes.
 
 ```bash
 # Quick example with Claude Code
@@ -84,6 +84,6 @@ agentkernel attach claude-sandbox -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
 
 ## Next Steps
 
-- [Commands Reference](commands.html) - Full CLI documentation
-- [Configuration](configuration.html) - Config file format
-- [Security Profiles](config-security.html) - Permission presets
+- [Commands Reference](commands.md) - Full CLI documentation
+- [Configuration](configuration.md) - Config file format
+- [Security Profiles](config-security.md) - Permission presets
