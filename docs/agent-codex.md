@@ -3,6 +3,15 @@
 
 Use OpenAI's Codex CLI with agentkernel for isolated code execution.
 
+## Integration Levels
+
+| Level | How It Works | Setup |
+|-------|-------------|-------|
+| **MCP Tools** | Codex calls agentkernel MCP tools for sandbox control | `agentkernel plugin install codex` |
+| **Full Isolation** | Run Codex itself inside an agentkernel sandbox | `agentkernel create` + `agentkernel attach` |
+
+Codex has its own [native sandbox](https://developers.openai.com/codex/security/) using OS-level primitives (Seatbelt on macOS, Landlock + seccomp on Linux). That sandbox cannot be replaced with a custom runtime. The MCP plugin gives Codex access to agentkernel sandboxes as tools it can call.
+
 ## Plugin Mode (Recommended)
 
 Codex runs locally, code execution is sandboxed via MCP:

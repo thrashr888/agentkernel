@@ -404,7 +404,8 @@ fn print_next_steps(target: PluginTarget) {
         }
         PluginTarget::Gemini => {
             println!("Gemini CLI MCP config written.");
-            println!("  Restart Gemini CLI to pick up the new MCP server.");
+            println!("  The agentkernel MCP server will be available in Gemini CLI.");
+            println!("  Restart Gemini CLI to pick up the new settings.");
         }
         PluginTarget::OpenCode => {
             println!("OpenCode plugin installed.");

@@ -3,6 +3,15 @@
 
 Use Google's Gemini CLI with agentkernel for isolated code execution.
 
+## Integration Levels
+
+| Level | How It Works | Setup |
+|-------|-------------|-------|
+| **MCP Tools** | Gemini calls agentkernel tools for sandbox management | `agentkernel plugin install gemini` |
+| **Full Isolation** | Run Gemini CLI itself inside an agentkernel sandbox | `agentkernel create` + `agentkernel attach` |
+
+Gemini CLI also has its own [native Docker sandbox](https://geminicli.com/docs/cli/sandbox/) that is separate from agentkernel. That sandbox is managed by Gemini itself and cannot be replaced with a custom runtime.
+
 ## Plugin Mode (Recommended)
 
 Gemini runs locally, code execution is sandboxed via MCP:
@@ -21,9 +30,21 @@ For global installation:
 agentkernel plugin install gemini --global
 ```
 
-## Sandbox Mode
+### MCP Tools
 
-Run Gemini CLI itself inside an isolated sandbox:
+The agentkernel MCP server gives Gemini access to:
+
+| Tool | Description |
+|------|-------------|
+| `run_command` | Run a command in a temporary sandbox |
+| `create_sandbox` | Create a persistent sandbox |
+| `exec_in_sandbox` | Execute in an existing sandbox |
+| `remove_sandbox` | Remove a sandbox |
+| `list_sandboxes` | List all sandboxes |
+
+## Full Isolation Mode
+
+Run Gemini CLI itself inside an agentkernel sandbox:
 
 ```bash
 # Create sandbox with Gemini pre-installed
@@ -38,6 +59,23 @@ agentkernel attach gemini-dev -e GEMINI_API_KEY=$GEMINI_API_KEY
 # Inside the sandbox:
 gemini
 ```
+
+## Native Sandbox
+
+Gemini CLI has its own [Docker-based sandbox](https://geminicli.com/docs/cli/sandbox/) separate from agentkernel. Enable it with:
+
+```bash
+# Environment variable
+GEMINI_SANDBOX=docker gemini
+
+# CLI flag
+gemini --sandbox
+
+# Or in .gemini/settings.json
+# { "sandbox": true }
+```
+
+This uses Gemini's own container image and lifecycle. It cannot be replaced with agentkernel. Use the MCP plugin for agentkernel-managed sandboxes, or Full Isolation Mode to run Gemini itself inside agentkernel.
 
 ## API Key
 

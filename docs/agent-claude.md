@@ -3,6 +3,15 @@
 
 Use [Claude Code](https://claude.ai/code) with agentkernel for isolated code execution.
 
+## Integration Levels
+
+| Level | How It Works | Setup |
+|-------|-------------|-------|
+| **MCP Tools** | Claude calls agentkernel MCP tools for sandbox control | `agentkernel plugin install claude` |
+| **Full Isolation** | Run Claude Code itself inside an agentkernel sandbox | `agentkernel create` + `agentkernel attach` |
+
+Claude Code has its own [native sandbox](https://code.claude.com/docs/en/sandboxing) using OS-level primitives (Seatbelt on macOS, bubblewrap on Linux). That sandbox cannot be replaced with a custom runtime. The MCP plugin gives Claude access to agentkernel sandboxes as tools it can call.
+
 ## Plugin Mode (Recommended)
 
 Claude runs locally, code execution is sandboxed via MCP:
