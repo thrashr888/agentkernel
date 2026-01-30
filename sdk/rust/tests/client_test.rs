@@ -206,7 +206,10 @@ async fn user_agent_header() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/health"))
-        .and(header("user-agent", "agentkernel-rust-sdk/0.1.0"))
+        .and(header(
+            "user-agent",
+            &format!("agentkernel-rust-sdk/{}", env!("CARGO_PKG_VERSION")),
+        ))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(serde_json::json!({"success": true, "data": "ok"})),

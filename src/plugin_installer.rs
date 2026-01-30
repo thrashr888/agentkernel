@@ -418,6 +418,53 @@ fn print_next_steps(target: PluginTarget) {
     }
 }
 
+/// Check if a CLI command exists in PATH.
+fn command_in_path(cmd: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Agent CLI commands mapped to plugin targets.
+const AGENT_COMMANDS: &[(&str, PluginTarget)] = &[
+    ("claude", PluginTarget::Claude),
+    ("codex", PluginTarget::Codex),
+    ("gemini", PluginTarget::Gemini),
+    ("opencode", PluginTarget::OpenCode),
+];
+
+/// Detect agents whose CLI is installed but whose plugin is missing.
+/// Returns targets that should be offered for installation.
+pub fn detect_uninstalled_plugins() -> Vec<PluginTarget> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    AGENT_COMMANDS
+        .iter()
+        .filter_map(|(cmd, target)| {
+            if command_in_path(cmd) && !check_installed(*target, &cwd) {
+                Some(*target)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Install plugins for the given targets (used by setup flow).
+pub fn install_detected_plugins(targets: &[PluginTarget]) -> Result<()> {
+    let opts = InstallOptions {
+        global: false,
+        force: false,
+        dry_run: false,
+    };
+    for target in targets {
+        install_plugin(*target, &opts)?;
+        println!();
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -45,7 +45,15 @@ jobs:
         run: npm version "${TAG_NAME#v}" --no-git-tag-version
 
       # Publish to npm via OIDC trusted publisher (no token needed)
-      - run: npm publish --access public
+      # Skip if version already exists on npm
+      - name: Publish to npm
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "agentkernel@${VERSION}" version 2>/dev/null; then
+            echo "Version ${VERSION} already published to npm, skipping"
+          else
+            npm publish --access public
+          fi
 
       # Publish to GitHub Packages
       - uses: actions/setup-node@v4

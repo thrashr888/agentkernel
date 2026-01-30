@@ -7,6 +7,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::plugin_installer;
+
 /// Runtime options for rootfs
 pub const RUNTIMES: &[(&str, &str)] = &[
     ("base", "Minimal Alpine Linux (~64MB)"),
@@ -431,6 +433,7 @@ pub async fn run_setup(non_interactive: bool) -> Result<()> {
 
     if status.is_ready() && non_interactive {
         println!("\nAgentkernel is already set up and ready to use!");
+        offer_plugin_install(non_interactive)?;
         return Ok(());
     }
 
@@ -561,6 +564,8 @@ pub async fn run_setup(non_interactive: bool) -> Result<()> {
             println!("\nAfter fixing permissions, run: agentkernel setup --verify");
         }
     }
+
+    offer_plugin_install(non_interactive)?;
 
     println!("\nYou can now create sandboxes with:");
     println!("  agentkernel create my-sandbox");
@@ -1036,6 +1041,40 @@ async fn run_verification_test(data_dir: &Path) -> Result<()> {
         }
     } else {
         eprintln!("  ⚠️  Guest agent not found at {}", agent_path.display());
+    }
+
+    Ok(())
+}
+
+/// Detect installed agents and offer to install plugins.
+fn offer_plugin_install(non_interactive: bool) -> Result<()> {
+    let uninstalled = plugin_installer::detect_uninstalled_plugins();
+    if uninstalled.is_empty() {
+        return Ok(());
+    }
+
+    println!("\n==> Agent plugins");
+    println!(
+        "Detected agents without plugins: {}",
+        uninstalled
+            .iter()
+            .map(|t| t.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    let should_install = if non_interactive {
+        true
+    } else {
+        prompt_yes_no("Install agent plugins now?", true)?
+    };
+
+    if should_install {
+        if let Err(e) = plugin_installer::install_detected_plugins(&uninstalled) {
+            eprintln!("Warning: Failed to install some plugins: {}", e);
+        }
+    } else {
+        println!("  Skipped. Run later with: agentkernel plugin install <agent>");
     }
 
     Ok(())
