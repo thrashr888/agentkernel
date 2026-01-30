@@ -13,6 +13,7 @@ mod hyperlight_backend;
 mod languages;
 mod mcp;
 mod permissions;
+mod plugin_installer;
 mod pool;
 mod rootfs;
 mod sandbox_pool;
@@ -168,6 +169,11 @@ enum Commands {
     },
     /// List supported AI agents and their availability
     Agents,
+    /// Manage agent plugins (install integration files for Claude, Codex, Gemini, etc.)
+    Plugin {
+        #[command(subcommand)]
+        action: PluginAction,
+    },
     /// Manage the daemon (VM pool server)
     Daemon {
         #[command(subcommand)]
@@ -199,6 +205,26 @@ enum Commands {
         #[arg(long, default_value = "2.0")]
         max_idle: f64,
     },
+}
+
+#[derive(Subcommand)]
+enum PluginAction {
+    /// Install plugin files for an agent integration
+    Install {
+        /// Agent target: claude, codex, gemini, opencode, mcp, or all
+        target: String,
+        /// Install to user-level config instead of current directory
+        #[arg(short, long)]
+        global: bool,
+        /// Overwrite existing files without prompting
+        #[arg(short, long)]
+        force: bool,
+        /// Show what would be written without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// List available plugins and their install status
+    List,
 }
 
 #[derive(Subcommand)]
@@ -814,6 +840,40 @@ memory_mb = 512
                 }
             }
         }
+        Commands::Plugin { action } => match action {
+            PluginAction::Install {
+                target,
+                global,
+                force,
+                dry_run,
+            } => {
+                let opts = plugin_installer::InstallOptions {
+                    global,
+                    force,
+                    dry_run,
+                };
+
+                if target == "all" {
+                    for t in plugin_installer::PluginTarget::all() {
+                        plugin_installer::install_plugin(*t, &opts)?;
+                        println!();
+                    }
+                } else {
+                    let t = plugin_installer::PluginTarget::from_str(&target).ok_or_else(
+                        || {
+                            anyhow::anyhow!(
+                            "Unknown plugin target: '{}'. Valid targets: claude, codex, gemini, opencode, mcp, all",
+                            target
+                        )
+                        },
+                    )?;
+                    plugin_installer::install_plugin(t, &opts)?;
+                }
+            }
+            PluginAction::List => {
+                plugin_installer::list_plugins();
+            }
+        },
         Commands::Daemon { action } => {
             match action {
                 DaemonAction::Start { background } => {

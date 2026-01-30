@@ -10,19 +10,13 @@ Use agentkernel as a sandbox backend for Google Gemini CLI via MCP.
 brew tap thrashr888/agentkernel && brew install agentkernel
 ```
 
-2. Add the MCP server to your Gemini CLI config. Add to your `~/.gemini/settings.json` or project-level `.gemini/settings.json`:
+2. Install the MCP config into your project:
 
-```json
-{
-  "mcpServers": {
-    "agentkernel": {
-      "command": "agentkernel",
-      "args": ["mcp-server"],
-      "env": {}
-    }
-  }
-}
+```bash
+agentkernel plugin install gemini
 ```
+
+This adds the agentkernel MCP server entry to your `.gemini/settings.json`. For global install, use `agentkernel plugin install gemini --global`.
 
 3. Start using agentkernel tools in Gemini CLI. The MCP server exposes:
 

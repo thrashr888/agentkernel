@@ -5,8 +5,8 @@
  * microVM security. Each OpenCode session gets a persistent sandbox that is
  * automatically cleaned up when the session ends.
  *
- * Install: copy this directory into your project's .opencode/plugins/
- * or add "opencode-agentkernel" to your opencode.json plugins array.
+ * Install: agentkernel plugin install opencode
+ * Or manually copy this directory into your project's .opencode/plugins/
  */
 import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";

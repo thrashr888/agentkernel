@@ -17,6 +17,9 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 | `list` | List all sandboxes |
 | `cp` | Copy files to/from a sandbox |
 | `setup` | Configure agentkernel and backends |
+| `plugin install` | Install agent plugin files (Claude, Codex, Gemini, OpenCode, MCP) |
+| `plugin list` | Show available plugins and their install status |
+| `agents` | List supported AI agents and their availability |
 | `daemon` | Manage the VM pool daemon |
 | `audit` | View and manage audit logs |
 | `replay` | Replay a recorded session |

@@ -12,11 +12,10 @@ brew tap thrashr888/agentkernel && brew install agentkernel
 cargo install --git https://github.com/thrashr888/agentkernel
 ```
 
-2. Copy the plugin into your project:
+2. Install the plugin into your project:
 
 ```bash
-cp -r plugins/opencode/.opencode/plugins/agentkernel.ts .opencode/plugins/
-cp plugins/opencode/.opencode/package.json .opencode/package.json
+agentkernel plugin install opencode
 ```
 
 3. Start agentkernel:

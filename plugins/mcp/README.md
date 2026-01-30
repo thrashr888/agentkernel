@@ -8,11 +8,11 @@ agentkernel includes a built-in MCP (Model Context Protocol) server that lets an
 
 | Agent | Config Location | Status |
 |-------|----------------|--------|
-| Claude Code | `~/.claude/settings.json` | Built-in (see `claude-plugin/`) |
-| Codex | MCP config file | See `plugins/codex/` |
-| Gemini CLI | `~/.gemini/settings.json` | See `plugins/gemini/` |
-| OpenCode | `.opencode/plugins/` | See `plugins/opencode/` |
-| Any MCP agent | Varies | Use config below |
+| Claude Code | `~/.claude/settings.json` | `agentkernel plugin install claude` |
+| Codex | `.mcp.json` | `agentkernel plugin install codex` |
+| Gemini CLI | `.gemini/settings.json` | `agentkernel plugin install gemini` |
+| OpenCode | `.opencode/plugins/` | `agentkernel plugin install opencode` |
+| Any MCP agent | Varies | `agentkernel plugin install mcp` |
 
 ## Universal MCP Config
 

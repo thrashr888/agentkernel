@@ -14,6 +14,15 @@ agentkernel provides pre-configured Docker images for popular AI coding agents. 
 
 ## Quick Start
 
+### Plugin Mode (agent runs locally, code runs in sandbox)
+
+```bash
+# Install the plugin for your agent
+agentkernel plugin install claude     # or: codex, gemini, opencode, mcp
+```
+
+### Sandbox Mode (agent runs inside the sandbox)
+
 ```bash
 # Create a sandbox with Claude Code
 agentkernel create my-agent --config examples/agents/claude-code/agentkernel.toml

@@ -10,19 +10,13 @@ Use agentkernel as a sandbox backend for OpenAI Codex via MCP.
 brew tap thrashr888/agentkernel && brew install agentkernel
 ```
 
-2. Add the MCP server config to your Codex setup. Copy `mcp.json` to your Codex MCP configuration directory:
+2. Install the MCP config into your project:
 
-```json
-{
-  "mcpServers": {
-    "agentkernel": {
-      "command": "agentkernel",
-      "args": ["mcp-server"],
-      "env": {}
-    }
-  }
-}
+```bash
+agentkernel plugin install codex
 ```
+
+This adds the agentkernel MCP server entry to your `.mcp.json`.
 
 3. Start using agentkernel tools in Codex. The MCP server exposes:
 

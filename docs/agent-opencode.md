@@ -12,8 +12,8 @@ OpenCode integrates with agentkernel through a TypeScript plugin that automatica
 brew services start agentkernel   # runs in background, survives reboots
 agentkernel serve                 # or run manually in a terminal
 
-# 2. Copy the plugin into your project
-cp -r plugins/opencode/.opencode/ .opencode/
+# 2. Install the plugin into your project
+agentkernel plugin install opencode
 
 # 3. Launch OpenCode — the plugin loads automatically
 opencode
@@ -42,13 +42,13 @@ brew tap thrashr888/agentkernel && brew install agentkernel
 
 ### 2. Install the plugin
 
-Copy the plugin files into your project's `.opencode/` directory:
+Install the OpenCode plugin files into your project:
 
 ```bash
-# From the agentkernel repo
-cp -r plugins/opencode/.opencode/plugins/ .opencode/plugins/
-cp plugins/opencode/.opencode/package.json .opencode/package.json
+agentkernel plugin install opencode
 ```
+
+This creates the `.opencode/` directory with `package.json` and `plugins/agentkernel.ts`.
 
 Your project should have:
 
