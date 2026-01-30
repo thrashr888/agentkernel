@@ -223,47 +223,30 @@ OpenCode        installed       set
 
 Official client libraries for the agentkernel HTTP API:
 
-| SDK | Package | Install |
-|-----|---------|---------|
-| **Node.js** | [`agentkernel`](https://www.npmjs.com/package/agentkernel) | `npm install agentkernel` |
-| **Python** | [`agentkernel-sdk`](https://pypi.org/project/agentkernel-sdk/) | `pip install agentkernel-sdk` |
-| **Go** | [`agentkernel`](https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang) | `go get github.com/thrashr888/agentkernel/sdk/golang` |
-| **Rust** | [`agentkernel-sdk`](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` |
-| **Swift** | `AgentKernel` | Swift Package Manager |
+| SDK | Package | Install | Docs |
+|-----|---------|---------|------|
+| **Node.js** | [`agentkernel`](https://www.npmjs.com/package/agentkernel) | `npm install agentkernel` | [Guide](docs/sdk-nodejs.md) |
+| **Python** | [`agentkernel-sdk`](https://pypi.org/project/agentkernel-sdk/) | `pip install agentkernel-sdk` | [Guide](docs/sdk-python.md) |
+| **Go** | [`agentkernel`](https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang) | `go get github.com/thrashr888/agentkernel/sdk/golang` | [Guide](docs/sdk-golang.md) |
+| **Rust** | [`agentkernel-sdk`](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` | [Guide](docs/sdk-rust.md) |
+| **Swift** | `AgentKernel` | Swift Package Manager | [Guide](docs/sdk-swift.md) |
 
 ```typescript
-// Node.js
 import { AgentKernel } from "agentkernel";
+
 const client = new AgentKernel();
-const result = await client.run(["echo", "hello"]);
+
+// Run a command in a temporary sandbox
+const result = await client.run(["python3", "-c", "print(1+1)"]);
+console.log(result.output); // "2\n"
+
+// Sandbox session with automatic cleanup
+await using sandbox = await client.sandbox("my-session");
+await sandbox.exec(["npm", "install"]);
+const tests = await sandbox.exec(["npm", "test"]);
 ```
 
-```python
-# Python
-from agentkernel import AgentKernel
-with AgentKernel() as client:
-    result = client.run(["echo", "hello"])
-```
-
-```go
-// Go
-client := agentkernel.New(nil)
-output, _ := client.Run(context.Background(), []string{"echo", "hello"}, nil)
-```
-
-```rust
-// Rust
-let client = agentkernel_sdk::AgentKernel::builder().build()?;
-let output = client.run(&["echo", "hello"], None).await?;
-```
-
-```swift
-// Swift
-let client = AgentKernel()
-let output = try await client.run(["echo", "hello"])
-```
-
-All SDKs support sandbox sessions with automatic cleanup, streaming output (SSE), and configuration via environment variables or explicit options. See [`sdk/`](sdk/) for full documentation.
+All SDKs support sandbox sessions with automatic cleanup, streaming output (SSE), and configuration via environment variables or explicit options. See [SDK documentation](docs/sdks.md) for all languages.
 
 ## Why agentkernel?
 

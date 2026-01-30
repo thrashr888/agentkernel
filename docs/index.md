@@ -112,16 +112,30 @@ brew services start agentkernel
 agentkernel serve --host 127.0.0.1 --port 18888
 ```
 
-```bash
-# Run a command via the API
-curl -X POST http://localhost:18888/run \
-  -H "Content-Type: application/json" \
-  -d '{"command": ["python3", "-c", "print(1+1)"], "profile": "restrictive"}'
+```typescript
+import { AgentKernel } from "agentkernel";
 
-# Response: {"success": true, "data": {"output": "2\n"}}
+const client = new AgentKernel();
+
+// Run a command in a temporary sandbox
+const result = await client.run(["python3", "-c", "print(1+1)"]);
+console.log(result.output); // "2\n"
+
+// Sandbox session with automatic cleanup
+await using sandbox = await client.sandbox("my-session");
+await sandbox.exec(["npm", "install"]);
+const tests = await sandbox.exec(["npm", "test"]);
 ```
 
-Full REST API for creating, managing, and executing commands in sandboxes. Build agent orchestration systems, CI/CD pipelines, or interactive coding environments on top of agentkernel.
+Official SDKs for [Node.js](sdk-nodejs.md), [Python](sdk-python.md), [Go](sdk-golang.md), [Rust](sdk-rust.md), and [Swift](sdk-swift.md). Full REST API for creating, managing, and executing commands in sandboxes. Build agent orchestration systems, CI/CD pipelines, or interactive coding environments on top of agentkernel.
+
+| SDK | Package | Install |
+|-----|---------|---------|
+| [Node.js](sdk-nodejs.md) | [`agentkernel`](https://www.npmjs.com/package/agentkernel) | `npm install agentkernel` |
+| [Python](sdk-python.md) | [`agentkernel-sdk`](https://pypi.org/project/agentkernel-sdk/) | `pip install agentkernel-sdk` |
+| [Go](sdk-golang.md) | [`agentkernel`](https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang) | `go get github.com/thrashr888/agentkernel/sdk/golang` |
+| [Rust](sdk-rust.md) | [`agentkernel-sdk`](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` |
+| [Swift](sdk-swift.md) | `AgentKernel` | Swift Package Manager |
 
 ## Docker vs. agentkernel
 
