@@ -7,10 +7,10 @@ agentkernel provides pre-configured Docker images for popular AI coding agents. 
 
 | Agent | CLI Command | API Key Variable |
 |-------|-------------|------------------|
-| [Claude Code](agent-claude) | `claude` | `ANTHROPIC_API_KEY` |
-| [OpenAI Codex](agent-codex) | `codex` | `OPENAI_API_KEY` |
-| [Google Gemini](agent-gemini) | `gemini` | `GEMINI_API_KEY` |
-| [OpenCode](agent-opencode) | `opencode` | Provider-specific |
+| [Claude Code](../agent-claude) | `claude` | `ANTHROPIC_API_KEY` |
+| [OpenAI Codex](../agent-codex) | `codex` | `OPENAI_API_KEY` |
+| [Google Gemini](../agent-gemini) | `gemini` | `GEMINI_API_KEY` |
+| [OpenCode](../agent-opencode) | `opencode` | Provider-specific |
 
 ## Quick Start
 

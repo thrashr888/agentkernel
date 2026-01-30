@@ -127,15 +127,15 @@ await sandbox.exec(["npm", "install"]);
 const tests = await sandbox.exec(["npm", "test"]);
 ```
 
-Official SDKs for [Node.js](sdk-nodejs.md), [Python](sdk-python.md), [Go](sdk-golang.md), [Rust](sdk-rust.md), and [Swift](sdk-swift.md). Full REST API for creating, managing, and executing commands in sandboxes. Build agent orchestration systems, CI/CD pipelines, or interactive coding environments on top of agentkernel.
+Official SDKs for [Node.js](sdk-nodejs), [Python](sdk-python), [Go](sdk-golang), [Rust](sdk-rust), and [Swift](sdk-swift). Full REST API for creating, managing, and executing commands in sandboxes. Build agent orchestration systems, CI/CD pipelines, or interactive coding environments on top of agentkernel.
 
 | SDK | Package | Install |
 |-----|---------|---------|
-| [Node.js](sdk-nodejs.md) | [`agentkernel`](https://www.npmjs.com/package/agentkernel) | `npm install agentkernel` |
-| [Python](sdk-python.md) | [`agentkernel-sdk`](https://pypi.org/project/agentkernel-sdk/) | `pip install agentkernel-sdk` |
-| [Go](sdk-golang.md) | [`agentkernel`](https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang) | `go get github.com/thrashr888/agentkernel/sdk/golang` |
-| [Rust](sdk-rust.md) | [`agentkernel-sdk`](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` |
-| [Swift](sdk-swift.md) | `AgentKernel` | Swift Package Manager |
+| [Node.js](sdk-nodejs) | [`agentkernel`](https://www.npmjs.com/package/agentkernel) | `npm install agentkernel` |
+| [Python](sdk-python) | [`agentkernel-sdk`](https://pypi.org/project/agentkernel-sdk/) | `pip install agentkernel-sdk` |
+| [Go](sdk-golang) | [`agentkernel`](https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang) | `go get github.com/thrashr888/agentkernel/sdk/golang` |
+| [Rust](sdk-rust) | [`agentkernel-sdk`](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` |
+| [Swift](sdk-swift) | `AgentKernel` | Swift Package Manager |
 
 ## Docker vs. agentkernel
 
@@ -160,12 +160,12 @@ agentkernel setup
 agentkernel run python3 -c "print('Hello from sandbox!')"
 ```
 
-- [Installation](installation.md) - Detailed setup instructions
-- [Getting Started](getting-started.md) - Your first sandbox
-- [Commands](commands.md) - Full CLI reference
-- [Configuration](configuration.md) - Config file format
-- [Agents](agents.md) - Running Claude Code, Codex, Gemini CLI
-- [HTTP API](api.md) - Programmatic access
-- [SDKs](sdks.md) - Client libraries for [Node.js](sdk-nodejs.md), [Python](sdk-python.md), [Go](sdk-golang.md), [Rust](sdk-rust.md), [Swift](sdk-swift.md)
-- [Benchmarks](benchmarks.md) - Performance numbers for every backend
-- [Comparisons](comparisons.md) - How agentkernel compares to E2B, Daytona, Docker, and others
+- [Installation](installation) - Detailed setup instructions
+- [Getting Started](getting-started) - Your first sandbox
+- [Commands](commands) - Full CLI reference
+- [Configuration](configuration) - Config file format
+- [Agents](agents) - Running Claude Code, Codex, Gemini CLI
+- [HTTP API](api) - Programmatic access
+- [SDKs](sdks) - Client libraries for [Node.js](sdk-nodejs), [Python](sdk-python), [Go](sdk-golang), [Rust](sdk-rust), [Swift](sdk-swift)
+- [Benchmarks](benchmarks) - Performance numbers for every backend
+- [Comparisons](comparisons) - How agentkernel compares to E2B, Daytona, Docker, and others

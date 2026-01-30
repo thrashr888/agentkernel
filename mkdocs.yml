@@ -80,3 +80,11 @@ extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/thrashr888/agentkernel
+    - icon: fontawesome/brands/npm
+      link: https://www.npmjs.com/package/agentkernel
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/agentkernel-sdk/
+    - icon: fontawesome/brands/golang
+      link: https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang
+    - icon: fontawesome/brands/rust
+      link: https://crates.io/crates/agentkernel-sdk
