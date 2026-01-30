@@ -5,7 +5,7 @@ Python SDK for [agentkernel](https://github.com/thrashr888/agentkernel) — run 
 ## Install
 
 ```bash
-pip install agentkernel
+pip install agentkernel-sdk
 ```
 
 Requires Python 3.10+.

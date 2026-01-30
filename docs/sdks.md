@@ -8,7 +8,7 @@ agentkernel provides official SDK clients in five languages. Each SDK wraps the 
 | SDK | Package | Install | Async | Streaming | Sandbox Sessions |
 |-----|---------|---------|-------|-----------|------------------|
 | [Node.js](sdk-nodejs.md) | `agentkernel` | `npm install agentkernel` | Native (Promise) | `AsyncGenerator` | `await using` (auto-cleanup) |
-| [Python](sdk-python.md) | `agentkernel` | `pip install agentkernel` | Sync + Async | `Iterator` / `AsyncIterator` | Context manager |
+| [Python](sdk-python.md) | `agentkernel-sdk` | `pip install agentkernel-sdk` | Sync + Async | `Iterator` / `AsyncIterator` | Context manager |
 | [Go](sdk-golang.md) | `agentkernel` | `go get github.com/thrashr888/agentkernel/sdk/golang` | `context.Context` | `<-chan StreamEvent` | Callback with `WithSandbox` |
 | [Rust](sdk-rust.md) | `agentkernel-sdk` | `cargo add agentkernel-sdk` | `async`/`await` | `Stream` | Closure with `with_sandbox` |
 | [Swift](sdk-swift.md) | `AgentKernel` | Swift Package Manager | `async`/`await` | `AsyncThrowingStream` | Closure with `withSandbox` |

@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agentkernel"
-version = "0.1.0"
+name = "agentkernel-sdk"
+version = "0.2.0"
 description = "Python SDK for agentkernel — run AI coding agents in secure, isolated microVMs"
 readme = "README.md"
 license = "MIT"

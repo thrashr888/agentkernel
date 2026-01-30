@@ -3,14 +3,14 @@
 
 Official Python client for agentkernel. Supports both sync and async usage.
 
-- **Package**: [`agentkernel`](https://pypi.org/project/agentkernel/)
+- **Package**: [`agentkernel-sdk`](https://pypi.org/project/agentkernel-sdk/)
 - **Source**: [`sdk/python/`](https://github.com/thrashr888/agentkernel/tree/main/sdk/python)
 - **Requires**: Python 3.10+
 
 ## Install
 
 ```bash
-pip install agentkernel
+pip install agentkernel-sdk
 ```
 
 ## Quick Start

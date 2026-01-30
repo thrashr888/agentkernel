@@ -40,7 +40,7 @@ All three SDKs share:
 
 ### 1A. Python SDK (`sdk/python/`)
 
-**Package**: `agentkernel` on PyPI. Python >= 3.10.
+**Package**: `agentkernel-sdk` on PyPI. Python >= 3.10.
 
 **Dependencies**: `httpx` (HTTP), `httpx-sse` (SSE), `pydantic` (types).
 

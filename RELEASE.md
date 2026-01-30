@@ -45,10 +45,10 @@ All 4 jobs run in parallel:
 
 | SDK | Registry | Package Name | Auth |
 |-----|----------|-------------|------|
-| Node.js | npmjs.com | `agentkernel` | `NPM_TOKEN` secret |
+| Node.js | npmjs.com | `agentkernel` | OIDC trusted publisher (no secret) |
 | Node.js | GitHub Packages | `@thrashr888/agentkernel` | `GITHUB_TOKEN` (automatic) |
-| Python | PyPI | `agentkernel` | OIDC trusted publisher (no secret) |
-| Rust | crates.io | `agentkernel-sdk` | `CARGO_REGISTRY_TOKEN` secret |
+| Python | PyPI | `agentkernel-sdk` | OIDC trusted publisher (no secret) |
+| Rust | crates.io | `agentkernel-sdk` | OIDC trusted publisher (no secret) |
 | Swift | Git tags (no registry) | `AgentKernel` | None (verified only) |
 
 Version is extracted from the tag name (`v0.3.0` → `0.3.0`) and injected into each SDK's manifest before publishing.
@@ -78,27 +78,38 @@ brew install agentkernel
 
 These secrets and configurations must be set up once before the first publish.
 
-### npm (`NPM_TOKEN`)
+### npm (OIDC trusted publisher)
 
-1. Go to https://www.npmjs.com/settings/tokens/granular-access-tokens/new
-2. Create a token with publish access to `agentkernel`
-3. Add as repo secret: Settings → Secrets → Actions → `NPM_TOKEN`
+1. Go to https://www.npmjs.com/package/agentkernel/access → Trusted Publishers
+2. Add a new trusted publisher:
+   - Provider: **GitHub Actions**
+   - Organization/username: `thrashr888`
+   - Repository: `agentkernel`
+   - Workflow: `sdk-publish.yml`
+   - Environment: `npm`
+3. Create a deployment environment in GitHub: Settings → Environments → `npm`
+4. (Optional) Delete the old `NPM_TOKEN` secret once trusted publishing is verified
 
 ### PyPI (OIDC trusted publisher)
 
-1. Create the project at https://pypi.org (first publish may need a manual upload)
-2. Go to project settings → Publishing → Add a new publisher:
+1. Publish the first version manually: `cd sdk/python && pip install build && python -m build && twine upload dist/*`
+2. Go to https://pypi.org/manage/project/agentkernel-sdk/settings/publishing/ → Add a new publisher:
    - Owner: `thrashr888`
    - Repository: `agentkernel`
    - Workflow: `sdk-publish.yml`
    - Environment: `pypi`
 3. Create a deployment environment in GitHub: Settings → Environments → `pypi`
 
-### crates.io (`CARGO_REGISTRY_TOKEN`)
+### crates.io (OIDC trusted publisher)
 
-1. Go to https://crates.io/settings/tokens/new
-2. Create a token with publish access
-3. Add as repo secret: Settings → Secrets → Actions → `CARGO_REGISTRY_TOKEN`
+1. Go to https://crates.io/crates/agentkernel-sdk/settings → Trusted Publishers
+2. Add a new trusted publisher:
+   - GitHub username: `thrashr888`
+   - Repository: `agentkernel`
+   - Workflow: `sdk-publish.yml`
+   - Environment: `crates`
+3. Create a deployment environment in GitHub: Settings → Environments → `crates`
+4. (Optional) Delete the old `CARGO_REGISTRY_TOKEN` secret once trusted publishing is verified
 
 ### Swift (no setup needed)
 
@@ -129,7 +140,7 @@ After tagging, check:
 1. **GitHub Actions**: Both workflows should show green at https://github.com/thrashr888/agentkernel/actions
 2. **GitHub Release**: Binary assets at https://github.com/thrashr888/agentkernel/releases
 3. **npm**: https://www.npmjs.com/package/agentkernel
-4. **PyPI**: https://pypi.org/project/agentkernel/
+4. **PyPI**: https://pypi.org/project/agentkernel-sdk/
 5. **crates.io**: https://crates.io/crates/agentkernel-sdk
 6. **Homebrew**: `brew info thrashr888/agentkernel/agentkernel`
 
@@ -140,6 +151,10 @@ After tagging, check:
 **npm dual-publish fails on GitHub Packages**: The GitHub Packages step temporarily rewrites `package.json` to use the scoped name `@thrashr888/agentkernel`. If it fails, the original `package.json` is restored by `git checkout`. The npm publish (unscoped) is unaffected.
 
 **PyPI OIDC fails**: Verify the trusted publisher config matches exactly: repo owner, repo name, workflow filename, and environment name. The `pypi` environment must exist in GitHub repo settings.
+
+**npm OIDC fails**: Verify the trusted publisher config on npmjs.com matches exactly: username, repo name, workflow filename (`sdk-publish.yml`), and environment name (`npm`). The `npm` environment must exist in GitHub repo settings. Requires npm >= 11.5.1.
+
+**crates.io OIDC fails**: Verify the trusted publisher config on crates.io matches exactly: username, repo name, workflow filename (`sdk-publish.yml`), and environment name (`crates`). The `crates` environment must exist in GitHub repo settings. Uses `rust-lang/crates-io-auth-action@v1`.
 
 **crates.io publish fails**: `cargo publish` requires that `Cargo.toml` metadata is complete (description, license, repository). The SDK's `Cargo.toml` already has these fields.
 

@@ -10,10 +10,15 @@ permissions:
   packages: write
 
 jobs:
-  # ── Node.js: npm + GitHub Packages ──────────────────────────────────
+  # ── Node.js: npm (OIDC trusted publisher) + GitHub Packages ─────────
   publish-nodejs:
     name: Publish Node.js SDK
     runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
     defaults:
       run:
         working-directory: sdk/nodejs
@@ -22,8 +27,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://registry.npmjs.org
+
+      # Trusted publishers require npm >= 11.5.1
+      - name: Update npm
+        run: npm install -g npm@latest
 
       - run: npm ci
       - run: npm run build
@@ -35,15 +44,13 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
         run: npm version "${TAG_NAME#v}" --no-git-tag-version
 
-      # Publish to npm
+      # Publish to npm via OIDC trusted publisher (no token needed)
       - run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # Publish to GitHub Packages
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://npm.pkg.github.com
 
       - name: Publish to GitHub Packages
@@ -94,10 +101,14 @@ jobs:
         with:
           packages-dir: sdk/python/dist/
 
-  # ── Rust: crates.io ─────────────────────────────────────────────────
+  # ── Rust: crates.io (OIDC trusted publisher) ───────────────────────
   publish-rust:
     name: Publish Rust SDK
     runs-on: ubuntu-latest
+    environment: crates
+    permissions:
+      id-token: write
+      contents: read
     defaults:
       run:
         working-directory: sdk/rust
@@ -115,10 +126,11 @@ jobs:
 
       - run: cargo test
 
+      - name: Authenticate with crates.io
+        uses: rust-lang/crates-io-auth-action@v1
+
       - name: Publish to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --token "$CARGO_REGISTRY_TOKEN"
+        run: cargo publish
 
   # ── Swift: verify only (SPM uses Git tags) ──────────────────────────
   verify-swift:

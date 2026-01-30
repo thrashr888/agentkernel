@@ -12,7 +12,7 @@ info:
     ```
 
     Set `AGENTKERNEL_API_KEY` environment variable to enable authentication.
-  version: 0.1.0
+  version: 0.2.0
   license:
     name: MIT
     url: https://github.com/thrashr888/agentkernel/blob/main/LICENSE

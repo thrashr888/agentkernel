@@ -226,7 +226,7 @@ Official client libraries for the agentkernel HTTP API:
 | SDK | Package | Install |
 |-----|---------|---------|
 | **Node.js** | [`agentkernel`](https://www.npmjs.com/package/agentkernel) | `npm install agentkernel` |
-| **Python** | [`agentkernel`](https://pypi.org/project/agentkernel/) | `pip install agentkernel` |
+| **Python** | [`agentkernel-sdk`](https://pypi.org/project/agentkernel-sdk/) | `pip install agentkernel-sdk` |
 | **Go** | [`agentkernel`](https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang) | `go get github.com/thrashr888/agentkernel/sdk/golang` |
 | **Rust** | [`agentkernel-sdk`](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` |
 | **Swift** | `AgentKernel` | Swift Package Manager |
@@ -298,27 +298,33 @@ On macOS, agentkernel automatically selects the best available backend:
 
 Firecracker and Hyperlight require KVM (Linux only).
 
-## Claude Code Integration
+## Agent Plugins
 
-agentkernel includes a Claude Code skill plugin for seamless AI agent integration.
-
-### Install the Plugin
+Use agentkernel with your AI coding agent. The `plugin install` command sets up MCP server configs, skills, and commands for each agent.
 
 ```bash
-# Add the marketplace and install (in Claude Code)
-/plugin marketplace add thrashr888/agentkernel
-/plugin install sandbox
+agentkernel plugin install claude     # Claude Code: skill + MCP config
+agentkernel plugin install codex      # Codex: MCP config
+agentkernel plugin install gemini     # Gemini CLI: MCP config
+agentkernel plugin install opencode   # OpenCode: TypeScript plugin
+agentkernel plugin install mcp        # Any MCP-compatible agent
 
-# Or install directly
-/plugin install sandbox@thrashr888/agentkernel
+agentkernel plugin list               # Show install status
 ```
+
+### What Gets Installed
+
+| Agent | Files | How It Works |
+|-------|-------|--------------|
+| Claude Code | `.claude/skills/agentkernel/SKILL.md`, `.claude/commands/sandbox.md`, `.mcp.json` | Skill teaches Claude when/how to sandbox. `/sandbox` command for explicit use. MCP server provides tools. |
+| Codex | `.mcp.json` | MCP server provides `run_command`, `create_sandbox`, `exec_in_sandbox` tools. |
+| Gemini CLI | `.gemini/settings.json` | MCP server provides sandbox tools via Gemini's MCP integration. |
+| OpenCode | `.opencode/plugins/agentkernel.ts` | TypeScript plugin auto-creates session sandboxes. Requires `agentkernel serve`. |
+| Generic MCP | `.mcp.json` | Works with any MCP-compatible agent. |
 
 ### Usage in Claude Code
 
-Once installed, Claude will automatically use agentkernel for isolated execution:
-
-- **Skill**: Claude detects when sandboxing is beneficial and uses the `sandbox` skill
-- **Command**: Use `/sandbox <command>` to explicitly run in a sandbox
+Once installed, Claude uses agentkernel for isolated execution:
 
 ```
 /sandbox python3 -c "print('Hello from sandbox!')"
