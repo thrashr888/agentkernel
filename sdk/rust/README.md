@@ -48,7 +48,7 @@ use std::time::Duration;
 use agentkernel_sdk::AgentKernel;
 
 let client = AgentKernel::builder()
-    .base_url("http://localhost:8080")
+    .base_url("http://localhost:8880")
     .api_key("sk-...")
     .timeout(Duration::from_secs(60))
     .build()
@@ -58,7 +58,7 @@ let client = AgentKernel::builder()
 Or use environment variables:
 
 ```bash
-export AGENTKERNEL_BASE_URL=http://localhost:8080
+export AGENTKERNEL_BASE_URL=http://localhost:8880
 export AGENTKERNEL_API_KEY=sk-...
 ```
 

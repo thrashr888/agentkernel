@@ -30,13 +30,13 @@ Set `AGENTKERNEL_API_KEY` environment variable to enable authentication.
 AGENTKERNEL_API_KEY=secret123 agentkernel serve
 
 # Make authenticated request
-curl -H "Authorization: Bearer secret123" http://localhost:8080/sandboxes
+curl -H "Authorization: Bearer secret123" http://localhost:8880/sandboxes
 ```
 
 ### Example: Run Command
 
 ```bash
-curl -X POST http://localhost:8080/run \
+curl -X POST http://localhost:8880/run \
   -H "Content-Type: application/json" \
   -d '{"command": ["echo", "hello"]}'
 ```
@@ -55,17 +55,17 @@ Response:
 
 ```bash
 # Create
-curl -X POST http://localhost:8080/sandboxes \
+curl -X POST http://localhost:8880/sandboxes \
   -H "Content-Type: application/json" \
   -d '{"name": "my-sandbox", "image": "python:3.12-alpine"}'
 
 # Execute
-curl -X POST http://localhost:8080/sandboxes/my-sandbox/exec \
+curl -X POST http://localhost:8880/sandboxes/my-sandbox/exec \
   -H "Content-Type: application/json" \
   -d '{"command": ["python3", "-c", "print(1+1)"]}'
 
 # Remove
-curl -X DELETE http://localhost:8080/sandboxes/my-sandbox
+curl -X DELETE http://localhost:8880/sandboxes/my-sandbox
 ```
 
 ## Using with API Clients

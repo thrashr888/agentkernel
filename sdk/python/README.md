@@ -53,7 +53,7 @@ for event in client.run_stream(["python3", "script.py"]):
 
 ```python
 client = AgentKernel(
-    base_url="http://localhost:8080",  # default
+    base_url="http://localhost:8880",  # default
     api_key="sk-...",                  # optional
     timeout=30.0,                      # default
 )
@@ -62,7 +62,7 @@ client = AgentKernel(
 Or use environment variables:
 
 ```bash
-export AGENTKERNEL_BASE_URL=http://localhost:8080
+export AGENTKERNEL_BASE_URL=http://localhost:8880
 export AGENTKERNEL_API_KEY=sk-...
 ```
 

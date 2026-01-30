@@ -17,13 +17,13 @@ import (
 
 const (
 	sdkVersion     = "0.1.0"
-	defaultBaseURL = "http://localhost:8080"
+	defaultBaseURL = "http://localhost:8880"
 	defaultTimeout = 30 * time.Second
 )
 
 // Options configures the agentkernel client.
 type Options struct {
-	// BaseURL is the agentkernel server URL. Default: http://localhost:8080
+	// BaseURL is the agentkernel server URL. Default: http://localhost:8880
 	BaseURL string
 
 	// APIKey is the optional API key for authentication.

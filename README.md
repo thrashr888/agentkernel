@@ -175,7 +175,7 @@ Run agentkernel as an HTTP server for programmatic access:
 brew services start agentkernel
 
 # Or run manually
-agentkernel serve --host 127.0.0.1 --port 8080
+agentkernel serve --host 127.0.0.1 --port 8880
 ```
 
 ### Endpoints
@@ -194,7 +194,7 @@ agentkernel serve --host 127.0.0.1 --port 8080
 
 ```bash
 # Run a command
-curl -X POST http://localhost:8080/run \
+curl -X POST http://localhost:8880/run \
   -H "Content-Type: application/json" \
   -d '{"command": ["python3", "-c", "print(1+1)"], "profile": "restrictive"}'
 

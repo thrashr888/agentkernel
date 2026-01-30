@@ -67,10 +67,10 @@ The daemon maintains 3-5 pre-warmed Firecracker VMs, reducing cold start from ~8
 agentkernel daemon start &
 
 # Run HTTP API (will auto-use daemon)
-agentkernel serve --host 0.0.0.0 --port 8080
+agentkernel serve --host 0.0.0.0 --port 8880
 
 # Reverse proxy (Caddy for auto-HTTPS)
-caddy reverse-proxy --from api.yourdomain.com --to localhost:8080
+caddy reverse-proxy --from api.yourdomain.com --to localhost:8880
 
 # Database (SQLite or PostgreSQL)
 # For usage tracking, auth tokens
@@ -144,7 +144,7 @@ Requires=agentkernel-daemon.service
 [Service]
 Type=simple
 User=agentkernel
-ExecStart=/usr/local/bin/agentkernel serve --host 0.0.0.0 --port 8080
+ExecStart=/usr/local/bin/agentkernel serve --host 0.0.0.0 --port 8880
 Restart=on-failure
 
 [Install]
@@ -243,7 +243,7 @@ After=agentkernel-daemon.service
 [Service]
 Type=simple
 User=agentkernel
-ExecStart=/usr/local/bin/agentkernel serve --host 0.0.0.0 --port 8080
+ExecStart=/usr/local/bin/agentkernel serve --host 0.0.0.0 --port 8880
 Restart=on-failure
 
 [Install]
@@ -259,7 +259,7 @@ agentkernel daemon status
 # Should show: Warm VMs: 3, In use: 0
 
 # 5. Install Caddy (auto-HTTPS)
-sudo caddy reverse-proxy --from api.agentkernel.com --to localhost:8080
+sudo caddy reverse-proxy --from api.agentkernel.com --to localhost:8880
 ```
 
 ## Architecture

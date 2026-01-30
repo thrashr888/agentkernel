@@ -109,12 +109,12 @@ Run agentkernel as an HTTP server for programmatic sandbox management:
 brew services start agentkernel
 
 # Or run manually
-agentkernel serve --host 127.0.0.1 --port 8080
+agentkernel serve --host 127.0.0.1 --port 8880
 ```
 
 ```bash
 # Run a command via the API
-curl -X POST http://localhost:8080/run \
+curl -X POST http://localhost:8880/run \
   -H "Content-Type: application/json" \
   -d '{"command": ["python3", "-c", "print(1+1)"], "profile": "restrictive"}'
 

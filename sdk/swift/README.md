@@ -36,7 +36,7 @@ print(output.output)
 ```swift
 // Explicit options
 let client = AgentKernel(AgentKernelOptions(
-    baseURL: "http://localhost:8080",
+    baseURL: "http://localhost:8880",
     apiKey: "sk-...",
     timeout: 30
 ))
