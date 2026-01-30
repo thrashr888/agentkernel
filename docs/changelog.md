@@ -8,7 +8,7 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ## v0.4.0 — API Surfaces & SDK Updates
 
-_Unreleased_
+_January 30, 2026_
 
 ### Added
 
