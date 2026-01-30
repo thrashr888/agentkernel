@@ -696,6 +696,18 @@ impl VmManager {
         Ok(())
     }
 
+    /// Get the stored state for a sandbox
+    pub fn get_state(&self, name: &str) -> Option<&SandboxState> {
+        self.sandboxes.get(name)
+    }
+
+    /// Delete a file from a running sandbox
+    pub async fn delete_file(&mut self, name: &str, path: &str) -> Result<()> {
+        let cmd = vec!["rm".to_string(), "-f".to_string(), path.to_string()];
+        self.exec_cmd(name, &cmd).await?;
+        Ok(())
+    }
+
     /// Read a file from a running sandbox
     pub async fn read_file(&mut self, name: &str, path: &str) -> Result<Vec<u8>> {
         let sandbox = self.running.get_mut(name).ok_or_else(|| {

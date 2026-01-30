@@ -58,6 +58,53 @@ fn default_fast() -> bool {
 struct CreateRequest {
     name: String,
     image: Option<String>,
+    vcpus: Option<u32>,
+    memory_mb: Option<u64>,
+    profile: Option<String>,
+}
+
+/// Request to write a file
+#[derive(Debug, Deserialize)]
+struct FileWriteRequest {
+    content: String,
+    /// "utf8" (default) or "base64"
+    #[serde(default = "default_encoding")]
+    encoding: String,
+}
+
+fn default_encoding() -> String {
+    "utf8".to_string()
+}
+
+/// Response for file read
+#[derive(Debug, Serialize)]
+struct FileReadResponse {
+    content: String,
+    encoding: String,
+    size: usize,
+}
+
+/// Request for batch run
+#[derive(Debug, Deserialize)]
+struct BatchRunRequest {
+    commands: Vec<BatchCommand>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BatchCommand {
+    command: Vec<String>,
+}
+
+/// Response for batch run
+#[derive(Debug, Serialize)]
+struct BatchRunResponse {
+    results: Vec<BatchResult>,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchResult {
+    output: Option<String>,
+    error: Option<String>,
 }
 
 /// Request to execute in a sandbox
@@ -100,6 +147,14 @@ struct SandboxInfo {
     name: String,
     status: String,
     backend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vcpus: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_mb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created_at: Option<String>,
 }
 
 /// Run command response
@@ -204,6 +259,9 @@ async fn handle_request(
         // Run a command with SSE streaming output
         (Method::POST, ["run", "stream"]) => handle_run_stream(req, state).await,
 
+        // Batch run commands in parallel
+        (Method::POST, ["batch", "run"]) => handle_batch_run(req, state).await,
+
         // List sandboxes
         (Method::GET, ["sandboxes"]) => handle_list_sandboxes(state).await,
 
@@ -215,6 +273,27 @@ async fn handle_request(
 
         // Execute in a sandbox
         (Method::POST, ["sandboxes", name, "exec"]) => handle_exec_sandbox(req, name, state).await,
+
+        // Sandbox logs
+        (Method::GET, ["sandboxes", name, "logs"]) => handle_sandbox_logs(name, state).await,
+
+        // File operations: GET /sandboxes/{name}/files/{path...}
+        (Method::GET, ["sandboxes", name, "files", ..]) => {
+            let file_path = segments[3..].join("/");
+            handle_file_read(name, &file_path, state).await
+        }
+
+        // File operations: PUT /sandboxes/{name}/files/{path...}
+        (Method::PUT, ["sandboxes", name, "files", ..]) => {
+            let file_path = segments[3..].join("/");
+            handle_file_write(req, name, &file_path, state).await
+        }
+
+        // File operations: DELETE /sandboxes/{name}/files/{path...}
+        (Method::DELETE, ["sandboxes", name, "files", ..]) => {
+            let file_path = segments[3..].join("/");
+            handle_file_delete(name, &file_path, state).await
+        }
 
         // Delete a sandbox
         (Method::DELETE, ["sandboxes", name]) => handle_delete_sandbox(name, state).await,
@@ -545,6 +624,10 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
             backend: backend
                 .map(|b| format!("{}", b))
                 .unwrap_or_else(|| "unknown".to_string()),
+            image: None,
+            vcpus: None,
+            memory_mb: None,
+            created_at: None,
         })
         .collect();
 
@@ -566,6 +649,8 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
     }
 
     let image = body.image.as_deref().unwrap_or("alpine:3.20");
+    let vcpus = body.vcpus.unwrap_or(1);
+    let memory_mb = body.memory_mb.unwrap_or(512);
 
     // Validate Docker image name if provided
     if let Some(ref img) = body.image
@@ -587,14 +672,33 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         }
     };
 
-    if let Err(e) = manager.create(&body.name, image, 1, 512).await {
+    if let Err(e) = manager.create(&body.name, image, vcpus, memory_mb).await {
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
         );
     }
 
-    if let Err(e) = manager.start(&body.name).await {
+    // Resolve profile for start_with_permissions
+    let perms = if let Some(ref profile_str) = body.profile {
+        match resolve_profile(profile_str) {
+            Some(profile) => profile.permissions(),
+            None => {
+                let _ = manager.remove(&body.name).await;
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    &ApiResponse::<()>::error(format!(
+                        "Invalid profile '{}'. Use: permissive, moderate, restrictive",
+                        profile_str
+                    )),
+                );
+            }
+        }
+    } else {
+        crate::permissions::SecurityProfile::default().permissions()
+    };
+
+    if let Err(e) = manager.start_with_permissions(&body.name, &perms).await {
         let _ = manager.remove(&body.name).await;
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -608,6 +712,10 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             name: body.name,
             status: "running".to_string(),
             backend: format!("{}", manager.backend()),
+            image: Some(image.to_string()),
+            vcpus: Some(vcpus),
+            memory_mb: Some(memory_mb),
+            created_at: None,
         }),
     )
 }
@@ -632,16 +740,21 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
     };
 
     let sandboxes = manager.list();
-    for (sandbox_name, running, backend) in sandboxes {
-        if sandbox_name == name {
+    for (sandbox_name, running, backend) in &sandboxes {
+        if *sandbox_name == name {
+            let state_info = manager.get_state(name);
             return json_response(
                 StatusCode::OK,
                 &ApiResponse::success(SandboxInfo {
                     name: sandbox_name.to_string(),
-                    status: if running { "running" } else { "stopped" }.to_string(),
+                    status: if *running { "running" } else { "stopped" }.to_string(),
                     backend: backend
                         .map(|b| format!("{}", b))
                         .unwrap_or_else(|| "unknown".to_string()),
+                    image: state_info.map(|s| s.image.clone()),
+                    vcpus: state_info.map(|s| s.vcpus),
+                    memory_mb: state_info.map(|s| s.memory_mb),
+                    created_at: state_info.map(|s| s.created_at.clone()),
                 }),
             );
         }
@@ -726,6 +839,270 @@ async fn handle_delete_sandbox(name: &str, state: Arc<AppState>) -> Response<Box
             &ApiResponse::<()>::error(e.to_string()),
         ),
     }
+}
+
+/// Resolve a profile name to a SecurityProfile
+fn resolve_profile(name: &str) -> Option<SecurityProfile> {
+    match name.to_lowercase().as_str() {
+        "permissive" => Some(SecurityProfile::Permissive),
+        "moderate" => Some(SecurityProfile::Moderate),
+        "restrictive" => Some(SecurityProfile::Restrictive),
+        _ => None,
+    }
+}
+
+// --- File operation handlers ---
+
+async fn handle_file_read(name: &str, file_path: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let abs_path = format!("/{}", file_path);
+    if let Err(e) = crate::backend::validate_sandbox_path(&abs_path) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.read_file(name, &abs_path).await {
+        Ok(content) => {
+            let size = content.len();
+            let (content_str, encoding) = match String::from_utf8(content.clone()) {
+                Ok(s) => (s, "utf8"),
+                Err(_) => (
+                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &content),
+                    "base64",
+                ),
+            };
+            json_response(
+                StatusCode::OK,
+                &ApiResponse::success(FileReadResponse {
+                    content: content_str,
+                    encoding: encoding.to_string(),
+                    size,
+                }),
+            )
+        }
+        Err(e) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_file_write(
+    req: Request<Incoming>,
+    name: &str,
+    file_path: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let abs_path = format!("/{}", file_path);
+    if let Err(e) = crate::backend::validate_sandbox_path(&abs_path) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let body: FileWriteRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    let bytes = if body.encoding == "base64" {
+        match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &body.content) {
+            Ok(b) => b,
+            Err(e) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    &ApiResponse::<()>::error(format!("Invalid base64: {}", e)),
+                );
+            }
+        }
+    } else {
+        body.content.into_bytes()
+    };
+
+    let size = bytes.len();
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.write_file(name, &abs_path, &bytes).await {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success(format!("Wrote {} bytes to {}", size, abs_path)),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_file_delete(
+    name: &str,
+    file_path: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let abs_path = format!("/{}", file_path);
+    if let Err(e) = crate::backend::validate_sandbox_path(&abs_path) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.delete_file(name, &abs_path).await {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success(format!("Deleted {}", abs_path)),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+// --- Sandbox logs handler ---
+
+async fn handle_sandbox_logs(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    // Verify sandbox exists
+    let manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    if !manager.exists(name) {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Sandbox not found"),
+        );
+    }
+
+    let audit = crate::audit::audit();
+    match audit.read_by_sandbox(name) {
+        Ok(entries) => json_response(StatusCode::OK, &ApiResponse::success(entries)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+// --- Batch run handler ---
+
+async fn handle_batch_run(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    let body: BatchRunRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    if body.commands.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("commands array is required and must not be empty"),
+        );
+    }
+
+    // Verify we can get a manager (validates backend availability)
+    if let Err(e) = state.get_manager().await {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    // Run all commands in parallel using the container pool
+    let handles: Vec<_> = body
+        .commands
+        .into_iter()
+        .map(|batch_cmd| {
+            tokio::spawn(async move { VmManager::run_pooled(&batch_cmd.command).await })
+        })
+        .collect();
+
+    let mut results = Vec::new();
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(output)) => results.push(BatchResult {
+                output: Some(output),
+                error: None,
+            }),
+            Ok(Err(e)) => results.push(BatchResult {
+                output: None,
+                error: Some(e.to_string()),
+            }),
+            Err(e) => results.push(BatchResult {
+                output: None,
+                error: Some(format!("Task failed: {}", e)),
+            }),
+        }
+    }
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(BatchRunResponse { results }),
+    )
 }
 
 /// Run the HTTP API server
@@ -852,6 +1229,10 @@ mod tests {
             name: "test-sandbox".to_string(),
             status: "running".to_string(),
             backend: "docker".to_string(),
+            image: None,
+            vcpus: None,
+            memory_mb: None,
+            created_at: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"name\":\"test-sandbox\""));
@@ -917,6 +1298,10 @@ mod tests {
             name: "test".to_string(),
             status: "running".to_string(),
             backend: "docker".to_string(),
+            image: None,
+            vcpus: None,
+            memory_mb: None,
+            created_at: None,
         };
         let response = json_response(StatusCode::CREATED, &ApiResponse::success(info));
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -957,5 +1342,230 @@ mod tests {
         let path = "/sandboxes/test-123";
         let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         assert_eq!(segments, vec!["sandboxes", "test-123"]);
+    }
+
+    // === Extended CreateRequest tests ===
+
+    #[test]
+    fn test_create_request_with_resources() {
+        let json = r#"{"name": "big-sandbox", "vcpus": 4, "memory_mb": 2048}"#;
+        let req: CreateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "big-sandbox");
+        assert_eq!(req.vcpus, Some(4));
+        assert_eq!(req.memory_mb, Some(2048));
+        assert!(req.image.is_none());
+        assert!(req.profile.is_none());
+    }
+
+    #[test]
+    fn test_create_request_with_profile() {
+        let json = r#"{"name": "secure", "profile": "restrictive"}"#;
+        let req: CreateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "secure");
+        assert_eq!(req.profile, Some("restrictive".to_string()));
+        assert!(req.vcpus.is_none());
+        assert!(req.memory_mb.is_none());
+    }
+
+    #[test]
+    fn test_create_request_full() {
+        let json = r#"{
+            "name": "full-sandbox",
+            "image": "python:3.12",
+            "vcpus": 2,
+            "memory_mb": 1024,
+            "profile": "moderate"
+        }"#;
+        let req: CreateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "full-sandbox");
+        assert_eq!(req.image, Some("python:3.12".to_string()));
+        assert_eq!(req.vcpus, Some(2));
+        assert_eq!(req.memory_mb, Some(1024));
+        assert_eq!(req.profile, Some("moderate".to_string()));
+    }
+
+    // === SandboxInfo extended serialization tests ===
+
+    #[test]
+    fn test_sandbox_info_with_resources() {
+        let info = SandboxInfo {
+            name: "big".to_string(),
+            status: "running".to_string(),
+            backend: "docker".to_string(),
+            image: Some("python:3.12".to_string()),
+            vcpus: Some(4),
+            memory_mb: Some(2048),
+            created_at: Some("2026-01-30T12:00:00Z".to_string()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"image\":\"python:3.12\""));
+        assert!(json.contains("\"vcpus\":4"));
+        assert!(json.contains("\"memory_mb\":2048"));
+        assert!(json.contains("\"created_at\":\"2026-01-30T12:00:00Z\""));
+    }
+
+    #[test]
+    fn test_sandbox_info_skips_none_fields() {
+        let info = SandboxInfo {
+            name: "test".to_string(),
+            status: "stopped".to_string(),
+            backend: "docker".to_string(),
+            image: None,
+            vcpus: None,
+            memory_mb: None,
+            created_at: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(!json.contains("image"));
+        assert!(!json.contains("vcpus"));
+        assert!(!json.contains("memory_mb"));
+        assert!(!json.contains("created_at"));
+    }
+
+    // === FileWriteRequest tests ===
+
+    #[test]
+    fn test_file_write_request_utf8() {
+        let json = r#"{"content": "hello world"}"#;
+        let req: FileWriteRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.content, "hello world");
+        assert_eq!(req.encoding, "utf8"); // default
+    }
+
+    #[test]
+    fn test_file_write_request_base64() {
+        let json = r#"{"content": "aGVsbG8=", "encoding": "base64"}"#;
+        let req: FileWriteRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.content, "aGVsbG8=");
+        assert_eq!(req.encoding, "base64");
+    }
+
+    // === FileReadResponse tests ===
+
+    #[test]
+    fn test_file_read_response_serialize() {
+        let resp = FileReadResponse {
+            content: "file contents".to_string(),
+            encoding: "utf8".to_string(),
+            size: 13,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"content\":\"file contents\""));
+        assert!(json.contains("\"encoding\":\"utf8\""));
+        assert!(json.contains("\"size\":13"));
+    }
+
+    // === BatchRunRequest tests ===
+
+    #[test]
+    fn test_batch_run_request_deserialize() {
+        let json = r#"{
+            "commands": [
+                {"command": ["echo", "a"]},
+                {"command": ["echo", "b"]}
+            ]
+        }"#;
+        let req: BatchRunRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.commands.len(), 2);
+        assert_eq!(req.commands[0].command, vec!["echo", "a"]);
+        assert_eq!(req.commands[1].command, vec!["echo", "b"]);
+    }
+
+    #[test]
+    fn test_batch_run_request_single_command() {
+        let json = r#"{"commands": [{"command": ["ls", "-la"]}]}"#;
+        let req: BatchRunRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.commands.len(), 1);
+        assert_eq!(req.commands[0].command, vec!["ls", "-la"]);
+    }
+
+    // === BatchRunResponse tests ===
+
+    #[test]
+    fn test_batch_run_response_serialize() {
+        let resp = BatchRunResponse {
+            results: vec![
+                BatchResult {
+                    output: Some("hello".to_string()),
+                    error: None,
+                },
+                BatchResult {
+                    output: None,
+                    error: Some("failed".to_string()),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"output\":\"hello\""));
+        assert!(json.contains("\"error\":\"failed\""));
+    }
+
+    // === resolve_profile tests ===
+
+    #[test]
+    fn test_resolve_profile_permissive() {
+        let profile = resolve_profile("permissive");
+        assert!(profile.is_some());
+    }
+
+    #[test]
+    fn test_resolve_profile_moderate() {
+        let profile = resolve_profile("moderate");
+        assert!(profile.is_some());
+    }
+
+    #[test]
+    fn test_resolve_profile_restrictive() {
+        let profile = resolve_profile("restrictive");
+        assert!(profile.is_some());
+    }
+
+    #[test]
+    fn test_resolve_profile_unknown() {
+        let profile = resolve_profile("nonexistent");
+        assert!(profile.is_none());
+    }
+
+    // === File path segment extraction tests ===
+
+    #[test]
+    fn test_path_segments_file_simple() {
+        let path = "/sandboxes/my-box/files/tmp/hello.txt";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(
+            segments,
+            vec!["sandboxes", "my-box", "files", "tmp", "hello.txt"]
+        );
+        let file_path = segments[3..].join("/");
+        assert_eq!(file_path, "tmp/hello.txt");
+    }
+
+    #[test]
+    fn test_path_segments_file_nested() {
+        let path = "/sandboxes/dev/files/home/user/projects/src/main.rs";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let file_path = segments[3..].join("/");
+        assert_eq!(file_path, "home/user/projects/src/main.rs");
+    }
+
+    #[test]
+    fn test_path_segments_batch_run() {
+        let path = "/batch/run";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["batch", "run"]);
+    }
+
+    #[test]
+    fn test_path_segments_sandbox_logs() {
+        let path = "/sandboxes/my-sandbox/logs";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["sandboxes", "my-sandbox", "logs"]);
+    }
+
+    // === default_encoding tests ===
+
+    #[test]
+    fn test_default_encoding_returns_utf8() {
+        assert_eq!(default_encoding(), "utf8");
     }
 }
