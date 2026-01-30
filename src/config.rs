@@ -145,7 +145,6 @@ pub struct CommandConfig {
 
 impl CommandConfig {
     /// Check if a command is allowed
-    #[allow(dead_code)]
     pub fn is_allowed(&self, command: &str) -> bool {
         // Extract the binary name (first part of command)
         let binary = command.split_whitespace().next().unwrap_or(command);

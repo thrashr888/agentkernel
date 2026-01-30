@@ -446,30 +446,49 @@ memory_mb = 512
                 }
             });
 
-            if let Some(ref path) = record_path {
-                eprintln!("Recording session to: {}", path.display());
-                eprintln!(
-                    "Note: Full PTY recording not yet implemented; recording placeholder created."
-                );
+            // Use a temp file for raw script output, then convert to asciicast
+            let script_tmp = record_path.as_ref().map(|p| p.with_extension("typescript"));
 
-                // Create the recordings directory if needed
-                if let Some(parent) = path.parent() {
+            if let Some(ref tmp) = script_tmp {
+                eprintln!(
+                    "Recording session to: {}",
+                    record_path.as_ref().unwrap().display()
+                );
+                if let Some(parent) = tmp.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-
-                // Create a basic recording file with header
-                let mut recorder = asciicast::AsciicastRecorder::with_header(
-                    path,
-                    asciicast::AsciicastHeader::with_size(80, 24)
-                        .with_title(format!("agentkernel attach {}", name))
-                        .with_command(format!("agentkernel attach {}", name)),
-                );
-                recorder.record_output("Session started\r\n");
-                recorder.save()?;
+                // Tell the Docker backend to wrap with `script`
+                // SAFETY: single-threaded at this point (before spawning attach)
+                unsafe { std::env::set_var("AGENTKERNEL_RECORD", tmp.to_string_lossy().as_ref()) };
             }
 
             // Attach to the sandbox's shell with environment variables
             let exit_code = manager.attach_with_env(&name, &env).await?;
+
+            // Convert script typescript to asciicast format
+            if let (Some(tmp), Some(cast_path)) = (&script_tmp, &record_path) {
+                // SAFETY: single-threaded at this point (attach just returned)
+                unsafe { std::env::remove_var("AGENTKERNEL_RECORD") };
+                if tmp.exists() {
+                    let raw = std::fs::read_to_string(tmp).unwrap_or_default();
+                    let mut recorder = asciicast::AsciicastRecorder::with_header(
+                        cast_path,
+                        asciicast::AsciicastHeader::with_size(80, 24)
+                            .with_title(format!("agentkernel attach {}", name))
+                            .with_command(format!("agentkernel attach {}", name)),
+                    );
+                    // Record the raw typescript output as a single asciicast event
+                    recorder.record_output(&raw);
+                    if let Err(e) = recorder.save() {
+                        eprintln!("Warning: Failed to save recording: {}", e);
+                    } else {
+                        eprintln!("Session saved to: {}", cast_path.display());
+                        eprintln!("  Replay with: agentkernel replay {}", cast_path.display());
+                    }
+                    // Clean up temp file
+                    let _ = std::fs::remove_file(tmp);
+                }
+            }
 
             if exit_code != 0 {
                 std::process::exit(exit_code);

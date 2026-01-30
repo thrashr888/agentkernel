@@ -393,24 +393,61 @@ impl Sandbox for DockerSandbox {
         let container_name = self.container_name();
         let shell_cmd = shell.unwrap_or("/bin/sh");
 
-        // Build args with environment variables
-        let mut args = vec!["exec".to_string(), "-it".to_string()];
+        // Build the docker exec command
+        let mut docker_args = vec!["exec".to_string(), "-it".to_string()];
         for e in env {
-            args.push("-e".to_string());
-            args.push(e.clone());
+            docker_args.push("-e".to_string());
+            docker_args.push(e.clone());
         }
-        args.push(container_name);
-        args.push(shell_cmd.to_string());
+        docker_args.push(container_name);
+        docker_args.push(shell_cmd.to_string());
 
-        // Use docker exec -it to attach an interactive terminal
-        // Note: this takes over stdin/stdout directly
-        let status = std::process::Command::new(self.runtime.cmd())
-            .args(&args)
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()
-            .context("Failed to attach to container")?;
+        let runtime_cmd = self.runtime.cmd();
+
+        // Check if recording was requested via AGENTKERNEL_RECORD env var
+        // (set by the attach command handler when --record is passed)
+        let record_path = std::env::var("AGENTKERNEL_RECORD").ok();
+
+        let status = if let Some(ref cast_path) = record_path {
+            // Wrap with `script` to capture PTY I/O for session recording.
+            // macOS: script -q <file> <cmd> [args...]
+            // Linux: script -qc "<cmd> [args...]" <file>
+            let full_cmd = std::iter::once(runtime_cmd.to_string())
+                .chain(docker_args.iter().cloned())
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            let mut script_args = if cfg!(target_os = "macos") {
+                vec!["-q".to_string(), cast_path.clone(), runtime_cmd.to_string()]
+            } else {
+                vec![
+                    "-q".to_string(),
+                    "-c".to_string(),
+                    full_cmd,
+                    cast_path.clone(),
+                ]
+            };
+
+            if cfg!(target_os = "macos") {
+                script_args.extend(docker_args);
+            }
+
+            std::process::Command::new("script")
+                .args(&script_args)
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .status()
+                .context("Failed to record session with script")?
+        } else {
+            std::process::Command::new(runtime_cmd)
+                .args(&docker_args)
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .status()
+                .context("Failed to attach to container")?
+        };
 
         Ok(status.code().unwrap_or(-1))
     }

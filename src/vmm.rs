@@ -7,6 +7,7 @@ use crate::audit::{AuditEvent, log_event};
 use crate::backend::{
     BackendType, FileInjection, Sandbox, SandboxConfig, create_sandbox, detect_best_backend,
 };
+use crate::config::Config;
 use crate::docker_backend::detect_container_runtime;
 use crate::languages::docker_image_to_firecracker_runtime;
 use crate::permissions::Permissions;
@@ -394,6 +395,26 @@ impl VmManager {
         Ok(())
     }
 
+    /// Check if a command is allowed by the security policy in agentkernel.toml.
+    /// Logs a PolicyViolation audit event and returns an error if blocked.
+    fn enforce_command_policy(cmd: &[String]) -> Result<()> {
+        if let Some(binary) = cmd.first()
+            && let Ok(cfg) = Config::from_file(&PathBuf::from("agentkernel.toml"))
+            && !cfg.security.commands.is_allowed(binary)
+        {
+            log_event(AuditEvent::PolicyViolation {
+                sandbox: "ephemeral".to_string(),
+                policy: "commands".to_string(),
+                details: format!("blocked command: {}", binary),
+            });
+            bail!(
+                "Command '{}' blocked by security policy. Check [security.commands] in agentkernel.toml",
+                binary
+            );
+        }
+        Ok(())
+    }
+
     /// Execute a command in a sandbox
     pub async fn exec_cmd(&mut self, name: &str, cmd: &[String]) -> Result<String> {
         self.exec_cmd_with_env(name, cmd, &[]).await
@@ -406,6 +427,8 @@ impl VmManager {
         cmd: &[String],
         env: &[String],
     ) -> Result<String> {
+        Self::enforce_command_policy(cmd)?;
+
         let sandbox = self.running.get_mut(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Sandbox '{}' is not running. Start it with: agentkernel start {}",
@@ -517,6 +540,7 @@ impl VmManager {
 
     /// Run a command using the container pool (fast path for ephemeral runs)
     pub async fn run_pooled(cmd: &[String]) -> Result<String> {
+        Self::enforce_command_policy(cmd)?;
         let pool = get_pool().await?;
         let container = pool.acquire().await?;
         let result = container.run_command(cmd).await;
@@ -549,6 +573,7 @@ impl VmManager {
         perms: &Permissions,
         files: &[FileInjection],
     ) -> Result<String> {
+        Self::enforce_command_policy(cmd)?;
         // Build config from permissions
         let work_dir = if perms.mount_cwd {
             std::env::current_dir()
