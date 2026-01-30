@@ -29,7 +29,8 @@ If you've used Docker, you already know the CLI:
 
 ```bash
 # Install
-curl -fsSL https://raw.githubusercontent.com/thrashr888/agentkernel/main/install.sh | sh
+brew tap thrashr888/agentkernel && brew install agentkernel
+# Or: curl -fsSL https://raw.githubusercontent.com/thrashr888/agentkernel/main/install.sh | sh
 agentkernel setup
 
 # Run any command in an isolated sandbox
@@ -135,7 +136,8 @@ Docker is a great tool for packaging and deploying applications. agentkernel is 
 ## Get started
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thrashr888/agentkernel/main/install.sh | sh
+brew tap thrashr888/agentkernel && brew install agentkernel
+# Or: curl -fsSL https://raw.githubusercontent.com/thrashr888/agentkernel/main/install.sh | sh
 agentkernel setup
 agentkernel run python3 -c "print('Hello from sandbox!')"
 ```

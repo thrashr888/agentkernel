@@ -1,0 +1,23 @@
+# OpenCode Agent Configuration
+#
+# Use this config to create a sandbox with OpenCode pre-installed:
+#   agentkernel create my-project --config examples/agents/opencode/agentkernel.toml
+
+[sandbox]
+name = "opencode-sandbox"
+
+[build]
+# Build from Dockerfile in this directory
+dockerfile = "Dockerfile"
+
+[agent]
+preferred = "opencode"
+
+[resources]
+vcpus = 2
+memory_mb = 1024
+
+[security]
+profile = "moderate"
+network = true      # OpenCode needs network for API calls
+mount_cwd = true    # Mount project directory

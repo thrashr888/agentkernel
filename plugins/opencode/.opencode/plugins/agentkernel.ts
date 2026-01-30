@@ -164,25 +164,33 @@ export const agentkernel: Plugin = async ({
             .describe("Command and arguments to run"),
         },
         async execute(args, context) {
-          // Find the session sandbox
-          // Note: context doesn't expose session ID directly, so we use
-          // the most recently created sandbox as a fallback
-          const sandboxes = await request<SandboxInfo[]>(
-            "GET",
-            "/sandboxes",
-          );
-          const sessionSandbox = sandboxes.find((s) =>
-            s.name.startsWith("opencode-"),
-          );
-          if (!sessionSandbox) {
-            throw new Error(
-              "No active session sandbox. Use sandbox_run for one-shot execution.",
+          // Look up the session sandbox from our in-memory map first
+          let sandboxName: string | undefined;
+          for (const [, name] of activeSandboxes) {
+            sandboxName = name;
+            break;
+          }
+
+          // Fallback: query the API if the map is empty (e.g. plugin reloaded mid-session)
+          if (!sandboxName) {
+            const sandboxes = await request<SandboxInfo[]>(
+              "GET",
+              "/sandboxes",
             );
+            const found = sandboxes.find((s) =>
+              s.name.startsWith("opencode-"),
+            );
+            if (!found) {
+              throw new Error(
+                "No active session sandbox. Use sandbox_run for one-shot execution.",
+              );
+            }
+            sandboxName = found.name;
           }
 
           const result = await request<RunOutput>(
             "POST",
-            `/sandboxes/${sessionSandbox.name}/exec`,
+            `/sandboxes/${sandboxName}/exec`,
             { command: args.command },
           );
           return result.output;

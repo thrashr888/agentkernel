@@ -60,6 +60,7 @@ nav:
     - Claude Code: agent-claude.md
     - OpenAI Codex: agent-codex.md
     - Google Gemini: agent-gemini.md
+    - OpenCode: agent-opencode.md
   - API:
     - Overview: api.md
     - HTTP API: api-http.md

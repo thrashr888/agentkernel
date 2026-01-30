@@ -5,7 +5,10 @@ Run AI coding agents in secure, isolated microVMs. Sub-125ms boot times, real ha
 ## Installation
 
 ```bash
-# macOS / Linux
+# Homebrew (macOS / Linux)
+brew tap thrashr888/agentkernel && brew install agentkernel
+
+# Or with the install script
 curl -fsSL https://raw.githubusercontent.com/thrashr888/agentkernel/main/install.sh | sh
 
 # Or with Cargo
