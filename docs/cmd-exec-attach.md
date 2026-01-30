@@ -104,6 +104,23 @@ $ claude
 # Claude Code starts in interactive mode
 ```
 
+### Session Recording
+
+The `--record` flag records terminal I/O in [asciicast v2](https://github.com/asciinema/asciinema/blob/develop/doc/asciicast-v2.md) format. Recordings capture:
+
+- **Output events** — everything written to the terminal
+- **Timing** — sub-millisecond timestamps relative to session start
+- **Terminal dimensions** — detected from your terminal at recording start (falls back to 80x24)
+
+Recordings are saved to `~/.agentkernel/recordings/<name>-YYYYMMDD-HHMMSS.cast`.
+
+Play back with `agentkernel replay` or any asciicast-compatible player (e.g., [asciinema](https://asciinema.org/)):
+
+```bash
+agentkernel replay ~/.agentkernel/recordings/my-sandbox-20260130-120000.cast
+agentkernel replay session.cast --speed 2.0 --max-idle 1.0
+```
+
 ### PTY Support
 
 `attach` provides a proper pseudo-terminal (PTY), supporting:

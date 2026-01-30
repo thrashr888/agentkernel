@@ -123,6 +123,9 @@ This is more secure than `pass_env = true` because you control exactly which var
 
 ## Domain Filtering
 
+!!! note "Not yet enforced at runtime"
+    Domain filtering rules are parsed and validated but **not enforced** at the network level yet. Runtime DNS enforcement requires the Firecracker backend. Rules are recorded in the config for future use. agentkernel will print a warning at startup when domain rules are configured.
+
 Control which network domains the sandbox can access.
 
 ```toml
@@ -156,6 +159,8 @@ block = ["*.ru", "*.cn", "malware-c2.com"]
 ```
 
 ## Command Filtering
+
+Command filtering is **enforced at runtime**. Blocked commands are rejected with an error and logged as `PolicyViolation` audit events (see [audit logging](../commands#audit-logging)).
 
 Control which commands and binaries can be executed inside the sandbox.
 
@@ -237,3 +242,11 @@ Built-in profiles are searched in the following locations:
 1. `./images/seccomp/` (development)
 2. `<executable-dir>/seccomp/` (installed)
 3. `/usr/share/agentkernel/seccomp/` (system)
+
+## Config Validation
+
+agentkernel validates security config at startup and prints warnings for:
+
+- **Domain rules with network disabled** — `[security.domains]` rules have no effect when the profile disables network access (e.g., `restrictive` profile).
+- **Conflicting domain lists** — A domain in the `allow` list that is also matched by the `block` list (block takes precedence).
+- **Unenforceable domain rules** — Domain filtering rules are configured but runtime DNS enforcement is not yet available.

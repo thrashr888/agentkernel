@@ -76,3 +76,19 @@ agentkernel audit list --sandbox my-sandbox
 # Show audit log file path
 agentkernel audit path
 ```
+
+The audit log is stored as JSONL at `~/.agentkernel/audit.jsonl`. Each line is a JSON object with `timestamp`, `pid`, `user`, and the event payload. Set `AGENTKERNEL_AUDIT=0` to disable.
+
+**Event types:**
+
+| Event | Fields | When |
+|-------|--------|------|
+| `sandbox_created` | name, image, backend | `create` |
+| `sandbox_started` | name, profile | `start` |
+| `sandbox_stopped` | name | `stop` |
+| `sandbox_removed` | name | `remove` |
+| `command_executed` | sandbox, command, exit_code | `exec` / `run` |
+| `file_written` | sandbox, path | `cp` to sandbox |
+| `file_read` | sandbox, path | `cp` from sandbox |
+| `session_attached` | sandbox | `attach` |
+| `policy_violation` | sandbox, policy, details | Blocked command |
