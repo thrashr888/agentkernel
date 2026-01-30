@@ -135,10 +135,19 @@ jobs:
       - run: cargo test
 
       - name: Authenticate with crates.io
+        id: crates-auth
         uses: rust-lang/crates-io-auth-action@v1
 
       - name: Publish to crates.io
-        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          if cargo search agentkernel-sdk --limit 1 2>/dev/null | grep -q "agentkernel-sdk = \"${VERSION}\""; then
+            echo "Version ${VERSION} already published to crates.io, skipping"
+          else
+            cargo publish
+          fi
 
   # ── Swift: verify only (SPM uses Git tags) ──────────────────────────
   verify-swift:
