@@ -9,22 +9,47 @@ Pushing a `v*` tag triggers two workflows in parallel:
 | **Release** | `.github/workflows/release.yml` | Builds CLI binaries for 4 platforms, creates GitHub Release |
 | **SDK Publish** | `.github/workflows/sdk-publish.yml` | Publishes all SDKs to their registries |
 
+## Pre-Release Checklist
+
+Before tagging, verify CI is green and all code is tested:
+
+```bash
+# 1. Main codebase quality gates
+cargo fmt -- --check && cargo clippy -- -D warnings && cargo test
+
+# 2. Rust SDK tests
+cd sdk/rust && cargo test && cd ../..
+
+# 3. Node.js SDK tests
+cd sdk/nodejs && npm ci && npm run build && npm test && cd ../..
+
+# 4. Swift SDK build
+cd sdk/swift && swift build && swift test && cd ../..
+
+# 5. Confirm CI history is green
+gh run list --repo thrashr888/agentkernel --limit 5
+```
+
+All checks must pass before tagging. Fix any failures and push before proceeding.
+
 ## Cutting a Release
 
 ```bash
 # 1. Update version in Cargo.toml (CLI)
 #    SDK versions are set automatically from the tag.
 
-# 2. Commit
+# 2. Run the pre-release checklist above
+
+# 3. Commit
 git add Cargo.toml
 git commit -m "release: v0.3.0"
 
-# 3. Tag and push
+# 4. Tag and push
 git tag v0.3.0
 git push origin main v0.3.0
 ```
 
-That's it. Both workflows trigger on the tag push.
+Both workflows trigger on the tag push.
 
 ## What Gets Published
 
