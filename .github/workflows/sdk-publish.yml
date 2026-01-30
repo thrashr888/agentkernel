@@ -71,7 +71,12 @@ jobs:
             pkg.name = '@thrashr888/agentkernel';
             require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2));
           "
-          npm publish --access public
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "@thrashr888/agentkernel@${VERSION}" version --registry https://npm.pkg.github.com 2>/dev/null; then
+            echo "Version ${VERSION} already published to GitHub Packages, skipping"
+          else
+            npm publish --access public
+          fi
           git checkout package.json
 
   # ── Python: PyPI via OIDC trusted publisher ─────────────────────────
