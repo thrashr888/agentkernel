@@ -9,7 +9,7 @@ OpenCode integrates with agentkernel through a TypeScript plugin that automatica
 
 ```bash
 # 1. Start agentkernel API server (pick one)
-brew services start agentkernel   # runs in background, survives reboots
+brew services start thrashr888/agentkernel/agentkernel   # runs in background, survives reboots
 agentkernel serve                 # or run manually in a terminal
 
 # 2. Install the plugin into your project
@@ -63,7 +63,7 @@ Your project should have:
 
 ```bash
 # As a background service (recommended — survives reboots)
-brew services start agentkernel
+brew services start thrashr888/agentkernel/agentkernel
 
 # Or run manually
 agentkernel serve --host 127.0.0.1 --port 18888

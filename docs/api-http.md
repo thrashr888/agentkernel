@@ -7,7 +7,7 @@ agentkernel includes a REST API for programmatic sandbox management.
 
 ```bash
 # As a background service (recommended — survives reboots)
-brew services start agentkernel
+brew services start thrashr888/agentkernel/agentkernel
 
 # Or start manually on default port (18888)
 agentkernel serve

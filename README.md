@@ -172,7 +172,7 @@ Run agentkernel as an HTTP server for programmatic access:
 
 ```bash
 # As a background service (recommended — survives reboots)
-brew services start agentkernel
+brew services start thrashr888/agentkernel/agentkernel
 
 # Or run manually
 agentkernel serve --host 127.0.0.1 --port 18888

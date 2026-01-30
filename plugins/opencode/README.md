@@ -22,7 +22,7 @@ agentkernel plugin install opencode
 
 ```bash
 # As a background service (recommended)
-brew services start agentkernel
+brew services start thrashr888/agentkernel/agentkernel
 
 # Or run manually
 agentkernel serve

@@ -106,7 +106,7 @@ Run agentkernel as an HTTP server for programmatic sandbox management:
 
 ```bash
 # As a background service (recommended)
-brew services start agentkernel
+brew services start thrashr888/agentkernel/agentkernel
 
 # Or run manually
 agentkernel serve --host 127.0.0.1 --port 18888
