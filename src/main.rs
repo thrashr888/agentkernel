@@ -327,6 +327,11 @@ memory_mb = 512
                 (Config::minimal(&name, &agent), None)
             };
 
+            // Validate config and print warnings
+            for warning in cfg.validate() {
+                eprintln!("Warning: {}", warning);
+            }
+
             // Parse backend option if provided
             let backend_type = if let Some(ref b) = backend {
                 Some(
@@ -473,7 +478,7 @@ memory_mb = 512
                     let raw = std::fs::read_to_string(tmp).unwrap_or_default();
                     let mut recorder = asciicast::AsciicastRecorder::with_header(
                         cast_path,
-                        asciicast::AsciicastHeader::with_size(80, 24)
+                        asciicast::AsciicastHeader::from_terminal()
                             .with_title(format!("agentkernel attach {}", name))
                             .with_command(format!("agentkernel attach {}", name)),
                     );
@@ -729,6 +734,9 @@ memory_mb = 512
             // Apply config overrides if present and load files
             let files = if let Some(ref config_path) = config {
                 let cfg = Config::from_file(config_path)?;
+                for warning in cfg.validate() {
+                    eprintln!("Warning: {}", warning);
+                }
                 let cfg_perms = cfg.get_permissions();
                 // Config overrides take precedence over CLI profile
                 if cfg.security.network.is_some() {

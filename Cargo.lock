@@ -18,6 +18,7 @@ dependencies = [
  "hyper-util",
  "hyperlight-wasm",
  "hyperlocal",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

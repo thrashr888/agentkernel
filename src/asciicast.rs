@@ -16,6 +16,24 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// Get the current terminal dimensions (columns, rows). Falls back to 80x24.
+pub fn terminal_size() -> (u32, u32) {
+    #[cfg(unix)]
+    {
+        use std::mem::MaybeUninit;
+        let mut ws = MaybeUninit::<libc::winsize>::uninit();
+        // SAFETY: TIOCGWINSZ is a read-only ioctl on stdout
+        let ret = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, ws.as_mut_ptr()) };
+        if ret == 0 {
+            let ws = unsafe { ws.assume_init() };
+            if ws.ws_col > 0 && ws.ws_row > 0 {
+                return (ws.ws_col as u32, ws.ws_row as u32);
+            }
+        }
+    }
+    (80, 24)
+}
+
 /// Asciicast v2 header
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsciicastHeader {
@@ -65,6 +83,12 @@ impl AsciicastHeader {
     /// Create a new header with default terminal size
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create a header with the current terminal's dimensions (falls back to 80x24)
+    pub fn from_terminal() -> Self {
+        let (w, h) = terminal_size();
+        Self::with_size(w, h)
     }
 
     /// Create a header with specific terminal dimensions

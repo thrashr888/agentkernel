@@ -36,6 +36,7 @@ dirs = "6.0.0"
 [target.'cfg(unix)'.dependencies]
 hyperlocal = "0.9"
 tokio-vsock = "0.6"
+libc = "0.2"
 
 # Hyperlight for sub-millisecond Wasm sandboxes (Linux only, requires KVM)
 [target.'cfg(target_os = "linux")'.dependencies]

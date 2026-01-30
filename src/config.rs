@@ -98,8 +98,12 @@ pub struct DomainConfig {
 }
 
 impl DomainConfig {
+    /// Returns true if any domain rules are configured
+    pub fn has_rules(&self) -> bool {
+        !self.allow.is_empty() || !self.block.is_empty() || self.allowlist_only
+    }
+
     /// Check if a domain is allowed
-    #[allow(dead_code)]
     pub fn is_allowed(&self, domain: &str) -> bool {
         // First check blocklist
         for pattern in &self.block {
@@ -118,7 +122,6 @@ impl DomainConfig {
     }
 
     /// Check if domain matches a pattern (supports * wildcard prefix)
-    #[allow(dead_code)]
     fn matches_pattern(domain: &str, pattern: &str) -> bool {
         if pattern.starts_with("*.") {
             let suffix = &pattern[1..]; // ".example.com"
@@ -318,6 +321,44 @@ impl Config {
             .as_ref()
             .and_then(|mode_str| crate::permissions::CompatibilityMode::from_str(mode_str))
             .map(|mode| mode.profile())
+    }
+
+    /// Validate configuration for consistency. Returns warnings about
+    /// misconfigured or unsupported settings.
+    pub fn validate(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        let perms = self.get_permissions();
+
+        // Warn if domain rules configured but network is disabled
+        if self.security.domains.has_rules() && !perms.network {
+            warnings.push(
+                "Domain filtering rules in [security.domains] have no effect \
+                 because network access is disabled."
+                    .to_string(),
+            );
+        }
+
+        // Check for domains appearing in both allow and block lists
+        for domain in &self.security.domains.allow {
+            if !self.security.domains.is_allowed(domain) {
+                warnings.push(format!(
+                    "Domain '{}' is in the allow list but matched by the block list \
+                     (block takes precedence).",
+                    domain
+                ));
+            }
+        }
+
+        // Warn that domain filtering is not yet enforced at runtime
+        if self.security.domains.has_rules() && perms.network {
+            warnings.push(
+                "Domain filtering rules are configured but runtime DNS enforcement \
+                 is not yet implemented. Rules are recorded for future use."
+                    .to_string(),
+            );
+        }
+
+        warnings
     }
 
     /// Get the effective Docker image for this config
@@ -715,5 +756,52 @@ mod tests {
         let config = Config::from_str(toml).unwrap();
 
         assert_eq!(config.security.seccomp, Some("default".to_string()));
+    }
+
+    #[test]
+    fn test_domain_config_has_rules() {
+        let empty = DomainConfig::default();
+        assert!(!empty.has_rules());
+
+        let with_allow = DomainConfig {
+            allow: vec!["example.com".to_string()],
+            ..Default::default()
+        };
+        assert!(with_allow.has_rules());
+
+        let allowlist_only = DomainConfig {
+            allowlist_only: true,
+            ..Default::default()
+        };
+        assert!(allowlist_only.has_rules());
+    }
+
+    #[test]
+    fn test_validate_domain_rules_no_network() {
+        let toml = r#"
+            [sandbox]
+            name = "test"
+
+            [security]
+            profile = "restrictive"
+
+            [security.domains]
+            allow = ["api.example.com"]
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        let warnings = config.validate();
+        // restrictive profile has network=false, so domain rules are ineffective
+        assert!(warnings.iter().any(|w| w.contains("no effect")));
+    }
+
+    #[test]
+    fn test_validate_no_warnings_without_domain_rules() {
+        let toml = r#"
+            [sandbox]
+            name = "test"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        let warnings = config.validate();
+        assert!(warnings.is_empty());
     }
 }
