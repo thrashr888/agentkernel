@@ -66,7 +66,7 @@ Your project should have:
 brew services start agentkernel
 
 # Or run manually
-agentkernel serve --host 127.0.0.1 --port 8880
+agentkernel serve --host 127.0.0.1 --port 18888
 ```
 
 ### 4. Launch OpenCode
@@ -122,7 +122,7 @@ mount_cwd = true    # Mount project directory
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGENTKERNEL_BASE_URL` | `http://localhost:8880` | agentkernel API endpoint |
+| `AGENTKERNEL_BASE_URL` | `http://localhost:18888` | agentkernel API endpoint |
 | `AGENTKERNEL_API_KEY` | - | Optional Bearer token for API auth |
 
 OpenCode itself supports multiple LLM providers. Pass your provider's API key as usual — it stays on your machine and is not forwarded to the sandbox.

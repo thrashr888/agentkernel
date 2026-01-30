@@ -9,7 +9,7 @@ agentkernel includes a REST API for programmatic sandbox management.
 # As a background service (recommended — survives reboots)
 brew services start agentkernel
 
-# Or start manually on default port (8880)
+# Or start manually on default port (18888)
 agentkernel serve
 
 # Custom port
@@ -24,7 +24,7 @@ AGENTKERNEL_API_KEY=your-secret agentkernel serve
 If `AGENTKERNEL_API_KEY` is set, all requests require the `X-API-Key` header:
 
 ```bash
-curl -H "X-API-Key: your-secret" http://localhost:8880/health
+curl -H "X-API-Key: your-secret" http://localhost:18888/health
 ```
 
 ## Endpoints
@@ -36,7 +36,7 @@ GET /health
 ```
 
 ```bash
-curl http://localhost:8880/health
+curl http://localhost:18888/health
 ```
 
 ```json
@@ -52,7 +52,7 @@ POST /run
 ```
 
 ```bash
-curl -X POST http://localhost:8880/run \
+curl -X POST http://localhost:18888/run \
   -H "Content-Type: application/json" \
   -d '{"command": ["python3", "-c", "print(1+1)"]}'
 ```
@@ -82,7 +82,7 @@ POST /run/stream
 ```
 
 ```bash
-curl -X POST http://localhost:8880/run/stream \
+curl -X POST http://localhost:18888/run/stream \
   -H "Content-Type: application/json" \
   -d '{"command": ["python3", "long_script.py"]}'
 ```
@@ -136,7 +136,7 @@ GET /sandboxes
 ```
 
 ```bash
-curl http://localhost:8880/sandboxes
+curl http://localhost:18888/sandboxes
 ```
 
 ```json
@@ -156,7 +156,7 @@ POST /sandboxes
 ```
 
 ```bash
-curl -X POST http://localhost:8880/sandboxes \
+curl -X POST http://localhost:18888/sandboxes \
   -H "Content-Type: application/json" \
   -d '{"name": "my-sandbox", "image": "python:3.12-alpine"}'
 ```
@@ -175,7 +175,7 @@ GET /sandboxes/{name}
 ```
 
 ```bash
-curl http://localhost:8880/sandboxes/my-sandbox
+curl http://localhost:18888/sandboxes/my-sandbox
 ```
 
 ### Execute in Sandbox
@@ -185,7 +185,7 @@ POST /sandboxes/{name}/exec
 ```
 
 ```bash
-curl -X POST http://localhost:8880/sandboxes/my-sandbox/exec \
+curl -X POST http://localhost:18888/sandboxes/my-sandbox/exec \
   -H "Content-Type: application/json" \
   -d '{"command": ["ls", "-la"]}'
 ```
@@ -204,7 +204,7 @@ POST /sandboxes/{name}/stop
 ```
 
 ```bash
-curl -X POST http://localhost:8880/sandboxes/my-sandbox/stop
+curl -X POST http://localhost:18888/sandboxes/my-sandbox/stop
 ```
 
 ### Delete Sandbox
@@ -214,7 +214,7 @@ DELETE /sandboxes/{name}
 ```
 
 ```bash
-curl -X DELETE http://localhost:8880/sandboxes/my-sandbox
+curl -X DELETE http://localhost:18888/sandboxes/my-sandbox
 ```
 
 ## Error Responses

@@ -31,7 +31,7 @@ Every SDK resolves configuration the same way:
 
 1. **Explicit options** passed to the constructor
 2. **Environment variables** (`AGENTKERNEL_BASE_URL`, `AGENTKERNEL_API_KEY`)
-3. **Defaults** (`http://localhost:8880`, no API key, 30s timeout)
+3. **Defaults** (`http://localhost:18888`, no API key, 30s timeout)
 
 ## Quick Start by Language
 

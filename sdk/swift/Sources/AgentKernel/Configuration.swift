@@ -27,7 +27,7 @@ struct ResolvedConfig: Sendable {
     let apiKey: String?
     let timeout: TimeInterval
 
-    static let defaultBaseURL = "http://localhost:8880"
+    static let defaultBaseURL = "http://localhost:18888"
     static let defaultTimeout: TimeInterval = 30
 
     init(options: AgentKernelOptions? = nil) {

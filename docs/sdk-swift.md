@@ -42,7 +42,7 @@ print(output.output) // "hello\n"
 
 ```swift
 let client = AgentKernel(AgentKernelOptions(
-    baseURL: "http://localhost:8880",
+    baseURL: "http://localhost:18888",
     apiKey: "sk-...",
     timeout: 30
 ))
@@ -51,7 +51,7 @@ let client = AgentKernel(AgentKernelOptions(
 ### Environment Variables
 
 ```bash
-export AGENTKERNEL_BASE_URL=http://localhost:8880
+export AGENTKERNEL_BASE_URL=http://localhost:18888
 export AGENTKERNEL_API_KEY=sk-...
 ```
 

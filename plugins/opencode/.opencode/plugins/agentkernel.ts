@@ -28,7 +28,7 @@ interface ApiResponse<T> {
 }
 
 const BASE_URL =
-  process.env.AGENTKERNEL_BASE_URL ?? "http://localhost:8880";
+  process.env.AGENTKERNEL_BASE_URL ?? "http://localhost:18888";
 const API_KEY = process.env.AGENTKERNEL_API_KEY;
 
 async function request<T>(

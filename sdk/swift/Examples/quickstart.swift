@@ -1,7 +1,7 @@
 // Quickstart example for the AgentKernel Swift SDK.
 //
 // Usage: swift run quickstart
-// Requires: agentkernel server running on localhost:8880
+// Requires: agentkernel server running on localhost:18888
 
 import AgentKernel
 

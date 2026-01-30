@@ -1,6 +1,6 @@
 import type { AgentKernelOptions } from "./types.js";
 
-const DEFAULT_BASE_URL = "http://localhost:8880";
+const DEFAULT_BASE_URL = "http://localhost:18888";
 const DEFAULT_TIMEOUT = 30_000;
 
 /** Resolve configuration from constructor args, env vars, and defaults. */

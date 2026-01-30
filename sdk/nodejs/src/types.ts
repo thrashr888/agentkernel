@@ -9,7 +9,7 @@ export type StreamEventType = "started" | "progress" | "output" | "done" | "erro
 
 /** Configuration options for the AgentKernel client. */
 export interface AgentKernelOptions {
-  /** Base URL of the agentkernel HTTP API. Default: AGENTKERNEL_BASE_URL or http://localhost:8880 */
+  /** Base URL of the agentkernel HTTP API. Default: AGENTKERNEL_BASE_URL or http://localhost:18888 */
   baseUrl?: string;
   /** API key for Bearer authentication. Default: AGENTKERNEL_API_KEY env var */
   apiKey?: string;

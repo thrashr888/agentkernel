@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-DEFAULT_BASE_URL = "http://localhost:8880"
+DEFAULT_BASE_URL = "http://localhost:18888"
 DEFAULT_TIMEOUT = 30.0
 
 

@@ -1,7 +1,7 @@
 // Sandbox session example for the AgentKernel Swift SDK.
 //
 // Demonstrates withSandbox for guaranteed cleanup.
-// Requires: agentkernel server running on localhost:8880
+// Requires: agentkernel server running on localhost:18888
 
 import AgentKernel
 

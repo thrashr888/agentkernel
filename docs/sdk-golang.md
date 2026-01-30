@@ -41,7 +41,7 @@ func main() {
 
 ```go
 client := agentkernel.New(&agentkernel.Options{
-	BaseURL: "http://localhost:8880", // default
+	BaseURL: "http://localhost:18888", // default
 	APIKey:  "sk-...",               // optional
 	Timeout: 60 * time.Second,       // default: 30s
 })
@@ -50,7 +50,7 @@ client := agentkernel.New(&agentkernel.Options{
 Or use environment variables:
 
 ```bash
-export AGENTKERNEL_BASE_URL=http://localhost:8880
+export AGENTKERNEL_BASE_URL=http://localhost:18888
 export AGENTKERNEL_API_KEY=sk-...
 ```
 

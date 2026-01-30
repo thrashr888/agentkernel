@@ -33,7 +33,7 @@ All responses wrapped in `{ success, data?, error? }`. Auth: optional `Authoriza
 
 All three SDKs share:
 
-- **Config resolution**: constructor args > `AGENTKERNEL_BASE_URL` / `AGENTKERNEL_API_KEY` env vars > defaults (`http://localhost:8880`, no auth, 30s timeout)
+- **Config resolution**: constructor args > `AGENTKERNEL_BASE_URL` / `AGENTKERNEL_API_KEY` env vars > defaults (`http://localhost:18888`, no auth, 30s timeout)
 - **Error taxonomy**: `AuthError` (401), `NotFoundError` (404), `ValidationError` (400), `ServerError` (500), `NetworkError` (connection), `StreamError` (SSE)
 - **User-Agent**: `agentkernel-{lang}-sdk/{version}`
 - **Sandbox session**: auto-cleanup pattern (create, use, remove on scope exit)
@@ -139,7 +139,7 @@ sdk/rust/
 **Client API**:
 ```rust
 let client = AgentKernel::builder()
-    .base_url("http://localhost:8880")
+    .base_url("http://localhost:18888")
     .api_key("sk-...")
     .build()?;
 
@@ -481,11 +481,11 @@ cd sdk/nodejs && npm install && npm test && npx tsc --noEmit
 
 ### Integration Tests (requires running server)
 ```bash
-agentkernel serve --host 127.0.0.1 --port 8880 &
+agentkernel serve --host 127.0.0.1 --port 18888 &
 
 cd sdk/python && pytest -m integration
 cd sdk/rust && cargo test -- --ignored
-cd sdk/nodejs && AGENTKERNEL_URL=http://localhost:8880 npm run test:integration
+cd sdk/nodejs && AGENTKERNEL_URL=http://localhost:18888 npm run test:integration
 ```
 
 ### Homebrew

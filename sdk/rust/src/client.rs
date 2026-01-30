@@ -5,7 +5,7 @@ use crate::error::{error_from_status, Error, Result};
 use crate::types::*;
 
 const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
-const DEFAULT_BASE_URL: &str = "http://localhost:8880";
+const DEFAULT_BASE_URL: &str = "http://localhost:18888";
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 /// Builder for constructing an [`AgentKernel`] client.

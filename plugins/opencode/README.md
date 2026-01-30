@@ -45,7 +45,7 @@ The plugin adds three tools to OpenCode:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGENTKERNEL_BASE_URL` | `http://localhost:8880` | API endpoint |
+| `AGENTKERNEL_BASE_URL` | `http://localhost:18888` | API endpoint |
 | `AGENTKERNEL_API_KEY` | - | Optional Bearer token |
 
 ## How It Works

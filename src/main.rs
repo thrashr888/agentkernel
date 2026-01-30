@@ -163,7 +163,7 @@ enum Commands {
         #[arg(short = 'H', long, default_value = "127.0.0.1")]
         host: String,
         /// Port to listen on
-        #[arg(short, long, default_value = "8880")]
+        #[arg(short, long, default_value = "18888")]
         port: u16,
     },
     /// List supported AI agents and their availability
