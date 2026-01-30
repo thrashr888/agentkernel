@@ -19,10 +19,15 @@ All SDKs share the same API surface:
 - **`run(command, options?)`** — Run a command in a temporary sandbox
 - **`runStream(command, options?)`** — Run with streaming output (SSE)
 - **`listSandboxes()`** — List all sandboxes
-- **`createSandbox(name, options?)`** — Create a sandbox
-- **`getSandbox(name)`** — Get sandbox info
+- **`createSandbox(name, options?)`** — Create a sandbox (with resource limits and profile)
+- **`getSandbox(name)`** — Get sandbox info (includes image, vcpus, memory)
 - **`removeSandbox(name)`** — Remove a sandbox
 - **`execInSandbox(name, command)`** — Execute in an existing sandbox
+- **`readFile(name, path)`** — Read a file from a sandbox
+- **`writeFile(name, path, content)`** — Write a file to a sandbox
+- **`deleteFile(name, path)`** — Delete a file from a sandbox
+- **`getSandboxLogs(name)`** — Get audit log entries for a sandbox
+- **`batchRun(commands)`** — Run multiple commands in parallel
 - **`sandbox(name)` / `withSandbox(name)`** — Scoped session with automatic cleanup
 
 ## Configuration

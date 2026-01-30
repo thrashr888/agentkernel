@@ -14,7 +14,7 @@ public actor AgentKernel {
     private let session: URLSession
 
     /// SDK version string.
-    static let sdkVersion = "0.1.0"
+    static let sdkVersion = "0.4.0"
 
     /// Create a client with optional configuration.
     /// Resolution order: explicit options > environment variables > defaults.
@@ -102,7 +102,13 @@ public actor AgentKernel {
         _ name: String,
         options: CreateSandboxOptions? = nil
     ) async throws -> SandboxInfo {
-        let body = CreateRequest(name: name, image: options?.image)
+        let body = CreateRequest(
+            name: name,
+            image: options?.image,
+            vcpus: options?.vcpus,
+            memory_mb: options?.memoryMB,
+            profile: options?.profile
+        )
         return try await request(method: "POST", path: "/sandboxes", body: body)
     }
 
@@ -134,10 +140,10 @@ public actor AgentKernel {
     /// ```
     public func withSandbox<T: Sendable>(
         _ name: String,
-        image: String? = nil,
+        options: CreateSandboxOptions? = nil,
         _ body: @Sendable (SandboxSession) async throws -> T
     ) async throws -> T {
-        _ = try await createSandbox(name, options: CreateSandboxOptions(image: image))
+        _ = try await createSandbox(name, options: options)
         let session = SandboxSession(name: name, client: self)
         do {
             let result = try await body(session)
@@ -147,6 +153,50 @@ public actor AgentKernel {
             try? await removeSandbox(name)
             throw error
         }
+    }
+
+    /// Read a file from a sandbox.
+    public func readFile(_ name: String, path: String) async throws -> FileReadResponse {
+        try await request(method: "GET", path: "/sandboxes/\(name)/files/\(path)")
+    }
+
+    /// Write a file to a sandbox.
+    public func writeFile(_ name: String, path: String, content: String, encoding: String = "utf8") async throws -> String {
+        let body = FileWriteRequest(content: content, encoding: encoding)
+        return try await request(method: "PUT", path: "/sandboxes/\(name)/files/\(path)", body: body)
+    }
+
+    /// Delete a file from a sandbox.
+    public func deleteFile(_ name: String, path: String) async throws -> String {
+        try await request(method: "DELETE", path: "/sandboxes/\(name)/files/\(path)")
+    }
+
+    /// Get audit log entries for a sandbox.
+    public func getSandboxLogs(_ name: String) async throws -> [[String: Any]] {
+        // Use raw JSON approach since [String: Any] isn't Decodable
+        let url = URL(string: "\(config.baseURL)/sandboxes/\(name)/logs")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        applyHeaders(&req)
+        let (data, response) = try await performRequest(req)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AgentKernelError.network(URLError(.badServerResponse))
+        }
+        if httpResponse.statusCode >= 400 {
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            throw errorFromStatus(httpResponse.statusCode, body: bodyText)
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        guard json["success"] as? Bool == true else {
+            throw AgentKernelError.server(json["error"] as? String ?? "Unknown error")
+        }
+        return json["data"] as? [[String: Any]] ?? []
+    }
+
+    /// Run multiple commands in parallel.
+    public func batchRun(_ commands: [BatchCommand]) async throws -> BatchRunResponse {
+        let body = BatchRunRequest(commands: commands)
+        return try await request(method: "POST", path: "/batch/run", body: body)
     }
 
     // MARK: - Internal

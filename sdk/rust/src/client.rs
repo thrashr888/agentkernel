@@ -114,11 +114,21 @@ impl AgentKernel {
             .await
     }
 
-    /// Create a new sandbox.
-    pub async fn create_sandbox(&self, name: &str, image: Option<&str>) -> Result<SandboxInfo> {
+    /// Create a new sandbox with optional resource limits.
+    pub async fn create_sandbox(
+        &self,
+        name: &str,
+        image: Option<&str>,
+        vcpus: Option<u32>,
+        memory_mb: Option<u64>,
+        profile: Option<SecurityProfile>,
+    ) -> Result<SandboxInfo> {
         let body = CreateRequest {
             name: name.to_string(),
             image: image.map(String::from),
+            vcpus,
+            memory_mb,
+            profile,
         };
         self.request(reqwest::Method::POST, "/sandboxes", Some(&body))
             .await
@@ -167,7 +177,7 @@ impl AgentKernel {
         F: FnOnce(SandboxHandle) -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
     {
-        self.create_sandbox(name, image).await?;
+        self.create_sandbox(name, image, None, None, None).await?;
         let handle = SandboxHandle {
             name: name.to_string(),
             client: self.clone(),
@@ -176,6 +186,63 @@ impl AgentKernel {
         // Always clean up
         let _ = self.remove_sandbox(name).await;
         result
+    }
+
+    /// Read a file from a sandbox.
+    pub async fn read_file(&self, name: &str, path: &str) -> Result<FileReadResponse> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/sandboxes/{name}/files/{path}"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Write a file to a sandbox.
+    pub async fn write_file(
+        &self,
+        name: &str,
+        path: &str,
+        content: &str,
+        encoding: Option<&str>,
+    ) -> Result<String> {
+        let body = FileWriteRequest {
+            content: content.to_string(),
+            encoding: encoding.map(String::from),
+        };
+        self.request(
+            reqwest::Method::PUT,
+            &format!("/sandboxes/{name}/files/{path}"),
+            Some(&body),
+        )
+        .await
+    }
+
+    /// Delete a file from a sandbox.
+    pub async fn delete_file(&self, name: &str, path: &str) -> Result<String> {
+        self.request(
+            reqwest::Method::DELETE,
+            &format!("/sandboxes/{name}/files/{path}"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Get audit log entries for a sandbox.
+    pub async fn get_sandbox_logs(&self, name: &str) -> Result<Vec<serde_json::Value>> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/sandboxes/{name}/logs"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Run multiple commands in parallel.
+    pub async fn batch_run(&self, commands: Vec<BatchCommand>) -> Result<BatchRunResponse> {
+        let body = BatchRunRequest { commands };
+        self.request(reqwest::Method::POST, "/batch/run", Some(&body))
+            .await
     }
 
     // -- Internal --
@@ -234,5 +301,20 @@ impl SandboxHandle {
     /// Get sandbox info.
     pub async fn info(&self) -> Result<SandboxInfo> {
         self.client.get_sandbox(&self.name).await
+    }
+
+    /// Read a file from this sandbox.
+    pub async fn read_file(&self, path: &str) -> Result<FileReadResponse> {
+        self.client.read_file(&self.name, path).await
+    }
+
+    /// Write a file to this sandbox.
+    pub async fn write_file(&self, path: &str, content: &str, encoding: Option<&str>) -> Result<String> {
+        self.client.write_file(&self.name, path, content, encoding).await
+    }
+
+    /// Delete a file from this sandbox.
+    pub async fn delete_file(&self, path: &str) -> Result<String> {
+        self.client.delete_file(&self.name, path).await
     }
 }

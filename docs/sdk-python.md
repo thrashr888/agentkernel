@@ -99,7 +99,12 @@ async for event in client.run_stream(["python3", "script.py"]):
 
 ```python
 # Create a sandbox
-sandbox = client.create_sandbox("my-project", image="python:3.12-alpine")
+sandbox = client.create_sandbox("my-project",
+    image="python:3.12-alpine",
+    vcpus=2,
+    memory_mb=1024,
+    profile="moderate",
+)
 
 # Execute commands
 result = client.exec_in_sandbox("my-project", ["pip", "install", "numpy"])
@@ -135,6 +140,28 @@ async with AsyncAgentKernel() as client:
         await sb.run(["pip", "install", "numpy"])
         result = await sb.run(["python3", "-c", "import numpy; print(numpy.__version__)"])
         print(result.output)
+```
+
+## File Operations
+
+```python
+# Write a file
+client.write_file("my-sandbox", "tmp/hello.txt", "hello world")
+
+# Read a file
+f = client.read_file("my-sandbox", "tmp/hello.txt")
+print(f.content)  # "hello world"
+
+# Delete a file
+client.delete_file("my-sandbox", "tmp/hello.txt")
+```
+
+## Batch Execution
+
+```python
+batch = client.batch_run([["echo", "hello"], ["echo", "world"]])
+for r in batch.results:
+    print(r.output)
 ```
 
 ## Error Handling
@@ -173,6 +200,11 @@ Error types by HTTP status:
 | `get_sandbox(name)` | `SandboxInfo` | Get sandbox info |
 | `remove_sandbox(name)` | `None` | Remove a sandbox |
 | `exec_in_sandbox(name, command)` | `RunOutput` | Execute in existing sandbox |
+| `read_file(name, path)` | `FileReadResponse` | Read a file from a sandbox |
+| `write_file(name, path, content, **options)` | `str` | Write a file to a sandbox |
+| `delete_file(name, path)` | `str` | Delete a file from a sandbox |
+| `get_sandbox_logs(name)` | `list[dict]` | Get sandbox audit logs |
+| `batch_run(commands)` | `BatchRunResponse` | Run commands in parallel |
 | `sandbox(name, **options)` | `SandboxSession` | Context manager with auto-cleanup |
 
 ### Async Client (`AsyncAgentKernel`)

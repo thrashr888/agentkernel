@@ -31,6 +31,9 @@ export interface RunOptions {
 export interface CreateSandboxOptions {
   /** Docker image to use. Default: alpine:3.20 */
   image?: string;
+  vcpus?: number;
+  memory_mb?: number;
+  profile?: SecurityProfile;
 }
 
 /** Output from a command execution. */
@@ -43,12 +46,45 @@ export interface SandboxInfo {
   name: string;
   status: SandboxStatus;
   backend: string;
+  image?: string;
+  vcpus?: number;
+  memory_mb?: number;
+  created_at?: string;
 }
 
 /** SSE stream event. */
 export interface StreamEvent {
   type: StreamEventType;
   data: Record<string, unknown>;
+}
+
+/** Options for writing a file. */
+export interface FileWriteOptions {
+  /** Content encoding: "utf8" (default) or "base64". */
+  encoding?: "utf8" | "base64";
+}
+
+/** Response from reading a file. */
+export interface FileReadResponse {
+  content: string;
+  encoding: "utf8" | "base64";
+  size: number;
+}
+
+/** A command for batch execution. */
+export interface BatchCommand {
+  command: string[];
+}
+
+/** Result of a single batch command. */
+export interface BatchResult {
+  output: string | null;
+  error: string | null;
+}
+
+/** Response from batch execution. */
+export interface BatchRunResponse {
+  results: BatchResult[];
 }
 
 /** API response wrapper. */

@@ -9,14 +9,18 @@ import { parseSSE } from "./sse.js";
 import type {
   AgentKernelOptions,
   ApiResponse,
+  BatchCommand,
+  BatchRunResponse,
   CreateSandboxOptions,
+  FileReadResponse,
+  FileWriteOptions,
   RunOptions,
   RunOutput,
   SandboxInfo,
   StreamEvent,
 } from "./types.js";
 
-const SDK_VERSION = "0.1.0";
+const SDK_VERSION = "0.4.0";
 
 /**
  * Client for the agentkernel HTTP API.
@@ -110,6 +114,9 @@ export class AgentKernel {
     return this.request<SandboxInfo>("POST", "/sandboxes", {
       name,
       image: opts?.image,
+      vcpus: opts?.vcpus,
+      memory_mb: opts?.memory_mb,
+      profile: opts?.profile,
     });
   }
 
@@ -130,6 +137,49 @@ export class AgentKernel {
       `/sandboxes/${encodeURIComponent(name)}/exec`,
       { command },
     );
+  }
+
+  /** Read a file from a sandbox. */
+  async readFile(name: string, path: string): Promise<FileReadResponse> {
+    return this.request<FileReadResponse>(
+      "GET",
+      `/sandboxes/${encodeURIComponent(name)}/files/${path}`,
+    );
+  }
+
+  /** Write a file to a sandbox. */
+  async writeFile(
+    name: string,
+    path: string,
+    content: string,
+    opts?: FileWriteOptions,
+  ): Promise<string> {
+    return this.request<string>(
+      "PUT",
+      `/sandboxes/${encodeURIComponent(name)}/files/${path}`,
+      { content, encoding: opts?.encoding ?? "utf8" },
+    );
+  }
+
+  /** Delete a file from a sandbox. */
+  async deleteFile(name: string, path: string): Promise<string> {
+    return this.request<string>(
+      "DELETE",
+      `/sandboxes/${encodeURIComponent(name)}/files/${path}`,
+    );
+  }
+
+  /** Get audit log entries for a sandbox. */
+  async getSandboxLogs(name: string): Promise<Record<string, unknown>[]> {
+    return this.request<Record<string, unknown>[]>(
+      "GET",
+      `/sandboxes/${encodeURIComponent(name)}/logs`,
+    );
+  }
+
+  /** Run multiple commands in parallel. */
+  async batchRun(commands: BatchCommand[]): Promise<BatchRunResponse> {
+    return this.request<BatchRunResponse>("POST", "/batch/run", { commands });
   }
 
   /**

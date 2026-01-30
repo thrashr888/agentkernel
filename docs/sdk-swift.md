@@ -107,7 +107,12 @@ for try await event in stream {
 ```swift
 // Create a sandbox
 let sandbox = try await client.createSandbox("my-project",
-    options: CreateSandboxOptions(image: "python:3.12-alpine"))
+    options: CreateSandboxOptions(
+        image: "python:3.12-alpine",
+        vcpus: 2,
+        memoryMB: 1024,
+        profile: .moderate
+    ))
 
 // Execute commands
 let result = try await client.execInSandbox("my-project",
@@ -135,6 +140,28 @@ let result = try await client.withSandbox("test", image: "python:3.12-alpine") {
 }
 print(result)
 // sandbox auto-removed
+```
+
+## File Operations
+
+```swift
+// Read a file
+let file = try await client.readFile("my-sandbox", path: "tmp/hello.txt")
+print(file.content)
+
+// Write a file
+try await client.writeFile("my-sandbox", path: "tmp/hello.txt", content: "hello world")
+
+// Delete a file
+try await client.deleteFile("my-sandbox", path: "tmp/hello.txt")
+```
+
+## Batch Execution
+
+```swift
+let results = try await client.batchRun([
+    BatchCommand(command: ["echo", "hello"]),
+])
 ```
 
 ## Error Handling
@@ -211,6 +238,11 @@ public enum SecurityProfile: String, Codable, Sendable {
 | `getSandbox(name)` | `SandboxInfo` | Get sandbox info |
 | `removeSandbox(name)` | `Void` | Remove a sandbox |
 | `execInSandbox(name, command:)` | `RunOutput` | Execute in existing sandbox |
+| `readFile(name, path:)` | `FileReadResponse` | Read a file from a sandbox |
+| `writeFile(name, path:, content:)` | `String` | Write a file to a sandbox |
+| `deleteFile(name, path:)` | `String` | Delete a file from a sandbox |
+| `getSandboxLogs(name)` | `[LogEntry]` | Get sandbox audit logs |
+| `batchRun(commands)` | `BatchRunResponse` | Run commands in parallel |
 | `withSandbox(name, image?, body)` | `T` | Scoped session with auto-cleanup |
 
 All methods are `async throws`.

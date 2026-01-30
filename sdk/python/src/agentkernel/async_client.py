@@ -11,7 +11,9 @@ import httpx
 from ._config import resolve_config
 from .errors import AgentKernelError, NetworkError, error_from_status
 from .types import (
+    BatchRunResponse,
     CreateSandboxOptions,
+    FileReadResponse,
     RunOptions,
     RunOutput,
     SandboxInfo,
@@ -19,7 +21,7 @@ from .types import (
     StreamEvent,
 )
 
-SDK_VERSION = "0.1.0"
+SDK_VERSION = "0.4.0"
 
 
 class AsyncSandboxSession:
@@ -149,9 +151,21 @@ class AsyncAgentKernel:
         data = await self._request("GET", "/sandboxes")
         return [SandboxInfo(**s) for s in data]
 
-    async def create_sandbox(self, name: str, *, image: str | None = None) -> SandboxInfo:
+    async def create_sandbox(
+        self,
+        name: str,
+        *,
+        image: str | None = None,
+        vcpus: int | None = None,
+        memory_mb: int | None = None,
+        profile: SecurityProfile | None = None,
+    ) -> SandboxInfo:
         """Create a new sandbox."""
-        data = await self._request("POST", "/sandboxes", json={"name": name, "image": image})
+        data = await self._request(
+            "POST",
+            "/sandboxes",
+            json={"name": name, "image": image, "vcpus": vcpus, "memory_mb": memory_mb, "profile": profile},
+        )
         return SandboxInfo(**data)
 
     async def get_sandbox(self, name: str) -> SandboxInfo:
@@ -168,7 +182,49 @@ class AsyncAgentKernel:
         data = await self._request("POST", f"/sandboxes/{name}/exec", json={"command": command})
         return RunOutput(**data)
 
-    async def sandbox(self, name: str, *, image: str | None = None) -> AsyncSandboxSession:
+    async def read_file(self, name: str, path: str) -> FileReadResponse:
+        """Read a file from a sandbox."""
+        data = await self._request("GET", f"/sandboxes/{name}/files/{path}")
+        return FileReadResponse(**data)
+
+    async def write_file(
+        self,
+        name: str,
+        path: str,
+        content: str,
+        *,
+        encoding: str = "utf8",
+    ) -> str:
+        """Write a file to a sandbox."""
+        return await self._request(
+            "PUT",
+            f"/sandboxes/{name}/files/{path}",
+            json={"content": content, "encoding": encoding},
+        )
+
+    async def delete_file(self, name: str, path: str) -> str:
+        """Delete a file from a sandbox."""
+        return await self._request("DELETE", f"/sandboxes/{name}/files/{path}")
+
+    async def get_sandbox_logs(self, name: str) -> list[dict]:
+        """Get audit log entries for a sandbox."""
+        return await self._request("GET", f"/sandboxes/{name}/logs")
+
+    async def batch_run(self, commands: list[list[str]]) -> BatchRunResponse:
+        """Run multiple commands in parallel."""
+        batch_commands = [{"command": cmd} for cmd in commands]
+        data = await self._request("POST", "/batch/run", json={"commands": batch_commands})
+        return BatchRunResponse(**data)
+
+    async def sandbox(
+        self,
+        name: str,
+        *,
+        image: str | None = None,
+        vcpus: int | None = None,
+        memory_mb: int | None = None,
+        profile: SecurityProfile | None = None,
+    ) -> AsyncSandboxSession:
         """Create a sandbox session with automatic cleanup.
 
         Example::
@@ -177,7 +233,7 @@ class AsyncAgentKernel:
                 await sb.run(["echo", "hello"])
             # sandbox auto-removed
         """
-        await self.create_sandbox(name, image=image)
+        await self.create_sandbox(name, image=image, vcpus=vcpus, memory_mb=memory_mb, profile=profile)
         return AsyncSandboxSession(name, self)
 
     # -- Internal --

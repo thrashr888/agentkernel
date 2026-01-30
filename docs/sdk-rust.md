@@ -103,7 +103,15 @@ while let Some(event) = stream.next().await {
 
 ```rust
 // Create a sandbox
-let sandbox = client.create_sandbox("my-project", None).await?;
+use agentkernel_sdk::CreateSandboxOptions;
+
+let opts = CreateSandboxOptions {
+    image: Some("python:3.12-alpine".into()),
+    vcpus: Some(2),
+    memory_mb: Some(1024),
+    profile: Some("moderate".into()),
+};
+let sandbox = client.create_sandbox("my-project", Some(opts)).await?;
 
 // Execute commands
 let result = client.exec_in_sandbox("my-project", &["pip", "install", "numpy"]).await?;
@@ -130,6 +138,29 @@ client.with_sandbox("test", Some("python:3.12-alpine"), |sb| async move {
     Ok(())
 }).await?;
 // sandbox auto-removed
+```
+
+## File Operations
+
+```rust
+// Read a file
+let file = client.read_file("my-sandbox", "tmp/hello.txt").await?;
+println!("{}", file.content);
+
+// Write a file
+client.write_file("my-sandbox", "tmp/hello.txt", "hello world", None).await?;
+
+// Delete a file
+client.delete_file("my-sandbox", "tmp/hello.txt").await?;
+```
+
+## Batch Execution
+
+```rust
+use agentkernel_sdk::BatchCommand;
+let results = client.batch_run(vec![
+    BatchCommand { command: vec!["echo".into(), "hello".into()] },
+]).await?;
 ```
 
 ## Error Handling
@@ -192,4 +223,9 @@ pub struct StreamEvent {
 | `get_sandbox(name)` | `Result<SandboxInfo>` | Get sandbox info |
 | `remove_sandbox(name)` | `Result<()>` | Remove a sandbox |
 | `exec_in_sandbox(name, command)` | `Result<RunOutput>` | Execute in existing sandbox |
+| `read_file(name, path)` | `Result<FileReadResponse>` | Read a file from a sandbox |
+| `write_file(name, path, content, options)` | `Result<String>` | Write a file to a sandbox |
+| `delete_file(name, path)` | `Result<String>` | Delete a file from a sandbox |
+| `get_sandbox_logs(name)` | `Result<Vec<LogEntry>>` | Get sandbox audit logs |
+| `batch_run(commands)` | `Result<BatchRunResponse>` | Run commands in parallel |
 | `with_sandbox(name, image, closure)` | `Result<T>` | Scoped session with auto-cleanup |

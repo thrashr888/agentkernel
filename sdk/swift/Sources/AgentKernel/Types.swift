@@ -27,9 +27,15 @@ public struct RunOptions: Sendable {
 /// Options for creating a sandbox.
 public struct CreateSandboxOptions: Sendable {
     public var image: String?
+    public var vcpus: Int?
+    public var memoryMB: Int?
+    public var profile: SecurityProfile?
 
-    public init(image: String? = nil) {
+    public init(image: String? = nil, vcpus: Int? = nil, memoryMB: Int? = nil, profile: SecurityProfile? = nil) {
         self.image = image
+        self.vcpus = vcpus
+        self.memoryMB = memoryMB
+        self.profile = profile
     }
 }
 
@@ -45,6 +51,10 @@ public struct SandboxInfo: Codable, Sendable {
     public let name: String
     public let status: String
     public let backend: String
+    public let image: String?
+    public let vcpus: Int?
+    public let memory_mb: Int?
+    public let created_at: String?
 }
 
 /// SSE stream event.
@@ -82,11 +92,49 @@ struct RunRequest: Encodable {
 struct CreateRequest: Encodable {
     let name: String
     let image: String?
+    let vcpus: Int?
+    let memory_mb: Int?
+    let profile: SecurityProfile?
 }
 
 /// Exec request body.
 struct ExecRequest: Encodable {
     let command: [String]
+}
+
+/// File write request body.
+struct FileWriteRequest: Encodable {
+    let content: String
+    let encoding: String?
+}
+
+/// Response from reading a file.
+public struct FileReadResponse: Codable, Sendable {
+    public let content: String
+    public let encoding: String
+    public let size: Int
+}
+
+/// A command for batch execution.
+public struct BatchCommand: Encodable, Sendable {
+    public let command: [String]
+    public init(command: [String]) { self.command = command }
+}
+
+/// Result of a single batch command.
+public struct BatchResult: Codable, Sendable {
+    public let output: String?
+    public let error: String?
+}
+
+/// Response from batch execution.
+public struct BatchRunResponse: Codable, Sendable {
+    public let results: [BatchResult]
+}
+
+/// Batch run request body.
+struct BatchRunRequest: Encodable {
+    let commands: [BatchCommand]
 }
 
 // MARK: - Type Erasure

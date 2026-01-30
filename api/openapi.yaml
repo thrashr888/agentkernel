@@ -16,7 +16,7 @@ info:
 
     Authentication is optional. When enabled, use Bearer token in the
     Authorization header.
-  version: 0.2.0
+  version: 0.4.0
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
@@ -35,6 +35,10 @@ tags:
     description: One-shot command execution
   - name: Sandboxes
     description: Persistent sandbox management
+  - name: Files
+    description: File operations inside sandboxes
+  - name: Batch
+    description: Parallel batch execution
 
 paths:
   /health:
@@ -226,6 +230,136 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /sandboxes/{name}/files/{path}:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+      - name: path
+        in: path
+        required: true
+        description: File path inside the sandbox (relative, e.g. tmp/hello.txt)
+        schema:
+          type: string
+
+    get:
+      tags: [Files]
+      summary: Read a file from a sandbox
+      operationId: readFile
+      responses:
+        '200':
+          description: File content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileReadResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    put:
+      tags: [Files]
+      summary: Write a file to a sandbox
+      operationId: writeFile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileWriteRequest'
+            examples:
+              text:
+                summary: Write text file
+                value:
+                  content: "hello world"
+              base64:
+                summary: Write binary file
+                value:
+                  content: "aGVsbG8="
+                  encoding: "base64"
+      responses:
+        '200':
+          description: File written
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [Files]
+      summary: Delete a file from a sandbox
+      operationId: deleteFile
+      responses:
+        '200':
+          description: File deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /sandboxes/{name}/logs:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+
+    get:
+      tags: [Sandboxes]
+      summary: Get sandbox audit logs
+      description: Returns audit log entries for this sandbox.
+      operationId: getSandboxLogs
+      responses:
+        '200':
+          description: Audit log entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxLogsResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /batch/run:
+    post:
+      tags: [Batch]
+      summary: Run multiple commands in parallel
+      description: |
+        Executes multiple commands in parallel, each in its own temporary sandbox.
+        Results are returned in the same order as the input commands.
+      operationId: batchRun
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchRunRequest'
+            examples:
+              simple:
+                summary: Two echo commands
+                value:
+                  commands:
+                    - command: ["echo", "hello"]
+                    - command: ["echo", "world"]
+      responses:
+        '200':
+          description: Batch results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchRunResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
 components:
   schemas:
     RunRequest:
@@ -275,6 +409,18 @@ components:
           default: "alpine:3.20"
           description: Docker image to use
           example: "python:3.12-alpine"
+        vcpus:
+          type: integer
+          default: 1
+          description: Number of virtual CPUs
+        memory_mb:
+          type: integer
+          default: 512
+          description: Memory in megabytes
+        profile:
+          type: string
+          enum: [permissive, moderate, restrictive]
+          description: Security profile
 
     ExecRequest:
       type: object
@@ -321,6 +467,21 @@ components:
           type: string
           enum: [running, stopped]
           example: "running"
+        backend:
+          type: string
+          example: "docker"
+        image:
+          type: string
+          example: "python:3.12-alpine"
+        vcpus:
+          type: integer
+          example: 1
+        memory_mb:
+          type: integer
+          example: 512
+        created_at:
+          type: string
+          example: "2026-01-30T12:00:00Z"
 
     SandboxResponse:
       type: object
@@ -361,6 +522,87 @@ components:
         error:
           type: string
           example: "Sandbox not found"
+
+    FileWriteRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          description: File content (text or base64-encoded)
+        encoding:
+          type: string
+          enum: [utf8, base64]
+          default: utf8
+          description: Content encoding
+
+    FileReadResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            content:
+              type: string
+              description: File content
+            encoding:
+              type: string
+              enum: [utf8, base64]
+            size:
+              type: integer
+              description: File size in bytes
+
+    BatchRunRequest:
+      type: object
+      required: [commands]
+      properties:
+        commands:
+          type: array
+          items:
+            type: object
+            required: [command]
+            properties:
+              command:
+                type: array
+                items:
+                  type: string
+                description: Command and arguments
+
+    BatchRunResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            results:
+              type: array
+              items:
+                type: object
+                properties:
+                  output:
+                    type: string
+                    nullable: true
+                  error:
+                    type: string
+                    nullable: true
+
+    SandboxLogsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            type: object
+            description: Audit log entry
 
   parameters:
     SandboxName:

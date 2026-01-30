@@ -112,7 +112,10 @@ for event := range ch {
 ```go
 // Create a sandbox
 sandbox, err := client.CreateSandbox(ctx, "my-project", &agentkernel.CreateSandboxOptions{
-	Image: "python:3.12-alpine",
+	Image:    "python:3.12-alpine",
+	VCPUs:    2,
+	MemoryMB: 1024,
+	Profile:  agentkernel.ProfileModerate,
 })
 
 // Execute commands
@@ -145,6 +148,28 @@ err := client.WithSandbox(ctx, "test", &agentkernel.CreateSandboxOptions{
 	return nil
 })
 // sandbox auto-removed
+```
+
+## File Operations
+
+```go
+// Read a file
+file, _ := client.ReadFile(ctx, "my-sandbox", "tmp/hello.txt")
+fmt.Println(file.Content)
+
+// Write a file
+client.WriteFile(ctx, "my-sandbox", "tmp/hello.txt", "hello world", "")
+
+// Delete a file
+client.DeleteFile(ctx, "my-sandbox", "tmp/hello.txt")
+```
+
+## Batch Execution
+
+```go
+results, _ := client.BatchRun(ctx, []agentkernel.BatchCommand{
+	{Command: []string{"echo", "hello"}},
+})
 ```
 
 ## Error Handling
@@ -202,4 +227,9 @@ output, err := client.Run(ctx, []string{"echo", "hello"}, nil)
 | `GetSandbox(ctx, name)` | `(*SandboxInfo, error)` | Get sandbox info |
 | `RemoveSandbox(ctx, name)` | `error` | Remove a sandbox |
 | `ExecInSandbox(ctx, name, command)` | `(*RunOutput, error)` | Execute in existing sandbox |
+| `ReadFile(ctx, name, path)` | `(*FileReadResponse, error)` | Read a file from a sandbox |
+| `WriteFile(ctx, name, path, content, encoding)` | `(string, error)` | Write a file to a sandbox |
+| `DeleteFile(ctx, name, path)` | `(string, error)` | Delete a file from a sandbox |
+| `GetSandboxLogs(ctx, name)` | `([]LogEntry, error)` | Get sandbox audit logs |
+| `BatchRun(ctx, commands)` | `(*BatchRunResponse, error)` | Run commands in parallel |
 | `WithSandbox(ctx, name, opts, fn)` | `error` | Scoped session with auto-cleanup |

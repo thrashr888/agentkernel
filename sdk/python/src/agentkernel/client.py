@@ -10,7 +10,9 @@ import httpx
 from ._config import resolve_config
 from .errors import AgentKernelError, NetworkError, error_from_status
 from .types import (
+    BatchRunResponse,
     CreateSandboxOptions,
+    FileReadResponse,
     RunOptions,
     RunOutput,
     SandboxInfo,
@@ -18,7 +20,7 @@ from .types import (
     StreamEvent,
 )
 
-SDK_VERSION = "0.1.0"
+SDK_VERSION = "0.4.0"
 
 
 class SandboxSession:
@@ -135,9 +137,21 @@ class AgentKernel:
         data = self._request("GET", "/sandboxes")
         return [SandboxInfo(**s) for s in data]
 
-    def create_sandbox(self, name: str, *, image: str | None = None) -> SandboxInfo:
+    def create_sandbox(
+        self,
+        name: str,
+        *,
+        image: str | None = None,
+        vcpus: int | None = None,
+        memory_mb: int | None = None,
+        profile: SecurityProfile | None = None,
+    ) -> SandboxInfo:
         """Create a new sandbox."""
-        data = self._request("POST", "/sandboxes", json={"name": name, "image": image})
+        data = self._request(
+            "POST",
+            "/sandboxes",
+            json={"name": name, "image": image, "vcpus": vcpus, "memory_mb": memory_mb, "profile": profile},
+        )
         return SandboxInfo(**data)
 
     def get_sandbox(self, name: str) -> SandboxInfo:
@@ -154,7 +168,49 @@ class AgentKernel:
         data = self._request("POST", f"/sandboxes/{name}/exec", json={"command": command})
         return RunOutput(**data)
 
-    def sandbox(self, name: str, *, image: str | None = None) -> SandboxSession:
+    def read_file(self, name: str, path: str) -> FileReadResponse:
+        """Read a file from a sandbox."""
+        data = self._request("GET", f"/sandboxes/{name}/files/{path}")
+        return FileReadResponse(**data)
+
+    def write_file(
+        self,
+        name: str,
+        path: str,
+        content: str,
+        *,
+        encoding: str = "utf8",
+    ) -> str:
+        """Write a file to a sandbox."""
+        return self._request(
+            "PUT",
+            f"/sandboxes/{name}/files/{path}",
+            json={"content": content, "encoding": encoding},
+        )
+
+    def delete_file(self, name: str, path: str) -> str:
+        """Delete a file from a sandbox."""
+        return self._request("DELETE", f"/sandboxes/{name}/files/{path}")
+
+    def get_sandbox_logs(self, name: str) -> list[dict]:
+        """Get audit log entries for a sandbox."""
+        return self._request("GET", f"/sandboxes/{name}/logs")
+
+    def batch_run(self, commands: list[list[str]]) -> BatchRunResponse:
+        """Run multiple commands in parallel."""
+        batch_commands = [{"command": cmd} for cmd in commands]
+        data = self._request("POST", "/batch/run", json={"commands": batch_commands})
+        return BatchRunResponse(**data)
+
+    def sandbox(
+        self,
+        name: str,
+        *,
+        image: str | None = None,
+        vcpus: int | None = None,
+        memory_mb: int | None = None,
+        profile: SecurityProfile | None = None,
+    ) -> SandboxSession:
         """Create a sandbox session with automatic cleanup.
 
         Example::
@@ -163,7 +219,7 @@ class AgentKernel:
                 sb.run(["pip", "install", "numpy"])
             # sandbox auto-removed
         """
-        self.create_sandbox(name, image=image)
+        self.create_sandbox(name, image=image, vcpus=vcpus, memory_mb=memory_mb, profile=profile)
         return SandboxSession(name, self)
 
     # -- Internal --

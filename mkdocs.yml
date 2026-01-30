@@ -43,6 +43,9 @@ nav:
   - Home: index.md
   - Installation: installation.md
   - Getting Started: getting-started.md
+  - Comparisons: comparisons.md
+  - Benchmarks: benchmarks.md
+  - Changelog: changelog.md
   - Commands:
     - Overview: commands.md
     - run: cmd-run.md
@@ -73,8 +76,6 @@ nav:
     - Go: sdk-golang.md
     - Rust: sdk-rust.md
     - Swift: sdk-swift.md
-  - Benchmarks: benchmarks.md
-  - Comparisons: comparisons.md
 
 extra:
   social:

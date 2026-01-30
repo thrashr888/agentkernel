@@ -89,6 +89,9 @@ for await (const event of client.runStream(["python3", "script.py"])) {
 // Create a sandbox
 const sandbox = await client.createSandbox("my-project", {
   image: "python:3.12-alpine",
+  vcpus: 2,
+  memory_mb: 1024,
+  profile: "moderate",
 });
 
 // Execute commands
@@ -131,6 +134,34 @@ try {
 }
 ```
 
+## File Operations
+
+```typescript
+// Write a file
+await client.writeFile("my-sandbox", "tmp/hello.txt", "hello world");
+
+// Read a file
+const file = await client.readFile("my-sandbox", "tmp/hello.txt");
+console.log(file.content); // "hello world"
+console.log(file.size);    // 11
+
+// Delete a file
+await client.deleteFile("my-sandbox", "tmp/hello.txt");
+
+// Write binary (base64)
+await client.writeFile("my-sandbox", "tmp/data.bin", btoa("binary"), { encoding: "base64" });
+```
+
+## Batch Execution
+
+```typescript
+const batch = await client.batchRun([
+  { command: ["echo", "hello"] },
+  { command: ["python3", "-c", "print(2+2)"] },
+]);
+batch.results.forEach(r => console.log(r.output));
+```
+
 ## Error Handling
 
 ```typescript
@@ -158,4 +189,9 @@ try {
 | `getSandbox(name)` | `Promise<SandboxInfo>` | Get sandbox info |
 | `removeSandbox(name)` | `Promise<void>` | Remove a sandbox |
 | `execInSandbox(name, command)` | `Promise<RunOutput>` | Execute in existing sandbox |
+| `readFile(name, path)` | `Promise<FileReadResponse>` | Read a file from a sandbox |
+| `writeFile(name, path, content, options?)` | `Promise<string>` | Write a file to a sandbox |
+| `deleteFile(name, path)` | `Promise<string>` | Delete a file from a sandbox |
+| `getSandboxLogs(name)` | `Promise<Record[]>` | Get sandbox audit logs |
+| `batchRun(commands)` | `Promise<BatchRunResponse>` | Run commands in parallel |
 | `sandbox(name, options?)` | `Promise<SandboxSession>` | Scoped session with auto-cleanup |

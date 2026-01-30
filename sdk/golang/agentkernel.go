@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	sdkVersion     = "0.1.0"
+	sdkVersion     = "0.4.0"
 	defaultBaseURL = "http://localhost:18888"
 	defaultTimeout = 30 * time.Second
 )
@@ -183,6 +183,9 @@ func (c *Client) CreateSandbox(ctx context.Context, name string, opts *CreateSan
 	body := createRequest{Name: name}
 	if opts != nil {
 		body.Image = opts.Image
+		body.VCPUs = opts.VCPUs
+		body.MemoryMB = opts.MemoryMB
+		body.Profile = opts.Profile
 	}
 	var result SandboxInfo
 	err := c.request(ctx, http.MethodPost, "/sandboxes", body, &result)
@@ -230,6 +233,50 @@ func (c *Client) WithSandbox(ctx context.Context, name string, opts *CreateSandb
 
 	session := &SandboxSession{name: name, client: c}
 	return fn(session)
+}
+
+// ReadFile reads a file from a sandbox.
+func (c *Client) ReadFile(ctx context.Context, name, path string) (*FileReadResponse, error) {
+	var result FileReadResponse
+	err := c.request(ctx, http.MethodGet, "/sandboxes/"+name+"/files/"+path, nil, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// WriteFile writes a file to a sandbox.
+func (c *Client) WriteFile(ctx context.Context, name, path, content string, encoding string) error {
+	if encoding == "" {
+		encoding = "utf8"
+	}
+	body := fileWriteRequest{Content: content, Encoding: encoding}
+	var result string
+	return c.request(ctx, http.MethodPut, "/sandboxes/"+name+"/files/"+path, body, &result)
+}
+
+// DeleteFile deletes a file from a sandbox.
+func (c *Client) DeleteFile(ctx context.Context, name, path string) error {
+	var result string
+	return c.request(ctx, http.MethodDelete, "/sandboxes/"+name+"/files/"+path, nil, &result)
+}
+
+// GetSandboxLogs returns audit log entries for a sandbox.
+func (c *Client) GetSandboxLogs(ctx context.Context, name string) ([]map[string]interface{}, error) {
+	var result []map[string]interface{}
+	err := c.request(ctx, http.MethodGet, "/sandboxes/"+name+"/logs", nil, &result)
+	return result, err
+}
+
+// BatchRun executes multiple commands in parallel.
+func (c *Client) BatchRun(ctx context.Context, commands []BatchCommand) (*BatchRunResponse, error) {
+	body := batchRunRequest{Commands: commands}
+	var result BatchRunResponse
+	err := c.request(ctx, http.MethodPost, "/batch/run", body, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 // --- internal ---

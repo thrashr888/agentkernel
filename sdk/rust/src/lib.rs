@@ -22,4 +22,7 @@ mod types;
 
 pub use client::{AgentKernel, AgentKernelBuilder, SandboxHandle};
 pub use error::{Error, Result};
-pub use types::{RunOptions, RunOutput, SandboxInfo, SecurityProfile, StreamEvent};
+pub use types::{
+    BatchCommand, BatchResult, BatchRunResponse, FileReadResponse, RunOptions, RunOutput,
+    SandboxInfo, SecurityProfile, StreamEvent,
+};

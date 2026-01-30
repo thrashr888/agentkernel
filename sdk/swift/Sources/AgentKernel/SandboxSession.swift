@@ -24,4 +24,19 @@ public struct SandboxSession: Sendable {
     public func info() async throws -> SandboxInfo {
         try await client.getSandbox(name)
     }
+
+    /// Read a file from this sandbox.
+    public func readFile(path: String) async throws -> FileReadResponse {
+        try await client.readFile(name, path: path)
+    }
+
+    /// Write a file to this sandbox.
+    public func writeFile(path: String, content: String, encoding: String = "utf8") async throws -> String {
+        try await client.writeFile(name, path: path, content: content, encoding: encoding)
+    }
+
+    /// Delete a file from this sandbox.
+    public func deleteFile(path: String) async throws -> String {
+        try await client.deleteFile(name, path: path)
+    }
 }
