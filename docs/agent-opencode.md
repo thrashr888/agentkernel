@@ -8,8 +8,9 @@ Run [OpenCode](https://opencode.ai/) in an isolated sandbox.
 OpenCode integrates with agentkernel through a TypeScript plugin that automatically sandboxes code execution.
 
 ```bash
-# 1. Start agentkernel API server
-agentkernel serve
+# 1. Start agentkernel API server (pick one)
+brew services start agentkernel   # runs in background, survives reboots
+agentkernel serve                 # or run manually in a terminal
 
 # 2. Copy the plugin into your project
 cp -r plugins/opencode/.opencode/ .opencode/
@@ -61,6 +62,10 @@ Your project should have:
 ### 3. Start agentkernel
 
 ```bash
+# As a background service (recommended — survives reboots)
+brew services start agentkernel
+
+# Or run manually
 agentkernel serve --host 127.0.0.1 --port 8080
 ```
 

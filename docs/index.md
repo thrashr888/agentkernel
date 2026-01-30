@@ -105,6 +105,10 @@ On Linux with KVM, you get Firecracker -- the same microVM technology that power
 Run agentkernel as an HTTP server for programmatic sandbox management:
 
 ```bash
+# As a background service (recommended)
+brew services start agentkernel
+
+# Or run manually
 agentkernel serve --host 127.0.0.1 --port 8080
 ```
 

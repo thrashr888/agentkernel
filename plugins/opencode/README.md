@@ -22,6 +22,10 @@ cp plugins/opencode/.opencode/package.json .opencode/package.json
 3. Start agentkernel:
 
 ```bash
+# As a background service (recommended)
+brew services start agentkernel
+
+# Or run manually
 agentkernel serve
 ```
 

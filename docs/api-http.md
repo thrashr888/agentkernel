@@ -6,7 +6,10 @@ agentkernel includes a REST API for programmatic sandbox management.
 ## Starting the Server
 
 ```bash
-# Start on default port (8080)
+# As a background service (recommended — survives reboots)
+brew services start agentkernel
+
+# Or start manually on default port (8080)
 agentkernel serve
 
 # Custom port
