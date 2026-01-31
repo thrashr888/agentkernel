@@ -14,6 +14,7 @@ default = []
 hyperlight = ["dep:hyperlight-wasm"]
 kubernetes = ["dep:kube", "dep:k8s-openapi", "dep:schemars", "dep:serde_yaml", "dep:futures"]
 nomad = ["dep:reqwest"]
+enterprise = ["dep:cedar-policy", "dep:ed25519-dalek", "dep:jsonwebtoken", "dep:reqwest"]
 
 [dependencies]
 anyhow = "1.0"
@@ -43,6 +44,10 @@ futures = { version = "0.3", optional = true }
 serde_yaml = { version = "0.9", optional = true }
 
 # Nomad backend (optional, behind "nomad" feature flag)
+# Enterprise policy engine (optional, behind "enterprise" feature)
+cedar-policy = { version = "4", optional = true }
+ed25519-dalek = { version = "2", features = ["rand_core"], optional = true }
+jsonwebtoken = { version = "9", optional = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], optional = true }
 
 # Unix socket support for Firecracker API
