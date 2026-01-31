@@ -24,10 +24,14 @@ mod vmm;
 mod vsock;
 
 // Enterprise modules (behind feature flag)
+// Allow dead_code: these modules provide the enterprise API surface
+// that is wired incrementally into the sandbox lifecycle.
 #[cfg(feature = "enterprise")]
+#[allow(dead_code)]
 mod identity;
 #[cfg(feature = "enterprise")]
-mod policy;
+#[allow(dead_code)]
+pub mod policy;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};

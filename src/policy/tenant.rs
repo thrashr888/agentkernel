@@ -7,12 +7,13 @@
 //!
 //! Policies are resolved from most specific (User) to least specific (Global).
 //! Key invariant: `forbid` ALWAYS overrides `permit` regardless of specificity.
+//!
+//! Note: This module lives inside `crate::policy` which is gated by
+//! `#![cfg(feature = "enterprise")]`, so no per-item cfg is needed.
 
-#[cfg(feature = "enterprise")]
 use serde::{Deserialize, Serialize};
 
 /// A policy decision: permit or forbid an action.
-#[cfg(feature = "enterprise")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PolicyDecision {
@@ -23,7 +24,6 @@ pub enum PolicyDecision {
 }
 
 /// A named policy with a decision and optional conditions.
-#[cfg(feature = "enterprise")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
     /// Unique policy identifier
@@ -46,11 +46,13 @@ pub struct Policy {
 }
 
 /// The scope level at which a policy is defined.
-#[cfg(feature = "enterprise")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum PolicyScope {
     /// Global policies apply to all organizations
+    #[default]
     Global = 0,
     /// Organization-level policies
     Organization = 1,
@@ -60,15 +62,7 @@ pub enum PolicyScope {
     User = 3,
 }
 
-#[cfg(feature = "enterprise")]
-impl Default for PolicyScope {
-    fn default() -> Self {
-        Self::Global
-    }
-}
-
 /// An organization in the tenant hierarchy.
-#[cfg(feature = "enterprise")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Org {
     /// Unique organization identifier
@@ -84,7 +78,6 @@ pub struct Org {
 }
 
 /// A team within an organization.
-#[cfg(feature = "enterprise")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Team {
     /// Unique team identifier
@@ -102,7 +95,6 @@ pub struct Team {
 }
 
 /// Represents the full tenant hierarchy for policy resolution.
-#[cfg(feature = "enterprise")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TenantHierarchy {
     /// Global policies that apply to all tenants
@@ -113,7 +105,6 @@ pub struct TenantHierarchy {
     pub organizations: Vec<Org>,
 }
 
-#[cfg(feature = "enterprise")]
 impl TenantHierarchy {
     /// Create a new empty tenant hierarchy.
     pub fn new() -> Self {
@@ -144,7 +135,6 @@ impl TenantHierarchy {
     }
 }
 
-#[cfg(feature = "enterprise")]
 impl Default for TenantHierarchy {
     fn default() -> Self {
         Self::new()
@@ -152,7 +142,6 @@ impl Default for TenantHierarchy {
 }
 
 /// Policy resolution order determining how policies are combined.
-#[cfg(feature = "enterprise")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyResolutionOrder {
     /// Most specific scope wins (User > Team > Org > Global)
@@ -173,7 +162,6 @@ pub enum PolicyResolutionOrder {
 ///
 /// This means if a Global policy forbids an action, no User-level permit
 /// can override it. This ensures security invariants are maintained.
-#[cfg(feature = "enterprise")]
 pub fn resolve_effective_policies(
     global_policies: &[Policy],
     org_policies: &[Policy],
@@ -190,7 +178,6 @@ pub fn resolve_effective_policies(
 }
 
 /// Resolve effective policies with a specified resolution order.
-#[cfg(feature = "enterprise")]
 pub fn resolve_with_order(
     global_policies: &[Policy],
     org_policies: &[Policy],
@@ -271,7 +258,6 @@ pub fn resolve_with_order(
 }
 
 /// Check if a specific action is permitted given resolved policies.
-#[cfg(feature = "enterprise")]
 pub fn is_action_permitted(policies: &[Policy], action: &str) -> bool {
     policies
         .iter()
@@ -279,7 +265,7 @@ pub fn is_action_permitted(policies: &[Policy], action: &str) -> bool {
         .is_some_and(|p| p.decision == PolicyDecision::Permit)
 }
 
-#[cfg(all(test, feature = "enterprise"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -6,7 +6,7 @@
 
 #![cfg(feature = "enterprise")]
 
-use anyhow::{Result, bail, Context as _};
+use anyhow::{Context as _, Result, bail};
 use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -48,10 +48,10 @@ impl TrustAnchor {
         if now < self.valid_from {
             return false;
         }
-        if let Some(until) = self.valid_until {
-            if now > until {
-                return false;
-            }
+        if let Some(until) = self.valid_until
+            && now > until
+        {
+            return false;
         }
         true
     }
@@ -65,10 +65,7 @@ impl PolicyBundle {
     pub fn canonical_payload(&self) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&self.version.to_le_bytes());
-        let expires_str = self
-            .expires_at
-            .map(|t| t.to_rfc3339())
-            .unwrap_or_default();
+        let expires_str = self.expires_at.map(|t| t.to_rfc3339()).unwrap_or_default();
         payload.extend_from_slice(expires_str.as_bytes());
         payload.extend_from_slice(self.policies.as_bytes());
         payload
@@ -101,10 +98,7 @@ pub fn verify_bundle(
 
     // Check trust anchor validity
     if !anchor.is_valid() {
-        bail!(
-            "Trust anchor '{}' is not currently valid",
-            anchor.key_id
-        );
+        bail!("Trust anchor '{}' is not currently valid", anchor.key_id);
     }
 
     // Verify Ed25519 signature
@@ -145,21 +139,21 @@ pub fn verify_bundle(
         .context("Ed25519 signature verification failed")?;
 
     // Check expiry
-    if let Some(expires_at) = bundle.expires_at {
-        if Utc::now() > expires_at {
-            bail!("Policy bundle has expired (expired at {})", expires_at);
-        }
+    if let Some(expires_at) = bundle.expires_at
+        && Utc::now() > expires_at
+    {
+        bail!("Policy bundle has expired (expired at {})", expires_at);
     }
 
     // Check version monotonicity
-    if let Some(min_ver) = min_version {
-        if bundle.version < min_ver {
-            bail!(
-                "Policy bundle version {} is older than minimum required version {}",
-                bundle.version,
-                min_ver
-            );
-        }
+    if let Some(min_ver) = min_version
+        && bundle.version < min_ver
+    {
+        bail!(
+            "Policy bundle version {} is older than minimum required version {}",
+            bundle.version,
+            min_ver
+        );
     }
 
     Ok(())
@@ -370,7 +364,12 @@ mod tests {
 
         let result = verify_bundle(&bundle, &[expired_anchor], None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not currently valid"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not currently valid")
+        );
     }
 
     #[test]

@@ -63,6 +63,7 @@ fn default_severity() -> u32 {
 
 impl PolicyDecisionLog {
     /// Create a new log entry from a policy evaluation.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         principal: &str,
         action: Action,
@@ -74,8 +75,8 @@ impl PolicyDecisionLog {
         reason: Option<String>,
     ) -> Self {
         let (activity_id, status_id, severity_id) = match decision {
-            PolicyEffect::Permit => (1, 1, 1),  // Authorize, Success, Informational
-            PolicyEffect::Deny => (2, 2, 3),    // Deny, Failure, Medium
+            PolicyEffect::Permit => (1, 1, 1), // Authorize, Success, Informational
+            PolicyEffect::Deny => (2, 2, 3),   // Deny, Failure, Medium
         };
 
         Self {
@@ -127,12 +128,10 @@ impl PolicyAuditLogger {
     pub fn log_decision(&self, entry: &PolicyDecisionLog) -> Result<()> {
         // Ensure parent directory exists
         if let Some(parent) = self.log_path.parent() {
-            std::fs::create_dir_all(parent)
-                .context("Failed to create audit log directory")?;
+            std::fs::create_dir_all(parent).context("Failed to create audit log directory")?;
         }
 
-        let json = serde_json::to_string(entry)
-            .context("Failed to serialize audit log entry")?;
+        let json = serde_json::to_string(entry).context("Failed to serialize audit log entry")?;
 
         let mut file = OpenOptions::new()
             .create(true)
@@ -140,8 +139,7 @@ impl PolicyAuditLogger {
             .open(&self.log_path)
             .context("Failed to open audit log file")?;
 
-        writeln!(file, "{}", json)
-            .context("Failed to write audit log entry")?;
+        writeln!(file, "{}", json).context("Failed to write audit log entry")?;
 
         Ok(())
     }
@@ -152,8 +150,8 @@ impl PolicyAuditLogger {
             return Ok(Vec::new());
         }
 
-        let content = std::fs::read_to_string(&self.log_path)
-            .context("Failed to read audit log")?;
+        let content =
+            std::fs::read_to_string(&self.log_path).context("Failed to read audit log")?;
 
         let mut entries = Vec::new();
         for line in content.lines() {

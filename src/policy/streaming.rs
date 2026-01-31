@@ -8,19 +8,13 @@
 //! Events include OCSF-compatible metadata fields for compliance integration
 //! with SIEM systems (Splunk, Datadog, etc.).
 
-#[cfg(feature = "enterprise")]
 use anyhow::{Context, Result};
-#[cfg(feature = "enterprise")]
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "enterprise")]
 use std::path::PathBuf;
-#[cfg(feature = "enterprise")]
 use std::sync::Arc;
-#[cfg(feature = "enterprise")]
 use tokio::sync::Mutex;
 
 /// Destination for streaming audit events.
-#[cfg(feature = "enterprise")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamDestination {
@@ -45,7 +39,6 @@ pub enum StreamDestination {
 }
 
 /// Configuration for the audit event streamer.
-#[cfg(feature = "enterprise")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditStreamConfig {
     /// Where to send audit events
@@ -64,27 +57,22 @@ pub struct AuditStreamConfig {
     pub ocsf_enabled: bool,
 }
 
-#[cfg(feature = "enterprise")]
 fn default_batch_size() -> usize {
     10
 }
 
-#[cfg(feature = "enterprise")]
 fn default_flush_interval() -> u64 {
     30
 }
 
-#[cfg(feature = "enterprise")]
 fn default_max_retries() -> u32 {
     3
 }
 
-#[cfg(feature = "enterprise")]
 fn default_ocsf_enabled() -> bool {
     true
 }
 
-#[cfg(feature = "enterprise")]
 impl Default for AuditStreamConfig {
     fn default() -> Self {
         Self {
@@ -101,7 +89,6 @@ impl Default for AuditStreamConfig {
 ///
 /// Maps to OCSF Base Event class (class_uid: 0) with agentkernel-specific
 /// extensions for sandbox operations and policy decisions.
-#[cfg(feature = "enterprise")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
     /// Event timestamp (ISO 8601)
@@ -137,23 +124,19 @@ pub struct AuditEvent {
     pub metadata: EventMetadata,
 }
 
-#[cfg(feature = "enterprise")]
 fn default_class_uid() -> u32 {
     3001
 }
 
-#[cfg(feature = "enterprise")]
 fn default_category_uid() -> u32 {
     3
 }
 
-#[cfg(feature = "enterprise")]
 fn default_severity_id() -> u32 {
     1
 }
 
 /// Event outcome (permit/deny/error).
-#[cfg(feature = "enterprise")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EventOutcome {
@@ -168,7 +151,6 @@ pub enum EventOutcome {
 }
 
 /// Information about who performed an action.
-#[cfg(feature = "enterprise")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActorInfo {
     /// User identifier (from JWT sub claim)
@@ -186,7 +168,6 @@ pub struct ActorInfo {
 }
 
 /// Information about the resource being acted upon.
-#[cfg(feature = "enterprise")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceInfo {
     /// Resource type (e.g., "sandbox", "file", "network")
@@ -200,7 +181,6 @@ pub struct ResourceInfo {
 }
 
 /// Policy information for decision events.
-#[cfg(feature = "enterprise")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyInfo {
     /// Policy ID that was evaluated
@@ -214,7 +194,6 @@ pub struct PolicyInfo {
 }
 
 /// Event metadata following OCSF conventions.
-#[cfg(feature = "enterprise")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventMetadata {
     /// Product name
@@ -231,22 +210,18 @@ pub struct EventMetadata {
     pub hostname: Option<String>,
 }
 
-#[cfg(feature = "enterprise")]
 fn default_product_name() -> String {
     "agentkernel".to_string()
 }
 
-#[cfg(feature = "enterprise")]
 fn default_vendor_name() -> String {
     "agentkernel".to_string()
 }
 
-#[cfg(feature = "enterprise")]
 fn default_product_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-#[cfg(feature = "enterprise")]
 impl Default for EventMetadata {
     fn default() -> Self {
         Self {
@@ -259,27 +234,22 @@ impl Default for EventMetadata {
 }
 
 /// Get the system hostname.
-#[cfg(feature = "enterprise")]
 fn hostname() -> Option<String> {
-    std::env::var("HOSTNAME")
-        .ok()
-        .or_else(|| {
-            std::process::Command::new("hostname")
-                .output()
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        })
+    std::env::var("HOSTNAME").ok().or_else(|| {
+        std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    })
 }
 
 /// Audit event streamer with batching and background flush.
-#[cfg(feature = "enterprise")]
 pub struct AuditStreamer {
     config: AuditStreamConfig,
     buffer: Arc<Mutex<Vec<AuditEvent>>>,
     client: reqwest::Client,
 }
 
-#[cfg(feature = "enterprise")]
 impl AuditStreamer {
     /// Create a new audit streamer with the given configuration.
     pub fn new(config: AuditStreamConfig) -> Self {
@@ -437,10 +407,8 @@ impl AuditStreamer {
                         continue;
                     }
 
-                    return Err(e).context(format!(
-                        "Webhook delivery failed after {} retries",
-                        retries
-                    ));
+                    return Err(e)
+                        .context(format!("Webhook delivery failed after {} retries", retries));
                 }
             }
         }
@@ -463,8 +431,7 @@ impl AuditStreamer {
             .with_context(|| format!("Failed to open audit stream file: {}", path.display()))?;
 
         for event in events {
-            let line = serde_json::to_string(event)
-                .context("Failed to serialize audit event")?;
+            let line = serde_json::to_string(event).context("Failed to serialize audit event")?;
             writeln!(file, "{}", line)?;
         }
 
@@ -474,8 +441,7 @@ impl AuditStreamer {
     /// Write events as JSONL to stdout.
     fn write_to_stdout(&self, events: &[AuditEvent]) -> Result<()> {
         for event in events {
-            let line = serde_json::to_string(event)
-                .context("Failed to serialize audit event")?;
+            let line = serde_json::to_string(event).context("Failed to serialize audit event")?;
             println!("{}", line);
         }
         Ok(())
@@ -488,7 +454,6 @@ impl AuditStreamer {
 }
 
 /// Create a new AuditEvent with sensible defaults.
-#[cfg(feature = "enterprise")]
 pub fn new_audit_event(type_name: &str, action: &str, outcome: EventOutcome) -> AuditEvent {
     AuditEvent {
         time: chrono::Utc::now().to_rfc3339(),
@@ -511,7 +476,7 @@ pub fn new_audit_event(type_name: &str, action: &str, outcome: EventOutcome) -> 
     }
 }
 
-#[cfg(all(test, feature = "enterprise"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -561,10 +526,7 @@ mod tests {
             deserialized.actor.unwrap().user_id,
             Some("user-123".to_string())
         );
-        assert_eq!(
-            deserialized.resource.unwrap().resource_type,
-            "sandbox"
-        );
+        assert_eq!(deserialized.resource.unwrap().resource_type, "sandbox");
         assert_eq!(
             deserialized.policy.unwrap().policy_id,
             "no-network-healthcare"

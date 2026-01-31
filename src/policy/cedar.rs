@@ -6,7 +6,7 @@
 
 #![cfg(feature = "enterprise")]
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use cedar_policy::{
     Authorizer, Context, Decision, Entities, Entity, EntityTypeName, EntityUid, PolicySet, Request,
     RestrictedExpression, Schema,
@@ -195,8 +195,8 @@ pub struct CedarEngine {
 impl CedarEngine {
     /// Create a new CedarEngine with the given policies and the built-in schema.
     pub fn new(policies_src: &str) -> Result<Self> {
-        let (schema, _warnings) = Schema::from_cedarschema_str(CEDAR_SCHEMA)
-            .context("Failed to parse Cedar schema")?;
+        let (schema, _warnings) =
+            Schema::from_cedarschema_str(CEDAR_SCHEMA).context("Failed to parse Cedar schema")?;
 
         let policy_set: PolicySet = policies_src
             .parse()
@@ -211,8 +211,8 @@ impl CedarEngine {
 
     /// Create a CedarEngine with a custom schema.
     pub fn with_schema(policies_src: &str, schema_src: &str) -> Result<Self> {
-        let (schema, _warnings) = Schema::from_cedarschema_str(schema_src)
-            .context("Failed to parse Cedar schema")?;
+        let (schema, _warnings) =
+            Schema::from_cedarschema_str(schema_src).context("Failed to parse Cedar schema")?;
 
         let policy_set: PolicySet = policies_src
             .parse()
@@ -286,7 +286,9 @@ impl CedarEngine {
             .collect();
 
         match response.decision() {
-            Decision::Allow => PolicyDecision::permit("Policy evaluation: permit", matched, elapsed),
+            Decision::Allow => {
+                PolicyDecision::permit("Policy evaluation: permit", matched, elapsed)
+            }
             Decision::Deny => {
                 let errors: Vec<String> = response
                     .diagnostics()
@@ -317,13 +319,19 @@ impl CedarEngine {
         // Build User entity
         let user_type = EntityTypeName::from_str("AgentKernel::User")
             .map_err(|e| anyhow::anyhow!("Invalid entity type: {}", e))?;
-        let user_uid = EntityUid::from_type_name_and_id(user_type, principal.id.clone().into());
+        let user_uid = EntityUid::from_type_name_and_id(
+            user_type,
+            principal
+                .id
+                .clone()
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid entity id: {}", e))?,
+        );
 
-        let roles_set: HashSet<RestrictedExpression> = principal
+        let roles_iter = principal
             .roles
             .iter()
-            .map(|r| RestrictedExpression::new_string(r.clone()))
-            .collect();
+            .map(|r| RestrictedExpression::new_string(r.clone()));
 
         let user_attrs: HashMap<String, RestrictedExpression> = [
             (
@@ -336,7 +344,7 @@ impl CedarEngine {
             ),
             (
                 "roles".to_string(),
-                RestrictedExpression::new_set(roles_set.into_iter()),
+                RestrictedExpression::new_set(roles_iter),
             ),
             (
                 "mfa_verified".to_string(),
@@ -353,8 +361,14 @@ impl CedarEngine {
         // Build Sandbox entity
         let sandbox_type = EntityTypeName::from_str("AgentKernel::Sandbox")
             .map_err(|e| anyhow::anyhow!("Invalid entity type: {}", e))?;
-        let sandbox_uid =
-            EntityUid::from_type_name_and_id(sandbox_type, resource.name.clone().into());
+        let sandbox_uid = EntityUid::from_type_name_and_id(
+            sandbox_type,
+            resource
+                .name
+                .clone()
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid entity id: {}", e))?,
+        );
 
         let sandbox_attrs: HashMap<String, RestrictedExpression> = [
             (
@@ -407,7 +421,6 @@ impl CedarEngine {
                 ctx_map
                     .into_iter()
                     .map(|(k, v)| (k, RestrictedExpression::new_string(v))),
-                None,
             )
             .context("Failed to build context")?
         } else {
