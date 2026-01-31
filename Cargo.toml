@@ -12,7 +12,7 @@ categories = ["command-line-utilities", "development-tools"]
 [features]
 default = []
 hyperlight = ["dep:hyperlight-wasm"]
-kubernetes = ["dep:kube", "dep:k8s-openapi"]
+kubernetes = ["dep:kube", "dep:k8s-openapi", "dep:schemars", "dep:serde_yaml", "dep:futures"]
 nomad = ["dep:reqwest"]
 
 [dependencies]
@@ -35,8 +35,12 @@ tempfile = "3.0"  # Temporary directories for rootfs conversion
 dirs = "6.0.0"
 
 # Kubernetes backend (optional, behind "kubernetes" feature flag)
-kube = { version = "0.98", features = ["client", "runtime", "ws"], optional = true }
+kube = { version = "0.98", features = ["client", "runtime", "ws", "derive"], optional = true }
 k8s-openapi = { version = "0.23", features = ["latest"], optional = true }
+schemars = { version = "0.8", optional = true }
+thiserror = "2"
+futures = { version = "0.3", optional = true }
+serde_yaml = { version = "0.9", optional = true }
 
 # Nomad backend (optional, behind "nomad" feature flag)
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], optional = true }
