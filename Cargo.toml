@@ -12,6 +12,7 @@ categories = ["command-line-utilities", "development-tools"]
 [features]
 default = []
 hyperlight = ["dep:hyperlight-wasm"]
+enterprise = ["dep:cedar-policy", "dep:ed25519-dalek", "dep:jsonwebtoken", "dep:reqwest"]
 
 [dependencies]
 anyhow = "1.0"
@@ -31,6 +32,12 @@ chrono = { version = "0.4", features = ["serde"] }
 wat = "1.225"  # WAT to WASM compiler for WebAssembly text format support
 tempfile = "3.0"  # Temporary directories for rootfs conversion
 dirs = "6.0.0"
+
+# Enterprise policy engine (optional, behind "enterprise" feature)
+cedar-policy = { version = "4", optional = true }
+ed25519-dalek = { version = "2", features = ["rand_core"], optional = true }
+jsonwebtoken = { version = "9", optional = true }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
 
 # Unix socket support for Firecracker API
 [target.'cfg(unix)'.dependencies]
