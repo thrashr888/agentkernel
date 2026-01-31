@@ -234,6 +234,96 @@ impl Permissions {
 
         args
     }
+
+    /// Convert permissions to Kubernetes SecurityContext fields.
+    ///
+    /// Returns a JSON value representing the K8s SecurityContext spec.
+    /// Used by the Kubernetes backend when building Pod specs.
+    #[cfg(feature = "kubernetes")]
+    pub fn to_k8s_security_context(&self) -> serde_json::Value {
+        use serde_json::json;
+
+        let mut ctx = json!({
+            "privileged": self.allow_privileged,
+            "allowPrivilegeEscalation": self.allow_privileged,
+            "readOnlyRootFilesystem": self.read_only_root,
+            "runAsNonRoot": !self.allow_privileged,
+            "runAsUser": 1000,
+        });
+
+        // Drop all capabilities unless privileged
+        if !self.allow_privileged {
+            ctx["capabilities"] = json!({
+                "drop": ["ALL"],
+            });
+        }
+
+        // Seccomp profile
+        if let Some(ref profile) = self.seccomp {
+            match profile.as_str() {
+                "default" | "moderate" | "restrictive" | "ai-agent" => {
+                    ctx["seccompProfile"] = json!({
+                        "type": "RuntimeDefault",
+                    });
+                }
+                _ => {
+                    // Custom profile path
+                    ctx["seccompProfile"] = json!({
+                        "type": "Localhost",
+                        "localhostProfile": profile,
+                    });
+                }
+            }
+        }
+
+        ctx
+    }
+
+    /// Convert permissions to Kubernetes ResourceRequirements.
+    ///
+    /// Returns a JSON value representing K8s resource limits and requests.
+    #[cfg(feature = "kubernetes")]
+    pub fn to_k8s_resources(&self) -> serde_json::Value {
+        use serde_json::json;
+
+        let mut limits = serde_json::Map::new();
+
+        if let Some(mem) = self.max_memory_mb {
+            limits.insert(
+                "memory".to_string(),
+                json!(format!("{}Mi", mem)),
+            );
+        }
+
+        if let Some(cpu) = self.max_cpu_percent {
+            // Convert percentage to millicores (100% = 1000m)
+            limits.insert(
+                "cpu".to_string(),
+                json!(format!("{}m", cpu * 10)),
+            );
+        }
+
+        json!({
+            "limits": limits,
+            "requests": {},
+        })
+    }
+
+    /// Convert permissions to Nomad resource configuration.
+    ///
+    /// Returns a JSON value matching Nomad's Resources stanza.
+    #[cfg(feature = "nomad")]
+    pub fn to_nomad_resources(&self) -> serde_json::Value {
+        use serde_json::json;
+
+        let memory_mb = self.max_memory_mb.unwrap_or(512);
+        let cpu_mhz = self.max_cpu_percent.map(|p| p * 10).unwrap_or(1000);
+
+        json!({
+            "CPU": cpu_mhz,
+            "MemoryMB": memory_mb,
+        })
+    }
 }
 
 /// Compatibility mode for agent-specific behavior
