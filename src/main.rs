@@ -72,7 +72,7 @@ enum Commands {
         /// Project directory to mount into sandbox
         #[arg(short, long)]
         dir: Option<PathBuf>,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
     },
@@ -80,7 +80,7 @@ enum Commands {
     Start {
         /// Name of the sandbox to start
         name: String,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
     },
@@ -152,7 +152,7 @@ enum Commands {
         /// Use container pool for faster execution (skips create/destroy overhead)
         #[arg(short = 'F', long)]
         fast: bool,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
     },
