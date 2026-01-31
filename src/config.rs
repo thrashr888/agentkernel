@@ -43,6 +43,62 @@ pub struct BuildConfig {
     pub no_cache: bool,
 }
 
+/// Trust anchor configuration for enterprise policy signing
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TrustAnchorsConfig {
+    /// Public key identifiers for Ed25519 signature verification
+    #[serde(default)]
+    pub keys: Vec<String>,
+}
+
+/// Enterprise policy management configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnterpriseConfig {
+    /// Enable enterprise policy management
+    #[serde(default)]
+    pub enabled: bool,
+    /// URL of the enterprise policy server
+    #[serde(default)]
+    pub policy_server: Option<String>,
+    /// Organization identifier
+    #[serde(default)]
+    pub org_id: Option<String>,
+    /// Environment variable name containing the API key
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    /// Offline mode behavior: fail_closed, cached_with_expiry, cached_indefinite, default_policy
+    #[serde(default = "default_offline_mode")]
+    pub offline_mode: String,
+    /// Maximum cache age in hours before requiring a refresh
+    #[serde(default = "default_cache_max_age_hours")]
+    pub cache_max_age_hours: u64,
+    /// Trust anchors for policy bundle signature verification
+    #[serde(default)]
+    pub trust_anchors: TrustAnchorsConfig,
+}
+
+fn default_offline_mode() -> String {
+    "cached_with_expiry".to_string()
+}
+
+fn default_cache_max_age_hours() -> u64 {
+    24
+}
+
+impl Default for EnterpriseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            policy_server: None,
+            org_id: None,
+            api_key_env: None,
+            offline_mode: default_offline_mode(),
+            cache_max_age_hours: default_cache_max_age_hours(),
+            trust_anchors: TrustAnchorsConfig::default(),
+        }
+    }
+}
+
 /// Root configuration structure matching agentkernel.toml schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -61,6 +117,9 @@ pub struct Config {
     /// Files to inject into the sandbox at startup
     #[serde(default, rename = "files")]
     pub files: Vec<FileEntry>,
+    /// Enterprise policy management
+    #[serde(default)]
+    pub enterprise: EnterpriseConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -274,6 +333,7 @@ impl Config {
             security: SecurityConfig::default(),
             build: BuildConfig::default(),
             files: Vec::new(),
+            enterprise: EnterpriseConfig::default(),
         }
     }
 
@@ -803,5 +863,54 @@ mod tests {
         let config = Config::from_str(toml).unwrap();
         let warnings = config.validate();
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn test_enterprise_config_defaults() {
+        let toml = r#"
+            [sandbox]
+            name = "test"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(!config.enterprise.enabled);
+        assert!(config.enterprise.policy_server.is_none());
+        assert!(config.enterprise.org_id.is_none());
+        assert!(config.enterprise.api_key_env.is_none());
+        assert_eq!(config.enterprise.offline_mode, "cached_with_expiry");
+        assert_eq!(config.enterprise.cache_max_age_hours, 24);
+        assert!(config.enterprise.trust_anchors.keys.is_empty());
+    }
+
+    #[test]
+    fn test_enterprise_config_full() {
+        let toml = r#"
+            [sandbox]
+            name = "enterprise-app"
+
+            [enterprise]
+            enabled = true
+            policy_server = "https://policy.acme-corp.com"
+            org_id = "acme-corp"
+            api_key_env = "AGENTKERNEL_API_KEY"
+            offline_mode = "fail_closed"
+            cache_max_age_hours = 48
+
+            [enterprise.trust_anchors]
+            keys = ["key1-public", "key2-public"]
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(config.enterprise.enabled);
+        assert_eq!(
+            config.enterprise.policy_server,
+            Some("https://policy.acme-corp.com".to_string())
+        );
+        assert_eq!(config.enterprise.org_id, Some("acme-corp".to_string()));
+        assert_eq!(
+            config.enterprise.api_key_env,
+            Some("AGENTKERNEL_API_KEY".to_string())
+        );
+        assert_eq!(config.enterprise.offline_mode, "fail_closed");
+        assert_eq!(config.enterprise.cache_max_age_hours, 48);
+        assert_eq!(config.enterprise.trust_anchors.keys.len(), 2);
     }
 }
