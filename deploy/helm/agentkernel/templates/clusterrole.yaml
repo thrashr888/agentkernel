@@ -1,0 +1,30 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "agentkernel.fullname" . }}
+  labels:
+    {{- include "agentkernel.labels" . | nindent 4 }}
+rules:
+  # Manage sandbox pods in the sandbox namespace
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/exec
+      - pods/attach
+      - pods/log
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+      - delete
+  # Manage network policies for sandbox isolation
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+    verbs:
+      - create
+      - get
+      - delete
+{{- end }}
