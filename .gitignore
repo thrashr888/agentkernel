@@ -1,6 +1,6 @@
 /target
 .build/
-
+.worktrees/
 
 # Built kernel binaries (build with: cd images/build && docker run ...)
 images/kernel/vmlinux-*
