@@ -48,6 +48,12 @@ pub struct SandboxState {
     /// Backend type used to create this sandbox
     #[serde(default)]
     pub backend: Option<BackendType>,
+    /// Remote resource identifier (K8s pod name or Nomad alloc ID)
+    #[serde(default)]
+    pub remote_id: Option<String>,
+    /// Remote namespace (K8s namespace or Nomad namespace)
+    #[serde(default)]
+    pub remote_namespace: Option<String>,
 }
 
 /// VM Manager - manages sandboxes via unified Sandbox trait
@@ -297,6 +303,8 @@ impl VmManager {
             vsock_cid,
             created_at: chrono::Utc::now().to_rfc3339(),
             backend: Some(self.backend),
+            remote_id: None,
+            remote_namespace: None,
         };
 
         self.save_sandbox(&state)?;
@@ -744,6 +752,8 @@ mod tests {
             vsock_cid: 5,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             backend: None,
+            remote_id: None,
+            remote_namespace: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -781,6 +791,8 @@ mod tests {
             vsock_cid: 3,
             created_at: "2024-06-15T12:30:00Z".to_string(),
             backend: None,
+            remote_id: None,
+            remote_namespace: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -827,6 +839,8 @@ mod tests {
             vsock_cid: 4,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             backend: None,
+            remote_id: None,
+            remote_namespace: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -866,6 +880,8 @@ mod tests {
                 vsock_cid: cid,
                 created_at: "2024-01-01T00:00:00Z".to_string(),
                 backend: None,
+                remote_id: None,
+                remote_namespace: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();
