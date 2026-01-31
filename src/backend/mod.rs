@@ -15,6 +15,16 @@ pub mod apple;
 pub mod docker;
 pub mod firecracker;
 pub mod hyperlight;
+#[cfg(feature = "kubernetes")]
+pub mod kubernetes;
+#[cfg(feature = "kubernetes")]
+pub mod kubernetes_operator;
+#[cfg(feature = "kubernetes")]
+pub mod kubernetes_pool;
+#[cfg(feature = "nomad")]
+pub mod nomad;
+#[cfg(feature = "nomad")]
+pub mod nomad_pool;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -26,6 +36,10 @@ pub use apple::AppleSandbox;
 pub use docker::{ContainerRuntime, DockerSandbox};
 pub use firecracker::FirecrackerSandbox;
 pub use hyperlight::HyperlightSandbox;
+#[cfg(feature = "kubernetes")]
+pub use kubernetes::KubernetesSandbox;
+#[cfg(feature = "nomad")]
+pub use nomad::NomadSandbox;
 
 /// Backend type identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +54,10 @@ pub enum BackendType {
     Apple,
     /// Hyperlight WebAssembly
     Hyperlight,
+    /// Kubernetes pods (requires --features kubernetes)
+    Kubernetes,
+    /// HashiCorp Nomad jobs (requires --features nomad)
+    Nomad,
 }
 
 impl fmt::Display for BackendType {
@@ -50,6 +68,8 @@ impl fmt::Display for BackendType {
             BackendType::Firecracker => write!(f, "firecracker"),
             BackendType::Apple => write!(f, "apple"),
             BackendType::Hyperlight => write!(f, "hyperlight"),
+            BackendType::Kubernetes => write!(f, "kubernetes"),
+            BackendType::Nomad => write!(f, "nomad"),
         }
     }
 }
@@ -64,8 +84,10 @@ impl std::str::FromStr for BackendType {
             "firecracker" => Ok(BackendType::Firecracker),
             "apple" => Ok(BackendType::Apple),
             "hyperlight" => Ok(BackendType::Hyperlight),
+            "kubernetes" | "k8s" => Ok(BackendType::Kubernetes),
+            "nomad" => Ok(BackendType::Nomad),
             _ => Err(format!(
-                "Unknown backend '{}'. Valid options: docker, podman, firecracker, apple, hyperlight",
+                "Unknown backend '{}'. Valid options: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad",
                 s
             )),
         }
@@ -445,6 +467,16 @@ pub fn backend_available(backend: BackendType) -> bool {
         #[cfg(not(target_os = "macos"))]
         BackendType::Apple => false,
         BackendType::Hyperlight => hyperlight::hyperlight_available(),
+        // Kubernetes and Nomad are always "available" when compiled with the feature;
+        // actual connectivity is checked at start() time.
+        #[cfg(feature = "kubernetes")]
+        BackendType::Kubernetes => true,
+        #[cfg(not(feature = "kubernetes"))]
+        BackendType::Kubernetes => false,
+        #[cfg(feature = "nomad")]
+        BackendType::Nomad => true,
+        #[cfg(not(feature = "nomad"))]
+        BackendType::Nomad => false,
     }
 }
 
@@ -454,6 +486,17 @@ pub fn backend_available(backend: BackendType) -> bool {
 /// This is needed because the Sandbox trait workflow (create/start/stop/attach)
 /// expects containers to persist between CLI invocations.
 pub fn create_sandbox(backend: BackendType, name: &str) -> Result<Box<dyn Sandbox>> {
+    create_sandbox_with_config(backend, name, &crate::config::OrchestratorConfig::default())
+}
+
+/// Create a sandbox with orchestrator configuration
+///
+/// Used by Kubernetes/Nomad backends to pass namespace, runtime class, etc.
+pub fn create_sandbox_with_config(
+    backend: BackendType,
+    name: &str,
+    orch_config: &crate::config::OrchestratorConfig,
+) -> Result<Box<dyn Sandbox>> {
     match backend {
         // Use new_persistent for Docker/Podman so containers survive CLI exit
         BackendType::Docker => Ok(Box::new(DockerSandbox::new_persistent(
@@ -470,6 +513,18 @@ pub fn create_sandbox(backend: BackendType, name: &str) -> Result<Box<dyn Sandbo
         #[cfg(not(target_os = "macos"))]
         BackendType::Apple => anyhow::bail!("Apple Containers only available on macOS"),
         BackendType::Hyperlight => Ok(Box::new(HyperlightSandbox::new(name))),
+        #[cfg(feature = "kubernetes")]
+        BackendType::Kubernetes => Ok(Box::new(KubernetesSandbox::new(name, orch_config))),
+        #[cfg(not(feature = "kubernetes"))]
+        BackendType::Kubernetes => {
+            anyhow::bail!("Kubernetes backend not compiled. Rebuild with --features kubernetes")
+        }
+        #[cfg(feature = "nomad")]
+        BackendType::Nomad => Ok(Box::new(NomadSandbox::new(name, orch_config))),
+        #[cfg(not(feature = "nomad"))]
+        BackendType::Nomad => {
+            anyhow::bail!("Nomad backend not compiled. Rebuild with --features nomad")
+        }
     }
 }
 
@@ -486,6 +541,8 @@ mod tests {
         assert_eq!(format!("{}", BackendType::Firecracker), "firecracker");
         assert_eq!(format!("{}", BackendType::Apple), "apple");
         assert_eq!(format!("{}", BackendType::Hyperlight), "hyperlight");
+        assert_eq!(format!("{}", BackendType::Kubernetes), "kubernetes");
+        assert_eq!(format!("{}", BackendType::Nomad), "nomad");
     }
 
     #[test]
@@ -507,6 +564,12 @@ mod tests {
             "hyperlight".parse::<BackendType>().unwrap(),
             BackendType::Hyperlight
         );
+        assert_eq!(
+            "kubernetes".parse::<BackendType>().unwrap(),
+            BackendType::Kubernetes
+        );
+        assert_eq!("k8s".parse::<BackendType>().unwrap(), BackendType::Kubernetes);
+        assert_eq!("nomad".parse::<BackendType>().unwrap(), BackendType::Nomad);
     }
 
     #[test]
