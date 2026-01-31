@@ -23,6 +23,12 @@ mod validation;
 mod vmm;
 mod vsock;
 
+// Enterprise modules (behind feature flag)
+#[cfg(feature = "enterprise")]
+mod identity;
+#[cfg(feature = "enterprise")]
+mod policy;
+
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};

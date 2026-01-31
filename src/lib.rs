@@ -15,3 +15,9 @@ pub mod permissions;
 pub mod rootfs;
 pub mod sandbox_pool;
 pub mod vsock;
+
+// Enterprise modules (behind feature flag)
+#[cfg(feature = "enterprise")]
+pub mod identity;
+#[cfg(feature = "enterprise")]
+pub mod policy;
