@@ -43,6 +43,76 @@ pub struct BuildConfig {
     pub no_cache: bool,
 }
 
+/// Configuration for Kubernetes/Nomad orchestration backends
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OrchestratorConfig {
+    /// Orchestrator provider: "kubernetes" or "nomad"
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Namespace for sandbox workloads (K8s namespace or Nomad namespace)
+    #[serde(default = "default_namespace")]
+    pub namespace: String,
+    /// Path to kubeconfig (optional, auto-detected from KUBECONFIG or ~/.kube/config)
+    #[serde(default)]
+    pub kubeconfig: Option<String>,
+    /// Kubeconfig context to use
+    #[serde(default)]
+    pub context: Option<String>,
+    /// Kubernetes runtime class (e.g., "gvisor", "kata") for stronger isolation
+    #[serde(default)]
+    pub runtime_class: Option<String>,
+    /// Kubernetes service account for sandbox pods
+    #[serde(default)]
+    pub service_account: Option<String>,
+    /// Node selector labels for pod scheduling
+    #[serde(default)]
+    pub node_selector: std::collections::HashMap<String, String>,
+    /// Nomad server address (e.g., "http://127.0.0.1:4646")
+    #[serde(default)]
+    pub nomad_addr: Option<String>,
+    /// Nomad ACL token (prefer NOMAD_TOKEN env var)
+    #[serde(default)]
+    pub nomad_token: Option<String>,
+    /// Nomad task driver: "docker", "exec", "raw_exec"
+    #[serde(default = "default_nomad_driver")]
+    pub nomad_driver: String,
+    /// Nomad datacenter
+    #[serde(default)]
+    pub nomad_datacenter: Option<String>,
+    /// Number of pre-warmed sandbox instances in the pool
+    #[serde(default = "default_warm_pool_size")]
+    pub warm_pool_size: usize,
+    /// Maximum number of concurrent sandboxes cluster-wide
+    #[serde(default = "default_max_pool_size")]
+    pub max_pool_size: usize,
+    /// Container images to pre-warm in the pool
+    #[serde(default)]
+    pub warm_pool_images: Vec<String>,
+    /// Hard cap on total concurrent sandboxes
+    #[serde(default = "default_max_sandboxes")]
+    pub max_sandboxes: usize,
+}
+
+fn default_namespace() -> String {
+    "agentkernel".to_string()
+}
+
+fn default_nomad_driver() -> String {
+    "docker".to_string()
+}
+
+fn default_warm_pool_size() -> usize {
+    10
+}
+
+fn default_max_pool_size() -> usize {
+    50
+}
+
+fn default_max_sandboxes() -> usize {
+    200
+}
+
 /// Root configuration structure matching agentkernel.toml schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -61,6 +131,9 @@ pub struct Config {
     /// Files to inject into the sandbox at startup
     #[serde(default, rename = "files")]
     pub files: Vec<FileEntry>,
+    /// Orchestrator configuration for Kubernetes/Nomad backends
+    #[serde(default)]
+    pub orchestrator: OrchestratorConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -274,6 +347,7 @@ impl Config {
             security: SecurityConfig::default(),
             build: BuildConfig::default(),
             files: Vec::new(),
+            orchestrator: OrchestratorConfig::default(),
         }
     }
 
