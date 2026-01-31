@@ -78,9 +78,7 @@ impl PolicyCache {
     /// Create a PolicyCache using the default cache directory.
     pub fn default_dir(offline_mode: OfflineMode) -> Self {
         let cache_dir = if let Some(home) = std::env::var_os("HOME") {
-            PathBuf::from(home)
-                .join(".agentkernel")
-                .join("policies")
+            PathBuf::from(home).join(".agentkernel").join("policies")
         } else {
             PathBuf::from("/tmp/agentkernel/policies")
         };
@@ -104,8 +102,8 @@ impl PolicyCache {
 
         // Write bundle
         let bundle_path = self.bundle_path();
-        let bundle_json = serde_json::to_string_pretty(bundle)
-            .context("Failed to serialize policy bundle")?;
+        let bundle_json =
+            serde_json::to_string_pretty(bundle).context("Failed to serialize policy bundle")?;
         std::fs::write(&bundle_path, bundle_json)
             .context("Failed to write policy bundle to cache")?;
 
@@ -113,8 +111,7 @@ impl PolicyCache {
         let meta_path = self.metadata_path();
         let meta_json = serde_json::to_string_pretty(&metadata)
             .context("Failed to serialize cache metadata")?;
-        std::fs::write(&meta_path, meta_json)
-            .context("Failed to write cache metadata")?;
+        std::fs::write(&meta_path, meta_json).context("Failed to write cache metadata")?;
 
         Ok(())
     }
@@ -131,15 +128,15 @@ impl PolicyCache {
             return Ok(None);
         }
 
-        let bundle_json = std::fs::read_to_string(&bundle_path)
-            .context("Failed to read cached policy bundle")?;
-        let bundle: PolicyBundle = serde_json::from_str(&bundle_json)
-            .context("Failed to parse cached policy bundle")?;
+        let bundle_json =
+            std::fs::read_to_string(&bundle_path).context("Failed to read cached policy bundle")?;
+        let bundle: PolicyBundle =
+            serde_json::from_str(&bundle_json).context("Failed to parse cached policy bundle")?;
 
-        let meta_json = std::fs::read_to_string(&meta_path)
-            .context("Failed to read cache metadata")?;
-        let metadata: CacheMetadata = serde_json::from_str(&meta_json)
-            .context("Failed to parse cache metadata")?;
+        let meta_json =
+            std::fs::read_to_string(&meta_path).context("Failed to read cache metadata")?;
+        let metadata: CacheMetadata =
+            serde_json::from_str(&meta_json).context("Failed to parse cache metadata")?;
 
         // Verify integrity
         let expected_hash = compute_hash(&bundle.policies);
@@ -169,7 +166,7 @@ impl PolicyCache {
     }
 
     /// Check if the cached bundle has expired based on the offline mode.
-    pub fn is_expired(&self, metadata: &CacheMetadata) -> bool {
+    fn is_expired(&self, metadata: &CacheMetadata) -> bool {
         match &self.offline_mode {
             OfflineMode::FailClosed => {
                 // Always expired when server is not reachable
@@ -195,10 +192,10 @@ impl PolicyCache {
             return Ok(None);
         }
 
-        let meta_json = std::fs::read_to_string(&meta_path)
-            .context("Failed to read cache metadata")?;
-        let metadata: CacheMetadata = serde_json::from_str(&meta_json)
-            .context("Failed to parse cache metadata")?;
+        let meta_json =
+            std::fs::read_to_string(&meta_path).context("Failed to read cache metadata")?;
+        let metadata: CacheMetadata =
+            serde_json::from_str(&meta_json).context("Failed to parse cache metadata")?;
 
         Ok(Some(metadata.version))
     }
@@ -209,12 +206,10 @@ impl PolicyCache {
         let meta_path = self.metadata_path();
 
         if bundle_path.exists() {
-            std::fs::remove_file(&bundle_path)
-                .context("Failed to remove cached bundle")?;
+            std::fs::remove_file(&bundle_path).context("Failed to remove cached bundle")?;
         }
         if meta_path.exists() {
-            std::fs::remove_file(&meta_path)
-                .context("Failed to remove cache metadata")?;
+            std::fs::remove_file(&meta_path).context("Failed to remove cache metadata")?;
         }
 
         Ok(())
@@ -263,10 +258,7 @@ mod tests {
     #[test]
     fn test_store_and_load() {
         let tmp = TempDir::new().unwrap();
-        let cache = PolicyCache::new(
-            tmp.path().join("policies"),
-            OfflineMode::CachedIndefinite,
-        );
+        let cache = PolicyCache::new(tmp.path().join("policies"), OfflineMode::CachedIndefinite);
 
         let bundle = test_bundle();
         cache.store(&bundle).unwrap();
@@ -282,10 +274,7 @@ mod tests {
     #[test]
     fn test_load_empty_cache() {
         let tmp = TempDir::new().unwrap();
-        let cache = PolicyCache::new(
-            tmp.path().join("policies"),
-            OfflineMode::CachedIndefinite,
-        );
+        let cache = PolicyCache::new(tmp.path().join("policies"), OfflineMode::CachedIndefinite);
 
         let loaded = cache.load().unwrap();
         assert!(loaded.is_none());
@@ -294,10 +283,7 @@ mod tests {
     #[test]
     fn test_cached_version() {
         let tmp = TempDir::new().unwrap();
-        let cache = PolicyCache::new(
-            tmp.path().join("policies"),
-            OfflineMode::CachedIndefinite,
-        );
+        let cache = PolicyCache::new(tmp.path().join("policies"), OfflineMode::CachedIndefinite);
 
         assert_eq!(cache.cached_version().unwrap(), None);
 
@@ -328,10 +314,7 @@ mod tests {
     #[test]
     fn test_cache_indefinite_never_expires() {
         let tmp = TempDir::new().unwrap();
-        let cache = PolicyCache::new(
-            tmp.path().join("policies"),
-            OfflineMode::CachedIndefinite,
-        );
+        let cache = PolicyCache::new(tmp.path().join("policies"), OfflineMode::CachedIndefinite);
 
         let bundle = test_bundle();
         cache.store(&bundle).unwrap();
@@ -343,10 +326,7 @@ mod tests {
     #[test]
     fn test_clear_cache() {
         let tmp = TempDir::new().unwrap();
-        let cache = PolicyCache::new(
-            tmp.path().join("policies"),
-            OfflineMode::CachedIndefinite,
-        );
+        let cache = PolicyCache::new(tmp.path().join("policies"), OfflineMode::CachedIndefinite);
 
         let bundle = test_bundle();
         cache.store(&bundle).unwrap();
@@ -359,10 +339,7 @@ mod tests {
     #[test]
     fn test_integrity_check() {
         let tmp = TempDir::new().unwrap();
-        let cache = PolicyCache::new(
-            tmp.path().join("policies"),
-            OfflineMode::CachedIndefinite,
-        );
+        let cache = PolicyCache::new(tmp.path().join("policies"), OfflineMode::CachedIndefinite);
 
         let bundle = test_bundle();
         cache.store(&bundle).unwrap();

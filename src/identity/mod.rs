@@ -94,9 +94,7 @@ impl AgentIdentity {
 
     /// Check if MFA is verified
     pub fn mfa_verified(&self) -> bool {
-        self.jwt_claims
-            .as_ref()
-            .is_some_and(|c| c.mfa_verified)
+        self.jwt_claims.as_ref().is_some_and(|c| c.mfa_verified)
     }
 
     /// Whether this identity is authenticated (has either API key or JWT)
@@ -249,10 +247,7 @@ pub fn to_cedar_context(
     if let Some(ref claims) = identity.jwt_claims {
         context.insert("email".to_string(), serde_json::json!(claims.email));
         context.insert("org_id".to_string(), serde_json::json!(claims.org_id));
-        context.insert(
-            "roles".to_string(),
-            serde_json::json!(claims.roles),
-        );
+        context.insert("roles".to_string(), serde_json::json!(claims.roles));
         context.insert(
             "mfa_verified".to_string(),
             serde_json::json!(claims.mfa_verified),

@@ -13,22 +13,22 @@
 //! Run with: cargo test --test enterprise_policy_test --features enterprise
 #![cfg(feature = "enterprise")]
 
-use agentkernel::policy::cedar::{Action, CedarEngine, PolicyEffect, Principal, Resource};
-use agentkernel::policy::cache::{OfflineMode, PolicyCache};
-use agentkernel::policy::signing::{PolicyBundle, TrustAnchor, sign_bundle, verify_bundle};
-use agentkernel::policy::tenant::{
-    Org, Policy, PolicyDecision as TenantPolicyDecision, PolicyScope, Team, TenantHierarchy,
-    is_action_permitted, resolve_effective_policies,
-};
-use agentkernel::policy::streaming::{
-    AuditEvent as StreamAuditEvent, AuditStreamConfig, AuditStreamer, EventOutcome,
-    StreamDestination, new_audit_event,
+use agentkernel::identity::oidc::{
+    DeviceAuthResponse, OidcConfig, OidcDeviceFlow, StoredTokens, TokenResponse,
 };
 use agentkernel::identity::{
     AgentIdentity, JwtClaims, to_cedar_context, to_cedar_principal, validate_api_key,
 };
-use agentkernel::identity::oidc::{
-    DeviceAuthResponse, OidcConfig, OidcDeviceFlow, StoredTokens, TokenResponse,
+use agentkernel::policy::cache::{OfflineMode, PolicyCache};
+use agentkernel::policy::cedar::{Action, CedarEngine, PolicyEffect, Principal, Resource};
+use agentkernel::policy::signing::{PolicyBundle, TrustAnchor, sign_bundle, verify_bundle};
+use agentkernel::policy::streaming::{
+    AuditEvent as StreamAuditEvent, AuditStreamConfig, AuditStreamer, EventOutcome,
+    StreamDestination, new_audit_event,
+};
+use agentkernel::policy::tenant::{
+    Org, Policy, PolicyDecision as TenantPolicyDecision, PolicyScope, Team, TenantHierarchy,
+    is_action_permitted, resolve_effective_policies,
 };
 
 use chrono::Utc;
@@ -120,8 +120,7 @@ permit(
     assert_eq!(bundle.signature.len(), 64);
 
     // Verify the signature
-    verify_bundle(&bundle, &[anchor.clone()], None)
-        .expect("Verification should succeed");
+    verify_bundle(&bundle, &[anchor.clone()], None).expect("Verification should succeed");
 
     // Verify with version monotonicity
     verify_bundle(&bundle, &[anchor.clone()], Some(1))
@@ -278,10 +277,7 @@ fn test_cedar_empty_policy_denies_all() {
 #[test]
 fn test_cache_store_and_load() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let cache = PolicyCache::new(
-        tmp.path().join("policies"),
-        OfflineMode::CachedIndefinite,
-    );
+    let cache = PolicyCache::new(tmp.path().join("policies"), OfflineMode::CachedIndefinite);
 
     let bundle = PolicyBundle {
         policies: "permit(principal, action, resource);".to_string(),
@@ -342,10 +338,7 @@ fn test_cache_expiry_with_zero_ttl() {
 #[test]
 fn test_cache_indefinite_never_expires() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let cache = PolicyCache::new(
-        tmp.path().join("policies"),
-        OfflineMode::CachedIndefinite,
-    );
+    let cache = PolicyCache::new(tmp.path().join("policies"), OfflineMode::CachedIndefinite);
 
     let bundle = PolicyBundle {
         policies: "permit(principal, action, resource);".to_string(),
@@ -909,10 +902,7 @@ permit(
 #[test]
 fn test_cache_roundtrip_preserves_bundle_for_cedar() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let cache = PolicyCache::new(
-        tmp.path().join("policies"),
-        OfflineMode::CachedIndefinite,
-    );
+    let cache = PolicyCache::new(tmp.path().join("policies"), OfflineMode::CachedIndefinite);
 
     let policies = r#"
 permit(
@@ -1004,5 +994,8 @@ fn test_identity_to_tenant_resolution() {
     );
 
     assert!(is_action_permitted(&effective, "Run"));
-    assert!(!is_action_permitted(&effective, "Network"), "Org forbid must override team permit");
+    assert!(
+        !is_action_permitted(&effective, "Network"),
+        "Org forbid must override team permit"
+    );
 }

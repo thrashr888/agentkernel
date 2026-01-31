@@ -4,8 +4,6 @@
 //! HTTP policy fetching, local caching, and audit logging into a unified
 //! PolicyEngine that integrates with the sandbox lifecycle.
 
-#![cfg(feature = "enterprise")]
-
 pub mod audit;
 pub mod cache;
 pub mod cedar;
@@ -72,10 +70,8 @@ impl PolicyEngine {
             bail!("Enterprise policy engine is not enabled");
         }
 
-        let offline_mode = OfflineMode::from_config(
-            &config.offline_mode,
-            config.cache_max_age_hours,
-        );
+        let offline_mode =
+            OfflineMode::from_config(&config.offline_mode, config.cache_max_age_hours);
 
         let cache = PolicyCache::default_dir(offline_mode.clone());
         let audit = PolicyAuditLogger::default_path();
@@ -156,8 +152,7 @@ impl PolicyEngine {
             let (shutdown_tx, shutdown_rx) = watch::channel(false);
             self.shutdown_tx = Some(shutdown_tx);
 
-            let mut bundle_rx =
-                client.clone().poll(Duration::from_secs(300), shutdown_rx);
+            let mut bundle_rx = client.clone().poll(Duration::from_secs(300), shutdown_rx);
 
             let engine = self.engine.clone();
             let trust_anchors = self.trust_anchors.clone();
@@ -174,26 +169,18 @@ impl PolicyEngine {
                     if let Some(bundle) = bundle {
                         // Verify signature
                         let min_ver = *current_version.read().await;
-                        if !trust_anchors.is_empty() {
-                            if let Err(e) =
-                                verify_bundle(&bundle, &trust_anchors, Some(min_ver))
-                            {
-                                eprintln!(
-                                    "[enterprise] Policy bundle verification failed: {}",
-                                    e
-                                );
-                                continue;
-                            }
+                        if !trust_anchors.is_empty()
+                            && let Err(e) = verify_bundle(&bundle, &trust_anchors, Some(min_ver))
+                        {
+                            eprintln!("[enterprise] Policy bundle verification failed: {}", e);
+                            continue;
                         }
 
                         // Update engine
                         {
                             let mut eng = engine.write().await;
                             if let Err(e) = eng.update_policies(&bundle.policies) {
-                                eprintln!(
-                                    "[enterprise] Failed to update policies: {}",
-                                    e
-                                );
+                                eprintln!("[enterprise] Failed to update policies: {}", e);
                                 continue;
                             }
                         }

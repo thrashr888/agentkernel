@@ -5,7 +5,7 @@
 
 #![cfg(feature = "enterprise")]
 
-use anyhow::{Result, Context as _};
+use anyhow::{Context as _, Result};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -68,11 +68,7 @@ impl PolicyClient {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<no body>".to_string());
-            anyhow::bail!(
-                "Policy server returned {}: {}",
-                status,
-                body
-            );
+            anyhow::bail!("Policy server returned {}: {}", status, body);
         }
 
         let bundle: PolicyBundle = response
@@ -153,8 +149,7 @@ mod tests {
 
     #[test]
     fn test_server_url_normalization() {
-        let client =
-            PolicyClient::new("https://policy.example.com/", None).unwrap();
+        let client = PolicyClient::new("https://policy.example.com/", None).unwrap();
         assert_eq!(client.server_url, "https://policy.example.com");
     }
 }

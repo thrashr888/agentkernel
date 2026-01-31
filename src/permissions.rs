@@ -103,6 +103,49 @@ impl Default for Permissions {
 }
 
 impl Permissions {
+    /// Create permission overrides from a Cedar policy decision.
+    ///
+    /// When the enterprise policy engine evaluates an action, certain
+    /// Cedar conditions map to permission overrides. For example, a
+    /// forbid on the "Network" action translates to `network = false`.
+    ///
+    /// This method applies Cedar-derived restrictions on top of the
+    /// existing base permissions. Cedar can only restrict, never grant
+    /// additional permissions beyond the base profile.
+    #[cfg(feature = "enterprise")]
+    #[allow(dead_code)]
+    pub fn from_cedar_decision(
+        base: &Permissions,
+        action: &crate::policy::Action,
+        decision: &crate::policy::PolicyDecision,
+    ) -> Permissions {
+        let mut perms = base.clone();
+
+        // If Cedar denies the action, apply restrictive overrides
+        if !decision.is_permit() {
+            match action {
+                crate::policy::Action::Network => {
+                    perms.network = false;
+                }
+                crate::policy::Action::Mount => {
+                    perms.mount_cwd = false;
+                    perms.mount_home = false;
+                }
+                crate::policy::Action::Create | crate::policy::Action::Run => {
+                    // Deny the entire operation - caller should check decision first
+                }
+                crate::policy::Action::Exec => {
+                    // Deny command execution - caller should check decision first
+                }
+                crate::policy::Action::Attach => {
+                    // Deny attach - caller should check decision first
+                }
+            }
+        }
+
+        perms
+    }
+
     /// Resolve seccomp profile path from name or path
     ///
     /// Built-in profiles: "default", "moderate", "restrictive", "ai-agent"

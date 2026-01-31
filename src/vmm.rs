@@ -69,6 +69,9 @@ pub struct VmManager {
     rootfs_dir: Option<PathBuf>,
     /// Next vsock CID
     next_cid: u32,
+    /// Enterprise policy engine (when enterprise feature is enabled)
+    #[cfg(feature = "enterprise")]
+    policy_engine: Option<crate::policy::PolicyEngine>,
 }
 
 impl VmManager {
@@ -114,6 +117,34 @@ impl VmManager {
         // Find next available CID
         let max_cid = sandboxes.values().map(|s| s.vsock_cid).max().unwrap_or(2);
 
+        // Initialize enterprise policy engine if configured
+        #[cfg(feature = "enterprise")]
+        let policy_engine = {
+            let default_config = PathBuf::from("agentkernel.toml");
+            if default_config.exists() {
+                if let Ok(cfg) = Config::from_file(&default_config) {
+                    if cfg.enterprise.enabled {
+                        match crate::policy::PolicyEngine::new(&cfg.enterprise) {
+                            Ok(engine) => {
+                                eprintln!("[enterprise] Policy engine initialized");
+                                Some(engine)
+                            }
+                            Err(e) => {
+                                eprintln!("[enterprise] Failed to initialize policy engine: {}", e);
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
         let mut manager = Self {
             backend,
             running: HashMap::new(),
@@ -121,6 +152,8 @@ impl VmManager {
             data_dir,
             rootfs_dir,
             next_cid: max_cid + 1,
+            #[cfg(feature = "enterprise")]
+            policy_engine,
         };
 
         // Detect already-running sandboxes
@@ -265,6 +298,49 @@ impl VmManager {
         Ok(path)
     }
 
+    /// Check enterprise policy for an action on a sandbox.
+    ///
+    /// Returns Ok(()) if the action is permitted (or no policy engine is active).
+    /// Returns an error if the action is denied by enterprise policy.
+    #[cfg(feature = "enterprise")]
+    async fn check_enterprise_policy(
+        &self,
+        action: crate::policy::Action,
+        sandbox_name: &str,
+        agent_type: &str,
+        runtime: &str,
+    ) -> Result<()> {
+        if let Some(ref engine) = self.policy_engine {
+            // Build a default principal from environment
+            let principal = crate::policy::Principal {
+                id: std::env::var("USER").unwrap_or_else(|_| "unknown".to_string()),
+                email: std::env::var("USER")
+                    .map(|u| format!("{}@local", u))
+                    .unwrap_or_else(|_| "unknown@local".to_string()),
+                org_id: "local".to_string(),
+                roles: vec!["developer".to_string()],
+                mfa_verified: false,
+            };
+
+            let resource = crate::policy::Resource {
+                name: sandbox_name.to_string(),
+                agent_type: agent_type.to_string(),
+                runtime: runtime.to_string(),
+            };
+
+            let decision = engine.evaluate(&principal, action, &resource).await;
+            if !decision.is_permit() {
+                bail!(
+                    "Enterprise policy denied action '{}' on sandbox '{}': {}",
+                    action,
+                    sandbox_name,
+                    decision.reason
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Create a new sandbox (persisted to disk)
     pub async fn create(
         &mut self,
@@ -276,6 +352,16 @@ impl VmManager {
         if self.sandboxes.contains_key(name) {
             bail!("Sandbox '{}' already exists", name);
         }
+
+        // Enterprise policy check
+        #[cfg(feature = "enterprise")]
+        self.check_enterprise_policy(
+            crate::policy::Action::Create,
+            name,
+            "unknown",
+            crate::languages::docker_image_to_firecracker_runtime(image),
+        )
+        .await?;
 
         // For Firecracker, convert Docker image names to runtime names
         let effective_image = if self.backend == BackendType::Firecracker {
@@ -339,6 +425,11 @@ impl VmManager {
         if self.running.contains_key(name) {
             bail!("Sandbox '{}' is already running", name);
         }
+
+        // Enterprise policy check for start
+        #[cfg(feature = "enterprise")]
+        self.check_enterprise_policy(crate::policy::Action::Run, name, "unknown", &state.image)
+            .await?;
 
         // Use the backend from stored state, or fall back to current backend
         let backend = state.backend.unwrap_or(self.backend);
@@ -428,6 +519,18 @@ impl VmManager {
         env: &[String],
     ) -> Result<String> {
         Self::enforce_command_policy(cmd)?;
+
+        // Enterprise policy check for exec
+        #[cfg(feature = "enterprise")]
+        {
+            let image = self
+                .sandboxes
+                .get(name)
+                .map(|s| s.image.clone())
+                .unwrap_or_default();
+            self.check_enterprise_policy(crate::policy::Action::Exec, name, "unknown", &image)
+                .await?;
+        }
 
         let sandbox = self.running.get_mut(name).ok_or_else(|| {
             anyhow::anyhow!(

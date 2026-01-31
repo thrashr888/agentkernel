@@ -205,11 +205,7 @@ impl OidcDeviceFlow {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            bail!(
-                "Device authorization request failed ({}): {}",
-                status,
-                body
-            );
+            bail!("Device authorization request failed ({}): {}", status, body);
         }
 
         let device_auth: DeviceAuthResponse = response
@@ -228,8 +224,8 @@ impl OidcDeviceFlow {
         let config = self.discover().await?;
         let token_endpoint = &config.token_endpoint;
         let interval = std::time::Duration::from_secs(device_auth.interval);
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(device_auth.expires_in);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(device_auth.expires_in);
 
         loop {
             // Respect the polling interval
@@ -262,8 +258,8 @@ impl OidcDeviceFlow {
 
             // Parse error response
             let error_body = response.text().await.unwrap_or_default();
-            let error: TokenErrorResponse = serde_json::from_str(&error_body)
-                .unwrap_or(TokenErrorResponse {
+            let error: TokenErrorResponse =
+                serde_json::from_str(&error_body).unwrap_or(TokenErrorResponse {
                     error: "unknown".to_string(),
                     error_description: Some(error_body),
                 });
@@ -314,8 +310,7 @@ impl OidcDeviceFlow {
 
         // Ensure directory exists
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .context("Failed to create auth directory")?;
+            std::fs::create_dir_all(parent).context("Failed to create auth directory")?;
         }
 
         // Calculate expiration time
@@ -333,11 +328,10 @@ impl OidcDeviceFlow {
             client_id: self.client_id.clone(),
         };
 
-        let content = serde_json::to_string_pretty(&stored)
-            .context("Failed to serialize tokens")?;
+        let content =
+            serde_json::to_string_pretty(&stored).context("Failed to serialize tokens")?;
 
-        std::fs::write(&path, &content)
-            .context("Failed to write token file")?;
+        std::fs::write(&path, &content).context("Failed to write token file")?;
 
         // Set file permissions to 0600 (owner read/write only)
         #[cfg(unix)]
@@ -363,8 +357,8 @@ impl OidcDeviceFlow {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let metadata = std::fs::metadata(&path)
-                .context("Failed to read token file metadata")?;
+            let metadata =
+                std::fs::metadata(&path).context("Failed to read token file metadata")?;
             let mode = metadata.permissions().mode() & 0o777;
             if mode != 0o600 {
                 bail!(
@@ -376,24 +370,22 @@ impl OidcDeviceFlow {
             }
         }
 
-        let content = std::fs::read_to_string(&path)
-            .context("Failed to read token file")?;
+        let content = std::fs::read_to_string(&path).context("Failed to read token file")?;
 
-        let tokens: StoredTokens = serde_json::from_str(&content)
-            .context("Failed to parse stored tokens")?;
+        let tokens: StoredTokens =
+            serde_json::from_str(&content).context("Failed to parse stored tokens")?;
 
         // Check if access token is expired
-        if let Some(ref expires_at) = tokens.expires_at {
-            if let Ok(expiry) = chrono::DateTime::parse_from_rfc3339(expires_at) {
-                if expiry < chrono::Utc::now() {
-                    // Token expired, but might have refresh token
-                    if tokens.refresh_token.is_some() {
-                        // Return tokens so caller can attempt refresh
-                        return Ok(Some(tokens));
-                    }
-                    return Ok(None);
-                }
+        if let Some(ref expires_at) = tokens.expires_at
+            && let Ok(expiry) = chrono::DateTime::parse_from_rfc3339(expires_at)
+            && expiry < chrono::Utc::now()
+        {
+            // Token expired, but might have refresh token
+            if tokens.refresh_token.is_some() {
+                // Return tokens so caller can attempt refresh
+                return Ok(Some(tokens));
             }
+            return Ok(None);
         }
 
         Ok(Some(tokens))
@@ -403,8 +395,7 @@ impl OidcDeviceFlow {
     pub fn clear_tokens() -> Result<()> {
         let path = Self::token_store_path();
         if path.exists() {
-            std::fs::remove_file(&path)
-                .context("Failed to remove token file")?;
+            std::fs::remove_file(&path).context("Failed to remove token file")?;
         }
         Ok(())
     }
@@ -504,7 +495,11 @@ mod tests {
         let config: OidcConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.issuer, "https://accounts.example.com");
         assert!(config.device_authorization_endpoint.is_some());
-        assert!(config.grant_types_supported.contains(&"urn:ietf:params:oauth:grant-type:device_code".to_string()));
+        assert!(
+            config
+                .grant_types_supported
+                .contains(&"urn:ietf:params:oauth:grant-type:device_code".to_string())
+        );
     }
 
     #[test]
@@ -544,11 +539,8 @@ mod tests {
 
     #[test]
     fn test_oidc_device_flow_with_scopes() {
-        let flow = OidcDeviceFlow::new(
-            "https://example.com".to_string(),
-            "client".to_string(),
-        )
-        .with_scopes(vec!["openid".to_string(), "custom:read".to_string()]);
+        let flow = OidcDeviceFlow::new("https://example.com".to_string(), "client".to_string())
+            .with_scopes(vec!["openid".to_string(), "custom:read".to_string()]);
 
         assert_eq!(flow.scopes.len(), 2);
         assert!(flow.scopes.contains(&"custom:read".to_string()));
