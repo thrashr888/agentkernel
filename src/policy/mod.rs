@@ -11,6 +11,8 @@ pub mod cache;
 pub mod cedar;
 pub mod client;
 pub mod signing;
+pub mod streaming;
+pub mod tenant;
 
 use anyhow::{Result, bail};
 use std::sync::Arc;
@@ -165,7 +167,11 @@ impl PolicyEngine {
 
             tokio::spawn(async move {
                 while bundle_rx.changed().await.is_ok() {
-                    if let Some(bundle) = bundle_rx.borrow().clone() {
+                    // Clone the bundle out of the borrow immediately to avoid
+                    // holding the non-Send Ref across an await point.
+                    let bundle = { bundle_rx.borrow().clone() };
+
+                    if let Some(bundle) = bundle {
                         // Verify signature
                         let min_ver = *current_version.read().await;
                         if !trust_anchors.is_empty() {
