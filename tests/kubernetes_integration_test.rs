@@ -46,7 +46,10 @@ async fn test_kubernetes_lifecycle() {
         .start(&config)
         .await
         .expect("Failed to start K8s sandbox");
-    assert!(sandbox.is_running(), "Sandbox should be running after start");
+    assert!(
+        sandbox.is_running(),
+        "Sandbox should be running after start"
+    );
 
     // Run a simple command
     let result = sandbox
@@ -83,10 +86,7 @@ async fn test_kubernetes_lifecycle() {
         .expect("Failed to remove file");
 
     // Stop
-    sandbox
-        .stop()
-        .await
-        .expect("Failed to stop K8s sandbox");
+    sandbox.stop().await.expect("Failed to stop K8s sandbox");
     assert!(
         !sandbox.is_running(),
         "Sandbox should not be running after stop"
@@ -131,8 +131,7 @@ async fn test_kubernetes_network_isolation() {
     use agentkernel::backend::Sandbox;
 
     let orch_config = test_orch_config();
-    let mut sandbox =
-        agentkernel::backend::KubernetesSandbox::new("k8s-test-nonet", &orch_config);
+    let mut sandbox = agentkernel::backend::KubernetesSandbox::new("k8s-test-nonet", &orch_config);
 
     let mut config = test_sandbox_config();
     config.network = false;
@@ -180,8 +179,7 @@ async fn test_kubernetes_concurrent_100() {
 
         let handle = tokio::spawn(async move {
             let name = format!("k8s-concurrent-{}", i);
-            let mut sandbox =
-                agentkernel::backend::KubernetesSandbox::new(&name, &orch_config);
+            let mut sandbox = agentkernel::backend::KubernetesSandbox::new(&name, &orch_config);
 
             if let Err(e) = sandbox.start(&config).await {
                 errors.lock().await.push(format!("start {}: {}", i, e));
@@ -242,8 +240,7 @@ async fn test_kubernetes_file_injection() {
     use agentkernel::backend::{FileInjection, Sandbox};
 
     let orch_config = test_orch_config();
-    let mut sandbox =
-        agentkernel::backend::KubernetesSandbox::new("k8s-test-inject", &orch_config);
+    let mut sandbox = agentkernel::backend::KubernetesSandbox::new("k8s-test-inject", &orch_config);
     let config = test_sandbox_config();
 
     sandbox

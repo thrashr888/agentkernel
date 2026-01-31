@@ -176,9 +176,7 @@ async fn reconcile_sandbox(
     ctx: Arc<OperatorContext>,
 ) -> std::result::Result<Action, ReconcileError> {
     let client = &ctx.client;
-    let namespace = sandbox
-        .namespace()
-        .unwrap_or_else(|| "default".to_string());
+    let namespace = sandbox.namespace().unwrap_or_else(|| "default".to_string());
     let name = sandbox.name_any();
 
     let pods: Api<Pod> = Api::namespaced(client.clone(), &namespace);
@@ -207,11 +205,7 @@ async fn reconcile_sandbox(
             });
 
             let _ = sandboxes
-                .patch_status(
-                    &name,
-                    &PatchParams::default(),
-                    &Patch::Merge(&status),
-                )
+                .patch_status(&name, &PatchParams::default(), &Patch::Merge(&status))
                 .await;
         }
         None => {
@@ -290,10 +284,7 @@ async fn reconcile_sandbox(
                     namespace: Some(namespace.clone()),
                     labels: Some({
                         let mut labels = BTreeMap::new();
-                        labels.insert(
-                            "agentkernel.io/sandbox".to_string(),
-                            name.clone(),
-                        );
+                        labels.insert("agentkernel.io/sandbox".to_string(), name.clone());
                         labels.insert(
                             "agentkernel.io/managed-by".to_string(),
                             "agentkernel-operator".to_string(),
@@ -324,11 +315,7 @@ async fn reconcile_sandbox(
                     });
 
                     let _ = sandboxes
-                        .patch_status(
-                            &name,
-                            &PatchParams::default(),
-                            &Patch::Merge(&status),
-                        )
+                        .patch_status(&name, &PatchParams::default(), &Patch::Merge(&status))
                         .await;
                 }
                 Err(e) => {
@@ -341,11 +328,7 @@ async fn reconcile_sandbox(
                     });
 
                     let _ = sandboxes
-                        .patch_status(
-                            &name,
-                            &PatchParams::default(),
-                            &Patch::Merge(&status),
-                        )
+                        .patch_status(&name, &PatchParams::default(), &Patch::Merge(&status))
                         .await;
                 }
             }
@@ -401,15 +384,11 @@ pub async fn run_operator(client: Client) -> Result<()> {
 ///
 /// Returns YAML strings for both AgentSandbox and AgentSandboxPool CRDs.
 pub fn generate_crd_manifests() -> Result<(String, String)> {
-    let sandbox_crd = serde_yaml::to_string(
-        &AgentSandbox::crd(),
-    )
-    .context("Failed to serialize AgentSandbox CRD")?;
+    let sandbox_crd = serde_yaml::to_string(&AgentSandbox::crd())
+        .context("Failed to serialize AgentSandbox CRD")?;
 
-    let pool_crd = serde_yaml::to_string(
-        &AgentSandboxPool::crd(),
-    )
-    .context("Failed to serialize AgentSandboxPool CRD")?;
+    let pool_crd = serde_yaml::to_string(&AgentSandboxPool::crd())
+        .context("Failed to serialize AgentSandboxPool CRD")?;
 
     Ok((sandbox_crd, pool_crd))
 }

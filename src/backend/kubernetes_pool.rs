@@ -11,8 +11,8 @@
 use anyhow::{Context, Result, bail};
 use k8s_openapi::api::core::v1::{Container, Pod, PodSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::Client;
+use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -181,7 +181,11 @@ impl KubernetesPool {
             match pods.create(&PostParams::default(), &pod).await {
                 Ok(_) => {}
                 Err(e) => {
-                    eprintln!("Warning: Failed to create warm pod {}: {}", start_index + i, e);
+                    eprintln!(
+                        "Warning: Failed to create warm pod {}: {}",
+                        start_index + i,
+                        e
+                    );
                 }
             }
         }
@@ -204,12 +208,7 @@ impl KubernetesPool {
         let warm_pod = warm_pods
             .items
             .into_iter()
-            .find(|p| {
-                p.status
-                    .as_ref()
-                    .and_then(|s| s.phase.as_deref())
-                    == Some("Running")
-            })
+            .find(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running"))
             .ok_or_else(|| anyhow::anyhow!("No warm pods available in pool"))?;
 
         let pod_name = warm_pod
@@ -227,13 +226,9 @@ impl KubernetesPool {
             }
         });
 
-        pods.patch(
-            &pod_name,
-            &PatchParams::default(),
-            &Patch::Merge(&patch),
-        )
-        .await
-        .context("Failed to relabel warm pod to active")?;
+        pods.patch(&pod_name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await
+            .context("Failed to relabel warm pod to active")?;
 
         Ok(pod_name)
     }
@@ -339,8 +334,8 @@ impl KubernetesPool {
     pub async fn cleanup(&self) -> Result<()> {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.config.namespace);
 
-        let lp =
-            ListParams::default().labels("agentkernel.io/managed-by=agentkernel,agentkernel.io/pool=warm");
+        let lp = ListParams::default()
+            .labels("agentkernel.io/managed-by=agentkernel,agentkernel.io/pool=warm");
         let warm_pods = pods.list(&lp).await?;
 
         for pod in warm_pods.items {

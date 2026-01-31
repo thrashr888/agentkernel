@@ -495,7 +495,7 @@ pub fn create_sandbox(backend: BackendType, name: &str) -> Result<Box<dyn Sandbo
 pub fn create_sandbox_with_config(
     backend: BackendType,
     name: &str,
-    orch_config: &crate::config::OrchestratorConfig,
+    #[allow(unused_variables)] orch_config: &crate::config::OrchestratorConfig,
 ) -> Result<Box<dyn Sandbox>> {
     match backend {
         // Use new_persistent for Docker/Podman so containers survive CLI exit
@@ -568,7 +568,10 @@ mod tests {
             "kubernetes".parse::<BackendType>().unwrap(),
             BackendType::Kubernetes
         );
-        assert_eq!("k8s".parse::<BackendType>().unwrap(), BackendType::Kubernetes);
+        assert_eq!(
+            "k8s".parse::<BackendType>().unwrap(),
+            BackendType::Kubernetes
+        );
         assert_eq!("nomad".parse::<BackendType>().unwrap(), BackendType::Nomad);
     }
 

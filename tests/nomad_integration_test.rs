@@ -48,7 +48,10 @@ async fn test_nomad_lifecycle() {
         .start(&config)
         .await
         .expect("Failed to start Nomad sandbox");
-    assert!(sandbox.is_running(), "Sandbox should be running after start");
+    assert!(
+        sandbox.is_running(),
+        "Sandbox should be running after start"
+    );
 
     // Run a simple command
     let result = sandbox
@@ -85,10 +88,7 @@ async fn test_nomad_lifecycle() {
         .expect("Failed to remove file");
 
     // Stop
-    sandbox
-        .stop()
-        .await
-        .expect("Failed to stop Nomad sandbox");
+    sandbox.stop().await.expect("Failed to stop Nomad sandbox");
     assert!(
         !sandbox.is_running(),
         "Sandbox should not be running after stop"

@@ -289,18 +289,12 @@ impl Permissions {
         let mut limits = serde_json::Map::new();
 
         if let Some(mem) = self.max_memory_mb {
-            limits.insert(
-                "memory".to_string(),
-                json!(format!("{}Mi", mem)),
-            );
+            limits.insert("memory".to_string(), json!(format!("{}Mi", mem)));
         }
 
         if let Some(cpu) = self.max_cpu_percent {
             // Convert percentage to millicores (100% = 1000m)
-            limits.insert(
-                "cpu".to_string(),
-                json!(format!("{}m", cpu * 10)),
-            );
+            limits.insert("cpu".to_string(), json!(format!("{}m", cpu * 10)));
         }
 
         json!({

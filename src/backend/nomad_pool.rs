@@ -232,10 +232,7 @@ impl NomadPool {
 
         let result = self
             .client
-            .post(
-                &format!("/v1/job/{}/dispatch", POOL_JOB_ID),
-                &dispatch_body,
-            )
+            .post(&format!("/v1/job/{}/dispatch", POOL_JOB_ID), &dispatch_body)
             .await?;
 
         let dispatch_id = result
@@ -270,7 +267,10 @@ impl NomadPool {
 
     /// Count allocations with warm pool status
     async fn count_warm_allocs(&self) -> Result<usize> {
-        let jobs = self.client.get("/v1/jobs?prefix=agentkernel-warm-pool/dispatch").await?;
+        let jobs = self
+            .client
+            .get("/v1/jobs?prefix=agentkernel-warm-pool/dispatch")
+            .await?;
         let mut count = 0;
 
         if let Some(jobs_arr) = jobs.as_array() {
@@ -303,7 +303,10 @@ impl NomadPool {
         let _guard = self.lock.lock().await;
 
         // Find a running dispatched job that hasn't been claimed
-        let jobs = self.client.get("/v1/jobs?prefix=agentkernel-warm-pool/dispatch").await?;
+        let jobs = self
+            .client
+            .get("/v1/jobs?prefix=agentkernel-warm-pool/dispatch")
+            .await?;
 
         if let Some(jobs_arr) = jobs.as_array() {
             for job in jobs_arr {
@@ -326,8 +329,7 @@ impl NomadPool {
                             .get("ClientStatus")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
-                        let alloc_id =
-                            alloc.get("ID").and_then(|v| v.as_str()).unwrap_or("");
+                        let alloc_id = alloc.get("ID").and_then(|v| v.as_str()).unwrap_or("");
 
                         if alloc_status == "running" && !alloc_id.is_empty() {
                             // Found a warm allocation -- return it
@@ -373,14 +375,15 @@ impl NomadPool {
         let warm = self.count_warm_allocs().await?;
 
         // Count active (this is approximate since we track warm, not active)
-        let all_jobs = self.client.get("/v1/jobs?prefix=agentkernel-warm-pool").await?;
+        let all_jobs = self
+            .client
+            .get("/v1/jobs?prefix=agentkernel-warm-pool")
+            .await?;
         let total_running = all_jobs
             .as_array()
             .map(|arr| {
                 arr.iter()
-                    .filter(|j| {
-                        j.get("Status").and_then(|v| v.as_str()) == Some("running")
-                    })
+                    .filter(|j| j.get("Status").and_then(|v| v.as_str()) == Some("running"))
                     .count()
             })
             .unwrap_or(0);
@@ -408,7 +411,10 @@ impl NomadPool {
 
     /// Clean up all warm pool jobs (for shutdown)
     pub async fn cleanup(&self) -> Result<()> {
-        let jobs = self.client.get("/v1/jobs?prefix=agentkernel-warm-pool").await?;
+        let jobs = self
+            .client
+            .get("/v1/jobs?prefix=agentkernel-warm-pool")
+            .await?;
 
         if let Some(jobs_arr) = jobs.as_array() {
             for job in jobs_arr {

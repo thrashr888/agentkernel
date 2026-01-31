@@ -143,7 +143,13 @@ impl NomadSandbox {
         let sanitized: String = sandbox_name
             .to_lowercase()
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '-'
+                }
+            })
             .collect();
         format!("agentkernel-{}", sanitized)
     }
@@ -151,10 +157,7 @@ impl NomadSandbox {
     /// Build the Nomad job spec
     fn build_job_spec(&self, config: &SandboxConfig) -> serde_json::Value {
         let job_id = Self::job_id_for(&self.name);
-        let datacenter = self
-            .datacenter
-            .clone()
-            .unwrap_or_else(|| "dc1".to_string());
+        let datacenter = self.datacenter.clone().unwrap_or_else(|| "dc1".to_string());
 
         // Build driver-specific config
         let driver_config = match self.driver.as_str() {

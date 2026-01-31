@@ -95,7 +95,13 @@ impl KubernetesSandbox {
         let sanitized: String = sandbox_name
             .to_lowercase()
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '-'
+                }
+            })
             .collect();
         format!("agentkernel-{}", sanitized)
     }
