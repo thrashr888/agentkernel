@@ -72,6 +72,8 @@ _January 30, 2026_
 - Integration levels and native sandbox links for all agents
 - SDK links and TypeScript example on docs home and README
 
+**Full Changelog**: [v0.3.1...v0.4.0](https://github.com/thrashr888/agentkernel/compare/v0.3.1...v0.4.0)
+
 ---
 
 ## [v0.3.1](https://github.com/thrashr888/agentkernel/releases/tag/v0.3.1) — Setup Auto-Installs Agent Plugins
