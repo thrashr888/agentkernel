@@ -131,6 +131,28 @@ agentkernel exec bash-app echo "Hello!"
 
 **Features**: Alpine 3.20, busybox, shell scripting
 
+### Kubernetes
+Run sandboxes as Kubernetes Pods on any cluster. Requires `--features kubernetes`.
+
+```bash
+agentkernel create k8s-sandbox --backend kubernetes --config examples/kubernetes/agentkernel.toml
+agentkernel start k8s-sandbox
+agentkernel exec k8s-sandbox -- echo "hello from k8s"
+```
+
+**Features**: Pod isolation, NetworkPolicy, warm pool, optional gVisor/Kata RuntimeClass
+
+### Nomad
+Run sandboxes as HashiCorp Nomad job allocations. Requires `--features nomad`.
+
+```bash
+agentkernel create nomad-sandbox --backend nomad --config examples/nomad/agentkernel.toml
+agentkernel start nomad-sandbox
+agentkernel exec nomad-sandbox -- echo "hello from nomad"
+```
+
+**Features**: Docker/exec/raw_exec drivers, warm pool, Consul/Vault integration
+
 ### Error App (Expected to Fail)
 An example that uses a non-existent image to test error handling.
 

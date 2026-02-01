@@ -1,0 +1,24 @@
+# Nomad Example
+# agentkernel configuration for running sandboxes on a HashiCorp Nomad cluster
+
+[sandbox]
+name = "nomad-sandbox"
+base_image = "alpine:3.20"
+
+[agent]
+preferred = "claude"
+
+[resources]
+vcpus = 1
+memory_mb = 512
+
+[security]
+profile = "restrictive"
+
+[orchestrator]
+provider = "nomad"
+nomad_driver = "docker"
+# nomad_addr = "http://127.0.0.1:4646"  # Default, or set NOMAD_ADDR
+# nomad_datacenter = "dc1"               # Default datacenter
+warm_pool_size = 5
+max_pool_size = 20

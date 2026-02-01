@@ -1,0 +1,24 @@
+# Kubernetes Example
+# agentkernel configuration for running sandboxes on a Kubernetes cluster
+
+[sandbox]
+name = "k8s-sandbox"
+base_image = "alpine:3.20"
+
+[agent]
+preferred = "claude"
+
+[resources]
+vcpus = 1
+memory_mb = 512
+
+[security]
+profile = "restrictive"
+
+[orchestrator]
+provider = "kubernetes"
+namespace = "agentkernel"
+# runtime_class = "gvisor"        # Uncomment for stronger isolation
+# service_account = "agentkernel" # Uncomment for custom SA
+warm_pool_size = 5
+max_pool_size = 20
