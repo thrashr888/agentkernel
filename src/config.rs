@@ -167,6 +167,16 @@ pub struct EnterpriseConfig {
     /// Trust anchors for policy bundle signature verification
     #[serde(default)]
     pub trust_anchors: TrustAnchorsConfig,
+    /// Default roles for API-key authenticated users
+    #[serde(default = "default_enterprise_roles")]
+    pub default_roles: Vec<String>,
+    /// JWKS URL for JWT validation (optional, enables JWT auth)
+    #[serde(default)]
+    pub jwks_url: Option<String>,
+}
+
+fn default_enterprise_roles() -> Vec<String> {
+    vec!["developer".to_string()]
 }
 
 fn default_offline_mode() -> String {
@@ -187,6 +197,8 @@ impl Default for EnterpriseConfig {
             offline_mode: default_offline_mode(),
             cache_max_age_hours: default_cache_max_age_hours(),
             trust_anchors: TrustAnchorsConfig::default(),
+            default_roles: default_enterprise_roles(),
+            jwks_url: None,
         }
     }
 }

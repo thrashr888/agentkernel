@@ -167,6 +167,12 @@ struct RunResponse {
 struct AppState {
     /// Optional API key for authentication
     api_key: Option<String>,
+    /// Enterprise configuration (when enterprise feature is enabled)
+    #[cfg(feature = "enterprise")]
+    enterprise_config: Option<crate::config::EnterpriseConfig>,
+    /// Enterprise policy engine (when enterprise feature is enabled)
+    #[cfg(feature = "enterprise")]
+    policy_engine: Option<tokio::sync::RwLock<crate::policy::PolicyEngine>>,
 }
 
 impl AppState {
@@ -176,7 +182,17 @@ impl AppState {
         if api_key.is_some() {
             eprintln!("API key authentication enabled");
         }
-        Self { api_key }
+
+        #[cfg(feature = "enterprise")]
+        let (enterprise_config, policy_engine) = Self::init_enterprise();
+
+        Self {
+            api_key,
+            #[cfg(feature = "enterprise")]
+            enterprise_config,
+            #[cfg(feature = "enterprise")]
+            policy_engine,
+        }
     }
 
     /// Create state with explicit API key
@@ -185,7 +201,47 @@ impl AppState {
         if api_key.is_some() {
             eprintln!("API key authentication enabled");
         }
-        Self { api_key }
+        Self {
+            api_key,
+            #[cfg(feature = "enterprise")]
+            enterprise_config: None,
+            #[cfg(feature = "enterprise")]
+            policy_engine: None,
+        }
+    }
+
+    #[cfg(feature = "enterprise")]
+    fn init_enterprise() -> (
+        Option<crate::config::EnterpriseConfig>,
+        Option<tokio::sync::RwLock<crate::policy::PolicyEngine>>,
+    ) {
+        let config_path = std::path::PathBuf::from("agentkernel.toml");
+        if !config_path.exists() {
+            return (None, None);
+        }
+
+        let cfg = match crate::config::Config::from_file(&config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[enterprise] Failed to load config: {}", e);
+                return (None, None);
+            }
+        };
+
+        if !cfg.enterprise.enabled {
+            return (Some(cfg.enterprise), None);
+        }
+
+        match crate::policy::PolicyEngine::new(&cfg.enterprise) {
+            Ok(engine) => {
+                eprintln!("[enterprise] Policy engine initialized for HTTP API");
+                (Some(cfg.enterprise), Some(tokio::sync::RwLock::new(engine)))
+            }
+            Err(e) => {
+                eprintln!("[enterprise] Failed to initialize policy engine: {}", e);
+                (Some(cfg.enterprise), None)
+            }
+        }
     }
 
     async fn get_manager(&self) -> Result<VmManager> {
@@ -229,6 +285,84 @@ impl AppState {
             )),
         }
     }
+}
+
+/// Extract identity from a request for enterprise policy evaluation.
+///
+/// Builds an AgentIdentity from the Authorization header.
+/// If a JWKS URL is configured, Bearer tokens are validated as JWTs.
+/// Otherwise, Bearer tokens are treated as API key identities.
+#[cfg(feature = "enterprise")]
+async fn extract_identity(
+    req: &Request<Incoming>,
+    state: &AppState,
+) -> crate::identity::AgentIdentity {
+    let auth_header = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok());
+
+    match auth_header {
+        Some(header) if header.starts_with("Bearer ") => {
+            let token = &header[7..];
+
+            // Try JWT validation if jwks_url is configured
+            if let Some(ref config) = state.enterprise_config
+                && let Some(ref jwks_url) = config.jwks_url
+            {
+                match crate::identity::validate_jwt(token, jwks_url).await {
+                    Ok(claims) => return crate::identity::AgentIdentity::from_jwt(claims),
+                    Err(e) => {
+                        eprintln!("[enterprise] JWT validation failed: {}", e);
+                        // Fall through to API key identity
+                    }
+                }
+            }
+
+            crate::identity::AgentIdentity::from_api_key(token.to_string())
+        }
+        _ => crate::identity::AgentIdentity::anonymous(),
+    }
+}
+
+/// Enforce enterprise policy for an action on a sandbox.
+///
+/// Returns Ok(()) if the action is permitted (or no policy engine is active).
+/// Returns a 403 Forbidden response if the action is denied.
+#[cfg(feature = "enterprise")]
+async fn enforce_policy(
+    state: &AppState,
+    identity: &crate::identity::AgentIdentity,
+    action: crate::policy::Action,
+    sandbox_name: &str,
+) -> Result<(), Response<BoxBody>> {
+    let Some(ref engine_lock) = state.policy_engine else {
+        return Ok(());
+    };
+    let Some(ref enterprise) = state.enterprise_config else {
+        return Ok(());
+    };
+
+    let principal = identity.to_principal(
+        enterprise.org_id.as_deref().unwrap_or("default"),
+        &enterprise.default_roles,
+    );
+    let resource = crate::policy::Resource {
+        name: sandbox_name.to_string(),
+        agent_type: "api".to_string(),
+        runtime: "unknown".to_string(),
+    };
+
+    let engine = engine_lock.read().await;
+    let decision = engine.evaluate(&principal, action, &resource).await;
+
+    if !decision.is_permit() {
+        return Err(json_response(
+            StatusCode::FORBIDDEN,
+            &ApiResponse::<()>::error(format!("Policy denied: {}", decision.reason)),
+        ));
+    }
+    Ok(())
 }
 
 /// Handle HTTP requests
@@ -298,6 +432,12 @@ async fn handle_request(
         // Delete a sandbox
         (Method::DELETE, ["sandboxes", name]) => handle_delete_sandbox(name, state).await,
 
+        // Enterprise policy endpoints
+        #[cfg(feature = "enterprise")]
+        (Method::GET, ["policy", "status"]) => handle_policy_status(state).await,
+        #[cfg(feature = "enterprise")]
+        (Method::POST, ["policy", "check"]) => handle_policy_check(req, state).await,
+
         // 404 for everything else
         _ => json_response(
             StatusCode::NOT_FOUND,
@@ -340,6 +480,17 @@ async fn read_json_body<T: for<'de> Deserialize<'de>>(
 }
 
 async fn handle_run(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    // Enterprise policy enforcement
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = extract_identity(&req, &state).await;
+        if let Err(resp) =
+            enforce_policy(&state, &identity, crate::policy::Action::Run, "ephemeral").await
+        {
+            return resp;
+        }
+    }
+
     let body: RunRequest = match read_json_body(req).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -464,6 +615,17 @@ fn sse_response(events: Vec<(&str, serde_json::Value)>) -> Response<BoxBody> {
 
 /// Handle /run/stream - runs command with SSE streaming output
 async fn handle_run_stream(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    // Enterprise policy enforcement
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = extract_identity(&req, &state).await;
+        if let Err(resp) =
+            enforce_policy(&state, &identity, crate::policy::Action::Run, "ephemeral").await
+        {
+            return resp;
+        }
+    }
+
     let body: RunRequest = match read_json_body(req).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -635,10 +797,23 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
 }
 
 async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    // Enterprise policy enforcement (extract identity before consuming body)
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+
     let body: CreateRequest = match read_json_body(req).await {
         Ok(b) => b,
         Err(resp) => return resp,
     };
+
+    #[cfg(feature = "enterprise")]
+    {
+        if let Err(resp) =
+            enforce_policy(&state, &identity, crate::policy::Action::Create, &body.name).await
+        {
+            return resp;
+        }
+    }
 
     // Validate sandbox name (security: prevents command injection)
     if let Err(e) = validation::validate_sandbox_name(&body.name) {
@@ -771,6 +946,17 @@ async fn handle_exec_sandbox(
     name: &str,
     state: Arc<AppState>,
 ) -> Response<BoxBody> {
+    // Enterprise policy enforcement
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = extract_identity(&req, &state).await;
+        if let Err(resp) =
+            enforce_policy(&state, &identity, crate::policy::Action::Exec, name).await
+        {
+            return resp;
+        }
+    }
+
     // Validate sandbox name (security: prevents command injection)
     if let Err(e) = validation::validate_sandbox_name(name) {
         return json_response(
@@ -814,6 +1000,17 @@ async fn handle_exec_sandbox(
 }
 
 async fn handle_delete_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    // Enterprise policy enforcement (reuse Create action for lifecycle operations)
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = crate::identity::AgentIdentity::anonymous();
+        if let Err(resp) =
+            enforce_policy(&state, &identity, crate::policy::Action::Create, name).await
+        {
+            return resp;
+        }
+    }
+
     // Validate sandbox name (security: prevents command injection)
     if let Err(e) = validation::validate_sandbox_name(name) {
         return json_response(
@@ -911,6 +1108,17 @@ async fn handle_file_write(
     file_path: &str,
     state: Arc<AppState>,
 ) -> Response<BoxBody> {
+    // Enterprise policy enforcement
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = extract_identity(&req, &state).await;
+        if let Err(resp) =
+            enforce_policy(&state, &identity, crate::policy::Action::Mount, name).await
+        {
+            return resp;
+        }
+    }
+
     if let Err(e) = validation::validate_sandbox_name(name) {
         return json_response(
             StatusCode::BAD_REQUEST,
@@ -974,6 +1182,17 @@ async fn handle_file_delete(
     file_path: &str,
     state: Arc<AppState>,
 ) -> Response<BoxBody> {
+    // Enterprise policy enforcement
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = crate::identity::AgentIdentity::anonymous();
+        if let Err(resp) =
+            enforce_policy(&state, &identity, crate::policy::Action::Mount, name).await
+        {
+            return resp;
+        }
+    }
+
     if let Err(e) = validation::validate_sandbox_name(name) {
         return json_response(
             StatusCode::BAD_REQUEST,
@@ -1052,6 +1271,17 @@ async fn handle_sandbox_logs(name: &str, state: Arc<AppState>) -> Response<BoxBo
 // --- Batch run handler ---
 
 async fn handle_batch_run(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    // Enterprise policy enforcement
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = extract_identity(&req, &state).await;
+        if let Err(resp) =
+            enforce_policy(&state, &identity, crate::policy::Action::Run, "batch").await
+        {
+            return resp;
+        }
+    }
+
     let body: BatchRunRequest = match read_json_body(req).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -1102,6 +1332,151 @@ async fn handle_batch_run(req: Request<Incoming>, state: Arc<AppState>) -> Respo
     json_response(
         StatusCode::OK,
         &ApiResponse::success(BatchRunResponse { results }),
+    )
+}
+
+// --- Enterprise policy handlers ---
+
+/// Policy status response
+#[cfg(feature = "enterprise")]
+#[derive(Debug, Serialize)]
+struct PolicyStatusResponse {
+    enabled: bool,
+    version: u64,
+    org_id: Option<String>,
+    offline_mode: String,
+    policy_server: Option<String>,
+}
+
+/// Policy check request
+#[cfg(feature = "enterprise")]
+#[derive(Debug, Deserialize)]
+struct PolicyCheckRequest {
+    action: String,
+    sandbox: String,
+}
+
+/// Policy check response
+#[cfg(feature = "enterprise")]
+#[derive(Debug, Serialize)]
+struct PolicyCheckResponse {
+    decision: String,
+    reason: String,
+    matched_policies: Vec<String>,
+    evaluation_time_us: u64,
+}
+
+#[cfg(feature = "enterprise")]
+async fn handle_policy_status(state: Arc<AppState>) -> Response<BoxBody> {
+    let Some(ref enterprise) = state.enterprise_config else {
+        return json_response(
+            StatusCode::OK,
+            &ApiResponse::success(PolicyStatusResponse {
+                enabled: false,
+                version: 0,
+                org_id: None,
+                offline_mode: "disabled".to_string(),
+                policy_server: None,
+            }),
+        );
+    };
+
+    let version = if let Some(ref engine_lock) = state.policy_engine {
+        let engine = engine_lock.read().await;
+        engine.version().await
+    } else {
+        0
+    };
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(PolicyStatusResponse {
+            enabled: enterprise.enabled,
+            version,
+            org_id: enterprise.org_id.clone(),
+            offline_mode: enterprise.offline_mode.clone(),
+            policy_server: enterprise.policy_server.clone(),
+        }),
+    )
+}
+
+#[cfg(feature = "enterprise")]
+async fn handle_policy_check(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    let body: PolicyCheckRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    let Some(ref engine_lock) = state.policy_engine else {
+        return json_response(
+            StatusCode::OK,
+            &ApiResponse::success(PolicyCheckResponse {
+                decision: "permit".to_string(),
+                reason: "No policy engine active (enterprise disabled)".to_string(),
+                matched_policies: vec![],
+                evaluation_time_us: 0,
+            }),
+        );
+    };
+
+    let Some(ref enterprise) = state.enterprise_config else {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error("Enterprise config missing"),
+        );
+    };
+
+    let action = match body.action.to_lowercase().as_str() {
+        "run" => crate::policy::Action::Run,
+        "exec" => crate::policy::Action::Exec,
+        "create" => crate::policy::Action::Create,
+        "attach" => crate::policy::Action::Attach,
+        "mount" => crate::policy::Action::Mount,
+        "network" => crate::policy::Action::Network,
+        other => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(format!(
+                    "Invalid action '{}'. Use: run, exec, create, attach, mount, network",
+                    other
+                )),
+            );
+        }
+    };
+
+    // Build principal from the local user (for CLI-like testing)
+    let principal = crate::policy::Principal {
+        id: std::env::var("USER").unwrap_or_else(|_| "unknown".to_string()),
+        email: String::new(),
+        org_id: enterprise
+            .org_id
+            .clone()
+            .unwrap_or_else(|| "default".to_string()),
+        roles: enterprise.default_roles.clone(),
+        mfa_verified: false,
+    };
+
+    let resource = crate::policy::Resource {
+        name: body.sandbox,
+        agent_type: "api".to_string(),
+        runtime: "unknown".to_string(),
+    };
+
+    let engine = engine_lock.read().await;
+    let decision = engine.evaluate(&principal, action, &resource).await;
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(PolicyCheckResponse {
+            decision: if decision.is_permit() {
+                "permit".to_string()
+            } else {
+                "deny".to_string()
+            },
+            reason: decision.reason,
+            matched_policies: decision.matched_policies,
+            evaluation_time_us: decision.evaluation_time_us,
+        }),
     )
 }
 

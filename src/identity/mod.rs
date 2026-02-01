@@ -101,6 +101,46 @@ impl AgentIdentity {
     pub fn is_authenticated(&self) -> bool {
         self.api_key.is_some() || self.jwt_claims.is_some()
     }
+
+    /// Convert to a Cedar Principal for policy evaluation.
+    ///
+    /// JWT-authenticated users get their claims mapped directly.
+    /// API-key users get default org/roles from config.
+    /// Anonymous users get an "anonymous" identity.
+    pub fn to_principal(
+        &self,
+        default_org: &str,
+        default_roles: &[String],
+    ) -> crate::policy::Principal {
+        if let Some(ref claims) = self.jwt_claims {
+            crate::policy::Principal {
+                id: claims.sub.clone(),
+                email: claims.email.clone(),
+                org_id: claims.org_id.clone(),
+                roles: claims.roles.clone(),
+                mfa_verified: claims.mfa_verified,
+            }
+        } else {
+            let id = self
+                .api_key
+                .as_ref()
+                .map(|k| {
+                    if k.len() >= 8 {
+                        k[..8].to_string()
+                    } else {
+                        k.clone()
+                    }
+                })
+                .unwrap_or_else(|| "anonymous".to_string());
+            crate::policy::Principal {
+                id,
+                email: String::new(),
+                org_id: default_org.to_string(),
+                roles: default_roles.to_vec(),
+                mfa_verified: false,
+            }
+        }
+    }
 }
 
 /// JWKS (JSON Web Key Set) key for JWT verification.
@@ -384,6 +424,49 @@ mod tests {
         assert_eq!(context.get("org_id").unwrap(), "acme-corp");
         assert_eq!(context.get("mfa_verified").unwrap(), true);
         assert_eq!(context.get("is_authenticated").unwrap(), true);
+    }
+
+    #[test]
+    fn test_to_principal_jwt() {
+        let claims = JwtClaims {
+            sub: "user-456".to_string(),
+            email: "dev@acme.com".to_string(),
+            org_id: "acme-corp".to_string(),
+            roles: vec!["developer".to_string()],
+            mfa_verified: true,
+            exp: None,
+            iat: None,
+        };
+        let identity = AgentIdentity::from_jwt(claims);
+        let principal = identity.to_principal("fallback-org", &["fallback-role".to_string()]);
+
+        assert_eq!(principal.id, "user-456");
+        assert_eq!(principal.email, "dev@acme.com");
+        assert_eq!(principal.org_id, "acme-corp");
+        assert_eq!(principal.roles, vec!["developer"]);
+        assert!(principal.mfa_verified);
+    }
+
+    #[test]
+    fn test_to_principal_api_key() {
+        let identity = AgentIdentity::from_api_key("ak_test_12345678abcdef".to_string());
+        let default_roles = vec!["viewer".to_string()];
+        let principal = identity.to_principal("my-org", &default_roles);
+
+        assert_eq!(principal.id, "ak_test_");
+        assert_eq!(principal.org_id, "my-org");
+        assert_eq!(principal.roles, vec!["viewer"]);
+        assert!(!principal.mfa_verified);
+    }
+
+    #[test]
+    fn test_to_principal_anonymous() {
+        let identity = AgentIdentity::anonymous();
+        let principal = identity.to_principal("default-org", &[]);
+
+        assert_eq!(principal.id, "anonymous");
+        assert_eq!(principal.org_id, "default-org");
+        assert!(principal.roles.is_empty());
     }
 
     #[test]

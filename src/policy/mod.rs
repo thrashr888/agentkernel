@@ -322,6 +322,8 @@ mod tests {
             offline_mode: "default_policy".to_string(),
             cache_max_age_hours: 24,
             trust_anchors: crate::config::TrustAnchorsConfig { keys: vec![] },
+            default_roles: vec!["developer".to_string()],
+            jwks_url: None,
         }
     }
 

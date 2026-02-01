@@ -24,13 +24,12 @@ mod vmm;
 mod vsock;
 
 // Enterprise modules (behind feature flag)
-// Allow dead_code: these modules provide the enterprise API surface
-// that is wired incrementally into the sandbox lifecycle.
+// identity has public API surface for CLI login, middleware, and Cedar helpers
+// not all consumed from the HTTP API yet
 #[cfg(feature = "enterprise")]
 #[allow(dead_code)]
 mod identity;
 #[cfg(feature = "enterprise")]
-#[allow(dead_code)]
 pub mod policy;
 
 use anyhow::{Result, bail};
@@ -215,6 +214,12 @@ enum Commands {
         #[arg(long, default_value = "2.0")]
         max_idle: f64,
     },
+    /// Enterprise policy management (requires --features enterprise)
+    #[cfg(feature = "enterprise")]
+    Policy {
+        #[command(subcommand)]
+        action: PolicyAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -249,6 +254,32 @@ enum DaemonAction {
     Stop,
     /// Show daemon status
     Status,
+}
+
+/// Enterprise policy management subcommands
+#[cfg(feature = "enterprise")]
+#[derive(Subcommand)]
+enum PolicyAction {
+    /// Check if an action would be permitted by the policy engine
+    Check {
+        /// Action to check: run, exec, create, attach, mount, network
+        #[arg(short, long)]
+        action: String,
+        /// Sandbox name to check against
+        #[arg(short, long)]
+        sandbox: String,
+    },
+    /// Show policy engine status (version, offline mode, server)
+    Status,
+    /// Show recent policy audit log entries
+    AuditLog {
+        /// Number of entries to show
+        #[arg(short, long, default_value = "20")]
+        last: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -1118,8 +1149,167 @@ memory_mb = 512
             println!("{}", "-".repeat(40));
             println!("Playback complete.");
         }
+        #[cfg(feature = "enterprise")]
+        Commands::Policy { action } => {
+            handle_policy_command(action).await?;
+        }
     }
 
+    Ok(())
+}
+
+#[cfg(feature = "enterprise")]
+async fn handle_policy_command(action: PolicyAction) -> Result<()> {
+    match action {
+        PolicyAction::Check { action, sandbox } => {
+            // Parse the action string
+            let cedar_action = match action.to_lowercase().as_str() {
+                "run" => policy::Action::Run,
+                "exec" => policy::Action::Exec,
+                "create" => policy::Action::Create,
+                "attach" => policy::Action::Attach,
+                "mount" => policy::Action::Mount,
+                "network" => policy::Action::Network,
+                other => bail!(
+                    "Invalid action '{}'. Use: run, exec, create, attach, mount, network",
+                    other
+                ),
+            };
+
+            // Load config and initialize policy engine
+            let config_path = std::path::PathBuf::from("agentkernel.toml");
+            let cfg = if config_path.exists() {
+                Config::from_file(&config_path)?
+            } else {
+                Config::minimal("default", "claude")
+            };
+
+            if !cfg.enterprise.enabled {
+                println!("Enterprise policy engine is not enabled.");
+                println!("Set [enterprise] enabled = true in agentkernel.toml");
+                return Ok(());
+            }
+
+            let engine = policy::PolicyEngine::new(&cfg.enterprise)?;
+
+            // Build principal from local user
+            let principal = policy::Principal {
+                id: std::env::var("USER").unwrap_or_else(|_| "unknown".to_string()),
+                email: String::new(),
+                org_id: cfg
+                    .enterprise
+                    .org_id
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string()),
+                roles: cfg.enterprise.default_roles.clone(),
+                mfa_verified: false,
+            };
+
+            let resource = policy::Resource {
+                name: sandbox.clone(),
+                agent_type: "cli".to_string(),
+                runtime: "unknown".to_string(),
+            };
+
+            let decision = engine.evaluate(&principal, cedar_action, &resource).await;
+
+            println!("Policy Check");
+            println!("{}", "-".repeat(40));
+            println!("Principal:  {} ({})", principal.id, principal.org_id);
+            println!("Roles:      {:?}", principal.roles);
+            println!("Action:     {}", action);
+            println!("Resource:   {}", sandbox);
+            println!("{}", "-".repeat(40));
+            if decision.is_permit() {
+                println!("Decision:   PERMIT");
+            } else {
+                println!("Decision:   DENY");
+            }
+            println!("Reason:     {}", decision.reason);
+            if !decision.matched_policies.is_empty() {
+                println!("Policies:   {}", decision.matched_policies.join(", "));
+            }
+            println!("Eval time:  {}us", decision.evaluation_time_us);
+        }
+        PolicyAction::Status => {
+            let config_path = std::path::PathBuf::from("agentkernel.toml");
+            let cfg = if config_path.exists() {
+                Config::from_file(&config_path)?
+            } else {
+                Config::minimal("default", "claude")
+            };
+
+            println!("Enterprise Policy Status");
+            println!("{}", "-".repeat(40));
+            println!("Enabled:        {}", cfg.enterprise.enabled);
+            println!(
+                "Org ID:         {}",
+                cfg.enterprise.org_id.as_deref().unwrap_or("(not set)")
+            );
+            println!("Offline mode:   {}", cfg.enterprise.offline_mode);
+            println!(
+                "Cache max age:  {} hours",
+                cfg.enterprise.cache_max_age_hours
+            );
+            println!(
+                "Policy server:  {}",
+                cfg.enterprise
+                    .policy_server
+                    .as_deref()
+                    .unwrap_or("(not configured)")
+            );
+            println!(
+                "Trust anchors:  {} key(s)",
+                cfg.enterprise.trust_anchors.keys.len()
+            );
+            println!("Default roles:  {:?}", cfg.enterprise.default_roles);
+
+            if cfg.enterprise.enabled {
+                match policy::PolicyEngine::new(&cfg.enterprise) {
+                    Ok(engine) => {
+                        let version = engine.version().await;
+                        println!("Policy ver:     {}", version);
+                        println!("Engine:         active");
+                    }
+                    Err(e) => {
+                        println!("Engine:         error ({})", e);
+                    }
+                }
+            }
+        }
+        PolicyAction::AuditLog { last, json } => {
+            let logger = policy::PolicyAuditLogger::default_path();
+            let entries = logger.read_last(last)?;
+
+            if entries.is_empty() {
+                println!("No policy audit entries found.");
+                println!("Log path: {}", logger.path().display());
+                return Ok(());
+            }
+
+            if json {
+                for entry in &entries {
+                    println!("{}", serde_json::to_string(entry)?);
+                }
+            } else {
+                println!(
+                    "{:<24} {:<10} {:<15} {:<15} RESOURCE",
+                    "TIMESTAMP", "DECISION", "PRINCIPAL", "ACTION"
+                );
+                println!("{}", "-".repeat(80));
+                for entry in &entries {
+                    println!(
+                        "{:<24} {:<10} {:<15} {:<15} {}",
+                        entry.timestamp.format("%Y-%m-%d %H:%M:%S"),
+                        format!("{:?}", entry.decision),
+                        entry.principal,
+                        entry.action,
+                        entry.resource
+                    );
+                }
+            }
+        }
+    }
     Ok(())
 }
 
