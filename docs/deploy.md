@@ -3,9 +3,22 @@
 
 Run agentkernel as a service on Kubernetes or Nomad clusters, managing sandboxes via the HTTP API.
 
-## Prerequisites
+## Docker Image
 
-Build with orchestration feature flags:
+Pre-built images are published to GitHub Container Registry on each release:
+
+```
+ghcr.io/thrashr888/agentkernel:latest
+ghcr.io/thrashr888/agentkernel:<version>    # e.g. 0.5.0
+```
+
+> **Note:** The Docker image is published automatically when a version tag (`v*`) is pushed. If no image exists yet, build locally with `docker build -t agentkernel .` from the repo root.
+
+The Dockerfile builds a release binary with both `kubernetes` and `nomad` feature flags enabled.
+
+## Building from Source
+
+If you prefer to build from source instead of using the Docker image:
 
 ```bash
 cargo build --release --features kubernetes,nomad
@@ -29,6 +42,8 @@ helm install agentkernel oci://ghcr.io/thrashr888/charts/agentkernel \
   --namespace agentkernel-system \
   --create-namespace
 ```
+
+> **Note:** The OCI chart is published automatically on each release. If not yet available, use the local clone method below.
 
 Or install from a local clone:
 
@@ -120,6 +135,8 @@ helm uninstall agentkernel --namespace agentkernel-system
 
 ### Deploy
 
+Using the raw job file:
+
 ```bash
 # Download the job file
 curl -fsSLO https://raw.githubusercontent.com/thrashr888/agentkernel/main/deploy/nomad/agentkernel.nomad.hcl
@@ -127,6 +144,17 @@ curl -fsSLO https://raw.githubusercontent.com/thrashr888/agentkernel/main/deploy
 # Deploy
 nomad job run agentkernel.nomad.hcl
 ```
+
+Or using [Nomad Pack](https://github.com/hashicorp/nomad-pack) for a configurable deployment:
+
+```bash
+git clone https://github.com/thrashr888/agentkernel.git
+nomad-pack run agentkernel/deploy/nomad-pack \
+  --var backend=nomad \
+  --var count=2
+```
+
+See [`deploy/nomad-pack/README.md`](https://github.com/thrashr888/agentkernel/tree/main/deploy/nomad-pack) for all available variables.
 
 ### Job Structure
 
