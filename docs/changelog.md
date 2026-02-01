@@ -6,6 +6,44 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## [v0.6.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.6.0) — Enterprise Policy Engine
+
+_February 1, 2026_
+
+### Added
+
+- **Cedar policy engine** — declarative authorization using [AWS Cedar](https://www.cedarpolicy.com/) with default-deny evaluation, role-based and attribute-based access control (`--features enterprise`)
+- **JWT/OIDC identity** — authenticate users via JWT tokens with JWKS validation and OIDC device authorization flow for CLI login
+- **Multi-tenant policy hierarchy** — organization and team scoping with inheritance for policy evaluation
+- **Policy bundle signing** — Ed25519 signature verification with trust anchors, version rollback protection, and expiry enforcement
+- **Policy cache** — offline operation with configurable modes (`default_policy`, `cached_only`, `cached_with_expiry`) and FNV-1a integrity hashing
+- **Audit logging** — OCSF-compatible policy decision logs with structured JSON output and SIEM-ready event streaming
+- **HTTP API policy endpoints** — `GET /policy/status`, `POST /policy/check`, `POST /policy/reload` for runtime policy management
+- **CLI policy commands** — `policy status`, `policy check`, `policy audit-log` for local policy inspection
+- **Policy enforcement in HTTP API** — all `/run`, `/create`, `/exec`, `/attach` endpoints enforce Cedar authorization
+- **AgentKernelPolicy CRD** — namespaced Kubernetes Custom Resource for Cedar policies, managed via `kubectl apply` and GitOps (shortname: `akp`)
+- **ClusterAgentKernelPolicy CRD** — cluster-scoped Cedar policy CRD for global rules (shortname: `cakp`)
+- **K8s policy operator** — watches policy CRs, validates Cedar syntax, aggregates by scope and priority, hot-reloads the evaluation engine
+- **Sandbox policy enforcement** — operator evaluates `Create` action against Cedar engine before creating pods, blocks denied requests with status update
+- **Example Cedar policies** — default permit, RBAC, MFA-required, runtime restrictions, and org isolation examples in `examples/enterprise/`
+- **Compliance mapping** — SOC 2, HIPAA, and FedRAMP control mapping documentation
+
+### Changed
+
+- **Default features** — `kubernetes`, `nomad`, and `enterprise` features are now included in default builds
+- **`generate_crd_manifests()`** — returns `Vec<String>` instead of tuple, includes all 4 CRDs (sandbox, pool, policy, cluster-policy)
+- **`run_operator()`** — accepts optional `CedarEngine` and `PolicyAuditLogger`, runs 3 controllers concurrently when enterprise is enabled
+
+### Docs
+
+- Kubernetes orchestration docs updated with policy CRD reference, evaluation order, identity annotations, and examples
+- Enterprise policy examples README with K8s-native and GitOps workflow documentation
+- Kubernetes example README with policy CRD quickstart
+
+**Full Changelog**: [v0.5.1...v0.6.0](https://github.com/thrashr888/agentkernel/compare/v0.5.1...v0.6.0)
+
+---
+
 ## [v0.5.1](https://github.com/thrashr888/agentkernel/releases/tag/v0.5.1) — Docker Images, Nomad Pack & Docs
 
 _February 1, 2026_

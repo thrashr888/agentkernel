@@ -7,5 +7,5 @@ pack {
   name        = "agentkernel"
   description = "Deploy agentkernel as a Nomad service for sandboxed AI agent execution."
   url         = "https://github.com/thrashr888/agentkernel/tree/main/deploy/nomad-pack"
-  version     = "0.5.1"
+  version     = "0.6.0"
 }
