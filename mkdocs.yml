@@ -58,6 +58,9 @@ nav:
     - agentkernel.toml: config-toml.md
     - Security Profiles: config-security.md
     - Backends: config-backends.md
+  - Orchestration:
+    - Overview: orchestration.md
+    - Deployment: deploy.md
   - AI Agents:
     - Overview: agents.md
     - Claude Code: agent-claude.md
