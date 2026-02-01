@@ -102,6 +102,18 @@ agentkernel picks the best available backend automatically:
 
 On Linux with KVM, you get Firecracker -- the same microVM technology that powers AWS Lambda and Fargate. On macOS 26+, Apple Containers provide native VM isolation. On older macOS or systems without KVM, Docker and Podman provide container-level isolation as a fallback. For team and cloud environments, deploy on [Kubernetes](orchestration-kubernetes) or [Nomad](orchestration-nomad) with warm pools, CRDs, and Helm/Nomad Pack support.
 
+For team and multi-tenant deployments, Kubernetes and Nomad backends run sandboxes on remote clusters. Same CLI, same API -- sandboxes just run on your cluster instead of your laptop.
+
+```bash
+# Run on Kubernetes
+agentkernel run --backend kubernetes -- python3 -c "print('hello from k8s')"
+
+# Run on Nomad
+agentkernel run --backend nomad -- echo "hello from nomad"
+```
+
+Both backends support warm pools for fast acquisition (~570ms one-shot latency) and scale to dozens of concurrent sandboxes per node.
+
 ## It's programmable
 
 Run agentkernel as an HTTP server for programmatic sandbox management:
@@ -138,6 +150,48 @@ Official SDKs for [Node.js](sdk-nodejs), [Python](sdk-python), [Go](sdk-golang),
 | [Go](sdk-golang) | [`agentkernel`](https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang) | `go get github.com/thrashr888/agentkernel/sdk/golang` |
 | [Rust](sdk-rust) | [`agentkernel-sdk`](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` |
 | [Swift](sdk-swift) | `AgentKernel` | Swift Package Manager |
+
+## Enterprise policy management
+
+For organizations that need centralized control over what agents can do, agentkernel supports Cedar-based policy management with cryptographic signing, RBAC, and compliance audit logging.
+
+```toml
+# agentkernel.toml
+[enterprise]
+enabled = true
+policy_server = "https://policy.your-company.com"
+org_id = "acme-corp"
+offline_mode = "cached_with_expiry"
+
+[enterprise.trust_anchors]
+keys = ["prod-signing-key-2026"]
+```
+
+Policies are written in [Cedar](https://www.cedarpolicy.com/), Amazon's open-source authorization language. Default deny -- if no policy permits an action, it's blocked.
+
+```
+// Only developers can create sandboxes
+permit(
+    principal is AgentKernel::User,
+    action == AgentKernel::Action::"Create",
+    resource is AgentKernel::Sandbox
+) when {
+    principal.roles.contains("developer")
+};
+
+// Network access requires MFA
+forbid(
+    principal is AgentKernel::User,
+    action == AgentKernel::Action::"Network",
+    resource is AgentKernel::Sandbox
+) when {
+    !principal.mfa_verified
+};
+```
+
+Every policy decision is logged in OCSF-compatible JSONL for compliance auditing (SOC 2, HIPAA, FedRAMP). Policies are signed with Ed25519 to prevent tampering, with version monotonicity checks to block downgrades.
+
+Build with `cargo build --features enterprise`. See [example policies](https://github.com/thrashr888/agentkernel/tree/main/examples/enterprise/policies) for RBAC, MFA enforcement, runtime restrictions, and org isolation patterns.
 
 ## Docker vs. agentkernel
 

@@ -1,0 +1,34 @@
+# Enterprise Example
+# agentkernel configuration with centralized policy management
+
+[sandbox]
+name = "enterprise-sandbox"
+base_image = "alpine:3.20"
+
+[agent]
+preferred = "claude"
+
+[resources]
+vcpus = 2
+memory_mb = 1024
+
+[security]
+profile = "restrictive"
+
+[security.domains]
+allow = ["api.anthropic.com", "*.pypi.org", "registry.npmjs.org"]
+block = ["169.254.169.254"]  # Block cloud metadata endpoint
+
+[security.commands]
+block = ["rm", "sudo", "chmod", "chown"]
+
+[enterprise]
+enabled = true
+policy_server = "https://policy.example.com"
+org_id = "acme-corp"
+api_key_env = "AGENTKERNEL_API_KEY"
+offline_mode = "cached_with_expiry"
+cache_max_age_hours = 24
+
+[enterprise.trust_anchors]
+keys = ["prod-signing-key-2026"]

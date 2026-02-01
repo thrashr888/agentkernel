@@ -153,6 +153,15 @@ agentkernel exec nomad-sandbox -- echo "hello from nomad"
 
 **Features**: Docker/exec/raw_exec drivers, warm pool, Consul/Vault integration
 
+### Enterprise Policies
+Centralized Cedar policy management with RBAC, MFA enforcement, and runtime restrictions. Requires `--features enterprise`.
+
+```bash
+agentkernel create enterprise-sandbox --config examples/enterprise/agentkernel.toml
+```
+
+**Features**: Cedar policies, Ed25519 signed bundles, RBAC, MFA gates, org isolation, offline caching
+
 ### Error App (Expected to Fail)
 An example that uses a non-existent image to test error handling.
 
