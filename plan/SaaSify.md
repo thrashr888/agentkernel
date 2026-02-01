@@ -97,49 +97,45 @@ $ agentkernel stats --json   # machine-readable output
 
 Requires adding `duration_ms: Option<u64>` to `AuditEvent::CommandExecuted`. Files: `main.rs`, new `stats.rs`, `audit.rs`.
 
-### Config presets
+### Templates
+
+Reusable sandbox configurations. `--template` works everywhere (`init`, `create`, `run`) and accepts three forms:
 
 ```
-$ agentkernel init --template claude-agent
-$ agentkernel init --template python-ml
-$ agentkernel init --template rust-ci
-$ agentkernel init --template secure
-$ agentkernel init --template node-fullstack
+$ agentkernel init --template claude-sandbox                              # built-in
+$ agentkernel init --template my-python                                   # local (saved)
+$ agentkernel init --template github:thrashr888/agentkernel-templates/pytorch-cuda  # GitHub
+$ agentkernel init --template github:user/repo/path/to/template          # any public repo
+$ agentkernel init --template ./my-local-template.toml                   # file path
 ```
 
-Each preset generates a tuned `agentkernel.toml`. For example, `claude-agent` sets `compatibility_mode = "claude"`, enables CWD mount, allows API domains; `secure` sets restrictive profile, no network, read-only root.
-
-Files: `main.rs`, `config.rs`.
-
-## P1: Core Enhancements
-
-### Sandbox templates
-
-Reusable sandbox configurations — local, from this repo, or fetched from any GitHub URL.
+The `github:` shorthand resolves to `https://raw.githubusercontent.com/{owner}/{repo}/main/{path}.toml`, fetches the TOML, and caches it locally. Works with `init`, `create`, and `run --template`:
 
 ```
-$ agentkernel template save my-python --from my-running-sandbox
+$ agentkernel create my-sandbox --template github:thrashr888/agentkernel-templates/pytorch-cuda
+$ agentkernel run --template secure "pytest"
+```
+
+**Resolution order** for `--template <name>`:
+1. Local saved templates in `~/.local/share/agentkernel/templates/`
+2. Built-in templates bundled in the binary
+3. `github:` prefix → fetch from GitHub, cache locally
+4. File path (`.toml` or directory with `template.toml` + `Dockerfile`)
+
+**Managing templates:**
+
+```
 $ agentkernel template list
-  my-python       local       python:3.12-alpine  moderate  512MB
-  ci-runner       local       rust:1.85-alpine    restrictive  1GB
   claude-sandbox  built-in    node:22-alpine      moderate  1GB
-$ agentkernel create --template my-python new-sandbox
+  pytorch-cuda    github      python:3.12         permissive  4GB
+  my-python       local       python:3.12-alpine  moderate  512MB
+
+$ agentkernel template save my-python --from my-running-sandbox
+$ agentkernel template add github:user/repo/some-template        # fetch and cache
+$ agentkernel template remove my-python
 ```
 
-**Fetch from GitHub URLs** (no registry needed):
-
-```
-$ agentkernel template add https://github.com/user/repo/blob/main/templates/ml-gpu.toml
-$ agentkernel template add github:thrashr888/agentkernel-templates/pytorch-cuda
-$ agentkernel template add ./my-local-template.toml
-```
-
-Templates are TOML + optional Dockerfile. Resolution order:
-1. Local templates in `~/.local/share/agentkernel/templates/`
-2. Built-in templates shipped in this repo under `templates/`
-3. GitHub URLs fetched on demand and cached locally
-
-**Built-in templates shipped in this repo** (`templates/` directory):
+**Built-in templates** shipped in this repo (`templates/` directory):
 
 ```
 templates/
@@ -154,9 +150,9 @@ templates/
 └── README.md
 ```
 
-These are bundled into the binary at build time (via `include_str!` or similar) so they work offline. Users can also browse them on GitHub and fork/modify.
+Bundled into the binary at build time (`include_str!`) so they work offline. Users can browse them on GitHub, fork, or publish their own template repos.
 
-Files: new `template.rs`, `main.rs`, new `templates/` directory.
+Files: new `template.rs`, `main.rs`, `config.rs`, new `templates/` directory.
 
 ### Agent-ready templates
 
