@@ -6,6 +6,42 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## [v0.5.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.5.0) — Kubernetes & Nomad Orchestration
+
+_January 31, 2026_
+
+### Added
+
+- **Kubernetes backend** — run sandboxes as Pods on any K8s cluster with NetworkPolicy isolation, optional gVisor/Kata RuntimeClass, and warm pool support (`--features kubernetes`)
+- **Nomad backend** — run sandboxes as Nomad job allocations with Docker/exec/raw_exec drivers and Consul/Vault integration (`--features nomad`)
+- **Kubernetes operator** — CRD types (`AgentSandbox`, `AgentSandboxPool`) and controller for declarative sandbox management
+- **Warm pool managers** for both K8s (label-based warm→active) and Nomad (parameterized batch jobs) backends
+- **Helm chart** for Kubernetes deployment (`deploy/helm/agentkernel/`)
+- **Nomad job spec** for Nomad deployment (`deploy/nomad/agentkernel.nomad.hcl`)
+- **Orchestrator config** — `[orchestrator]` section in `agentkernel.toml` for namespace, warm pool size, runtime class, and driver settings
+- **Security mapping** for K8s Pod security contexts and Nomad cap_drop to existing permission profiles
+- `remote_id` and `remote_namespace` fields on `SandboxState` for tracking cluster-side resources
+
+### Performance
+
+- **O(1) sandbox state detection** — batch state queries instead of per-sandbox checks across all backends
+- Optimized K8s and Nomad backend latency (~570ms one-shot, faster with warm pools)
+
+### Docs
+
+- Orchestration documentation with separate Kubernetes and Nomad pages
+- Benchmark results for K8s and Nomad backends
+- Updated backend comparison table
+
+### Fixed
+
+- K8s and Nomad backend fixes from live integration testing
+- CI `rustsec/audit-check` now has `checks: write` permission
+
+**Full Changelog**: [v0.4.0...v0.5.0](https://github.com/thrashr888/agentkernel/compare/v0.4.0...v0.5.0)
+
+---
+
 ## v0.4.0 — API Surfaces & SDK Updates
 
 _January 30, 2026_
