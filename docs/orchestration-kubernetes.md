@@ -151,7 +151,7 @@ Run agentkernel itself as a Kubernetes service that manages sandbox pods via the
 ```bash
 # Install from OCI registry (recommended)
 helm install agentkernel oci://ghcr.io/thrashr888/charts/agentkernel \
-  --version 0.5.0 \
+  --version 0.5.1 \
   --namespace agentkernel-system \
   --create-namespace
 ```
@@ -230,7 +230,7 @@ The Helm chart creates a ClusterRole with permissions to:
 
 ```bash
 helm upgrade agentkernel oci://ghcr.io/thrashr888/charts/agentkernel \
-  --version 0.5.0 \
+  --version 0.5.1 \
   --namespace agentkernel-system
 
 helm uninstall agentkernel --namespace agentkernel-system

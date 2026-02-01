@@ -6,6 +6,32 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## [v0.5.1](https://github.com/thrashr888/agentkernel/releases/tag/v0.5.1) — Docker Images, Nomad Pack & Docs
+
+_February 1, 2026_
+
+### Added
+
+- **Docker image publishing** — `ghcr.io/thrashr888/agentkernel:latest` and versioned tags built automatically on each release
+- **Helm OCI publishing** — `oci://ghcr.io/thrashr888/charts/agentkernel` published automatically on each release
+- **Nomad Pack** — configurable Nomad deployment via `nomad-pack run` with variables for count, backend, resources, and Consul service registration
+
+### Fixed
+
+- **Dockerfile** — bumped Rust from 1.83 to 1.88 (required for edition 2024 let-chains)
+- **K8s labels** — replaced fictional `agentkernel.io/` domain prefix with bare `agentkernel/` in all labels and CRDs
+- **Deploy docs** — replaced local file paths with `git clone` / `curl` from GitHub; added honest notes about OCI/Docker image availability
+- **CI** — added `checks: write` permission for `rustsec/audit-check` workflow
+
+### Changed
+
+- **Docs restructure** — deploy content inlined into orchestration-kubernetes.md and orchestration-nomad.md; deploy.md slimmed to shared concerns only
+- **README** — added Kubernetes and Nomad to platform table and orchestration section
+
+**Full Changelog**: [v0.5.0...v0.5.1](https://github.com/thrashr888/agentkernel/compare/v0.5.0...v0.5.1)
+
+---
+
 ## [v0.5.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.5.0) — Kubernetes & Nomad Orchestration
 
 _January 31, 2026_

@@ -273,6 +273,8 @@ agentkernel uses **Firecracker microVMs** (the same tech behind AWS Lambda) to p
 | macOS 26+ (Apple Silicon) | Apple Containers | Full support (VM isolation) |
 | macOS (Apple Silicon, Intel) | Docker | Full support (~220ms) |
 | macOS (Apple Silicon, Intel) | Podman | Full support (~300ms) |
+| Kubernetes cluster | K8s Pods | Full support |
+| Nomad cluster | Nomad Jobs | Full support |
 
 On macOS, agentkernel automatically selects the best available backend:
 1. **Apple Containers** (macOS 26+) - True VM isolation, ~940ms
@@ -280,6 +282,32 @@ On macOS, agentkernel automatically selects the best available backend:
 3. **Podman** - Rootless/daemonless, ~300ms
 
 Firecracker and Hyperlight require KVM (Linux only).
+
+## Orchestration Backends
+
+Deploy agentkernel on Kubernetes or Nomad for team and cloud environments. Sandboxes run as pods or job allocations with warm pools for fast acquisition.
+
+```bash
+# Kubernetes
+agentkernel run --backend kubernetes -- python3 -c "print('hello from k8s')"
+
+# Nomad
+agentkernel run --backend nomad -- python3 -c "print('hello from nomad')"
+```
+
+Install with Helm or Nomad Pack:
+
+```bash
+# Kubernetes (Helm)
+helm install agentkernel oci://ghcr.io/thrashr888/charts/agentkernel \
+  --namespace agentkernel-system --create-namespace
+
+# Nomad (job file)
+curl -fsSLO https://raw.githubusercontent.com/thrashr888/agentkernel/main/deploy/nomad/agentkernel.nomad.hcl
+nomad job run agentkernel.nomad.hcl
+```
+
+Features: warm pools, NetworkPolicy/network isolation, Kubernetes CRDs (AgentSandbox, AgentSandboxPool), configurable resource limits. See [Orchestration docs](docs/orchestration.md) for details.
 
 ## Agent Plugins
 

@@ -97,8 +97,10 @@ agentkernel picks the best available backend automatically:
 | Linux (x86_64, aarch64) | Hyperlight Wasm | Hypervisor + Wasm sandbox (experimental) |
 | macOS 26+ (Apple Silicon) | Apple Containers | Full VM isolation |
 | macOS (Apple Silicon, Intel) | Docker / Podman | Container isolation |
+| Kubernetes cluster | K8s Pods | Pod isolation + NetworkPolicy |
+| Nomad cluster | Nomad Jobs | Job allocation isolation |
 
-On Linux with KVM, you get Firecracker -- the same microVM technology that powers AWS Lambda and Fargate. On macOS 26+, Apple Containers provide native VM isolation. On older macOS or systems without KVM, Docker and Podman provide container-level isolation as a fallback.
+On Linux with KVM, you get Firecracker -- the same microVM technology that powers AWS Lambda and Fargate. On macOS 26+, Apple Containers provide native VM isolation. On older macOS or systems without KVM, Docker and Podman provide container-level isolation as a fallback. For team and cloud environments, deploy on [Kubernetes](orchestration-kubernetes) or [Nomad](orchestration-nomad) with warm pools, CRDs, and Helm/Nomad Pack support.
 
 ## It's programmable
 
