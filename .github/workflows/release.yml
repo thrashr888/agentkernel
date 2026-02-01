@@ -12,6 +12,7 @@ env:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build:
@@ -72,3 +73,25 @@ jobs:
         with:
           files: artifacts/**/*.tar.gz
           generate_release_notes: true
+
+  helm:
+    name: Publish Helm Chart
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Login to GHCR
+        run: echo "$GITHUB_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+
+      - name: Package chart
+        run: helm package deploy/helm/agentkernel/
+
+      - name: Push to GHCR
+        run: helm push agentkernel-*.tgz oci://ghcr.io/thrashr888/charts

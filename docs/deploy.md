@@ -23,11 +23,18 @@ cargo build --release --features nomad
 ### Install
 
 ```bash
-# Clone the repo for the Helm chart
-git clone https://github.com/thrashr888/agentkernel.git
-cd agentkernel
+# Install from OCI registry (recommended)
+helm install agentkernel oci://ghcr.io/thrashr888/charts/agentkernel \
+  --version 0.5.0 \
+  --namespace agentkernel-system \
+  --create-namespace
+```
 
-helm install agentkernel deploy/helm/agentkernel/ \
+Or install from a local clone:
+
+```bash
+git clone https://github.com/thrashr888/agentkernel.git
+helm install agentkernel agentkernel/deploy/helm/agentkernel/ \
   --namespace agentkernel-system \
   --create-namespace
 ```
@@ -101,7 +108,8 @@ The Helm chart creates a ClusterRole with permissions to:
 
 ```bash
 # Upgrade
-helm upgrade agentkernel deploy/helm/agentkernel/ \
+helm upgrade agentkernel oci://ghcr.io/thrashr888/charts/agentkernel \
+  --version 0.5.0 \
   --namespace agentkernel-system
 
 # Uninstall
