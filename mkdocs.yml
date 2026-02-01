@@ -60,6 +60,8 @@ nav:
     - Backends: config-backends.md
   - Orchestration:
     - Overview: orchestration.md
+    - Kubernetes: orchestration-kubernetes.md
+    - Nomad: orchestration-nomad.md
     - Deployment: deploy.md
   - AI Agents:
     - Overview: agents.md
