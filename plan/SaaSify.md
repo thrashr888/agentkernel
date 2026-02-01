@@ -204,30 +204,69 @@ Files: new `benchmark.rs`, `main.rs`.
 
 ### Secrets vault
 
-Encrypted local storage for API keys that sandboxes need.
+CRUD for API keys with pluggable backends. Secrets are auto-injected as env vars into sandboxes.
 
 ```
 $ agentkernel secret set OPENAI_API_KEY
 Enter value: ********
-Stored (encrypted)
+Stored (encrypted, backend: keyring)
 
 $ agentkernel secret list
-  OPENAI_API_KEY      set 2026-01-30
-  ANTHROPIC_API_KEY   set 2026-01-28
+  OPENAI_API_KEY      keyring     set 2026-01-30
+  ANTHROPIC_API_KEY   vault       set 2026-01-28
+  GEMINI_API_KEY      1password   set 2026-01-25
 
+$ agentkernel secret get OPENAI_API_KEY
 $ agentkernel secret delete OPENAI_API_KEY
 ```
+
+**Backends:**
+
+| Backend | Config | Use Case |
+|---------|--------|----------|
+| `keyring` (default) | OS keyring (macOS Keychain, Linux secret-service) | Local dev, single machine |
+| `env` | Read from environment variables | CI/CD, simple setups |
+| `file` | `age`-encrypted file (`~/.agentkernel/secrets.age`) | Portable, no OS deps |
+| `vault` | HashiCorp Vault (`VAULT_ADDR` + token/AppRole) | Teams, rotation, audit trail |
+| `kubernetes` | K8s Secrets in configured namespace | K8s-deployed sandboxes |
+| `nomad` | Nomad Variables in configured namespace | Nomad-deployed sandboxes |
+| `1password` | 1Password CLI (`op`) or Connect API | Personal/team password manager |
 
 Config reference:
 
 ```toml
-[agent]
-secrets = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+[secrets]
+backend = "vault"                          # default: "keyring"
+keys = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+
+# Vault backend
+[secrets.vault]
+addr = "https://vault.example.com"         # or VAULT_ADDR env
+mount = "secret"                           # KV v2 mount path
+path = "agentkernel/api-keys"              # secret path
+auth = "token"                             # token, approle, kubernetes
+
+# Kubernetes backend
+[secrets.kubernetes]
+namespace = "agentkernel"                  # namespace for Secret objects
+secret_name = "agent-api-keys"            # K8s Secret name
+
+# Nomad backend
+[secrets.nomad]
+namespace = "default"
+path = "agentkernel/api-keys"
+
+# 1Password backend
+[secrets.onepassword]
+vault = "Development"                      # 1Password vault name
+connect_host = "http://localhost:8080"     # optional: Connect server
 ```
 
-Secrets auto-injected as env vars. Encrypted via OS keyring (macOS Keychain) or `age` file (`~/.agentkernel/secrets.age`).
+The backend is selected per-project via config. `agentkernel secret set/get/list/delete` works the same regardless of backend — the CLI abstracts the storage layer.
 
-Files: new `secrets.rs`, `config.rs`, `vmm.rs`.
+When using orchestration backends (K8s, Nomad), secrets are mounted natively into pods/allocations rather than passed as env vars, avoiding exposure in process listings.
+
+Files: new `secrets.rs` (trait + backends), `config.rs`, `vmm.rs`. Vault/1Password backends behind feature flags.
 
 ### `info` command
 
