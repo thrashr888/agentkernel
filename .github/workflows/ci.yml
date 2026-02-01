@@ -8,8 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Rust 1.88+ required for let-chains (edition 2024)
-  RUST_VERSION: "1.88"
+  # Rust 1.89+ required for cedar-policy 4.8 (edition 2024 + let-chains)
+  RUST_VERSION: "1.89"
 
 jobs:
   check:
