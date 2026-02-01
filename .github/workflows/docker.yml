@@ -9,9 +9,28 @@ permissions:
   contents: read
   packages: write
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.89"
+
 jobs:
+  test:
+    name: Test Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy -- -D warnings
+      - run: cargo test
+
   build-and-push:
     name: Build and Push
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

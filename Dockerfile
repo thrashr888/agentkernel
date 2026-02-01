@@ -24,9 +24,14 @@ RUN apt-get update && apt-get install -y \
 # Copy manifests first for layer caching
 COPY Cargo.toml Cargo.lock ./
 
-# Copy source
+# Copy source and directories referenced by include_str!()
 COPY src ./src
 COPY tests ./tests
+COPY guest-agent ./guest-agent
+COPY claude-plugin ./claude-plugin
+COPY plugins ./plugins
+COPY images/build ./images/build
+COPY images/kernel/microvm.config ./images/kernel/microvm.config
 
 # Build release binary with orchestrator features
 RUN cargo build --release --features kubernetes,nomad

@@ -9,9 +9,28 @@ permissions:
   contents: read
   packages: write
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.89"
+
 jobs:
+  test:
+    name: Test Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy -- -D warnings
+      - run: cargo test
+
   # ── Node.js: npm (OIDC trusted publisher) + GitHub Packages ─────────
   publish-nodejs:
+    needs: test
     name: Publish Node.js SDK
     runs-on: ubuntu-latest
     environment: npm
@@ -81,6 +100,7 @@ jobs:
 
   # ── Python: PyPI via OIDC trusted publisher ─────────────────────────
   publish-python:
+    needs: test
     name: Publish Python SDK
     runs-on: ubuntu-latest
     environment: pypi
@@ -116,6 +136,7 @@ jobs:
 
   # ── Rust: crates.io (OIDC trusted publisher) ───────────────────────
   publish-rust:
+    needs: test
     name: Publish Rust SDK
     runs-on: ubuntu-latest
     environment: crates
@@ -148,7 +169,9 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-          if cargo search agentkernel-sdk --limit 1 2>/dev/null | grep -q "agentkernel-sdk = \"${VERSION}\""; then
+          # Use crates.io API directly (cargo search has index lag)
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/agentkernel-sdk/${VERSION}")
+          if [ "$HTTP_STATUS" = "200" ]; then
             echo "Version ${VERSION} already published to crates.io, skipping"
           else
             cargo publish
@@ -156,6 +179,7 @@ jobs:
 
   # ── Swift: verify only (SPM uses Git tags) ──────────────────────────
   verify-swift:
+    needs: test
     name: Verify Swift SDK
     runs-on: macos-latest
     defaults:
