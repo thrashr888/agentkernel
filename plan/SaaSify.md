@@ -2,9 +2,9 @@
 
 Local-first features for agentkernel as an open-source CLI tool. No remote host required.
 
-## Already Shipped (v0.5.1)
+## Already Shipped
 
-The original SaaSify plan proposed auth, multi-tenancy, billing, and daemon integration. Here's what actually shipped:
+### v0.5.1 — Core Platform
 
 - [x] HTTP API — 12+ endpoints, SSE streaming, batch execution, OpenAPI 3.1
 - [x] API key auth — `AGENTKERNEL_API_KEY` env var or config
@@ -22,6 +22,24 @@ The original SaaSify plan proposed auth, multi-tenancy, billing, and daemon inte
 - [x] File injection — `[[files]]` config, read/write/delete API
 - [x] Resource limits — vCPUs, memory_mb per sandbox
 - [x] Orchestration — Kubernetes (CRDs, operator, Helm), Nomad (warm pools, Nomad Pack)
+
+### v0.6.0 — Enterprise Policy Engine
+
+All enterprise features are compiled in by default and **work fully offline** — no remote policy server required.
+
+- [x] Cedar policy engine — declarative authorization with default-deny, 42-60x faster than OPA
+- [x] Policy CLI — `policy check`, `policy status`, `policy audit-log`
+- [x] Policy cache — offline-first with 4 modes (fail_closed, cached_with_expiry, cached_indefinite, default_policy)
+- [x] Policy audit logging — OCSF-compatible JSONL at `~/.agentkernel/logs/policy-audit.jsonl`
+- [x] Policy bundle signing — Ed25519 signatures, trust anchors, version rollback protection
+- [x] HTTP API policy enforcement — all `/run`, `/create`, `/exec`, `/attach` check Cedar policies
+- [x] HTTP API policy endpoints — `GET /policy/status`, `POST /policy/check`, `POST /policy/reload`
+- [x] JWT/OIDC identity — token validation with JWKS, device auth flow (optional, env vars work locally)
+- [x] Multi-tenant policy hierarchy — org/team scoping with inheritance
+- [x] Example Cedar policies — default permit, RBAC, MFA-required, runtime restrictions, org isolation
+- [x] K8s AgentKernelPolicy CRD — namespaced Cedar policies via `kubectl apply` (shortname: `akp`)
+- [x] K8s ClusterAgentKernelPolicy CRD — cluster-scoped global rules (shortname: `cakp`)
+- [x] K8s policy operator — watches CRs, validates Cedar syntax, hot-reloads, enforces on pod creation
 
 ## P0: Quick Wins
 
@@ -42,6 +60,11 @@ Daemon:
   Status .............. running (socket: /tmp/agentkernel-daemon.sock)
   Warm VMs ............ 3/5
   Memory .............. 1.2 GB / 16 GB
+
+Policy Engine:
+  Cedar ............... enabled (5 policies loaded)
+  Cache ............... cached_with_expiry (fresh, 2h old)
+  Audit log ........... 1,204 decisions logged
 
 Sandboxes:
   Running ............. 2
@@ -90,12 +113,13 @@ Sandboxes:      34 created, 29 removed, 5 active
 Avg duration:   3.2s per exec
 Top images:     python:3.12-alpine (412), node:22-alpine (287), rust:1.85 (98)
 Top backends:   Docker (1,102), Apple (145)
+Policy:         1,204 permits, 3 denies (avg 145μs eval)
 First entry:    2026-01-20  Last: 2026-02-01
 
 $ agentkernel stats --json   # machine-readable output
 ```
 
-Requires adding `duration_ms: Option<u64>` to `AuditEvent::CommandExecuted`. Files: `main.rs`, new `stats.rs`, `audit.rs`.
+Aggregates both the sandbox audit log (`audit.rs`) and the policy audit log (`policy-audit.jsonl`). Requires adding `duration_ms: Option<u64>` to `AuditEvent::CommandExecuted`. Files: `main.rs`, new `stats.rs`, `audit.rs`.
 
 ### Templates
 
@@ -341,6 +365,7 @@ Image:          python:3.12-alpine
 Resources:      2 vCPUs, 512MB RAM
 Profile:        moderate
 Network:        enabled (allow: api.openai.com, pypi.org)
+Policy:         5 permits, 0 denies (Cedar, cached)
 Created:        2026-02-01 10:30:00
 Last active:    2026-02-01 12:44:12
 
@@ -352,7 +377,7 @@ Recent activity (last 5):
   10:30:00  create
 ```
 
-Combines `VmManager::get_state()` + `AuditLog::read_by_sandbox()`. Files: `main.rs`.
+Combines `VmManager::get_state()` + `AuditLog::read_by_sandbox()` + `PolicyEngine::status()`. Files: `main.rs`.
 
 ## P2: Workflow Features
 
@@ -535,16 +560,23 @@ $ agentkernel parallel \
 │  doctor  stats  benchmark  init  create  run  exec  ...  │
 └───────────────────────┬──────────────────────────────────┘
                         │
-          ┌─────────────┼─────────────┐
-          ▼             ▼             ▼
-   ┌─────────────┐ ┌────────┐ ┌───────────┐
-   │  Templates  │ │ Secrets│ │  Sessions  │
-   │  ~/.local/  │ │ vault  │ │  (agent    │
-   │  share/     │ │        │ │  lifecycle)│
-   └─────────────┘ └────────┘ └───────────┘
-          │             │             │
-          └─────────────┼─────────────┘
+       ┌────────────────┼────────────────┐
+       ▼                ▼                ▼
+┌─────────────┐  ┌────────────┐  ┌───────────┐
+│  Templates  │  │  Secrets   │  │  Sessions  │
+│  (built-in, │  │  (keyring, │  │  (agent    │
+│   github:,  │  │   vault,   │  │  lifecycle)│
+│   local)    │  │   1pw, k8s)│  │            │
+└─────────────┘  └────────────┘  └───────────┘
+       │                │                │
+       └────────────────┼────────────────┘
                         ▼
+          ┌──────────────────────────┐
+          │     Cedar Policy Engine  │
+          │  (offline, default-deny) │
+          │  OCSF audit ← decisions  │
+          └────────────┬─────────────┘
+                       ▼
           ┌──────────────────────────┐
           │       VmManager          │
           │                          │
