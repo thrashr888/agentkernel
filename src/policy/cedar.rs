@@ -438,6 +438,17 @@ impl CedarEngine {
     }
 }
 
+/// Validate Cedar policy syntax without building a full engine.
+///
+/// Useful for lightweight validation (e.g., in a K8s CRD reconciler)
+/// where you want to check if the Cedar text parses before aggregating.
+pub fn validate_cedar_syntax(src: &str) -> Result<()> {
+    let _: PolicySet = src
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid Cedar syntax: {}", e))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

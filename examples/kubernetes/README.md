@@ -53,3 +53,51 @@ Sandbox pods run with:
 - All capabilities dropped
 - Read-only root filesystem (restrictive profile)
 - NetworkPolicy denying all traffic when `network = false`
+
+## Policy CRDs (Enterprise)
+
+With `--features enterprise`, apply Cedar authorization policies as Kubernetes CRDs:
+
+```bash
+# Install CRDs
+agentkernel operator crds | kubectl apply -f -
+
+# Apply a cluster-wide default permit
+kubectl apply -f - <<EOF
+apiVersion: agentkernel/v1alpha1
+kind: ClusterAgentKernelPolicy
+metadata:
+  name: default-permit
+spec:
+  cedar: |
+    permit(
+        principal is AgentKernel::User,
+        action,
+        resource is AgentKernel::Sandbox
+    );
+  priority: 0
+EOF
+
+# Apply a namespace-level deny
+kubectl apply -f - <<EOF
+apiVersion: agentkernel/v1alpha1
+kind: AgentKernelPolicy
+metadata:
+  name: deny-network
+  namespace: agentkernel
+spec:
+  cedar: |
+    forbid(
+        principal,
+        action == AgentKernel::Action::"Network",
+        resource
+    );
+  priority: 100
+EOF
+
+# Check status
+kubectl get akp -A
+kubectl get cakp
+```
+
+See `docs/orchestration-kubernetes.md` for full details.

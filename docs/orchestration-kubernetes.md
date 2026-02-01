@@ -132,14 +132,108 @@ spec:
   memory_mb: 512
 ```
 
+### AgentKernelPolicy CRD (Enterprise)
+
+Namespaced Cedar policy that applies to sandboxes in the same namespace. Requires the `enterprise` feature.
+
+```yaml
+apiVersion: agentkernel/v1alpha1
+kind: AgentKernelPolicy
+metadata:
+  name: deny-network-staging
+  namespace: staging
+spec:
+  cedar: |
+    forbid(
+        principal,
+        action == AgentKernel::Action::"Network",
+        resource
+    );
+  priority: 100
+  description: "Block network access in staging"
+```
+
+Apply via `kubectl apply` — the operator validates Cedar syntax and reports status:
+
+```bash
+kubectl get akp -A          # List all namespace policies
+kubectl describe akp deny-network-staging -n staging
+```
+
+### ClusterAgentKernelPolicy CRD (Enterprise)
+
+Cluster-scoped Cedar policy that applies to all sandboxes globally.
+
+```yaml
+apiVersion: agentkernel/v1alpha1
+kind: ClusterAgentKernelPolicy
+metadata:
+  name: default-permit
+spec:
+  cedar: |
+    permit(
+        principal is AgentKernel::User,
+        action,
+        resource is AgentKernel::Sandbox
+    );
+  priority: 0
+  description: "Default permit for all authenticated users"
+```
+
+```bash
+kubectl get cakp             # List cluster-wide policies
+kubectl describe cakp default-permit
+```
+
+#### Policy Evaluation Order
+
+1. Cluster-scoped policies are loaded first (lower scope weight)
+2. Within the same scope, higher `priority` values take precedence
+3. Cedar's default-deny model applies — if no `permit` matches, the action is denied
+4. `forbid` rules always override `permit` rules regardless of priority
+
+#### Policy Status
+
+The operator sets status on each policy CR:
+
+| Field | Description |
+|-------|-------------|
+| `valid` | Whether the Cedar syntax parsed successfully |
+| `active` | Whether the policy is loaded in the evaluation engine |
+| `message` | Error details when `valid: false` |
+| `lastApplied` | Timestamp of last successful load |
+| `observedGeneration` | Generation for change detection |
+
+#### Identity from Sandbox Annotations
+
+The policy engine reads principal identity from sandbox CR annotations:
+
+| Annotation | Maps to | Default |
+|------------|---------|---------|
+| `agentkernel/user-id` | `Principal.id` | `anonymous` |
+| `agentkernel/email` | `Principal.email` | `anonymous@unknown` |
+| `agentkernel/org-id` | `Principal.org_id` | `default` |
+| `agentkernel/roles` | `Principal.roles` (comma-separated) | `developer` |
+| `agentkernel/mfa-verified` | `Principal.mfa_verified` | `false` |
+| `agentkernel/agent-type` | `Resource.agent_type` | `unknown` |
+| `agentkernel/runtime` | `Resource.runtime` | `unknown` |
+
 ### Generating CRD Manifests
 
 ```rust
 use agentkernel::backend::kubernetes_operator::generate_crd_manifests;
 
-let (sandbox_crd, pool_crd) = generate_crd_manifests()?;
-std::fs::write("sandbox-crd.yaml", sandbox_crd)?;
-std::fs::write("pool-crd.yaml", pool_crd)?;
+let crds = generate_crd_manifests()?;
+for (i, crd) in crds.iter().enumerate() {
+    std::fs::write(format!("crd-{}.yaml", i), crd)?;
+}
+```
+
+Or generate all CRDs at once:
+
+```bash
+# Output all CRDs as YAML (pipe to kubectl apply)
+agentkernel operator crds | kubectl apply -f -
 ```
 
 ## Deploying agentkernel on Kubernetes
@@ -225,6 +319,8 @@ The Helm chart creates a ClusterRole with permissions to:
 - Create, delete, list, get pods in the sandbox namespace
 - Create and delete NetworkPolicies (for `network: false` sandboxes)
 - Exec into pods (for `agentkernel exec`)
+- Watch and update AgentSandbox, AgentSandboxPool CRDs
+- (Enterprise) Watch and update AgentKernelPolicy, ClusterAgentKernelPolicy CRDs
 
 ### Upgrade and Uninstall
 

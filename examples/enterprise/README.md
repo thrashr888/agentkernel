@@ -55,6 +55,60 @@ The built-in schema defines:
 3. Conditions in `when` clauses filter which requests match
 4. Multiple policy files can be combined — all are evaluated together
 
+## Kubernetes-Native Policy Management
+
+When running on Kubernetes, Cedar policies can be managed as CRDs instead of (or alongside) the HTTP policy server.
+
+### Namespaced Policies
+
+Apply a policy to a specific namespace:
+
+```yaml
+apiVersion: agentkernel/v1alpha1
+kind: AgentKernelPolicy
+metadata:
+  name: deny-network
+  namespace: staging
+spec:
+  cedar: |
+    forbid(
+        principal,
+        action == AgentKernel::Action::"Network",
+        resource
+    );
+  priority: 100
+```
+
+### Cluster-Wide Policies
+
+Apply a policy globally:
+
+```yaml
+apiVersion: agentkernel/v1alpha1
+kind: ClusterAgentKernelPolicy
+metadata:
+  name: default-permit
+spec:
+  cedar: |
+    permit(
+        principal is AgentKernel::User,
+        action,
+        resource is AgentKernel::Sandbox
+    );
+  priority: 0
+```
+
+### GitOps Compatible
+
+Policy CRDs work with Argo CD, Flux, and other GitOps tools. Store policies in your infrastructure repo and `kubectl apply` them automatically.
+
+```bash
+kubectl get akp -A           # Namespace policies
+kubectl get cakp             # Cluster policies
+```
+
+See `docs/orchestration-kubernetes.md` for full CRD documentation.
+
 ## Testing Policies Locally
 
 Run the enterprise tests to validate policies against the Cedar engine:
