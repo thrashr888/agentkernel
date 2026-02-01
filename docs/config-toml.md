@@ -126,6 +126,50 @@ dest = "/etc/app/settings.json"
 | `source` | string | Local file path (relative to config file) |
 | `dest` | string | Absolute path inside sandbox |
 
+## [orchestrator]
+
+Configuration for Kubernetes and Nomad orchestration backends. Only needed when using `--backend kubernetes` or `--backend nomad`.
+
+```toml
+[orchestrator]
+provider = "kubernetes"              # "kubernetes" or "nomad"
+namespace = "agentkernel"            # Namespace for sandbox resources
+
+# Kubernetes-specific
+kubeconfig = "~/.kube/config"        # Optional, auto-detected
+context = "my-cluster"               # Optional kubeconfig context
+runtime_class = "gvisor"             # Optional: "gvisor", "kata"
+service_account = "agentkernel-sa"   # Optional service account
+
+# Nomad-specific
+nomad_addr = "http://127.0.0.1:4646"  # Nomad API address
+nomad_driver = "docker"                 # "docker", "exec", "raw_exec"
+nomad_datacenter = "dc1"               # Target datacenter
+
+# Pool settings
+warm_pool_size = 10                  # Pre-warmed instances
+max_pool_size = 50                   # Maximum concurrent sandboxes
+max_sandboxes = 200                  # Hard cap on total sandboxes
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `provider` | string | none | `kubernetes` or `nomad` |
+| `namespace` | string | `agentkernel` | Namespace for sandbox resources |
+| `kubeconfig` | string | auto-detected | Path to kubeconfig file |
+| `context` | string | current | Kubeconfig context |
+| `runtime_class` | string | none | K8s RuntimeClass (gvisor, kata) |
+| `service_account` | string | none | K8s service account |
+| `nomad_addr` | string | `NOMAD_ADDR` env | Nomad API address |
+| `nomad_token` | string | `NOMAD_TOKEN` env | Nomad ACL token |
+| `nomad_driver` | string | `docker` | Nomad task driver |
+| `nomad_datacenter` | string | `dc1` | Nomad datacenter |
+| `warm_pool_size` | int | 10 | Pre-warmed idle instances |
+| `max_pool_size` | int | 50 | Maximum pool capacity |
+| `max_sandboxes` | int | 200 | Hard cap on total sandboxes |
+
+See the [Orchestration Guide](orchestration.md) for detailed usage and deployment instructions.
+
 ## Full Example
 
 ```toml

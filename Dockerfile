@@ -1,16 +1,17 @@
-# Agentkernel Docker runner
-# Runs agentkernel inside a Docker container with KVM support
+# Agentkernel multi-stage build for Kubernetes/Nomad deployment
 #
-# On macOS with Docker Desktop, this provides a Linux environment with KVM
-# for running Firecracker microVMs.
+# Builds agentkernel with orchestrator backends enabled, producing a
+# minimal runtime image suitable for deployment as a K8s Deployment
+# or Nomad service job.
 #
 # Build:
 #   docker build -t agentkernel .
 #
-# Run (requires --privileged for KVM access):
-#   docker run --privileged -it agentkernel
+# Run:
+#   docker run -p 18888:18888 agentkernel
 
-FROM rust:1.82-slim-bookworm AS builder
+# --- Builder stage ---
+FROM rust:1.83-slim AS builder
 
 WORKDIR /build
 
@@ -18,44 +19,30 @@ WORKDIR /build
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy source
+# Copy manifests first for layer caching
 COPY Cargo.toml Cargo.lock ./
+
+# Copy source
 COPY src ./src
 COPY tests ./tests
 
-# Build
-RUN cargo build --release
+# Build release binary with orchestrator features
+RUN cargo build --release --features kubernetes,nomad
 
-# Runtime image
+# --- Runtime stage ---
 FROM debian:bookworm-slim
 
-# Install runtime dependencies and Firecracker
 RUN apt-get update && apt-get install -y \
-    curl \
     ca-certificates \
-    iproute2 \
+    libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Download Firecracker (latest release for amd64)
-ARG FIRECRACKER_VERSION=v1.7.0
-ARG ARCH=x86_64
-RUN curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-${ARCH}.tgz" \
-    | tar -xz -C /usr/local/bin \
-    && mv /usr/local/bin/release-${FIRECRACKER_VERSION}-${ARCH}/firecracker-${FIRECRACKER_VERSION}-${ARCH} /usr/local/bin/firecracker \
-    && chmod +x /usr/local/bin/firecracker \
-    && rm -rf /usr/local/bin/release-*
+# Copy the compiled binary
+COPY --from=builder /build/target/release/agentkernel /usr/local/bin/agentkernel
 
-# Copy agentkernel binary
-COPY --from=builder /build/target/release/agentkernel /usr/local/bin/
+EXPOSE 18888
 
-# Copy kernel and config
-COPY images/kernel/microvm.config /images/kernel/
-COPY images/build /images/build/
-
-WORKDIR /workspace
-
-# Default command shows help
-CMD ["agentkernel", "--help"]
+ENTRYPOINT ["agentkernel"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "18888"]

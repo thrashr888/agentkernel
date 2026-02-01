@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentkernel.fullname" . }}-config
+  labels:
+    {{- include "agentkernel.labels" . | nindent 4 }}
+data:
+  agentkernel.toml: |
+    [sandbox]
+    name = "default"
+    base_image = {{ .Values.sandbox.defaults.image | quote }}
+
+    [security]
+    profile = {{ .Values.sandbox.defaults.securityProfile | quote }}
+
+    [resources]
+    vcpus = 1
+    memory_mb = 512
+
+    [orchestrator]
+    provider = {{ .Values.backend | quote }}
+    namespace = {{ .Values.orchestrator.namespace | quote }}
+    warm_pool_size = {{ .Values.orchestrator.warmPoolSize }}
+    max_sandboxes = {{ .Values.orchestrator.maxSandboxes }}
+    {{- if .Values.orchestrator.runtimeClass }}
+    runtime_class = {{ .Values.orchestrator.runtimeClass | quote }}
+    {{- end }}
+    service_account = {{ .Values.orchestrator.serviceAccount | quote }}

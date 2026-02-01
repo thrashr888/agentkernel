@@ -1,0 +1,55 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/thrashr888/agentkernel
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Backend for sandbox creation: kubernetes or nomad
+backend: kubernetes
+
+# Orchestrator configuration written to agentkernel.toml
+orchestrator:
+  namespace: agentkernel-sandboxes
+  runtimeClass: ""          # "gvisor" if available
+  warmPoolSize: 10
+  maxSandboxes: 200         # cluster-wide limit
+  serviceAccount: agentkernel-sandbox
+
+# Default sandbox resource limits
+sandbox:
+  defaults:
+    image: alpine:3.20
+    memory: 512Mi
+    cpu: "1"
+    securityProfile: restrictive
+
+# RBAC for the agentkernel API server
+rbac:
+  create: true
+
+# API key for authenticating clients (set via --set or external secret)
+apiKey: ""
+
+service:
+  type: ClusterIP
+  port: 18888
+
+# Resource limits for the agentkernel API server pod
+resources:
+  limits:
+    memory: 256Mi
+    cpu: 500m
+  requests:
+    memory: 128Mi
+    cpu: 100m
+
+# Horizontal Pod Autoscaler (disabled by default)
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+
+nameOverride: ""
+fullnameOverride: ""

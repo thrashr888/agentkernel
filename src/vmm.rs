@@ -48,6 +48,12 @@ pub struct SandboxState {
     /// Backend type used to create this sandbox
     #[serde(default)]
     pub backend: Option<BackendType>,
+    /// Remote resource identifier (K8s pod name or Nomad alloc ID)
+    #[serde(default)]
+    pub remote_id: Option<String>,
+    /// Remote namespace (K8s namespace or Nomad namespace)
+    #[serde(default)]
+    pub remote_namespace: Option<String>,
 }
 
 /// VM Manager - manages sandboxes via unified Sandbox trait
@@ -69,6 +75,14 @@ pub struct VmManager {
     rootfs_dir: Option<PathBuf>,
     /// Next vsock CID
     next_cid: u32,
+}
+
+/// Run a command only when `names` is non-empty; returns `Err` (skip) when empty.
+fn batch_cmd(names: &[String], cmd: &str, args: &[&str]) -> std::io::Result<std::process::Output> {
+    if names.is_empty() {
+        return Err(std::io::Error::other("empty"));
+    }
+    std::process::Command::new(cmd).args(args).output()
 }
 
 impl VmManager {
@@ -129,51 +143,96 @@ impl VmManager {
         Ok(manager)
     }
 
-    /// Detect sandboxes that are already running (e.g., Docker containers)
+    /// Detect sandboxes that are already running (e.g., Docker containers).
+    ///
+    /// Uses batched queries (one call per backend) instead of per-sandbox calls
+    /// to avoid O(N) subprocess overhead on startup.
     fn detect_running_sandboxes(&mut self) {
-        // Need to collect names first to avoid borrow checker issues
-        let sandboxes_to_check: Vec<_> = self
-            .sandboxes
-            .iter()
-            .map(|(name, state)| (name.clone(), state.backend.unwrap_or(self.backend)))
-            .collect();
+        use std::collections::HashSet;
 
-        for (name, sandbox_backend) in sandboxes_to_check {
-            // Check if the sandbox is running
-            let is_running = match sandbox_backend {
-                BackendType::Docker | BackendType::Podman => {
-                    self.detect_docker_sandbox_running(&name, sandbox_backend)
-                }
-                _ => false, // Other backends need more complex detection
-            };
+        // Collect sandbox names grouped by backend type
+        let mut docker_names: Vec<String> = Vec::new();
+        let mut podman_names: Vec<String> = Vec::new();
+        let mut k8s_names: Vec<String> = Vec::new();
+        let mut nomad_names: Vec<String> = Vec::new();
 
-            if is_running {
-                // Recreate the sandbox object for the running container
-                // Note: DockerSandbox::is_running() checks Docker directly
-                if let Ok(sandbox) = create_sandbox(sandbox_backend, &name) {
-                    self.running.insert(name.clone(), sandbox);
-                }
+        for (name, state) in &self.sandboxes {
+            match state.backend.unwrap_or(self.backend) {
+                BackendType::Docker => docker_names.push(name.clone()),
+                BackendType::Podman => podman_names.push(name.clone()),
+                BackendType::Kubernetes => k8s_names.push(name.clone()),
+                BackendType::Nomad => nomad_names.push(name.clone()),
+                _ => {}
             }
         }
-    }
 
-    /// Check if a Docker/Podman sandbox is currently running
-    fn detect_docker_sandbox_running(&self, name: &str, backend: BackendType) -> bool {
-        use std::process::Command;
+        let mut running_set: HashSet<String> = HashSet::new();
 
-        let cmd = match backend {
-            BackendType::Docker => "docker",
-            BackendType::Podman => "podman",
-            _ => return false,
-        };
+        // Helper: match sandbox names against a set of active prefixed names
+        let match_active =
+            |names: &[String], active: &HashSet<&str>, running: &mut HashSet<String>| {
+                for name in names {
+                    if active.contains(format!("agentkernel-{}", name).as_str()) {
+                        running.insert(name.clone());
+                    }
+                }
+            };
 
-        let container_name = format!("agentkernel-{}", name);
+        // Batch Docker: one `docker ps` call for all Docker sandboxes
+        if let Ok(output) = batch_cmd(&docker_names, "docker", &["ps", "--format", "{{.Names}}"]) {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let active: HashSet<&str> = stdout.lines().collect();
+            match_active(&docker_names, &active, &mut running_set);
+        }
 
-        Command::new(cmd)
-            .args(["ps", "-q", "-f", &format!("name={}", container_name)])
-            .output()
-            .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-            .unwrap_or(false)
+        // Batch Podman: one `podman ps` call
+        if let Ok(output) = batch_cmd(&podman_names, "podman", &["ps", "--format", "{{.Names}}"]) {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let active: HashSet<&str> = stdout.lines().collect();
+            match_active(&podman_names, &active, &mut running_set);
+        }
+
+        // Batch Kubernetes: one `kubectl get pods` call
+        if let Ok(output) = batch_cmd(
+            &k8s_names,
+            "kubectl",
+            &[
+                "get",
+                "pods",
+                "-n",
+                "agentkernel",
+                "--field-selector=status.phase=Running",
+                "-o",
+                "jsonpath={.items[*].metadata.name}",
+            ],
+        ) {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let active: HashSet<&str> = stdout.split_whitespace().collect();
+            match_active(&k8s_names, &active, &mut running_set);
+        }
+
+        // Batch Nomad: one `nomad job status` call
+        if let Ok(output) = batch_cmd(&nomad_names, "nomad", &["job", "status", "-short"]) {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let active: HashSet<&str> = stdout
+                .lines()
+                .filter(|line| line.contains("running"))
+                .filter_map(|line| line.split_whitespace().next())
+                .collect();
+            match_active(&nomad_names, &active, &mut running_set);
+        }
+
+        // Create sandbox objects for running sandboxes
+        for name in running_set {
+            let backend = self
+                .sandboxes
+                .get(&name)
+                .and_then(|s| s.backend)
+                .unwrap_or(self.backend);
+            if let Ok(sandbox) = create_sandbox(backend, &name) {
+                self.running.insert(name, sandbox);
+            }
+        }
     }
 
     /// Get the data directory
@@ -297,6 +356,8 @@ impl VmManager {
             vsock_cid,
             created_at: chrono::Utc::now().to_rfc3339(),
             backend: Some(self.backend),
+            remote_id: None,
+            remote_namespace: None,
         };
 
         self.save_sandbox(&state)?;
@@ -744,6 +805,8 @@ mod tests {
             vsock_cid: 5,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             backend: None,
+            remote_id: None,
+            remote_namespace: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -781,6 +844,8 @@ mod tests {
             vsock_cid: 3,
             created_at: "2024-06-15T12:30:00Z".to_string(),
             backend: None,
+            remote_id: None,
+            remote_namespace: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -827,6 +892,8 @@ mod tests {
             vsock_cid: 4,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             backend: None,
+            remote_id: None,
+            remote_namespace: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -866,6 +933,8 @@ mod tests {
                 vsock_cid: cid,
                 created_at: "2024-01-01T00:00:00Z".to_string(),
                 backend: None,
+                remote_id: None,
+                remote_namespace: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();

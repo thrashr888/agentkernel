@@ -12,6 +12,8 @@ agentkernel supports multiple isolation backends. Each provides different tradeo
 | Firecracker | MicroVM | <125ms | Linux (KVM) | Stable |
 | Hyperlight | Wasm + Hypervisor | ~68ms | Linux (KVM) | Experimental |
 | Apple | Container | ~940ms | macOS 26+ | Beta |
+| Kubernetes | Pod | ~2-5s | Any K8s cluster | Stable |
+| Nomad | Job allocation | ~2-5s | Any Nomad cluster | Stable |
 
 ## Docker
 
@@ -114,15 +116,72 @@ agentkernel create my-sandbox --backend apple
 - macOS 26+ only
 - Beta status
 
+## Kubernetes
+
+Run sandboxes as Kubernetes Pods on any cluster. Requires building with `--features kubernetes`.
+
+```bash
+cargo build --features kubernetes
+
+agentkernel create my-sandbox --backend kubernetes --image alpine:3.20
+```
+
+**Requirements:**
+- Kubernetes cluster access (kubeconfig)
+- Build with `--features kubernetes`
+
+**Pros:**
+- Scales to thousands of sandboxes
+- Warm pool for fast acquisition (~100ms vs ~2-5s cold start)
+- NetworkPolicy-based network isolation
+- Optional RuntimeClass for gVisor/Kata isolation
+- Kubernetes-native CRDs (AgentSandbox, AgentSandboxPool)
+
+**Cons:**
+- Requires cluster infrastructure
+- Higher latency than local backends
+- Never auto-detected (must specify `--backend kubernetes`)
+
+See the [Orchestration Guide](orchestration.md) for full configuration and deployment details.
+
+## Nomad
+
+Run sandboxes as HashiCorp Nomad job allocations. Requires building with `--features nomad`.
+
+```bash
+cargo build --features nomad
+
+agentkernel create my-sandbox --backend nomad --image alpine:3.20
+```
+
+**Requirements:**
+- Nomad cluster access (`nomad` CLI or `NOMAD_ADDR`)
+- Build with `--features nomad`
+
+**Pros:**
+- Simpler cluster setup than Kubernetes
+- Multiple task drivers (Docker, exec, raw_exec)
+- Warm pool via parameterized batch jobs
+- Integrates with Consul and Vault
+
+**Cons:**
+- Requires Nomad infrastructure
+- Higher latency than local backends
+- Never auto-detected (must specify `--backend nomad`)
+
+See the [Orchestration Guide](orchestration.md) for full configuration and deployment details.
+
 ## Auto-Detection
 
-By default, agentkernel selects the best available backend:
+By default, agentkernel selects the best available *local* backend:
 
 1. **Hyperlight** - If KVM available and `--features hyperlight` built (Linux, Wasm only)
 2. **Firecracker** - If KVM is available (Linux)
 3. **Apple** - If Apple Containers available (macOS 26+)
 4. **Docker** - If Docker is installed
 5. **Podman** - If Podman is installed
+
+Kubernetes and Nomad are never auto-detected. They must be specified explicitly with `--backend kubernetes` or `--backend nomad`.
 
 ```bash
 # Check which backend is selected
@@ -153,6 +212,8 @@ NAME          STATUS     BACKEND
 project-a     running    docker
 project-b     stopped    podman
 test-vm       running    firecracker
+k8s-sandbox   running    kubernetes
+nomad-job     running    nomad
 ```
 
 Each sandbox remembers its backend.
