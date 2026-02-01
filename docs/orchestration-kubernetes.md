@@ -69,7 +69,7 @@ For stronger isolation, set `runtime_class` to `gvisor` or `kata` to run pods in
 
 ## Warm Pool
 
-The Kubernetes warm pool pre-creates pods labeled `agentkernel.io/pool=warm`. When you call `acquire()`, a warm pod is relabeled to `active` and returned immediately. When released, the pod is deleted and a replacement is created.
+The Kubernetes warm pool pre-creates pods labeled `agentkernel/pool=warm`. When you call `acquire()`, a warm pod is relabeled to `active` and returned immediately. When released, the pod is deleted and a replacement is created.
 
 A background task runs every 30 seconds to maintain the target warm count.
 
@@ -77,7 +77,7 @@ A background task runs every 30 seconds to maintain the target warm count.
 
 ```bash
 # List agentkernel pods
-kubectl get pods -n agentkernel -l agentkernel.io/managed-by=agentkernel
+kubectl get pods -n agentkernel -l agentkernel/managed-by=agentkernel
 
 # Check a specific sandbox pod
 kubectl describe pod agentkernel-my-sandbox -n agentkernel
@@ -93,7 +93,7 @@ For Kubernetes-native management, agentkernel provides Custom Resource Definitio
 ### AgentSandbox CRD
 
 ```yaml
-apiVersion: agentkernel.io/v1alpha1
+apiVersion: agentkernel/v1alpha1
 kind: AgentSandbox
 metadata:
   name: my-sandbox
@@ -120,7 +120,7 @@ kubectl describe agentsandbox my-sandbox
 ### AgentSandboxPool CRD
 
 ```yaml
-apiVersion: agentkernel.io/v1alpha1
+apiVersion: agentkernel/v1alpha1
 kind: AgentSandboxPool
 metadata:
   name: default-pool
@@ -144,4 +144,4 @@ std::fs::write("pool-crd.yaml", pool_crd)?;
 
 ## Deployment
 
-For running agentkernel as a service on Kubernetes, a Helm chart is provided at `deploy/helm/agentkernel/`. See the [Deployment Guide](deploy.md) for installation instructions.
+For running agentkernel as a service on Kubernetes, see the [Deployment Guide](deploy.md) for Helm chart installation instructions.

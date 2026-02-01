@@ -1,6 +1,6 @@
 //! Kubernetes warm pool manager.
 //!
-//! Pre-creates pods labeled `agentkernel.io/pool=warm` that can be quickly
+//! Pre-creates pods labeled `agentkernel/pool=warm` that can be quickly
 //! relabeled to `active` when acquired. When released, pods are deleted and
 //! the pool replenishes to maintain the target warm count.
 //!
@@ -83,10 +83,10 @@ impl KubernetesPool {
     fn warm_labels() -> BTreeMap<String, String> {
         let mut labels = BTreeMap::new();
         labels.insert(
-            "agentkernel.io/managed-by".to_string(),
+            "agentkernel/managed-by".to_string(),
             "agentkernel".to_string(),
         );
-        labels.insert("agentkernel.io/pool".to_string(), "warm".to_string());
+        labels.insert("agentkernel/pool".to_string(), "warm".to_string());
         labels
     }
 
@@ -94,7 +94,7 @@ impl KubernetesPool {
     fn build_warm_pod(&self, index: usize) -> Pod {
         let pod_name = format!("agentkernel-warm-{}", index);
         let mut labels = Self::warm_labels();
-        labels.insert("agentkernel.io/warm-index".to_string(), index.to_string());
+        labels.insert("agentkernel/warm-index".to_string(), index.to_string());
 
         // Minimal security context
         let security_context = k8s_openapi::api::core::v1::SecurityContext {
@@ -166,7 +166,7 @@ impl KubernetesPool {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.config.namespace);
 
         // Count existing warm pods
-        let lp = ListParams::default().labels("agentkernel.io/pool=warm");
+        let lp = ListParams::default().labels("agentkernel/pool=warm");
         let existing = pods.list(&lp).await?;
         let existing_count = existing.items.len();
 
@@ -200,7 +200,7 @@ impl KubernetesPool {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.config.namespace);
 
         // Find a warm pod that is Running
-        let lp = ListParams::default().labels("agentkernel.io/pool=warm");
+        let lp = ListParams::default().labels("agentkernel/pool=warm");
         let warm_pods = pods.list(&lp).await?;
 
         let warm_pod = warm_pods
@@ -218,8 +218,8 @@ impl KubernetesPool {
         let patch = json!({
             "metadata": {
                 "labels": {
-                    "agentkernel.io/pool": "active",
-                    "agentkernel.io/sandbox": sandbox_name,
+                    "agentkernel/pool": "active",
+                    "agentkernel/sandbox": sandbox_name,
                 }
             }
         });
@@ -250,12 +250,12 @@ impl KubernetesPool {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.config.namespace);
 
         // Count current warm pods
-        let warm_lp = ListParams::default().labels("agentkernel.io/pool=warm");
+        let warm_lp = ListParams::default().labels("agentkernel/pool=warm");
         let warm_pods = pods.list(&warm_lp).await?;
         let warm_count = warm_pods.items.len();
 
         // Count total active pods
-        let active_lp = ListParams::default().labels("agentkernel.io/pool=active");
+        let active_lp = ListParams::default().labels("agentkernel/pool=active");
         let active_pods = pods.list(&active_lp).await?;
         let active_count = active_pods.items.len();
 
@@ -278,7 +278,7 @@ impl KubernetesPool {
                 p.metadata
                     .labels
                     .as_ref()
-                    .and_then(|l| l.get("agentkernel.io/warm-index"))
+                    .and_then(|l| l.get("agentkernel/warm-index"))
                     .and_then(|v| v.parse::<usize>().ok())
             })
             .max()
@@ -301,10 +301,10 @@ impl KubernetesPool {
     pub async fn stats(&self) -> Result<PoolStats> {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.config.namespace);
 
-        let warm_lp = ListParams::default().labels("agentkernel.io/pool=warm");
+        let warm_lp = ListParams::default().labels("agentkernel/pool=warm");
         let warm_count = pods.list(&warm_lp).await?.items.len();
 
-        let active_lp = ListParams::default().labels("agentkernel.io/pool=active");
+        let active_lp = ListParams::default().labels("agentkernel/pool=active");
         let active_count = pods.list(&active_lp).await?.items.len();
 
         Ok(PoolStats {
@@ -333,7 +333,7 @@ impl KubernetesPool {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.config.namespace);
 
         let lp = ListParams::default()
-            .labels("agentkernel.io/managed-by=agentkernel,agentkernel.io/pool=warm");
+            .labels("agentkernel/managed-by=agentkernel,agentkernel/pool=warm");
         let warm_pods = pods.list(&lp).await?;
 
         for pod in warm_pods.items {

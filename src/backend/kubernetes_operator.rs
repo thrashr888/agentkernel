@@ -24,7 +24,7 @@ use std::sync::Arc;
 /// Spec for the AgentSandbox custom resource
 #[derive(CustomResource, Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[kube(
-    group = "agentkernel.io",
+    group = "agentkernel",
     version = "v1alpha1",
     kind = "AgentSandbox",
     plural = "agentsandboxes",
@@ -100,7 +100,7 @@ pub struct AgentSandboxStatus {
 /// Spec for the AgentSandboxPool custom resource
 #[derive(CustomResource, Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[kube(
-    group = "agentkernel.io",
+    group = "agentkernel",
     version = "v1alpha1",
     kind = "AgentSandboxPool",
     plural = "agentsandboxpools",
@@ -283,9 +283,9 @@ async fn reconcile_sandbox(
                     namespace: Some(namespace.clone()),
                     labels: Some({
                         let mut labels = BTreeMap::new();
-                        labels.insert("agentkernel.io/sandbox".to_string(), name.clone());
+                        labels.insert("agentkernel/sandbox".to_string(), name.clone());
                         labels.insert(
-                            "agentkernel.io/managed-by".to_string(),
+                            "agentkernel/managed-by".to_string(),
                             "agentkernel-operator".to_string(),
                         );
                         labels

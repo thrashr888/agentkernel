@@ -95,4 +95,4 @@ nomad alloc logs <alloc-id>
 
 ## Deployment
 
-For running agentkernel as a service on Nomad, a job definition is provided at `deploy/nomad/agentkernel.nomad.hcl`. See the [Deployment Guide](deploy.md) for details.
+For running agentkernel as a service on Nomad, see the [Deployment Guide](deploy.md) for job file download and deployment instructions.

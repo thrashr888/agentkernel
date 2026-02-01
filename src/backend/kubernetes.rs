@@ -107,15 +107,12 @@ impl KubernetesSandbox {
     /// Standard labels for all agentkernel-managed pods
     fn pod_labels(sandbox_name: &str) -> BTreeMap<String, String> {
         let mut labels = BTreeMap::new();
+        labels.insert("agentkernel/sandbox".to_string(), sandbox_name.to_string());
         labels.insert(
-            "agentkernel.io/sandbox".to_string(),
-            sandbox_name.to_string(),
-        );
-        labels.insert(
-            "agentkernel.io/managed-by".to_string(),
+            "agentkernel/managed-by".to_string(),
             "agentkernel".to_string(),
         );
-        labels.insert("agentkernel.io/pool".to_string(), "active".to_string());
+        labels.insert("agentkernel/pool".to_string(), "active".to_string());
         labels
     }
 
@@ -232,7 +229,7 @@ impl KubernetesSandbox {
         let np_name = format!("{}-deny-all", pod_name);
 
         let mut match_labels = BTreeMap::new();
-        match_labels.insert("agentkernel.io/sandbox".to_string(), self.name.clone());
+        match_labels.insert("agentkernel/sandbox".to_string(), self.name.clone());
 
         let np = NetworkPolicy {
             metadata: ObjectMeta {

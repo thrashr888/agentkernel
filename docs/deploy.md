@@ -23,6 +23,10 @@ cargo build --release --features nomad
 ### Install
 
 ```bash
+# Clone the repo for the Helm chart
+git clone https://github.com/thrashr888/agentkernel.git
+cd agentkernel
+
 helm install agentkernel deploy/helm/agentkernel/ \
   --namespace agentkernel-system \
   --create-namespace
@@ -30,7 +34,7 @@ helm install agentkernel deploy/helm/agentkernel/ \
 
 ### Key Configuration
 
-Edit `deploy/helm/agentkernel/values.yaml` or pass `--set` flags:
+Override defaults with `--set` flags or create a custom `values.yaml`:
 
 ```yaml
 # Backend for sandbox creation
@@ -109,7 +113,11 @@ helm uninstall agentkernel --namespace agentkernel-system
 ### Deploy
 
 ```bash
-nomad job run deploy/nomad/agentkernel.nomad.hcl
+# Download the job file
+curl -fsSLO https://raw.githubusercontent.com/thrashr888/agentkernel/main/deploy/nomad/agentkernel.nomad.hcl
+
+# Deploy
+nomad job run agentkernel.nomad.hcl
 ```
 
 ### Job Structure
@@ -143,13 +151,13 @@ The job registers a `agentkernel` service with Consul/Nomad service discovery an
 
 ```bash
 # Edit the job file
-vim deploy/nomad/agentkernel.nomad.hcl
+vim agentkernel.nomad.hcl
 
 # Plan changes
-nomad job plan deploy/nomad/agentkernel.nomad.hcl
+nomad job plan agentkernel.nomad.hcl
 
 # Apply
-nomad job run deploy/nomad/agentkernel.nomad.hcl
+nomad job run agentkernel.nomad.hcl
 ```
 
 ## Environment Variables

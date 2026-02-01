@@ -23,7 +23,7 @@ agentkernel start k8s-sandbox
 agentkernel exec k8s-sandbox -- echo "hello from kubernetes"
 
 # Verify with kubectl
-kubectl get pods -n agentkernel -l agentkernel.io/managed-by=agentkernel
+kubectl get pods -n agentkernel -l agentkernel/managed-by=agentkernel
 
 # Clean up
 agentkernel stop k8s-sandbox
