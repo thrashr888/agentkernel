@@ -15,8 +15,8 @@ All numbers below are measured on real hardware -- an AMD EPYC server for Linux 
 | Docker pool (Linux) | ~250ms | ~4.0/sec | Container (shared kernel) |
 | Podman (macOS) | ~300ms | ~3.3/sec | Container (rootless) |
 | Podman (Linux) | ~310ms | ~3.2/sec | Container (rootless) |
-| **Kubernetes** (remote) | ~575ms | ~1.3/sec | Pod (NetworkPolicy) |
-| **Nomad** (remote) | ~575ms | ~0.9/sec | Job allocation |
+| **Kubernetes** (remote) | ~570ms | ~7.7/sec | Pod (NetworkPolicy) |
+| **Nomad** (remote) | ~570ms | ~6.1/sec | Job allocation |
 | Firecracker cold (Linux) | 800ms | ~1.3/sec | Full VM (separate kernel) |
 | Apple Containers (macOS 26+) | ~940ms | ~1.1/sec | Full VM (separate kernel) |
 
@@ -171,44 +171,57 @@ The daemon starts in ~3 seconds (pre-warms 3 VMs) and then every command benefit
 
 The orchestration backends run sandboxes on remote clusters instead of the local machine. This adds network overhead but enables team-scale and multi-tenant deployments.
 
-All numbers below measured on an M3 Pro (12 cores, 36 GB) against a local k3d cluster (Kubernetes) and local Nomad dev agent. Production clusters with dedicated resources will perform better.
+Numbers below are measured on both platforms: an AMD EPYC server (16 cores, 57 GB) with k3d single-node and Nomad dev agent for Linux, and an M3 Pro MacBook (12 cores, 36 GB) with k3d and Nomad for macOS.
 
 ### Single sandbox lifecycle
 
 Full create → start → exec → stop cycle, averaged over 5 iterations:
 
+**Linux (AMD EPYC)**
+
 | Operation | Kubernetes | Nomad | Docker (baseline) |
 |-----------|-----------|-------|-------------------|
-| Create | 302ms | 547ms | 749ms |
-| Start | 1,074ms | 2,221ms | 2,696ms |
-| Exec | 367ms | 883ms | 720ms |
-| Stop | 311ms | 629ms | 697ms |
-| **Total** | **2,054ms** | **4,280ms** | **4,862ms** |
+| Create | 92ms | 39ms | 47ms |
+| Start | 904ms | 811ms | 198ms |
+| Exec | 128ms | 165ms | 68ms |
+| Stop | 101ms | 38ms | 152ms |
+| **Total** | **1,225ms** | **1,053ms** | **465ms** |
 
-Kubernetes is the fastest for managed sandbox lifecycle -- 2.4x faster than Docker for the full cycle. The K8s API is optimized for rapid pod scheduling and the exec API has low overhead.
+**macOS (M3 Pro)**
+
+| Operation | Kubernetes | Nomad | Docker (baseline) |
+|-----------|-----------|-------|-------------------|
+| Create | 100ms | 166ms | 104ms |
+| Start | 785ms | 1,280ms | 231ms |
+| Exec | 120ms | 392ms | 116ms |
+| Stop | 78ms | 159ms | 169ms |
+| **Total** | **1,083ms** | **1,997ms** | **620ms** |
+
+Kubernetes has the fastest exec path on both platforms thanks to its WebSocket-based exec API. Docker is fastest for the full lifecycle due to simpler local container management.
 
 ### One-shot `run` command
 
 `agentkernel run --backend <backend> -- echo hello` (full lifecycle in one command):
 
-| Backend | Avg | Notes |
-|---------|-----|-------|
-| Nomad | 575ms | Most consistent |
-| Docker | 585ms | Baseline |
-| Kubernetes | 927ms | 606ms after first run |
-| Docker `--fast` | 589ms | After pool warmup |
+| Backend | Linux | macOS |
+|---------|-------|-------|
+| Kubernetes | 571ms | 594ms |
+| Nomad | 569ms | 580ms |
+| Docker | 580ms | 577ms |
+
+All three backends converge to ~575ms for one-shot execution on both platforms.
 
 ### Exec throughput
 
 50 sequential `exec` calls on a single running sandbox:
 
-| Backend | Avg/exec | Min | Max | Throughput |
-|---------|----------|-----|-----|------------|
-| Kubernetes | 786ms | 753ms | 946ms | 1.3 exec/sec |
-| Docker | 793ms | 754ms | 917ms | 1.2 exec/sec |
-| Nomad | 1,121ms | 1,038ms | 1,324ms | 0.9 exec/sec |
+| Backend | Linux avg | Linux RPS | macOS avg | macOS RPS |
+|---------|-----------|-----------|-----------|-----------|
+| Docker | 67ms | 14.8/sec | 103ms | 9.6/sec |
+| **Kubernetes** | **128ms** | **7.7/sec** | **99ms** | **10.0/sec** |
+| Nomad | 163ms | 6.1/sec | 365ms | 2.7/sec |
 
-Kubernetes and Docker have nearly identical sustained exec throughput. Nomad's `alloc exec` path adds ~300ms of overhead per call.
+Kubernetes and Docker trade the lead depending on platform. Nomad's `alloc exec` CLI path adds overhead per call.
 
 ### Concurrent scale
 
@@ -218,9 +231,9 @@ How many sandboxes can run simultaneously on a single node:
 
 | Count | Create | Start | Running | Parallel exec |
 |-------|--------|-------|---------|---------------|
-| 5 | 1.1s | 1.8s | 5/5 | 1.3s |
-| 10 | 2.3s | 3.1s | 10/10 | 2.3s |
-| 20 | 4.7s | 128s | 11/20 | 6.5s |
+| 5 | 116ms | 1.4s | 5/5 | 124ms |
+| 10 | 134ms | 1.4s | 10/10 | 163ms |
+| 20 | 241ms | 120s | 15/20 | 287ms |
 
 The k3d single-node cluster hits resource limits at ~15 pods. A production cluster with multiple nodes handles hundreds.
 
@@ -228,9 +241,9 @@ The k3d single-node cluster hits resource limits at ~15 pods. A production clust
 
 | Count | Create | Start | Running | Parallel exec |
 |-------|--------|-------|---------|---------------|
-| 5 | 2.1s | 6.0s | 5/5 | 3.1s |
-| 10 | 3.8s | 6.9s | 10/10 | 6.5s |
-| 20 | 8.9s | 13.9s | 20/20 | 17.7s |
+| 5 | 46ms | 814ms | 5/5 | 171ms |
+| 10 | 52ms | 834ms | 10/10 | 197ms |
+| 20 | 107ms | 1.4s | 20/20 | 310ms |
 
 Nomad successfully ran all 20 concurrent sandboxes where k3d failed at 20. Nomad's scheduling is more resilient on a single node, though K8s is faster per-operation when resources are available.
 
@@ -245,8 +258,8 @@ Nomad successfully ran all 20 concurrent sandboxes where k3d failed at 20. Nomad
 | Linux CI/CD (no KVM) | Docker | Works without KVM |
 | Untrusted code (Linux) | Firecracker | Separate kernel per sandbox |
 | Untrusted code (macOS) | Apple Containers | Separate VM per sandbox |
-| Team / multi-tenant | Kubernetes | Fastest orchestration, NetworkPolicy isolation |
-| HashiCorp stack | Nomad | Integrates with Consul/Vault, resilient scheduling |
+| Team / multi-tenant | Kubernetes | 7.7 exec/sec, NetworkPolicy isolation |
+| HashiCorp stack | Nomad | Integrates with Consul/Vault, scales to 50+ on single node |
 
 ## Running your own benchmarks
 
@@ -280,5 +293,5 @@ Results are saved to `benchmark-results/` as JSON for comparison across runs.
 
 | Platform | CPU | Use |
 |----------|-----|-----|
-| Linux | AMD EPYC | Firecracker, Hyperlight, Docker, Podman |
-| macOS | Apple M3 Pro (36 GB) | Docker, Podman, Apple Containers, Kubernetes (k3d), Nomad |
+| Linux | AMD EPYC (16 cores, 57 GB) | Firecracker, Hyperlight, Docker, Podman, Kubernetes (k3d), Nomad |
+| macOS | Apple M3 Pro (12 cores, 36 GB) | Docker, Podman, Apple Containers, Kubernetes (k3d), Nomad |
