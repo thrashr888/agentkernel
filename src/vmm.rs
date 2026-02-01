@@ -150,6 +150,8 @@ impl VmManager {
                 BackendType::Docker | BackendType::Podman => {
                     self.detect_docker_sandbox_running(&name, sandbox_backend)
                 }
+                BackendType::Kubernetes => self.detect_k8s_sandbox_running(&name),
+                BackendType::Nomad => self.detect_nomad_sandbox_running(&name),
                 _ => false, // Other backends need more complex detection
             };
 
@@ -179,6 +181,48 @@ impl VmManager {
             .args(["ps", "-q", "-f", &format!("name={}", container_name)])
             .output()
             .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Detect if a Kubernetes sandbox pod is running
+    fn detect_k8s_sandbox_running(&self, name: &str) -> bool {
+        use std::process::Command;
+
+        let pod_name = format!("agentkernel-{}", name);
+        let namespace = self
+            .sandboxes
+            .get(name)
+            .and_then(|s| s.remote_namespace.as_deref())
+            .unwrap_or("agentkernel");
+
+        Command::new("kubectl")
+            .args([
+                "get",
+                "pod",
+                &pod_name,
+                "-n",
+                namespace,
+                "-o",
+                "jsonpath={.status.phase}",
+            ])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "Running")
+            .unwrap_or(false)
+    }
+
+    /// Detect if a Nomad sandbox job is running
+    fn detect_nomad_sandbox_running(&self, name: &str) -> bool {
+        use std::process::Command;
+
+        let job_id = format!("agentkernel-{}", name);
+
+        Command::new("nomad")
+            .args(["job", "status", "-short", &job_id])
+            .output()
+            .map(|o| {
+                let output = String::from_utf8_lossy(&o.stdout);
+                output.contains("running")
+            })
             .unwrap_or(false)
     }
 

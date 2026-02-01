@@ -5,8 +5,6 @@
 //!
 //! Compile with `--features kubernetes` to enable.
 
-#![cfg(feature = "kubernetes")]
-
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{Container, Pod, PodSpec};
@@ -279,15 +277,15 @@ impl KubernetesSandbox {
         // Poll for up to 120 seconds
         for _ in 0..240 {
             let pod = pods.get(pod_name).await?;
-            if let Some(status) = &pod.status {
-                if let Some(phase) = &status.phase {
-                    match phase.as_str() {
-                        "Running" => return Ok(()),
-                        "Failed" | "Succeeded" => {
-                            bail!("Pod entered unexpected phase: {}", phase);
-                        }
-                        _ => {} // Pending, etc.
+            if let Some(status) = &pod.status
+                && let Some(phase) = &status.phase
+            {
+                match phase.as_str() {
+                    "Running" => return Ok(()),
+                    "Failed" | "Succeeded" => {
+                        bail!("Pod entered unexpected phase: {}", phase);
                     }
+                    _ => {} // Pending, etc.
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -357,14 +355,21 @@ impl Sandbox for KubernetesSandbox {
     }
 
     async fn exec_with_env(&mut self, cmd: &[&str], env: &[String]) -> Result<ExecResult> {
-        let client = self
-            .client
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("K8s client not initialized"))?;
-        let pod_name = self
-            .pod_name
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Pod not started"))?;
+        // Lazily initialize client and pod_name if needed (e.g., reconnecting to a running pod)
+        if self.client.is_none() {
+            let orch_config = OrchestratorConfig {
+                namespace: self.namespace.clone(),
+                ..Default::default()
+            };
+            let client = Self::build_client(&orch_config).await?;
+            self.client = Some(client);
+        }
+        if self.pod_name.is_none() {
+            self.pod_name = Some(Self::pod_name_for(&self.name));
+        }
+
+        let client = self.client.as_ref().unwrap();
+        let pod_name = self.pod_name.as_ref().unwrap();
 
         let pods: Api<Pod> = Api::namespaced(client.clone(), &self.namespace);
 
@@ -379,13 +384,11 @@ impl Sandbox for KubernetesSandbox {
             parts
         };
 
-        let cmd_refs: Vec<&str> = full_cmd.iter().map(|s| s.as_str()).collect();
-
         // Use the kube API for pod exec via WebSocket
-        let attached = pods
+        let mut attached = pods
             .exec(
                 pod_name,
-                &cmd_refs,
+                full_cmd,
                 &kube::api::AttachParams::default()
                     .container("sandbox")
                     .stdout(true)
@@ -416,18 +419,9 @@ impl Sandbox for KubernetesSandbox {
         let stdout = String::from_utf8_lossy(&stdout_buf).to_string();
         let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
 
-        // Try to get exit code from the attached process
-        let exit_code = attached
-            .join()
-            .await
-            .map(|statuses| {
-                statuses
-                    .first()
-                    .and_then(|s| s.status.as_ref())
-                    .map(|status| if status == "Success" { 0 } else { 1 })
-                    .unwrap_or(1)
-            })
-            .unwrap_or(0);
+        // Wait for the process to complete; infer exit code from stderr
+        let _ = attached.join().await;
+        let exit_code = if stderr.is_empty() { 0 } else { 1 };
 
         Ok(ExecResult {
             exit_code,
@@ -437,6 +431,20 @@ impl Sandbox for KubernetesSandbox {
     }
 
     async fn stop(&mut self) -> Result<()> {
+        // Lazily initialize client and pod_name if needed
+        if self.client.is_none() {
+            let orch_config = OrchestratorConfig {
+                namespace: self.namespace.clone(),
+                ..Default::default()
+            };
+            if let Ok(client) = Self::build_client(&orch_config).await {
+                self.client = Some(client);
+            }
+        }
+        if self.pod_name.is_none() {
+            self.pod_name = Some(Self::pod_name_for(&self.name));
+        }
+
         if let (Some(client), Some(pod_name)) = (&self.client, &self.pod_name) {
             let pods: Api<Pod> = Api::namespaced(client.clone(), &self.namespace);
 
@@ -535,10 +543,10 @@ impl Sandbox for KubernetesSandbox {
         let shell = shell.unwrap_or("/bin/sh");
         let pods: Api<Pod> = Api::namespaced(client.clone(), &self.namespace);
 
-        let attached = pods
+        let mut attached = pods
             .exec(
                 pod_name,
-                &[shell],
+                vec![shell.to_string()],
                 &kube::api::AttachParams::default()
                     .container("sandbox")
                     .stdin(true)
@@ -594,10 +602,10 @@ impl Sandbox for KubernetesSandbox {
 
 /// Expand tilde (~) to home directory in paths
 fn tilde_expand(path: &str) -> String {
-    if path.starts_with("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return format!("{}{}", home.to_string_lossy(), &path[1..]);
-        }
+    if path.starts_with("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return format!("{}{}", home.to_string_lossy(), &path[1..]);
     }
     path.to_string()
 }

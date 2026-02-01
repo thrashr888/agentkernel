@@ -5,8 +5,6 @@
 //!
 //! Compile with `--features nomad` to enable.
 
-#![cfg(feature = "nomad")]
-
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde_json::json;
@@ -274,18 +272,21 @@ impl NomadSandbox {
         nomad_token: &Option<String>,
     ) -> Result<ExecResult> {
         let mut command = Command::new("nomad");
-        command.arg("alloc").arg("exec").arg(alloc_id);
+        command
+            .arg("alloc")
+            .arg("exec")
+            .args(["-task", "sandbox"])
+            .arg(alloc_id);
 
         // Set NOMAD_ADDR env
         command.env("NOMAD_ADDR", nomad_addr);
 
         // Set NOMAD_TOKEN env if present
-        if let Some(ref token) = nomad_token {
+        if let Some(token) = nomad_token {
             command.env("NOMAD_TOKEN", token);
         }
 
-        // Add the separator and command arguments individually
-        command.arg("--");
+        // Add command arguments
         for arg in cmd {
             command.arg(arg);
         }
@@ -331,10 +332,20 @@ impl Sandbox for NomadSandbox {
     }
 
     async fn exec_with_env(&mut self, cmd: &[&str], env: &[String]) -> Result<ExecResult> {
-        let alloc_id = self
-            .alloc_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Nomad allocation not started"))?;
+        // Lazily resolve job_id and alloc_id if needed (e.g., reconnecting)
+        if self.alloc_id.is_none() {
+            let job_id = self
+                .job_id
+                .clone()
+                .unwrap_or_else(|| Self::job_id_for(&self.name));
+            self.job_id = Some(job_id.clone());
+
+            // Query Nomad API to find the running allocation
+            let alloc_id = self.wait_for_running(&job_id).await?;
+            self.alloc_id = Some(alloc_id);
+        }
+
+        let alloc_id = self.alloc_id.as_ref().unwrap();
 
         // Wrap command with env if provided
         let full_cmd: Vec<String> = if env.is_empty() {
@@ -353,6 +364,11 @@ impl Sandbox for NomadSandbox {
     }
 
     async fn stop(&mut self) -> Result<()> {
+        // Lazily resolve job_id if needed
+        if self.job_id.is_none() {
+            self.job_id = Some(Self::job_id_for(&self.name));
+        }
+
         if let Some(ref job_id) = self.job_id {
             let path = format!("/v1/job/{}?purge=true", job_id);
             let _ = self.client.delete(&path).await;

@@ -6,8 +6,6 @@
 //!
 //! Compile with `--features nomad` to enable.
 
-#![cfg(feature = "nomad")]
-
 use anyhow::{Context, Result, bail};
 use serde_json::json;
 use std::sync::Arc;
@@ -299,7 +297,7 @@ impl NomadPool {
     /// Acquire an idle allocation from the pool.
     ///
     /// Returns (dispatched_job_id, alloc_id) on success.
-    pub async fn acquire(&self, sandbox_name: &str) -> Result<(String, String)> {
+    pub async fn acquire(&self, _sandbox_name: &str) -> Result<(String, String)> {
         let _guard = self.lock.lock().await;
 
         // Find a running dispatched job that hasn't been claimed

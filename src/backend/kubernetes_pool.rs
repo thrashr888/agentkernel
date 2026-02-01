@@ -6,9 +6,7 @@
 //!
 //! Compile with `--features kubernetes` to enable.
 
-#![cfg(feature = "kubernetes")]
-
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::{Container, Pod, PodSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::Client;

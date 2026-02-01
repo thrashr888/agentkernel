@@ -44,7 +44,7 @@ pub struct BuildConfig {
 }
 
 /// Configuration for Kubernetes/Nomad orchestration backends
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestratorConfig {
     /// Orchestrator provider: "kubernetes" or "nomad"
     #[serde(default)]
@@ -111,6 +111,28 @@ fn default_max_pool_size() -> usize {
 
 fn default_max_sandboxes() -> usize {
     200
+}
+
+impl Default for OrchestratorConfig {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            namespace: default_namespace(),
+            kubeconfig: None,
+            context: None,
+            runtime_class: None,
+            service_account: None,
+            node_selector: std::collections::HashMap::new(),
+            nomad_addr: None,
+            nomad_token: None,
+            nomad_driver: default_nomad_driver(),
+            nomad_datacenter: None,
+            warm_pool_size: default_warm_pool_size(),
+            max_pool_size: default_max_pool_size(),
+            warm_pool_images: Vec::new(),
+            max_sandboxes: default_max_sandboxes(),
+        }
+    }
 }
 
 /// Root configuration structure matching agentkernel.toml schema.

@@ -240,6 +240,7 @@ impl Permissions {
     /// Returns a JSON value representing the K8s SecurityContext spec.
     /// Used by the Kubernetes backend when building Pod specs.
     #[cfg(feature = "kubernetes")]
+    #[allow(dead_code)]
     pub fn to_k8s_security_context(&self) -> serde_json::Value {
         use serde_json::json;
 
@@ -283,6 +284,7 @@ impl Permissions {
     ///
     /// Returns a JSON value representing K8s resource limits and requests.
     #[cfg(feature = "kubernetes")]
+    #[allow(dead_code)]
     pub fn to_k8s_resources(&self) -> serde_json::Value {
         use serde_json::json;
 
@@ -307,6 +309,7 @@ impl Permissions {
     ///
     /// Returns a JSON value matching Nomad's Resources stanza.
     #[cfg(feature = "nomad")]
+    #[allow(dead_code)]
     pub fn to_nomad_resources(&self) -> serde_json::Value {
         use serde_json::json;
 

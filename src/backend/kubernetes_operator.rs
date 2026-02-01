@@ -6,12 +6,11 @@
 //!
 //! Compile with `--features kubernetes` to enable.
 
-#![cfg(feature = "kubernetes")]
-
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Container, Pod, PodSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use kube::CustomResourceExt;
 use kube::api::{Api, Patch, PatchParams, PostParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher::Config as WatcherConfig;
