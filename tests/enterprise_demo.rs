@@ -9,7 +9,7 @@
 
 use agentkernel::policy::audit::{PolicyAuditLogger, PolicyDecisionLog};
 use agentkernel::policy::cedar::{Action, CedarEngine, PolicyEffect, Principal, Resource};
-use agentkernel::policy::signing::{sign_bundle, verify_bundle, TrustAnchor};
+use agentkernel::policy::signing::{TrustAnchor, sign_bundle, verify_bundle};
 use chrono::Utc;
 use ed25519_dalek::SigningKey;
 use std::path::Path;
@@ -49,7 +49,11 @@ fn eval_and_log(
     label: &str,
 ) {
     let decision = engine.evaluate(principal, action, resource, None);
-    let symbol = if decision.is_permit() { "PERMIT" } else { "DENY  " };
+    let symbol = if decision.is_permit() {
+        "PERMIT"
+    } else {
+        "DENY  "
+    };
     println!(
         "  {} | {:7} {} on {:20} | {}",
         symbol,
@@ -92,12 +96,54 @@ fn demo_default_policy() {
     let alice = demo_principal("alice", "alice@acme.com", "acme-corp", &["developer"], true);
     let sandbox = demo_sandbox("my-project", "claude", "python");
 
-    eval_and_log(&engine, &logger, &alice, Action::Create, &sandbox, "authenticated user");
-    eval_and_log(&engine, &logger, &alice, Action::Run, &sandbox, "authenticated user");
-    eval_and_log(&engine, &logger, &alice, Action::Exec, &sandbox, "authenticated user");
-    eval_and_log(&engine, &logger, &alice, Action::Attach, &sandbox, "authenticated user");
-    eval_and_log(&engine, &logger, &alice, Action::Mount, &sandbox, "not in default policy");
-    eval_and_log(&engine, &logger, &alice, Action::Network, &sandbox, "not in default policy");
+    eval_and_log(
+        &engine,
+        &logger,
+        &alice,
+        Action::Create,
+        &sandbox,
+        "authenticated user",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &alice,
+        Action::Run,
+        &sandbox,
+        "authenticated user",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &alice,
+        Action::Exec,
+        &sandbox,
+        "authenticated user",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &alice,
+        Action::Attach,
+        &sandbox,
+        "authenticated user",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &alice,
+        Action::Mount,
+        &sandbox,
+        "not in default policy",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &alice,
+        Action::Network,
+        &sandbox,
+        "not in default policy",
+    );
 
     println!("\n  Audit log (JSONL):");
     for entry in logger.read_all().unwrap() {
@@ -122,20 +168,90 @@ fn demo_rbac_policy() {
     let sandbox = demo_sandbox("api-server", "claude", "python");
 
     println!("  Developer (bob):");
-    eval_and_log(&engine, &logger, &dev, Action::Create, &sandbox, "developer role");
-    eval_and_log(&engine, &logger, &dev, Action::Run, &sandbox, "developer role");
-    eval_and_log(&engine, &logger, &dev, Action::Mount, &sandbox, "developer can't mount");
-    eval_and_log(&engine, &logger, &dev, Action::Network, &sandbox, "developer can't network");
+    eval_and_log(
+        &engine,
+        &logger,
+        &dev,
+        Action::Create,
+        &sandbox,
+        "developer role",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &dev,
+        Action::Run,
+        &sandbox,
+        "developer role",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &dev,
+        Action::Mount,
+        &sandbox,
+        "developer can't mount",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &dev,
+        Action::Network,
+        &sandbox,
+        "developer can't network",
+    );
 
     println!("\n  Admin (carol):");
-    eval_and_log(&engine, &logger, &admin, Action::Create, &sandbox, "admin inherits all");
-    eval_and_log(&engine, &logger, &admin, Action::Mount, &sandbox, "admin can mount");
-    eval_and_log(&engine, &logger, &admin, Action::Network, &sandbox, "admin can network");
+    eval_and_log(
+        &engine,
+        &logger,
+        &admin,
+        Action::Create,
+        &sandbox,
+        "admin inherits all",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &admin,
+        Action::Mount,
+        &sandbox,
+        "admin can mount",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &admin,
+        Action::Network,
+        &sandbox,
+        "admin can network",
+    );
 
     println!("\n  Viewer (dave):");
-    eval_and_log(&engine, &logger, &viewer, Action::Attach, &sandbox, "viewer can attach");
-    eval_and_log(&engine, &logger, &viewer, Action::Create, &sandbox, "viewer can't create");
-    eval_and_log(&engine, &logger, &viewer, Action::Exec, &sandbox, "viewer can't exec");
+    eval_and_log(
+        &engine,
+        &logger,
+        &viewer,
+        Action::Attach,
+        &sandbox,
+        "viewer can attach",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &viewer,
+        Action::Create,
+        &sandbox,
+        "viewer can't create",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &viewer,
+        Action::Exec,
+        &sandbox,
+        "viewer can't exec",
+    );
 
     println!("\n  Audit log (JSONL):");
     for entry in logger.read_all().unwrap() {
@@ -159,14 +275,56 @@ fn demo_mfa_policy() {
     let sandbox = demo_sandbox("data-pipeline", "gemini", "python");
 
     println!("  With MFA (alice):");
-    eval_and_log(&engine, &logger, &mfa_user, Action::Run, &sandbox, "basic op, no MFA needed");
-    eval_and_log(&engine, &logger, &mfa_user, Action::Network, &sandbox, "MFA verified -> permit");
-    eval_and_log(&engine, &logger, &mfa_user, Action::Mount, &sandbox, "MFA verified -> permit");
+    eval_and_log(
+        &engine,
+        &logger,
+        &mfa_user,
+        Action::Run,
+        &sandbox,
+        "basic op, no MFA needed",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &mfa_user,
+        Action::Network,
+        &sandbox,
+        "MFA verified -> permit",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &mfa_user,
+        Action::Mount,
+        &sandbox,
+        "MFA verified -> permit",
+    );
 
     println!("\n  Without MFA (eve):");
-    eval_and_log(&engine, &logger, &no_mfa, Action::Run, &sandbox, "basic op, no MFA needed");
-    eval_and_log(&engine, &logger, &no_mfa, Action::Network, &sandbox, "no MFA -> forbid");
-    eval_and_log(&engine, &logger, &no_mfa, Action::Mount, &sandbox, "no MFA -> forbid");
+    eval_and_log(
+        &engine,
+        &logger,
+        &no_mfa,
+        Action::Run,
+        &sandbox,
+        "basic op, no MFA needed",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &no_mfa,
+        Action::Network,
+        &sandbox,
+        "no MFA -> forbid",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &no_mfa,
+        Action::Mount,
+        &sandbox,
+        "no MFA -> forbid",
+    );
 
     println!("\n  Audit log (JSONL):");
     for entry in logger.read_all().unwrap() {
@@ -193,16 +351,58 @@ fn demo_runtime_restrictions() {
     let codex_sandbox = demo_sandbox("codex-project", "codex", "python");
 
     println!("  Developer (alice):");
-    eval_and_log(&engine, &logger, &dev, Action::Create, &py_sandbox, "python -> permit");
-    eval_and_log(&engine, &logger, &dev, Action::Create, &rust_sandbox, "rust -> deny");
+    eval_and_log(
+        &engine,
+        &logger,
+        &dev,
+        Action::Create,
+        &py_sandbox,
+        "python -> permit",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &dev,
+        Action::Create,
+        &rust_sandbox,
+        "rust -> deny",
+    );
 
     println!("\n  Platform engineer (bob):");
-    eval_and_log(&engine, &logger, &platform, Action::Create, &rust_sandbox, "rust -> permit");
-    eval_and_log(&engine, &logger, &platform, Action::Create, &py_sandbox, "python -> deny (no dev role)");
+    eval_and_log(
+        &engine,
+        &logger,
+        &platform,
+        Action::Create,
+        &rust_sandbox,
+        "rust -> permit",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &platform,
+        Action::Create,
+        &py_sandbox,
+        "python -> deny (no dev role)",
+    );
 
     println!("\n  Codex agent (blocked for all):");
-    eval_and_log(&engine, &logger, &dev, Action::Run, &codex_sandbox, "codex agent -> forbid");
-    eval_and_log(&engine, &logger, &platform, Action::Run, &codex_sandbox, "codex agent -> forbid");
+    eval_and_log(
+        &engine,
+        &logger,
+        &dev,
+        Action::Run,
+        &codex_sandbox,
+        "codex agent -> forbid",
+    );
+    eval_and_log(
+        &engine,
+        &logger,
+        &platform,
+        Action::Run,
+        &codex_sandbox,
+        "codex agent -> forbid",
+    );
 
     println!("\n  Audit log (JSONL):");
     for entry in logger.read_all().unwrap() {
