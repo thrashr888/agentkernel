@@ -66,7 +66,17 @@ $ agentkernel completions bash > /etc/bash_completion.d/agentkernel
 $ agentkernel completions fish > ~/.config/fish/completions/agentkernel.fish
 ```
 
-Uses `clap_complete`. Files: `main.rs`, `Cargo.toml`.
+Homebrew formula should install completions automatically:
+
+```ruby
+# In homebrew formula
+def install
+  bin.install "agentkernel"
+  generate_completions_from_executable(bin/"agentkernel", "completions")
+end
+```
+
+Uses `clap_complete`. Files: `main.rs`, `Cargo.toml`, Homebrew formula.
 
 ### `stats` command
 
@@ -105,19 +115,48 @@ Files: `main.rs`, `config.rs`.
 
 ### Sandbox templates
 
-User-created reusable sandbox configurations saved locally.
+Reusable sandbox configurations — local, from this repo, or fetched from any GitHub URL.
 
 ```
 $ agentkernel template save my-python --from my-running-sandbox
 $ agentkernel template list
-  my-python       python:3.12-alpine  moderate  512MB
-  ci-runner       rust:1.85-alpine    restrictive  1GB
+  my-python       local       python:3.12-alpine  moderate  512MB
+  ci-runner       local       rust:1.85-alpine    restrictive  1GB
+  claude-sandbox  built-in    node:22-alpine      moderate  1GB
 $ agentkernel create --template my-python new-sandbox
 ```
 
-Templates are TOML + optional Dockerfile stored in `~/.local/share/agentkernel/templates/`. Different from config presets — presets are built-in, templates are user-created from running sandboxes.
+**Fetch from GitHub URLs** (no registry needed):
 
-Files: new `template.rs`, `main.rs`.
+```
+$ agentkernel template add https://github.com/user/repo/blob/main/templates/ml-gpu.toml
+$ agentkernel template add github:thrashr888/agentkernel-templates/pytorch-cuda
+$ agentkernel template add ./my-local-template.toml
+```
+
+Templates are TOML + optional Dockerfile. Resolution order:
+1. Local templates in `~/.local/share/agentkernel/templates/`
+2. Built-in templates shipped in this repo under `templates/`
+3. GitHub URLs fetched on demand and cached locally
+
+**Built-in templates shipped in this repo** (`templates/` directory):
+
+```
+templates/
+├── claude-sandbox.toml
+├── codex-sandbox.toml
+├── gemini-sandbox.toml
+├── opencode-sandbox.toml
+├── python-ml.toml
+├── node-fullstack.toml
+├── rust-ci.toml
+├── secure.toml
+└── README.md
+```
+
+These are bundled into the binary at build time (via `include_str!` or similar) so they work offline. Users can also browse them on GitHub and fork/modify.
+
+Files: new `template.rs`, `main.rs`, new `templates/` directory.
 
 ### Agent-ready templates
 
@@ -170,18 +209,42 @@ Files: `config.rs` (template definitions), `secrets.rs` (injection), `main.rs`.
 
 ### Auto-cleanup (TTL / GC)
 
-Prevent sandbox sprawl with automatic expiry.
+Prevent sandbox sprawl with automatic expiry. Default TTL: **3 days** for created sandboxes, **1 hour** for `run` (ephemeral). Daemon auto-GCs on a periodic sweep.
 
 ```
-$ agentkernel run --ttl 1h "pytest"           # auto-remove after 1 hour
-$ agentkernel create my-temp --ttl 24h        # expires in 24 hours
-$ agentkernel gc                               # remove all expired sandboxes
+$ agentkernel run --ttl 1h "pytest"           # explicit TTL (default for run)
+$ agentkernel create my-temp --ttl 24h        # explicit TTL
+$ agentkernel create my-long --ttl 0          # no expiry (opt out)
+$ agentkernel gc                               # manual GC: remove all expired
 $ agentkernel gc --dry-run                     # show what would be removed
+$ agentkernel gc --snapshot                    # snapshot before removing
 ```
 
-Adds `ttl` and `last_active` to `SandboxState`. Daemon mode can run periodic GC in the background.
+**Snapshot before GC**: `--snapshot` (or config `gc.snapshot_before_remove = true`) takes a snapshot of each sandbox before deleting it. The snapshot persists independently in `~/.local/share/agentkernel/snapshots/` and can be restored later with `agentkernel restore`. GC never deletes snapshots — only the running sandbox (container/VM) is removed.
 
-Files: `vmm.rs`, `main.rs`.
+```
+$ agentkernel gc --snapshot
+  Snapshotting my-temp → snapshot:my-temp-20260201
+  Removing my-temp (expired, TTL 24h)
+  Snapshotting old-project → snapshot:old-project-20260201
+  Removing old-project (expired, TTL 3d)
+  2 sandboxes removed, 2 snapshots created
+```
+
+**Daemon auto-GC**: When the daemon is running, it sweeps every 15 minutes and removes expired sandboxes. Configurable:
+
+```toml
+[gc]
+default_ttl = "3d"           # default for `create` (0 = no expiry)
+ephemeral_ttl = "1h"         # default for `run`
+auto_gc = true               # daemon runs periodic GC
+auto_gc_interval = "15m"     # sweep frequency
+snapshot_before_remove = false  # snapshot before GC removes a sandbox
+```
+
+Adds `ttl`, `last_active`, and `expires_at` to `SandboxState`. Daemon gets a GC sweep task.
+
+Files: `vmm.rs`, `config.rs`, `daemon/server.rs`, `main.rs`.
 
 ### `benchmark` command
 
