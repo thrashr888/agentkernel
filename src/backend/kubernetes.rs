@@ -270,12 +270,14 @@ impl KubernetesSandbox {
         Ok(())
     }
 
-    /// Wait for the pod to reach the Running phase
+    /// Wait for the pod to reach the Running phase.
+    /// Uses exponential backoff: 50ms → 100ms → 200ms → 500ms (capped).
     async fn wait_for_running(&self, client: &Client, pod_name: &str) -> Result<()> {
         let pods: Api<Pod> = Api::namespaced(client.clone(), &self.namespace);
+        let mut delay_ms: u64 = 50;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
 
-        // Poll for up to 120 seconds
-        for _ in 0..240 {
+        loop {
             let pod = pods.get(pod_name).await?;
             if let Some(status) = &pod.status
                 && let Some(phase) = &status.phase
@@ -288,10 +290,14 @@ impl KubernetesSandbox {
                     _ => {} // Pending, etc.
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
 
-        bail!("Timed out waiting for pod '{}' to start", pod_name);
+            if tokio::time::Instant::now() >= deadline {
+                bail!("Timed out waiting for pod '{}' to start", pod_name);
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            delay_ms = (delay_ms * 2).min(500);
+        }
     }
 }
 
@@ -305,20 +311,22 @@ impl Sandbox for KubernetesSandbox {
         };
         let client = Self::build_client(&orch_config).await?;
 
-        // Ensure namespace exists (best effort)
+        // Ensure namespace exists (only create if missing)
         let ns_api: Api<k8s_openapi::api::core::v1::Namespace> = Api::all(client.clone());
-        let _ = ns_api
-            .create(
-                &PostParams::default(),
-                &k8s_openapi::api::core::v1::Namespace {
-                    metadata: ObjectMeta {
-                        name: Some(self.namespace.clone()),
+        if ns_api.get(&self.namespace).await.is_err() {
+            let _ = ns_api
+                .create(
+                    &PostParams::default(),
+                    &k8s_openapi::api::core::v1::Namespace {
+                        metadata: ObjectMeta {
+                            name: Some(self.namespace.clone()),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
-                    ..Default::default()
-                },
-            )
-            .await; // Ignore error if already exists
+                )
+                .await;
+        }
 
         // Build and create the pod
         let pod = self.build_pod_spec(config);

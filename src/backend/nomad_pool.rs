@@ -11,11 +11,13 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use super::nomad::shared_http_client;
+
 /// HTTP client wrapper for Nomad pool operations
 struct PoolNomadClient {
     addr: String,
     token: Option<String>,
-    http: reqwest::Client,
+    http: &'static reqwest::Client,
 }
 
 impl PoolNomadClient {
@@ -23,7 +25,7 @@ impl PoolNomadClient {
         Self {
             addr: addr.to_string(),
             token,
-            http: reqwest::Client::new(),
+            http: shared_http_client(),
         }
     }
 

@@ -9,9 +9,17 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde_json::json;
 use std::process::Command;
+use std::sync::OnceLock;
 
 use super::{BackendType, ExecResult, Sandbox, SandboxConfig};
 use crate::config::OrchestratorConfig;
+
+/// Shared reqwest::Client for all Nomad operations.
+/// Creating a new reqwest::Client per sandbox wastes TCP/TLS connection setup.
+pub(crate) fn shared_http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
 
 /// HTTP client for the Nomad API
 struct NomadClient {
@@ -19,7 +27,7 @@ struct NomadClient {
     token: Option<String>,
     #[allow(dead_code)]
     region: Option<String>,
-    http: reqwest::Client,
+    http: &'static reqwest::Client,
 }
 
 impl NomadClient {
@@ -39,7 +47,7 @@ impl NomadClient {
             addr,
             token,
             region: None,
-            http: reqwest::Client::new(),
+            http: shared_http_client(),
         }
     }
 
@@ -229,10 +237,13 @@ impl NomadSandbox {
         })
     }
 
-    /// Wait for an allocation to be in the running state
+    /// Wait for an allocation to be in the running state.
+    /// Uses exponential backoff: 50ms → 100ms → 200ms → 500ms (capped).
     async fn wait_for_running(&self, job_id: &str) -> Result<String> {
-        // Poll for up to 120 seconds
-        for _ in 0..240 {
+        let mut delay_ms: u64 = 50;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+
+        loop {
             let allocs = self
                 .client
                 .get(&format!("/v1/job/{}/allocations", job_id))
@@ -256,10 +267,13 @@ impl NomadSandbox {
                 }
             }
 
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
+            if tokio::time::Instant::now() >= deadline {
+                bail!("Timed out waiting for Nomad allocation to start");
+            }
 
-        bail!("Timed out waiting for Nomad allocation to start")
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            delay_ms = (delay_ms * 2).min(500);
+        }
     }
 
     /// Run a command via `nomad alloc exec` (Phase 1: shell out to CLI).
