@@ -1,317 +1,470 @@
-# Minimum Viable SaaS Wrapper
+# OSS CLI Roadmap
 
-You already have 95% of what you need:
-- HTTP API (`http_api.rs`) - production-ready REST endpoints
-- Daemon mode (`daemon/`) - pre-warmed VM pool for 4x faster execution
+Local-first features for agentkernel as an open-source CLI tool. No remote host required.
 
-## Performance (Measured on Linux/KVM)
+## Already Shipped (v0.5.1)
 
-| Mode | Latency | Use Case |
-|------|---------|----------|
-| Ephemeral Firecracker | ~810ms | One-off executions |
-| Daemon (warm pool) | ~195ms | API requests, interactive use |
-| Container pool (Docker) | ~250ms | macOS/non-KVM environments |
+The original SaaSify plan proposed auth, multi-tenancy, billing, and daemon integration. Here's what actually shipped:
 
-The daemon maintains 3-5 pre-warmed Firecracker VMs, reducing cold start from ~800ms to ~200ms.
+- [x] HTTP API — 12+ endpoints, SSE streaming, batch execution, OpenAPI 3.1
+- [x] API key auth — `AGENTKERNEL_API_KEY` env var or config
+- [x] Daemon mode — warm VM pools, ~195ms latency, per-runtime pools
+- [x] Daemon ↔ HTTP integration — daemon auto-used by `serve`
+- [x] Audit logging — JSONL format, per-sandbox filtering, event types
+- [x] Session recording — asciicast v2, replay with speed control
+- [x] 7 backends — Docker, Podman, Firecracker, Apple Containers, Hyperlight, Kubernetes, Nomad
+- [x] Security profiles — permissive/moderate/restrictive, domain filtering, command filtering, seccomp
+- [x] MCP server — JSON-RPC 2.0 over stdio, 9 tools
+- [x] Plugin system — Claude, Codex, Gemini, OpenCode installers
+- [x] 5 SDKs — Node.js, Python, Rust, Go, Swift
+- [x] Language detection — 12+ runtimes auto-detected from project files
+- [x] Dockerfile support — auto-build with caching, multi-stage, build args
+- [x] File injection — `[[files]]` config, read/write/delete API
+- [x] Resource limits — vCPUs, memory_mb per sandbox
+- [x] Orchestration — Kubernetes (CRDs, operator, Helm), Nomad (warm pools, Nomad Pack)
 
-## What's Missing
+## P0: Quick Wins
 
-### 1. Add Authentication Layer (30 minutes)
+### `doctor` command
 
-```rust
-// Add to http_api.rs
-- API key validation middleware
-- Per-user resource limits
-- Usage tracking
+System diagnostics that go beyond `agentkernel status`.
+
+```
+$ agentkernel doctor
+
+Backend Health:
+  Docker .............. v27.4.1 (daemon running)
+  Podman .............. not installed
+  Firecracker ......... not available (no KVM)
+  Apple Containers .... macOS 26.0
+
+Daemon:
+  Status .............. running (socket: /tmp/agentkernel-daemon.sock)
+  Warm VMs ............ 3/5
+  Memory .............. 1.2 GB / 16 GB
+
+Sandboxes:
+  Running ............. 2
+  Stopped ............. 5
+  Stale (>7d) ......... 3 (run `agentkernel gc` to clean)
+
+Disk:
+  Images .............. 847 MB (~/.local/share/agentkernel/)
+  Audit log ........... 2.1 MB (4,312 entries)
+
+Config:
+  agentkernel.toml .... valid
 ```
 
-### 2. Add Multi-Tenancy (1 hour)
+Extends existing `check_installation()` in `setup.rs`. Files: `main.rs`, `setup.rs`.
 
-```rust
-// Namespace sandboxes by user/account
-- Prefix sandbox names with account ID
-- Track quotas per account
-- Isolate sandbox lists
+### Shell completions
+
+```
+$ agentkernel completions zsh > ~/.zfunc/_agentkernel
+$ agentkernel completions bash > /etc/bash_completion.d/agentkernel
+$ agentkernel completions fish > ~/.config/fish/completions/agentkernel.fish
 ```
 
-### 3. Add Billing Hooks (30 minutes)
+Uses `clap_complete`. Files: `main.rs`, `Cargo.toml`.
 
-```rust
-// Track execution time/resources
-- Log executions to DB/file
-- Export usage metrics endpoint
+### `stats` command
+
+Local analytics from the existing audit log.
+
+```
+$ agentkernel stats
+
+Executions:     1,247 total (last 30d: 892)
+Sandboxes:      34 created, 29 removed, 5 active
+Avg duration:   3.2s per exec
+Top images:     python:3.12-alpine (412), node:22-alpine (287), rust:1.85 (98)
+Top backends:   Docker (1,102), Apple (145)
+First entry:    2026-01-20  Last: 2026-02-01
+
+$ agentkernel stats --json   # machine-readable output
 ```
 
-### 4. Integrate Daemon with HTTP API (1 hour)
+Requires adding `duration_ms: Option<u64>` to `AuditEvent::CommandExecuted`. Files: `main.rs`, new `stats.rs`, `audit.rs`.
 
-```rust
-// Modify http_api.rs to use daemon pool
-- Check if daemon is available
-- Route /run requests through daemon for ~200ms response
-- Fall back to ephemeral if daemon unavailable
+### Config presets
+
+```
+$ agentkernel init --template claude-agent
+$ agentkernel init --template python-ml
+$ agentkernel init --template rust-ci
+$ agentkernel init --template secure
+$ agentkernel init --template node-fullstack
 ```
 
-## Hosting Options
+Each preset generates a tuned `agentkernel.toml`. For example, `claude-agent` sets `compatibility_mode = "claude"`, enables CWD mount, allows API domains; `secure` sets restrictive profile, no network, read-only root.
 
-### Home Linux Box (Free - $500 one-time)
+Files: `main.rs`, `config.rs`.
 
-**Hardware Requirements:**
-- Mini PC with KVM support (Intel NUC, Beelink SER7)
-- 32GB RAM, 500GB SSD
-- ~$300-500
+## P1: Core Enhancements
 
-**Stack:**
+### Sandbox templates
 
-```bash
-# Run daemon for warm VM pool
-agentkernel daemon start &
+User-created reusable sandbox configurations saved locally.
 
-# Run HTTP API (will auto-use daemon)
-agentkernel serve --host 0.0.0.0 --port 18888
-
-# Reverse proxy (Caddy for auto-HTTPS)
-caddy reverse-proxy --from api.yourdomain.com --to localhost:18888
-
-# Database (SQLite or PostgreSQL)
-# For usage tracking, auth tokens
+```
+$ agentkernel template save my-python --from my-running-sandbox
+$ agentkernel template list
+  my-python       python:3.12-alpine  moderate  512MB
+  ci-runner       rust:1.85-alpine    restrictive  1GB
+$ agentkernel create --template my-python new-sandbox
 ```
 
-**Pros:**
-- No monthly costs beyond electricity (~$5/mo)
-- Full control
-- Firecracker microVMs work perfectly (KVM native)
-- ~200ms response times with daemon
+Templates are TOML + optional Dockerfile stored in `~/.local/share/agentkernel/templates/`. Different from config presets — presets are built-in, templates are user-created from running sandboxes.
 
-**Cons:**
-- Your internet goes down = service down
-- You manage everything
-- Limited bandwidth (home ISP)
+Files: new `template.rs`, `main.rs`.
 
-**Best for:** Personal use, small team (1-10 users), testing
+### Agent-ready templates
 
-### Cloud Hosting ($20-200+/month)
+Built-in templates for sandboxes with AI agents pre-installed and credential injection configured.
 
-**Option A: Bare Metal (Firecracker + Daemon)**
-
-- **Hetzner Dedicated** - €40/mo (~$45)
-  - AMD Ryzen 5 3600, 64GB RAM
-  - Native KVM, fast network
-  - Best price/performance
-  - Run daemon for ~200ms latency
-
-- **OVH Bare Metal** - $50-100/mo
-  - Similar specs, US/EU locations
-
-**Option B: VMs with Nested Virtualization**
-
-- **DigitalOcean Droplet** - $48/mo
-  - 8GB RAM, nested KVM enabled
-  - Simple, but slower than bare metal
-
-- **Linode Dedicated CPU** - $36/mo
-  - KVM support, good for microVMs
-
-**Option C: Containers Only (Docker backend)**
-
-- **Fly.io** - $0.02/s compute + $0.15/GB RAM
-  - ~$20-50/mo for low traffic
-  - No KVM, uses Docker backend (~250ms with pool)
-  - Excellent for testing
-
-**Cloud Stack:**
-
-```bash
-# /etc/systemd/system/agentkernel-daemon.service
-[Unit]
-Description=Agentkernel Daemon (VM Pool)
-After=network.target
-
-[Service]
-Type=simple
-User=agentkernel
-ExecStart=/usr/local/bin/agentkernel daemon start
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-
-# /etc/systemd/system/agentkernel-api.service
-[Unit]
-Description=Agentkernel HTTP API
-After=agentkernel-daemon.service
-Requires=agentkernel-daemon.service
-
-[Service]
-Type=simple
-User=agentkernel
-ExecStart=/usr/local/bin/agentkernel serve --host 0.0.0.0 --port 18888
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-
-# Caddy/nginx reverse proxy
-# PostgreSQL for users/billing
-# Redis for rate limiting (optional)
+```
+$ agentkernel init --template claude-sandbox
+$ agentkernel init --template codex-sandbox
+$ agentkernel init --template gemini-sandbox
+$ agentkernel init --template opencode-sandbox
 ```
 
-## Pricing Models
+Each agent template includes:
+- **Base image** with the agent CLI pre-installed (or install script in `[[files]]`)
+- **Credential passthrough** — agent API keys injected from secrets vault or env:
+  ```toml
+  [agent]
+  preferred = "claude"
+  secrets = ["ANTHROPIC_API_KEY"]
+  compatibility_mode = "claude"
 
-**Tier 1: Free (Personal)**
-- 100 executions/month
-- 512MB RAM per sandbox
-- Network disabled
-- API access only
+  [security]
+  profile = "moderate"
 
-**Tier 2: Developer ($10/mo)**
-- 1,000 executions/month
-- 1GB RAM per sandbox
-- Network enabled
-- Priority queue (daemon pool)
+  [security.network.domains]
+  allow = ["api.anthropic.com"]
+  ```
+- **Agent-specific defaults** — correct working directory mounts, PTY support, terminal size
+- **Quick-start instructions** printed after init
 
-**Tier 3: Team ($50/mo)**
-- 10,000 executions/month
-- 2GB RAM per sandbox
-- Persistent sandboxes (24h)
-- SLA
+Template details per agent:
 
-**Tier 4: Enterprise ($200+/mo)**
-- Unlimited executions
-- Custom resource limits
-- Private deployment option
-- White-label
+| Template | Agent CLI | Required Secret | Allowed Domains |
+|----------|-----------|-----------------|-----------------|
+| `claude-sandbox` | Claude Code | `ANTHROPIC_API_KEY` | `api.anthropic.com`, `sentry.io` |
+| `codex-sandbox` | OpenAI Codex | `OPENAI_API_KEY` | `api.openai.com` |
+| `gemini-sandbox` | Gemini CLI | `GOOGLE_API_KEY` or `GEMINI_API_KEY` | `generativelanguage.googleapis.com` |
+| `opencode-sandbox` | OpenCode | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` | `api.openai.com`, `api.anthropic.com` |
 
-**Pay-as-you-go Alternative:**
-- $0.01 per execution
-- $0.001 per GB-second of RAM
-- Similar to AWS Lambda pricing
+Combined with the secrets vault (below), this gives a one-command flow:
 
-## Implementation Roadmap
-
-### Week 1: MVP Wrapper
-
-- [x] Daemon mode for VM pooling (done!)
-- [ ] Integrate daemon with HTTP API `/run` endpoint
-- [ ] Add API key auth to http_api.rs
-- [ ] Add user namespace to sandbox names
-- [ ] SQLite DB for users, API keys, usage
-- [ ] Usage tracking middleware
-
-### Week 2: Deployment
-
-- [ ] Caddy reverse proxy config
-- [ ] systemd service files (daemon + API)
-- [ ] PostgreSQL migration (from SQLite)
-- [ ] Monitoring (simple health checks)
-- [ ] Daemon health endpoint for load balancers
-
-### Week 3: Billing
-
-- [ ] Stripe integration
-- [ ] Usage limits enforcement
-- [ ] Email notifications (quota warnings)
-- [ ] Basic admin dashboard
-
-## Quick Start: Home Box Setup
-
-```bash
-# 1. Install on your Linux box
-cargo build --release
-sudo cp target/release/agentkernel /usr/local/bin/
-
-# 2. Create systemd services
-sudo tee /etc/systemd/system/agentkernel-daemon.service <<EOF
-[Unit]
-Description=Agentkernel Daemon (VM Pool)
-After=network.target
-
-[Service]
-Type=simple
-User=agentkernel
-ExecStart=/usr/local/bin/agentkernel daemon start
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo tee /etc/systemd/system/agentkernel-api.service <<EOF
-[Unit]
-Description=Agentkernel HTTP API
-After=agentkernel-daemon.service
-
-[Service]
-Type=simple
-User=agentkernel
-ExecStart=/usr/local/bin/agentkernel serve --host 0.0.0.0 --port 18888
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# 3. Start services
-sudo systemctl enable --now agentkernel-daemon
-sudo systemctl enable --now agentkernel-api
-
-# 4. Verify daemon is running
-agentkernel daemon status
-# Should show: Warm VMs: 3, In use: 0
-
-# 5. Install Caddy (auto-HTTPS)
-sudo caddy reverse-proxy --from api.agentkernel.com --to localhost:18888
 ```
+$ agentkernel secret set ANTHROPIC_API_KEY
+$ agentkernel init --template claude-sandbox
+$ agentkernel run --keep "claude"
+# Claude Code is running inside the sandbox with credentials injected
+```
+
+Files: `config.rs` (template definitions), `secrets.rs` (injection), `main.rs`.
+
+### Auto-cleanup (TTL / GC)
+
+Prevent sandbox sprawl with automatic expiry.
+
+```
+$ agentkernel run --ttl 1h "pytest"           # auto-remove after 1 hour
+$ agentkernel create my-temp --ttl 24h        # expires in 24 hours
+$ agentkernel gc                               # remove all expired sandboxes
+$ agentkernel gc --dry-run                     # show what would be removed
+```
+
+Adds `ttl` and `last_active` to `SandboxState`. Daemon mode can run periodic GC in the background.
+
+Files: `vmm.rs`, `main.rs`.
+
+### `benchmark` command
+
+Compare backends on your hardware.
+
+```
+$ agentkernel benchmark
+
+Backend          Boot (cold)  Boot (warm)  Exec    Memory
+Docker           220ms        45ms         12ms    48MB
+Apple            940ms        -            18ms    64MB
+Firecracker      125ms        8ms          5ms     25MB
+
+$ agentkernel benchmark --backends docker,apple --iterations 10
+```
+
+Standard workload: create, start, exec(`echo hello`), stop, remove. Reports p50/p95 when `--iterations` > 1.
+
+Files: new `benchmark.rs`, `main.rs`.
+
+### Secrets vault
+
+Encrypted local storage for API keys that sandboxes need.
+
+```
+$ agentkernel secret set OPENAI_API_KEY
+Enter value: ********
+Stored (encrypted)
+
+$ agentkernel secret list
+  OPENAI_API_KEY      set 2026-01-30
+  ANTHROPIC_API_KEY   set 2026-01-28
+
+$ agentkernel secret delete OPENAI_API_KEY
+```
+
+Config reference:
+
+```toml
+[agent]
+secrets = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+```
+
+Secrets auto-injected as env vars. Encrypted via OS keyring (macOS Keychain) or `age` file (`~/.agentkernel/secrets.age`).
+
+Files: new `secrets.rs`, `config.rs`, `vmm.rs`.
+
+### `info` command
+
+Detailed view of a single sandbox.
+
+```
+$ agentkernel info my-sandbox
+
+Name:           my-sandbox
+Status:         running (uptime: 2h 14m)
+Backend:        docker
+Image:          python:3.12-alpine
+Resources:      2 vCPUs, 512MB RAM
+Profile:        moderate
+Network:        enabled (allow: api.openai.com, pypi.org)
+Created:        2026-02-01 10:30:00
+Last active:    2026-02-01 12:44:12
+
+Recent activity (last 5):
+  12:44:12  exec  python train.py         exit=0  3.2s
+  12:40:01  exec  pip install torch       exit=0  12.1s
+  12:38:55  file  wrote /app/config.yaml
+  10:30:01  start
+  10:30:00  create
+```
+
+Combines `VmManager::get_state()` + `AuditLog::read_by_sandbox()`. Files: `main.rs`.
+
+## P2: Workflow Features
+
+### Snapshot / restore
+
+Save and resume sandbox state.
+
+```
+$ agentkernel snapshot my-sandbox --name before-refactor
+$ agentkernel snapshot list
+  before-refactor   my-sandbox   2026-02-01  docker  247MB
+$ agentkernel restore before-refactor --as my-sandbox-v2
+```
+
+Implementation varies by backend:
+- **Docker**: `docker commit` + `docker save`
+- **Firecracker**: Firecracker snapshot API (VM memory + disk state)
+- **Apple Containers**: filesystem snapshot
+
+Snapshots stored in `~/.local/share/agentkernel/snapshots/`. Most valuable for long-running agent sessions where you want a checkpoint before a risky operation.
+
+Files: `vmm.rs`, backend trait additions, `main.rs`.
+
+### Agent sessions
+
+Tie sandbox lifecycle to an agent conversation.
+
+```
+$ agentkernel session start --agent claude --name feature-x
+  Created sandbox: session-feature-x
+  MCP tools routed to session sandbox
+
+$ agentkernel session list
+  feature-x    claude    running    2h 14m    12 execs
+  debug-auth   codex     stopped    yesterday
+
+$ agentkernel session save feature-x
+$ agentkernel session resume feature-x
+```
+
+Sessions bundle: sandbox name, audit trail, injected files, env vars, agent type. Resume recreates from saved state + snapshot if available.
+
+Files: new `session.rs`, `mcp.rs`, `main.rs`.
+
+### Per-branch sandboxes
+
+Automatic sandbox naming from git context.
+
+```
+$ git checkout feature/auth
+$ agentkernel run --branch "pytest"
+  sandbox: myproject-feature-auth (auto-created)
+
+$ git checkout main
+$ agentkernel run --branch "pytest"
+  sandbox: myproject-main (reuses existing)
+
+$ agentkernel list --project
+  myproject-feature-auth   running    docker
+  myproject-main           stopped    docker
+  myproject-fix-bug-42     stopped    docker
+```
+
+Files: new `git_utils.rs`, `main.rs`.
+
+### Agent pipelines
+
+Chain sandboxes with data flowing between steps.
+
+```toml
+# pipeline.toml
+[[step]]
+name = "generate"
+image = "python:3.12-alpine"
+command = "python generate_data.py"
+output = "/app/output/"
+
+[[step]]
+name = "process"
+image = "node:22-alpine"
+command = "node process.js"
+input = "/app/input/"
+output = "/app/results/"
+
+[[step]]
+name = "analyze"
+image = "python:3.12-alpine"
+command = "python analyze.py"
+input = "/app/input/"
+```
+
+```
+$ agentkernel pipeline run pipeline.toml
+  [1/3] generate .......... done (3.2s)
+  [2/3] process ........... done (1.8s)
+  [3/3] analyze ........... done (0.9s)
+  Done (5.9s total)
+```
+
+Each step runs in its own sandbox. Output dir from step N is volume-mounted as input in step N+1.
+
+Files: new `pipeline.rs`, `main.rs`.
+
+## P3: Nice to Have
+
+### Image cache management
+
+```
+$ agentkernel images list
+  python:3.12-alpine    45MB    used by 3 sandboxes
+  node:22-alpine        52MB    used by 1 sandbox
+  agentkernel-myproj    128MB   custom build
+  Total: 847MB
+
+$ agentkernel images prune              # remove unused
+$ agentkernel images pull rust:1.85     # pre-pull
+```
+
+### Artifact extraction
+
+Extend `cp` with bulk operations.
+
+```
+$ agentkernel cp my-sandbox:/app/output/ ./local-output/     # recursive
+$ agentkernel export my-sandbox --output my-env.tar          # full filesystem
+```
+
+### Sandbox export / import
+
+Share sandbox configurations between machines.
+
+```
+$ agentkernel export-config my-sandbox > my-env.toml
+$ agentkernel import-config my-env.toml --as new-sandbox
+```
+
+### Parallel execution
+
+Fan-out independent jobs, fan-in results.
+
+```
+$ agentkernel parallel \
+    --job "lint:node:22-alpine:npm run lint" \
+    --job "test:python:3.12-alpine:pytest" \
+    --job "build:rust:1.85:cargo build --release"
+
+  lint done (2.1s)  test done (8.3s)  build done (45.2s)
+  All jobs passed (45.2s wall time)
+```
+
+## Priority Matrix
+
+| Feature | Value | Effort | Priority |
+|---------|-------|--------|----------|
+| `doctor` command | High | Low | **P0** |
+| Shell completions | High | Very Low | **P0** |
+| `stats` command | High | Low | **P0** |
+| Config presets | Medium | Low | **P0** |
+| Sandbox templates | High | Medium | **P1** |
+| Agent-ready templates | High | Medium | **P1** |
+| Auto-cleanup (TTL/GC) | High | Medium | **P1** |
+| `benchmark` command | Medium | Low | **P1** |
+| Secrets vault | High | Medium | **P1** |
+| `info` command | Medium | Low | **P1** |
+| Snapshot/restore | High | High | **P2** |
+| Agent sessions | High | High | **P2** |
+| Per-branch sandboxes | Medium | Low | **P2** |
+| Agent pipelines | Medium | High | **P2** |
+| Image cache management | Medium | Low | **P3** |
+| Artifact extraction | Medium | Low | **P3** |
+| Sandbox export/import | Low | Low | **P3** |
+| Parallel execution | Medium | High | **P3** |
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     Internet                             │
-└─────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│                  Caddy (HTTPS + Auth)                    │
-└─────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│              agentkernel serve (HTTP API)                │
+┌──────────────────────────────────────────────────────────┐
+│                    agentkernel CLI                        │
 │                                                          │
-│  /run  ─────► Daemon Client ─────► Unix Socket          │
-│  /create                              │                  │
-│  /exec                                ▼                  │
-│  /status          ┌─────────────────────────────────┐   │
-│                   │     agentkernel daemon          │   │
-│                   │                                  │   │
-│                   │  ┌────┐ ┌────┐ ┌────┐ ┌────┐   │   │
-│                   │  │ VM │ │ VM │ │ VM │ │ VM │   │   │
-│                   │  │warm│ │warm│ │warm│ │use │   │   │
-│                   │  └────┘ └────┘ └────┘ └────┘   │   │
-│                   │       Firecracker Pool          │   │
-│                   └─────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
+│  doctor  stats  benchmark  init  create  run  exec  ...  │
+└───────────────────────┬──────────────────────────────────┘
+                        │
+          ┌─────────────┼─────────────┐
+          ▼             ▼             ▼
+   ┌─────────────┐ ┌────────┐ ┌───────────┐
+   │  Templates  │ │ Secrets│ │  Sessions  │
+   │  ~/.local/  │ │ vault  │ │  (agent    │
+   │  share/     │ │        │ │  lifecycle)│
+   └─────────────┘ └────────┘ └───────────┘
+          │             │             │
+          └─────────────┼─────────────┘
+                        ▼
+          ┌──────────────────────────┐
+          │       VmManager          │
+          │                          │
+          │  TTL / GC    Snapshots   │
+          │  Audit log   Pipelines   │
+          └────────────┬─────────────┘
+                       │
+        ┌──────────────┼──────────────────┐
+        ▼              ▼                  ▼
+  ┌──────────┐  ┌────────────┐    ┌────────────┐
+  │  Docker  │  │ Firecracker│    │   Apple     │
+  │  Podman  │  │ Hyperlight │    │ Containers  │
+  └──────────┘  └────────────┘    └────────────┘
+                       │
+                ┌──────┴──────┐
+                │   Daemon    │
+                │  (warm pool)│
+                └─────────────┘
 ```
 
-## Recommendation
-
-Start with home Linux box for these reasons:
-
-1. You already have the HTTP API + daemon
-2. Firecracker works perfectly on Linux
-3. ~200ms response times with daemon pool
-4. Zero monthly costs while testing pricing
-5. Easy to migrate to cloud later (same systemd setup)
-
-**Migrate to Hetzner bare metal when:**
-- You have paying customers
-- Home bandwidth becomes limiting
-- You want 99.9% uptime SLA
-
-**The only code you need to write:**
-- Daemon/HTTP integration (~50 lines)
-- API key middleware (~50 lines)
-- Usage tracking (~100 lines)
-- User namespace (~20 lines)
-
-**Total:** ~2-3 hours of work for a functional SaaS with ~200ms response times.
+All features run locally. No remote host, no cloud account, no billing.
