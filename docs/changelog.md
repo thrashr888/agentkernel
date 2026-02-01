@@ -42,7 +42,7 @@ _January 31, 2026_
 
 ---
 
-## v0.4.0 — API Surfaces & SDK Updates
+## [v0.4.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.4.0) — API Surfaces & SDK Updates
 
 _January 30, 2026_
 
