@@ -93,6 +93,64 @@ nomad alloc status <alloc-id>
 nomad alloc logs <alloc-id>
 ```
 
-## Deployment
+## Deploying agentkernel on Nomad
 
-For running agentkernel as a service on Nomad, see the [Deployment Guide](deploy.md) for job file download and deployment instructions.
+Run agentkernel itself as a Nomad service that manages sandbox allocations via the HTTP API.
+
+### Deploy with Job File
+
+```bash
+# Download the job file
+curl -fsSLO https://raw.githubusercontent.com/thrashr888/agentkernel/main/deploy/nomad/agentkernel.nomad.hcl
+
+# Deploy
+nomad job run agentkernel.nomad.hcl
+```
+
+### Deploy with Nomad Pack
+
+For a configurable deployment using [Nomad Pack](https://github.com/hashicorp/nomad-pack):
+
+```bash
+git clone https://github.com/thrashr888/agentkernel.git
+nomad-pack run agentkernel/deploy/nomad-pack \
+  --var backend=nomad \
+  --var count=2
+```
+
+See [`deploy/nomad-pack/README.md`](https://github.com/thrashr888/agentkernel/tree/main/deploy/nomad-pack) for all available variables.
+
+### Job Structure
+
+The Nomad job runs agentkernel as a `service` type job with:
+
+- Docker driver with the `ghcr.io/thrashr888/agentkernel:latest` image
+- HTTP health check on `/health`
+- Port 18888 exposed
+- `--backend nomad` flag for sandbox creation
+
+### ACL Token (Production)
+
+Configure a Nomad ACL token with permissions to submit and manage jobs:
+
+```bash
+# Via environment variable
+export NOMAD_TOKEN="s.xxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Or via Nomad Variables (recommended for production)
+nomad var put nomad/jobs/agentkernel NOMAD_TOKEN="s.xxxx"
+```
+
+The job template references the token via the `env` stanza. For Vault integration, use a Vault stanza instead.
+
+### Service Registration
+
+The job registers an `agentkernel` service with Consul/Nomad service discovery and includes an HTTP health check on `/health` every 10 seconds.
+
+### Modify and Redeploy
+
+```bash
+vim agentkernel.nomad.hcl
+nomad job plan agentkernel.nomad.hcl
+nomad job run agentkernel.nomad.hcl
+```

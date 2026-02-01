@@ -142,6 +142,96 @@ std::fs::write("sandbox-crd.yaml", sandbox_crd)?;
 std::fs::write("pool-crd.yaml", pool_crd)?;
 ```
 
-## Deployment
+## Deploying agentkernel on Kubernetes
 
-For running agentkernel as a service on Kubernetes, see the [Deployment Guide](deploy.md) for Helm chart installation instructions.
+Run agentkernel itself as a Kubernetes service that manages sandbox pods via the HTTP API.
+
+### Install with Helm
+
+```bash
+# Install from OCI registry (recommended)
+helm install agentkernel oci://ghcr.io/thrashr888/charts/agentkernel \
+  --version 0.5.0 \
+  --namespace agentkernel-system \
+  --create-namespace
+```
+
+> **Note:** The OCI chart is published automatically on each release. If not yet available, use the local clone method below.
+
+Or install from a local clone:
+
+```bash
+git clone https://github.com/thrashr888/agentkernel.git
+helm install agentkernel agentkernel/deploy/helm/agentkernel/ \
+  --namespace agentkernel-system \
+  --create-namespace
+```
+
+### Helm Values
+
+Override defaults with `--set` flags or a custom `values.yaml`:
+
+```yaml
+backend: kubernetes
+
+orchestrator:
+  namespace: agentkernel-sandboxes    # Where sandbox pods run
+  runtimeClass: ""                     # "gvisor" if available
+  warmPoolSize: 10                     # Pre-warmed pods
+  maxSandboxes: 200                    # Cluster-wide limit
+  serviceAccount: agentkernel-sandbox  # SA for sandbox pods
+
+sandbox:
+  defaults:
+    image: alpine:3.20
+    memory: 512Mi
+    cpu: "1"
+    securityProfile: restrictive
+
+apiKey: ""          # Set via --set apiKey=<key> or external secret
+
+resources:
+  limits:
+    memory: 256Mi
+    cpu: 500m
+  requests:
+    memory: 128Mi
+    cpu: 100m
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+```
+
+### What the Chart Creates
+
+| Resource | Purpose |
+|----------|---------|
+| Deployment | agentkernel API server |
+| Service | ClusterIP on port 18888 |
+| ServiceAccount | For the API server pod |
+| ClusterRole | RBAC for managing sandbox pods |
+| ClusterRoleBinding | Binds role to service account |
+| ConfigMap | agentkernel.toml configuration |
+| Namespace | Sandbox namespace (configurable) |
+| Secret | API key (if set) |
+| HPA | Horizontal Pod Autoscaler (optional) |
+
+### RBAC
+
+The Helm chart creates a ClusterRole with permissions to:
+
+- Create, delete, list, get pods in the sandbox namespace
+- Create and delete NetworkPolicies (for `network: false` sandboxes)
+- Exec into pods (for `agentkernel exec`)
+
+### Upgrade and Uninstall
+
+```bash
+helm upgrade agentkernel oci://ghcr.io/thrashr888/charts/agentkernel \
+  --version 0.5.0 \
+  --namespace agentkernel-system
+
+helm uninstall agentkernel --namespace agentkernel-system
+```

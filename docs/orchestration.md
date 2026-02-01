@@ -20,6 +20,6 @@ Both backends are included in the default build. You must specify `--backend kub
 
 ## Next Steps
 
-- [Kubernetes Backend](orchestration-kubernetes.md) — Pods, NetworkPolicy, warm pools, CRDs, operator
-- [Nomad Backend](orchestration-nomad.md) — Jobs, parameterized warm pools, task drivers
-- [Deployment Guide](deploy.md) — Helm chart and Nomad job for running agentkernel as a service
+- [Kubernetes Backend](orchestration-kubernetes.md) — Pods, NetworkPolicy, warm pools, CRDs, operator, Helm deployment
+- [Nomad Backend](orchestration-nomad.md) — Jobs, parameterized warm pools, task drivers, Nomad Pack deployment
+- [Deployment Guide](deploy.md) — Docker image, building from source, HTTP API reference
