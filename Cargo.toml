@@ -10,7 +10,7 @@ keywords = ["ai", "agents", "sandbox", "firecracker", "microvm"]
 categories = ["command-line-utilities", "development-tools"]
 
 [features]
-default = []
+default = ["kubernetes", "nomad", "enterprise"]
 hyperlight = ["dep:hyperlight-wasm"]
 kubernetes = ["dep:kube", "dep:k8s-openapi", "dep:schemars", "dep:serde_yaml", "dep:futures"]
 nomad = ["dep:reqwest"]

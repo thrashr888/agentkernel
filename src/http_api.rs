@@ -9,7 +9,7 @@
 //! - Or configure `api_key` in the config file
 //!
 //! When enabled, requests must include the API key in the Authorization header:
-//! ```
+//! ```text
 //! Authorization: Bearer <api_key>
 //! ```
 
