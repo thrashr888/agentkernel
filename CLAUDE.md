@@ -144,6 +144,12 @@ MicroVM isolation provides:
 - **Security profiles**: `restrictive` (default in examples), `moderate`, `permissive`
 - **Network control**: `--no-network` flag or config override
 
+## Release Policy
+
+**Roll forward only.** Never delete, move, or force-push tags. Once a version is tagged and pushed, it is immutable. If a release has problems, fix them and cut a new patch version (e.g., v0.6.0 broke → fix and release v0.6.1). This applies to all artifacts: Git tags, GitHub Releases, crates.io, npm, PyPI, Docker images, and Helm charts.
+
+Before tagging, ensure CI is green and all quality gates pass locally. See `RELEASE.md` for the full checklist.
+
 ## Beads Issue Tracking
 
 ```bash

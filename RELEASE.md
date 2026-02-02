@@ -1,13 +1,24 @@
 # Release Process
 
+## Roll-Forward Policy
+
+**Never delete, move, or force-push a tag.** Once a version is tagged and pushed, it is immutable. Published artifacts (crates.io, npm, PyPI, Docker images, Helm charts, GitHub Releases) cannot be reliably retracted, and consumers may already be pinned to that version.
+
+If a release has problems, fix the issue on `main` and cut a new patch version:
+- `v0.6.0` has a bug → fix and release `v0.6.1`
+- Never `git tag -d v0.6.0 && git tag v0.6.0 && git push --force`
+
 ## Overview
 
-Pushing a `v*` tag triggers two workflows in parallel:
+Pushing a `v*` tag triggers four workflows in parallel:
 
 | Workflow | File | What it does |
 |----------|------|--------------|
-| **Release** | `.github/workflows/release.yml` | Builds CLI binaries for 4 platforms, creates GitHub Release |
-| **SDK Publish** | `.github/workflows/sdk-publish.yml` | Publishes all SDKs to their registries |
+| **Release** | `.github/workflows/release.yml` | Test gate → build CLI binaries for 4 platforms → create GitHub Release → publish Helm chart |
+| **SDK Publish** | `.github/workflows/sdk-publish.yml` | Test gate → publish all SDKs to their registries |
+| **Docker** | `.github/workflows/docker.yml` | Test gate → build and push Docker image to GHCR |
+
+Each workflow includes its own test gate (fmt, clippy, test) that must pass before any build or publish step runs.
 
 ## Pre-Release Checklist
 
@@ -30,7 +41,7 @@ cd sdk/swift && swift build && swift test && cd ../..
 gh run list --repo thrashr888/agentkernel --limit 5
 ```
 
-All checks must pass before tagging. Fix any failures and push before proceeding.
+All checks must pass before tagging. Fix any failures and push before proceeding. Do not tag until CI is green — tags are immutable once pushed.
 
 ## Cutting a Release
 
@@ -170,6 +181,8 @@ After tagging, check:
 6. **Homebrew**: `brew info thrashr888/agentkernel/agentkernel`
 
 ## Troubleshooting
+
+**Registry already has this version (crates.io, npm, PyPI)**: Package registries are immutable — once a version is published, it cannot be overwritten or deleted. If the tag was pushed and some registries succeeded before a failure, re-tagging will not fix it. The publish workflows have idempotency checks that skip already-published versions, so re-runs are safe. But the correct fix is always to roll forward to a new patch version.
 
 **SDK publish fails but Release succeeds**: The workflows are independent. Fix the failing SDK job and re-run it from the Actions tab — no need to retag.
 
