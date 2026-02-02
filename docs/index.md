@@ -127,7 +127,7 @@ agentkernel create ci --template rust-ci
 
 # Snapshots: save and restore sandbox state
 agentkernel snapshot take my-sandbox --name before-upgrade
-agentkernel restore before-upgrade --as rollback
+agentkernel snapshot restore before-upgrade --as rollback
 
 # Sessions: tie sandbox lifecycle to agent conversations
 agentkernel session start --name feature-x --agent claude -B docker

@@ -345,17 +345,6 @@ enum Commands {
         #[command(subcommand)]
         action: SnapshotAction,
     },
-    /// Restore a sandbox from a snapshot
-    Restore {
-        /// Name of the snapshot to restore
-        name: String,
-        /// Name for the restored sandbox (defaults to original name + "-restored")
-        #[arg(long, value_name = "NAME")]
-        r#as: Option<String>,
-        /// Backend to use for the restored sandbox
-        #[arg(short = 'B', long)]
-        backend: Option<String>,
-    },
     /// Remove all sandboxes and agentkernel Docker artifacts to free disk space
     Clean {
         /// Also stop and remove running sandboxes
@@ -480,6 +469,17 @@ enum SnapshotAction {
     Delete {
         /// Name of the snapshot to delete
         name: String,
+    },
+    /// Restore a sandbox from a snapshot
+    Restore {
+        /// Name of the snapshot to restore
+        name: String,
+        /// Name for the restored sandbox (defaults to original name + "-restored")
+        #[arg(long, value_name = "NAME")]
+        r#as: Option<String>,
+        /// Backend to use for the restored sandbox
+        #[arg(short = 'B', long)]
+        backend: Option<String>,
     },
 }
 
@@ -2157,41 +2157,41 @@ memory_mb = 512
                 snapshot::delete(&name)?;
                 println!("Snapshot '{}' deleted.", name);
             }
+            SnapshotAction::Restore {
+                name,
+                r#as: as_name,
+                backend,
+            } => {
+                let meta = snapshot::get(&name)?
+                    .ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", name))?;
+
+                let restore_name = as_name.unwrap_or_else(|| format!("{}-restored", meta.sandbox));
+                validation::validate_sandbox_name(&restore_name)?;
+
+                let backend_type = if let Some(ref b) = backend {
+                    Some(
+                        b.parse::<crate::backend::BackendType>()
+                            .map_err(|e| anyhow::anyhow!(e))?,
+                    )
+                } else {
+                    None
+                };
+                let mut manager = VmManager::with_backend(backend_type)?;
+
+                println!(
+                    "Restoring snapshot '{}' as sandbox '{}'...",
+                    name, restore_name
+                );
+                manager
+                    .create(&restore_name, &meta.image_tag, meta.vcpus, meta.memory_mb)
+                    .await?;
+
+                println!("Sandbox '{}' restored from snapshot.", restore_name);
+                println!("\nNext steps:");
+                println!("  agentkernel start {}", restore_name);
+                println!("  agentkernel attach {}", restore_name);
+            }
         },
-        Commands::Restore {
-            name,
-            r#as: as_name,
-            backend,
-        } => {
-            let meta = snapshot::get(&name)?
-                .ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", name))?;
-
-            let restore_name = as_name.unwrap_or_else(|| format!("{}-restored", meta.sandbox));
-            validation::validate_sandbox_name(&restore_name)?;
-
-            let backend_type = if let Some(ref b) = backend {
-                Some(
-                    b.parse::<crate::backend::BackendType>()
-                        .map_err(|e| anyhow::anyhow!(e))?,
-                )
-            } else {
-                None
-            };
-            let mut manager = VmManager::with_backend(backend_type)?;
-
-            println!(
-                "Restoring snapshot '{}' as sandbox '{}'...",
-                name, restore_name
-            );
-            manager
-                .create(&restore_name, &meta.image_tag, meta.vcpus, meta.memory_mb)
-                .await?;
-
-            println!("Sandbox '{}' restored from snapshot.", restore_name);
-            println!("\nNext steps:");
-            println!("  agentkernel start {}", restore_name);
-            println!("  agentkernel attach {}", restore_name);
-        }
         Commands::Clean { force, all } => {
             run_clean(force, all).await?;
         }

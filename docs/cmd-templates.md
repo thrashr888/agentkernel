@@ -8,7 +8,7 @@ Manage sandbox templates. Templates are pre-configured `agentkernel.toml` config
 | Command | Description |
 |---------|-------------|
 | `template list` | List available templates |
-| `template save <NAME>` | Save a running sandbox's config as a template |
+| `template save --from <SANDBOX> <NAME>` | Save a sandbox's config as a template |
 | `template add <SPECIFIER>` | Fetch and cache a GitHub template |
 | `template remove <NAME>` | Remove a custom template |
 
@@ -63,7 +63,7 @@ agentkernel create ci-runner --template rust-ci -B docker
 ### Save a sandbox as a template
 
 ```bash
-agentkernel template save my-sandbox my-template
+agentkernel template save --from my-sandbox my-template
 ```
 
 ### Add from GitHub

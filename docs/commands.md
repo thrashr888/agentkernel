@@ -38,7 +38,7 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 | [`snapshot take`](cmd-snapshots) | Save a sandbox's current state |
 | [`snapshot list`](cmd-snapshots) | List all snapshots |
 | [`snapshot delete`](cmd-snapshots) | Delete a snapshot |
-| [`restore`](cmd-snapshots) | Restore a sandbox from a snapshot |
+| [`snapshot restore`](cmd-snapshots) | Restore a sandbox from a snapshot |
 | [`session start`](cmd-sessions) | Start an agent session (sandbox + agent) |
 | [`session list`](cmd-sessions) | List all sessions |
 | [`session stop`](cmd-sessions) | Stop a session |
@@ -127,7 +127,7 @@ agentkernel stop my-sandbox
 ### Snapshot and restore
 ```bash
 agentkernel snapshot take my-sandbox --name my-checkpoint
-agentkernel restore my-checkpoint --as restored-sandbox
+agentkernel snapshot restore my-checkpoint --as restored-sandbox
 ```
 
 ### Agent sessions
@@ -155,8 +155,8 @@ agentkernel attach dev
 
 ### Session recording and playback
 ```bash
-# Record a session (saves to ~/.agentkernel/recordings/)
-agentkernel attach my-sandbox --record
+# Record a session
+agentkernel attach my-sandbox --record session.cast
 
 # Replay a recorded session
 agentkernel replay ~/.agentkernel/recordings/my-sandbox-20260126-120000.cast
@@ -168,13 +168,13 @@ agentkernel replay session.cast --speed 2.0 --max-idle 1.0
 ### Audit logging
 ```bash
 # List recent audit events
-agentkernel audit list
+agentkernel audit
 
 # Show audit entries for a specific sandbox
-agentkernel audit list --sandbox my-sandbox
+agentkernel audit --sandbox my-sandbox
 
 # Show audit log file path
-agentkernel audit path
+agentkernel audit --path
 ```
 
 The audit log is stored as JSONL at `~/.agentkernel/audit.jsonl`. Each line is a JSON object with `timestamp`, `pid`, `user`, and the event payload. Set `AGENTKERNEL_AUDIT=0` to disable.

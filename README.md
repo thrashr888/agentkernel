@@ -171,7 +171,7 @@ agentkernel create my-project --template python
 agentkernel create ci --template rust-ci
 
 # Save a running sandbox as a reusable template
-agentkernel template save my-sandbox --name my-custom-template
+agentkernel template save --from my-sandbox my-custom-template
 
 # Add/remove custom templates
 agentkernel template add my-template /path/to/template.toml
@@ -188,7 +188,7 @@ Save and restore sandbox state, or tie sandbox lifecycle to agent conversations.
 # Snapshots: save and restore sandbox state
 agentkernel snapshot take my-sandbox --name before-upgrade
 agentkernel snapshot list
-agentkernel restore before-upgrade --as rollback
+agentkernel snapshot restore before-upgrade --as rollback
 
 # Sessions: agent conversation lifecycle
 agentkernel session start --name feature-x --agent claude -B docker
@@ -219,10 +219,10 @@ Pipeline steps are defined in TOML with `name`, `image`, `command`, and optional
 
 ```bash
 # Secrets vault: store API keys and credentials
-agentkernel secrets set ANTHROPIC_API_KEY sk-ant-...
-agentkernel secrets get ANTHROPIC_API_KEY
-agentkernel secrets list
-agentkernel secrets delete ANTHROPIC_API_KEY
+agentkernel secret set ANTHROPIC_API_KEY sk-ant-...
+agentkernel secret get ANTHROPIC_API_KEY
+agentkernel secret list
+agentkernel secret delete ANTHROPIC_API_KEY
 
 # Image cache management
 agentkernel images list --all

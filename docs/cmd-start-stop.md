@@ -17,7 +17,7 @@ agentkernel start [OPTIONS] <NAME>
 
 | Option | Description |
 |--------|-------------|
-| `--backend <BACKEND>` | Override backend (usually auto-detected from saved state) |
+| `-B, --backend <BACKEND>` | Override backend (usually auto-detected from saved state) |
 
 ### Examples
 
