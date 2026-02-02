@@ -1,0 +1,16 @@
+# Python ML sandbox template
+# Pre-configured for machine learning / data science workloads
+
+[sandbox]
+name = "python-ml"
+base_image = "python:3.12"
+
+[resources]
+vcpus = 4
+memory_mb = 4096
+
+[security]
+profile = "moderate"
+
+[security.domains]
+allow = ["pypi.org", "files.pythonhosted.org"]

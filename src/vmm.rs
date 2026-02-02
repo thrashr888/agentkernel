@@ -54,6 +54,12 @@ pub struct SandboxState {
     /// Remote namespace (K8s namespace or Nomad namespace)
     #[serde(default)]
     pub remote_namespace: Option<String>,
+    /// Time-to-live in seconds (None = no expiry)
+    #[serde(default)]
+    pub ttl_seconds: Option<u64>,
+    /// When this sandbox expires (RFC3339). Computed from created_at + ttl_seconds.
+    #[serde(default)]
+    pub expires_at: Option<String>,
 }
 
 /// VM Manager - manages sandboxes via unified Sandbox trait
@@ -408,6 +414,19 @@ impl VmManager {
         vcpus: u32,
         memory_mb: u64,
     ) -> Result<()> {
+        self.create_with_ttl(name, image, vcpus, memory_mb, None)
+            .await
+    }
+
+    /// Create a new sandbox with an optional TTL
+    pub async fn create_with_ttl(
+        &mut self,
+        name: &str,
+        image: &str,
+        vcpus: u32,
+        memory_mb: u64,
+        ttl_seconds: Option<u64>,
+    ) -> Result<()> {
         if self.sandboxes.contains_key(name) {
             bail!("Sandbox '{}' already exists", name);
         }
@@ -434,16 +453,22 @@ impl VmManager {
         let vsock_cid = self.next_cid;
         self.next_cid += 1;
 
+        let created = chrono::Utc::now();
+        let expires_at =
+            ttl_seconds.map(|ttl| (created + chrono::Duration::seconds(ttl as i64)).to_rfc3339());
+
         let state = SandboxState {
             name: name.to_string(),
             image: effective_image.clone(),
             vcpus,
             memory_mb,
             vsock_cid,
-            created_at: chrono::Utc::now().to_rfc3339(),
+            created_at: created.to_rfc3339(),
             backend: Some(self.backend),
             remote_id: None,
             remote_namespace: None,
+            ttl_seconds,
+            expires_at,
         };
 
         self.save_sandbox(&state)?;
@@ -665,6 +690,34 @@ impl VmManager {
         });
 
         Ok(())
+    }
+
+    /// Return names of sandboxes that have expired (past their TTL).
+    pub fn expired(&self) -> Vec<String> {
+        let now = chrono::Utc::now();
+        self.sandboxes
+            .iter()
+            .filter_map(|(name, state)| {
+                if let Some(ref exp) = state.expires_at
+                    && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(exp)
+                    && dt < now
+                {
+                    return Some(name.clone());
+                }
+                None
+            })
+            .collect()
+    }
+
+    /// Garbage-collect expired sandboxes. Returns names of removed sandboxes.
+    pub async fn gc(&mut self) -> Result<Vec<String>> {
+        let expired = self.expired();
+        let mut removed = Vec::new();
+        for name in expired {
+            self.remove(&name).await?;
+            removed.push(name);
+        }
+        Ok(removed)
     }
 
     /// List all sandboxes (persisted, with running status and backend)
@@ -910,6 +963,8 @@ mod tests {
             backend: None,
             remote_id: None,
             remote_namespace: None,
+            ttl_seconds: None,
+            expires_at: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -949,6 +1004,8 @@ mod tests {
             backend: None,
             remote_id: None,
             remote_namespace: None,
+            ttl_seconds: None,
+            expires_at: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -997,6 +1054,8 @@ mod tests {
             backend: None,
             remote_id: None,
             remote_namespace: None,
+            ttl_seconds: None,
+            expires_at: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -1038,6 +1097,8 @@ mod tests {
                 backend: None,
                 remote_id: None,
                 remote_namespace: None,
+                ttl_seconds: None,
+                expires_at: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();

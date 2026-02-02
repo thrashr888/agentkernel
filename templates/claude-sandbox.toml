@@ -1,0 +1,20 @@
+# Claude Code sandbox template
+# Pre-configured for running Claude Code inside an isolated sandbox
+
+[sandbox]
+name = "claude-sandbox"
+base_image = "node:22-alpine"
+
+[agent]
+preferred = "claude"
+compatibility_mode = "claude"
+
+[resources]
+vcpus = 2
+memory_mb = 1024
+
+[security]
+profile = "moderate"
+
+[security.domains]
+allow = ["api.anthropic.com", "sentry.io"]

@@ -1,0 +1,19 @@
+# OpenCode sandbox template
+# Pre-configured for running OpenCode inside an isolated sandbox
+
+[sandbox]
+name = "opencode-sandbox"
+base_image = "node:22-alpine"
+
+[agent]
+preferred = "opencode"
+
+[resources]
+vcpus = 2
+memory_mb = 1024
+
+[security]
+profile = "moderate"
+
+[security.domains]
+allow = ["api.openai.com", "api.anthropic.com"]
