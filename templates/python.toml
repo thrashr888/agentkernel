@@ -1,0 +1,16 @@
+# Python sandbox template
+# Python with pip for general Python development
+
+[sandbox]
+name = "python"
+base_image = "python:3.12-alpine"
+
+[resources]
+vcpus = 1
+memory_mb = 512
+
+[security]
+profile = "moderate"
+
+[security.domains]
+allow = ["pypi.org", "files.pythonhosted.org"]

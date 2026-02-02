@@ -1,0 +1,13 @@
+# C/C++ sandbox template
+# GCC toolchain for C and C++ development
+
+[sandbox]
+name = "c"
+base_image = "gcc:14-bookworm"
+
+[resources]
+vcpus = 2
+memory_mb = 512
+
+[security]
+profile = "moderate"

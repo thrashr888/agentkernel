@@ -1,0 +1,16 @@
+# Ruby sandbox template
+# Ruby with Bundler for Ruby development
+
+[sandbox]
+name = "ruby"
+base_image = "ruby:3.3-alpine"
+
+[resources]
+vcpus = 1
+memory_mb = 512
+
+[security]
+profile = "moderate"
+
+[security.domains]
+allow = ["rubygems.org"]

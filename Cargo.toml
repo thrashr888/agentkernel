@@ -22,6 +22,7 @@ async-trait = "0.1"
 base64 = "0.22"
 bytes = "1.0"
 clap = { version = "4.0", features = ["derive"] }
+clap_complete = "4.0"
 hyper = { version = "1.5", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
 http-body-util = "0.1"

@@ -1,0 +1,14 @@
+# Secure sandbox template
+# Maximum isolation: no network, no mounts, read-only filesystem
+
+[sandbox]
+name = "secure"
+base_image = "alpine:3.20"
+
+[resources]
+vcpus = 1
+memory_mb = 256
+
+[security]
+profile = "restrictive"
+network = false

@@ -1,0 +1,16 @@
+# Node.js sandbox template
+# Node.js LTS for JavaScript development
+
+[sandbox]
+name = "node"
+base_image = "node:22-alpine"
+
+[resources]
+vcpus = 1
+memory_mb = 512
+
+[security]
+profile = "moderate"
+
+[security.domains]
+allow = ["registry.npmjs.org"]

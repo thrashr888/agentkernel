@@ -31,6 +31,14 @@ agentkernel run npm test
 agentkernel run cargo build
 agentkernel run pytest
 
+# Create from a template
+agentkernel create my-project --template python
+agentkernel start my-project
+agentkernel exec my-project -- pytest
+
+# Or auto-name from your git branch
+agentkernel create --branch -B docker
+
 # Run with a specific image
 agentkernel run --image postgres:16-alpine psql --version
 ```
@@ -101,12 +109,18 @@ For longer-running work, create named sandboxes:
 # Create a sandbox
 agentkernel create my-project --dir .
 
+# Create from a template with auto-expiry
+agentkernel create ci-test --template node-ci --ttl 1h
+
+# Create per-branch sandboxes (auto-named from git branch)
+agentkernel create --branch -B docker
+
 # Start it
 agentkernel start my-project
 
 # Run commands
-agentkernel exec my-project npm test
-agentkernel exec my-project python -m pytest
+agentkernel exec my-project -- npm test
+agentkernel exec my-project -- python -m pytest
 
 # Attach an interactive shell
 agentkernel attach my-project
@@ -115,8 +129,9 @@ agentkernel attach my-project
 agentkernel stop my-project
 agentkernel remove my-project
 
-# List all sandboxes
+# List all sandboxes (or filter by project)
 agentkernel list
+agentkernel list --project my-app
 ```
 
 ## Security Profiles
@@ -142,6 +157,109 @@ agentkernel run --no-network curl example.com  # Will fail
 | permissive | Yes | Yes | Yes | Yes | No |
 | moderate | Yes | No | No | No | No |
 | restrictive | No | No | No | No | Yes |
+
+## Templates
+
+Pre-configured sandbox environments for common use cases. 18+ built-in templates, or save your own.
+
+```bash
+# List available templates
+agentkernel template list
+
+# Create a sandbox from a template
+agentkernel create my-project --template python
+agentkernel create ci --template rust-ci
+
+# Save a running sandbox as a reusable template
+agentkernel template save my-sandbox --name my-custom-template
+
+# Add/remove custom templates
+agentkernel template add my-template /path/to/template.toml
+agentkernel template remove my-template
+```
+
+Built-in templates include: `python`, `node`, `rust`, `go`, `ruby`, `java`, `dotnet`, `php`, `elixir`, `c-cpp`, `shell`, `terraform`, `python-ci`, `node-ci`, `rust-ci`, `data-science`, `web-dev`, `fullstack`.
+
+## Snapshots & Sessions
+
+Save and restore sandbox state, or tie sandbox lifecycle to agent conversations.
+
+```bash
+# Snapshots: save and restore sandbox state
+agentkernel snapshot take my-sandbox --name before-upgrade
+agentkernel snapshot list
+agentkernel restore before-upgrade --as rollback
+
+# Sessions: agent conversation lifecycle
+agentkernel session start --name feature-x --agent claude -B docker
+agentkernel session save feature-x
+agentkernel session resume feature-x
+agentkernel session list
+agentkernel session delete feature-x
+```
+
+## Pipelines & Parallel Execution
+
+Chain sandboxes with data flow, or fan-out jobs across sandboxes.
+
+```bash
+# Pipelines: sequential multi-step execution with data flow
+agentkernel pipeline pipeline.toml
+
+# Parallel: run independent jobs concurrently
+agentkernel parallel \
+  --job "lint:node:22-alpine:npx eslint ." \
+  --job "test:node:22-alpine:npm test" \
+  --job "build:rust:1.85-alpine:cargo build"
+```
+
+Pipeline steps are defined in TOML with `name`, `image`, `command`, and optional `input`/`output` directories for data passing between steps.
+
+## Secrets & Image Management
+
+```bash
+# Secrets vault: store API keys and credentials
+agentkernel secrets set ANTHROPIC_API_KEY sk-ant-...
+agentkernel secrets get ANTHROPIC_API_KEY
+agentkernel secrets list
+agentkernel secrets delete ANTHROPIC_API_KEY
+
+# Image cache management
+agentkernel images list --all
+agentkernel images pull python:3.12-alpine
+agentkernel images prune
+
+# Export/import sandbox configs
+agentkernel export-config my-sandbox > my-sandbox.toml
+agentkernel import-config my-sandbox.toml --as new-sandbox -B docker
+
+# Export sandbox filesystem
+agentkernel export my-sandbox -o backup.tar
+```
+
+## Maintenance
+
+```bash
+# Garbage collection (remove expired/stopped sandboxes)
+agentkernel gc
+agentkernel gc --dry-run
+
+# Clean up everything (containers, images, cache)
+agentkernel clean --all
+
+# System diagnostics
+agentkernel doctor
+agentkernel stats
+
+# Performance benchmarking
+agentkernel benchmark
+agentkernel benchmark --backends docker,podman
+
+# Shell completions
+agentkernel completions bash > /etc/bash_completion.d/agentkernel
+agentkernel completions zsh > ~/.zfunc/_agentkernel
+agentkernel completions fish > ~/.config/fish/completions/agentkernel.fish
+```
 
 ## Configuration
 
@@ -413,6 +531,23 @@ See [BENCHMARK.md](BENCHMARK.md) for detailed Hyperlight benchmarks.
 - One-off commands
 - Clean VM per execution
 - Memory-constrained environments
+
+## Documentation
+
+- [Getting Started](docs/getting-started.md) - Your first sandbox
+- [Commands](docs/commands.md) - Full CLI reference
+- [Configuration](docs/configuration.md) - Config file format
+- [Templates](docs/cmd-templates.md) - Pre-configured sandbox environments
+- [Snapshots](docs/cmd-snapshots.md) - Save and restore sandbox state
+- [Sessions](docs/cmd-sessions.md) - Agent session lifecycle management
+- [Pipelines](docs/cmd-pipelines.md) - Multi-step sandbox pipelines
+- [Parallel](docs/cmd-parallel.md) - Concurrent job execution
+- [Secrets](docs/cmd-secrets.md) - API key and credential management
+- [Agents](docs/agents.md) - Running Claude Code, Codex, Gemini CLI
+- [HTTP API](docs/api.md) - Programmatic access
+- [SDKs](docs/sdks.md) - Client libraries for Node.js, Python, Go, Rust, Swift
+- [Benchmarks](docs/benchmarks.md) - Performance numbers for every backend
+- [Comparisons](docs/comparisons.md) - How agentkernel compares to E2B, Daytona, Docker
 
 ## Examples
 
