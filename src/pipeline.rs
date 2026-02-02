@@ -69,11 +69,22 @@ pub fn load(path: &Path) -> Result<Pipeline> {
         bail!("Pipeline has no steps");
     }
 
-    // Validate step names are unique
+    // Validate step names are unique and safe
     let mut seen = std::collections::HashSet::new();
     for step in &pipeline.step {
         if !seen.insert(&step.name) {
             bail!("Duplicate step name: '{}'", step.name);
+        }
+        // Prevent path traversal in step names (used in sandbox names and temp dirs)
+        if step.name.contains('/')
+            || step.name.contains('\\')
+            || step.name.contains("..")
+            || step.name.is_empty()
+        {
+            bail!(
+                "Invalid step name '{}': must not contain '/', '\\', or '..'",
+                step.name
+            );
         }
     }
 
@@ -92,8 +103,9 @@ pub async fn run(
     let mut results = Vec::new();
     let total_start = Instant::now();
 
-    // Track output directories for chaining
+    // Track output directories for chaining and cleanup
     let mut prev_output_host: Option<PathBuf> = None;
+    let mut temp_dirs: Vec<PathBuf> = Vec::new();
 
     for (i, step) in pipeline.step.iter().enumerate() {
         let step_num = i + 1;
@@ -158,6 +170,7 @@ pub async fn run(
                     }
                 }
             }
+            temp_dirs.push(host_dir.clone());
             prev_output_host = Some(host_dir);
         }
 
@@ -193,9 +206,9 @@ pub async fn run(
     let total_duration = total_start.elapsed();
     eprintln!("  Done ({:.1}s total)", total_duration.as_secs_f64());
 
-    // Clean up temp dirs
-    if let Some(ref host_dir) = prev_output_host {
-        let _ = std::fs::remove_dir_all(host_dir);
+    // Clean up all temp dirs
+    for dir in &temp_dirs {
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     Ok(results)
@@ -280,6 +293,50 @@ command = "echo b"
     #[test]
     fn test_load_missing_file() {
         let result = load(Path::new("/nonexistent/pipeline.toml"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_invalid_step_name_path_traversal() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("bad.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[step]]
+name = "../escape"
+image = "alpine"
+command = "echo bad"
+"#,
+        )
+        .unwrap();
+
+        let result = load(&path);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid step name")
+        );
+    }
+
+    #[test]
+    fn test_load_invalid_step_name_slash() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("slash.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[step]]
+name = "step/one"
+image = "alpine"
+command = "echo bad"
+"#,
+        )
+        .unwrap();
+
+        let result = load(&path);
         assert!(result.is_err());
     }
 

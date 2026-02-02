@@ -291,7 +291,7 @@ enum Commands {
     },
     /// Run multiple jobs in parallel (fan-out, fan-in results)
     Parallel {
-        /// Jobs in format "name:image:command" (repeatable)
+        /// Jobs in format "name:image:command" or "name:image:tag:command" (repeatable)
         #[arg(short, long, required = true)]
         job: Vec<String>,
         /// Backend to use
@@ -798,7 +798,7 @@ memory_mb = 512
             println!("  vCPUs: {}", cfg.resources.vcpus);
             println!("  Memory: {} MB", cfg.resources.memory_mb);
 
-            let ttl_secs = ttl.map(|t| parse_ttl(&t)).transpose()?;
+            let ttl_secs = ttl.map(|t| parse_ttl(&t)).transpose()?.filter(|&s| s > 0); // 0 means no expiry
             manager
                 .create_with_ttl(
                     &name,
@@ -1304,7 +1304,8 @@ memory_mb = 512
             // Create
             // For `run`, default TTL is 1h when --keep is used
             let ttl_secs = if let Some(ref t) = ttl {
-                Some(parse_ttl(t)?)
+                let parsed = parse_ttl(t)?;
+                if parsed > 0 { Some(parsed) } else { None } // 0 means no expiry
             } else if keep {
                 Some(3600) // 1h default for kept run sandboxes
             } else {
@@ -1700,18 +1701,34 @@ memory_mb = 512
                 bail!("At least one --job is required");
             }
 
-            // Parse jobs: "name:image:command"
+            // Parse jobs: "name:image:command" or "name:image:tag:command"
             let mut parsed_jobs: Vec<(String, String, String)> = Vec::new();
             for j in &job {
-                let parts: Vec<&str> = j.splitn(3, ':').collect();
-                if parts.len() < 3 {
-                    bail!("Invalid job format: '{}'. Expected 'name:image:command'", j);
+                let parts: Vec<&str> = j.splitn(4, ':').collect();
+                match parts.len() {
+                    3 => {
+                        // name:image:command (image without tag)
+                        parsed_jobs.push((
+                            parts[0].to_string(),
+                            parts[1].to_string(),
+                            parts[2].to_string(),
+                        ));
+                    }
+                    4 => {
+                        // name:image:tag:command (image with tag like alpine:3.20)
+                        parsed_jobs.push((
+                            parts[0].to_string(),
+                            format!("{}:{}", parts[1], parts[2]),
+                            parts[3].to_string(),
+                        ));
+                    }
+                    _ => {
+                        bail!(
+                            "Invalid job format: '{}'. Expected 'name:image:command' or 'name:image:tag:command'",
+                            j
+                        );
+                    }
                 }
-                parsed_jobs.push((
-                    parts[0].to_string(),
-                    parts[1].to_string(),
-                    parts[2].to_string(),
-                ));
             }
 
             println!(
@@ -1758,14 +1775,14 @@ memory_mb = 512
                             // Fallback to full lifecycle
                             mgr.create(&sandbox, &image, 1, 512).await?;
                             mgr.start(&sandbox).await?;
-                            let output = mgr
-                                .exec_cmd(&sandbox, &cmd)
-                                .await
-                                .unwrap_or_else(|e| format!("Error: {}", e));
+                            let exec_result = mgr.exec_cmd(&sandbox, &cmd).await;
                             let _ = mgr.stop(&sandbox).await;
                             let _ = mgr.remove(&sandbox).await;
                             let elapsed = start.elapsed();
-                            Ok((name, elapsed, true, output))
+                            match exec_result {
+                                Ok(output) => Ok((name, elapsed, true, output)),
+                                Err(e) => Ok((name, elapsed, false, format!("Error: {}", e))),
+                            }
                         }
                         Err(e) => Ok((name, elapsed, false, format!("Error: {}", e))),
                     }
@@ -1812,9 +1829,10 @@ memory_mb = 512
             let output_file = output.unwrap_or_else(|| format!("{}.tar", name));
 
             // Use docker export to get the full filesystem
+            let container_name = format!("agentkernel-{}", name);
             println!("Exporting sandbox '{}' to {}...", name, output_file);
             let status = std::process::Command::new("docker")
-                .args(["export", "-o", &output_file, &name])
+                .args(["export", "-o", &output_file, &container_name])
                 .status()
                 .map_err(|e| anyhow::anyhow!("Failed to run docker export: {}", e))?;
 
