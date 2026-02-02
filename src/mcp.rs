@@ -208,6 +208,11 @@ impl McpServer {
                                 "enum": ["native", "claude", "codex", "gemini"],
                                 "description": "Agent compatibility mode with preset permissions and network policies. Only when fast=false.",
                                 "default": "native"
+                            },
+                            "ports": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Port mappings (e.g., [\"8080:80\", \"3000\", \"5353:53/udp\"]). Only when fast=false."
                             }
                         },
                         "required": ["command"]
@@ -226,6 +231,11 @@ impl McpServer {
                             "image": {
                                 "type": "string",
                                 "description": "Docker image to use (default: alpine:3.20)"
+                            },
+                            "ports": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Port mappings (e.g., [\"8080:80\", \"3000\", \"5353:53/udp\"])"
                             }
                         },
                         "required": ["name"]
@@ -410,11 +420,29 @@ impl McpServer {
             anyhow::bail!("command is required");
         }
 
+        // Parse port mappings
+        let ports: Vec<crate::backend::PortMapping> = args
+            .get("ports")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(crate::backend::PortMapping::parse)
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+
         // Default to fast mode (use container pool)
         let fast = args.get("fast").and_then(|v| v.as_bool()).unwrap_or(true);
 
         // Fast path: use container pool (default)
         if fast {
+            if !ports.is_empty() {
+                anyhow::bail!(
+                    "Cannot use fast mode with ports (pooled containers don't support port mapping). Set fast=false."
+                );
+            }
             if args.get("image").is_some() {
                 eprintln!("Warning: custom image ignored in fast mode (pool uses alpine:3.20)");
             }
@@ -482,14 +510,42 @@ impl McpServer {
             .and_then(|v| v.as_str())
             .unwrap_or("alpine:3.20");
 
+        // Parse port mappings
+        let ports: Vec<crate::backend::PortMapping> = args
+            .get("ports")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(crate::backend::PortMapping::parse)
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+
+        let port_desc = if ports.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " with ports {}",
+                ports
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
-                manager.create(name, image, 1, 512).await?;
+                manager
+                    .create_with_options(name, image, 1, 512, None, ports)
+                    .await?;
                 manager.start(name).await?;
                 Ok(format!(
-                    "Sandbox '{}' created and started with image '{}'",
-                    name, image
+                    "Sandbox '{}' created and started with image '{}'{}",
+                    name, image, port_desc
                 ))
             })
         })
@@ -533,13 +589,26 @@ impl McpServer {
                     return Ok("No sandboxes found.".to_string());
                 }
 
-                let mut output = String::from("NAME\tSTATUS\tBACKEND\n");
-                for (name, running, backend) in sandboxes {
-                    let status = if running { "running" } else { "stopped" };
+                let mut output = String::from("NAME\tSTATUS\tBACKEND\tPORTS\n");
+                for (name, running, backend) in &sandboxes {
+                    let status = if *running { "running" } else { "stopped" };
                     let backend_str = backend
                         .map(|b| format!("{}", b))
                         .unwrap_or_else(|| "unknown".to_string());
-                    output.push_str(&format!("{}\t{}\t{}\n", name, status, backend_str));
+                    let ports_str = manager
+                        .get_state(name)
+                        .map(|s| {
+                            s.ports
+                                .iter()
+                                .map(|p| p.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    output.push_str(&format!(
+                        "{}\t{}\t{}\t{}\n",
+                        name, status, backend_str, ports_str
+                    ));
                 }
                 Ok(output)
             })

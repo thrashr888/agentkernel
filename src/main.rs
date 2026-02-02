@@ -105,6 +105,9 @@ enum Commands {
         /// Auto-name sandbox from git project + branch (e.g. myproject-feature-auth)
         #[arg(long)]
         branch: bool,
+        /// Publish a port (host:container, container, or host:container/udp). Can be repeated.
+        #[arg(short = 'p', long = "publish")]
+        publish: Vec<String>,
     },
     /// Start a sandbox
     Start {
@@ -198,6 +201,9 @@ enum Commands {
         /// Use git project+branch as sandbox name (reuses existing sandbox for same branch)
         #[arg(long)]
         branch: bool,
+        /// Publish a port (host:container, container, or host:container/udp). Can be repeated.
+        #[arg(short = 'P', long = "publish")]
+        publish: Vec<String>,
     },
     /// Start MCP server for Claude Code integration (JSON-RPC over stdio)
     McpServer,
@@ -722,6 +728,7 @@ memory_mb = 512
             template: tmpl,
             ttl,
             branch,
+            publish,
         } => {
             // Resolve sandbox name: --branch auto-derives from git, otherwise require explicit name
             let name = if branch {
@@ -799,13 +806,41 @@ memory_mb = 512
             println!("  Memory: {} MB", cfg.resources.memory_mb);
 
             let ttl_secs = ttl.map(|t| parse_ttl(&t)).transpose()?.filter(|&s| s > 0); // 0 means no expiry
+
+            // Parse port mappings from CLI --publish flags and config file [network].ports
+            let mut ports: Vec<crate::backend::PortMapping> = publish
+                .iter()
+                .map(|s| crate::backend::PortMapping::parse(s))
+                .collect::<Result<Vec<_>>>()?;
+
+            // Merge config file ports (CLI takes precedence, config adds extras)
+            if let Ok(config_ports) = cfg.network.port_mappings() {
+                for cp in config_ports {
+                    if !ports.contains(&cp) {
+                        ports.push(cp);
+                    }
+                }
+            }
+
+            if !ports.is_empty() {
+                println!(
+                    "  Ports: {}",
+                    ports
+                        .iter()
+                        .map(|p| p.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+
             manager
-                .create_with_ttl(
+                .create_with_options(
                     &name,
                     &docker_image,
                     cfg.resources.vcpus,
                     cfg.resources.memory_mb,
                     ttl_secs,
+                    ports,
                 )
                 .await?;
 
@@ -1057,13 +1092,29 @@ memory_mb = 512
                 }
                 println!("\nCreate one with: agentkernel create <name>");
             } else {
-                println!("{:<30} {:<10} {:<10}", "NAME", "STATUS", "BACKEND");
+                println!(
+                    "{:<30} {:<10} {:<10} PORTS",
+                    "NAME", "STATUS", "BACKEND"
+                );
                 for (name, running, backend) in filtered {
                     let status = if running { "running" } else { "stopped" };
                     let backend_str = backend
                         .map(|b| format!("{}", b))
                         .unwrap_or_else(|| "unknown".to_string());
-                    println!("{:<30} {:<10} {:<10}", name, status, backend_str);
+                    let ports_str = manager
+                        .get_state(name)
+                        .map(|s| {
+                            s.ports
+                                .iter()
+                                .map(|p| p.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    println!(
+                        "{:<30} {:<10} {:<10} {}",
+                        name, status, backend_str, ports_str
+                    );
                 }
             }
         }
@@ -1079,15 +1130,27 @@ memory_mb = 512
             template: tmpl,
             ttl,
             branch,
+            publish,
         } => {
             if command.is_empty() {
                 bail!("No command specified. Usage: agentkernel run [OPTIONS] <command...>");
             }
 
+            // Parse port mappings
+            let port_mappings: Vec<crate::backend::PortMapping> = publish
+                .iter()
+                .map(|s| crate::backend::PortMapping::parse(s))
+                .collect::<Result<Vec<_>>>()?;
+
             // Fast path: use container pool for ephemeral runs
             if fast {
                 if keep {
                     bail!("Cannot use --fast with --keep (pooled containers are ephemeral)");
+                }
+                if !port_mappings.is_empty() {
+                    bail!(
+                        "Cannot use --fast with -p/--publish (pooled containers don't support port mapping)"
+                    );
                 }
                 if image.is_some() || config.is_some() {
                     eprintln!(
@@ -2445,8 +2508,9 @@ async fn handle_policy_command(action: PolicyAction) -> Result<()> {
                 "attach" => policy::Action::Attach,
                 "mount" => policy::Action::Mount,
                 "network" => policy::Action::Network,
+                "portmap" => policy::Action::PortMap,
                 other => bail!(
-                    "Invalid action '{}'. Use: run, exec, create, attach, mount, network",
+                    "Invalid action '{}'. Use: run, exec, create, attach, mount, network, portmap",
                     other
                 ),
             };
@@ -2708,6 +2772,15 @@ fn run_info(name: &str) -> Result<()> {
     }
     if let Some(ref rns) = state.remote_namespace {
         println!("Namespace:      {}", rns);
+    }
+    if !state.ports.is_empty() {
+        let ports_str = state
+            .ports
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("Ports:          {}", ports_str);
     }
 
     // Show recent audit activity

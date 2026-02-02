@@ -407,6 +407,19 @@ fn default_memory_mb() -> u64 {
 pub struct NetworkConfig {
     /// vsock CID for host-guest communication (auto-assigned if not specified)
     pub vsock_cid: Option<u32>,
+    /// Port mappings (Docker-style: "host:container", "container", "host:container/udp")
+    #[serde(default)]
+    pub ports: Vec<String>,
+}
+
+impl NetworkConfig {
+    /// Parse port strings into PortMapping structs
+    pub fn port_mappings(&self) -> anyhow::Result<Vec<crate::backend::PortMapping>> {
+        self.ports
+            .iter()
+            .map(|s| crate::backend::PortMapping::parse(s))
+            .collect()
+    }
 }
 
 impl Config {
@@ -496,6 +509,21 @@ impl Config {
     pub fn validate(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         let perms = self.get_permissions();
+
+        // Warn if ports configured but network is disabled
+        if !self.network.ports.is_empty() && !perms.network {
+            warnings.push(
+                "Port mappings in [network] have no effect because network access is disabled."
+                    .to_string(),
+            );
+        }
+
+        // Validate port strings are parseable
+        for port_str in &self.network.ports {
+            if crate::backend::PortMapping::parse(port_str).is_err() {
+                warnings.push(format!("Invalid port mapping '{}' in [network].", port_str));
+            }
+        }
 
         // Warn if domain rules configured but network is disabled
         if self.security.domains.has_rules() && !perms.network {

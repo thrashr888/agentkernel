@@ -61,6 +61,9 @@ struct CreateRequest {
     vcpus: Option<u32>,
     memory_mb: Option<u64>,
     profile: Option<String>,
+    /// Port mappings (e.g., ["8080:80", "3000", "5353:53/udp"])
+    #[serde(default)]
+    ports: Vec<String>,
 }
 
 /// Request to write a file
@@ -155,6 +158,8 @@ struct SandboxInfo {
     memory_mb: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     created_at: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ports: Vec<String>,
 }
 
 /// Run command response
@@ -780,16 +785,23 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
     let sandboxes: Vec<SandboxInfo> = manager
         .list()
         .into_iter()
-        .map(|(name, running, backend)| SandboxInfo {
-            name: name.to_string(),
-            status: if running { "running" } else { "stopped" }.to_string(),
-            backend: backend
-                .map(|b| format!("{}", b))
-                .unwrap_or_else(|| "unknown".to_string()),
-            image: None,
-            vcpus: None,
-            memory_mb: None,
-            created_at: None,
+        .map(|(name, running, backend)| {
+            let state_info = manager.get_state(name);
+            let ports = state_info
+                .map(|s| s.ports.iter().map(|p| p.to_string()).collect())
+                .unwrap_or_default();
+            SandboxInfo {
+                name: name.to_string(),
+                status: if running { "running" } else { "stopped" }.to_string(),
+                backend: backend
+                    .map(|b| format!("{}", b))
+                    .unwrap_or_else(|| "unknown".to_string()),
+                image: None,
+                vcpus: None,
+                memory_mb: None,
+                created_at: None,
+                ports,
+            }
         })
         .collect();
 
@@ -837,6 +849,36 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         );
     }
 
+    // Parse port mappings
+    let ports: Vec<crate::backend::PortMapping> = match body
+        .ports
+        .iter()
+        .map(|s| crate::backend::PortMapping::parse(s))
+        .collect::<Result<Vec<_>>>()
+    {
+        Ok(p) => p,
+        Err(e) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(format!("Invalid port mapping: {}", e)),
+            );
+        }
+    };
+
+    // Enterprise policy enforcement for port mapping
+    #[cfg(feature = "enterprise")]
+    if !ports.is_empty()
+        && let Err(resp) = enforce_policy(
+            &state,
+            &identity,
+            crate::policy::Action::PortMap,
+            &body.name,
+        )
+        .await
+    {
+        return resp;
+    }
+
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
         Err(e) => {
@@ -847,7 +889,10 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         }
     };
 
-    if let Err(e) = manager.create(&body.name, image, vcpus, memory_mb).await {
+    if let Err(e) = manager
+        .create_with_options(&body.name, image, vcpus, memory_mb, None, ports.clone())
+        .await
+    {
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
@@ -881,6 +926,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         );
     }
 
+    let port_strings: Vec<String> = ports.iter().map(|p| p.to_string()).collect();
     json_response(
         StatusCode::CREATED,
         &ApiResponse::success(SandboxInfo {
@@ -891,6 +937,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             vcpus: Some(vcpus),
             memory_mb: Some(memory_mb),
             created_at: None,
+            ports: port_strings,
         }),
     )
 }
@@ -918,6 +965,9 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
     for (sandbox_name, running, backend) in &sandboxes {
         if *sandbox_name == name {
             let state_info = manager.get_state(name);
+            let ports = state_info
+                .map(|s| s.ports.iter().map(|p| p.to_string()).collect())
+                .unwrap_or_default();
             return json_response(
                 StatusCode::OK,
                 &ApiResponse::success(SandboxInfo {
@@ -930,6 +980,7 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                     vcpus: state_info.map(|s| s.vcpus),
                     memory_mb: state_info.map(|s| s.memory_mb),
                     created_at: state_info.map(|s| s.created_at.clone()),
+                    ports,
                 }),
             );
         }
@@ -1433,11 +1484,12 @@ async fn handle_policy_check(req: Request<Incoming>, state: Arc<AppState>) -> Re
         "attach" => crate::policy::Action::Attach,
         "mount" => crate::policy::Action::Mount,
         "network" => crate::policy::Action::Network,
+        "portmap" => crate::policy::Action::PortMap,
         other => {
             return json_response(
                 StatusCode::BAD_REQUEST,
                 &ApiResponse::<()>::error(format!(
-                    "Invalid action '{}'. Use: run, exec, create, attach, mount, network",
+                    "Invalid action '{}'. Use: run, exec, create, attach, mount, network, portmap",
                     other
                 )),
             );
@@ -1608,6 +1660,7 @@ mod tests {
             vcpus: None,
             memory_mb: None,
             created_at: None,
+            ports: vec![],
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"name\":\"test-sandbox\""));
@@ -1677,6 +1730,7 @@ mod tests {
             vcpus: None,
             memory_mb: None,
             created_at: None,
+            ports: vec![],
         };
         let response = json_response(StatusCode::CREATED, &ApiResponse::success(info));
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -1771,6 +1825,7 @@ mod tests {
             vcpus: Some(4),
             memory_mb: Some(2048),
             created_at: Some("2026-01-30T12:00:00Z".to_string()),
+            ports: vec![],
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"image\":\"python:3.12\""));
@@ -1789,6 +1844,7 @@ mod tests {
             vcpus: None,
             memory_mb: None,
             created_at: None,
+            ports: vec![],
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(!json.contains("image"));

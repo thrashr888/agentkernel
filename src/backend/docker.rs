@@ -213,6 +213,12 @@ impl Sandbox for DockerSandbox {
             args.push("--network=none".to_string());
         }
 
+        // Port mappings (-p host:container[/udp])
+        for pm in &config.ports {
+            args.push("-p".to_string());
+            args.push(pm.to_string());
+        }
+
         // Mount working directory if requested
         if config.mount_cwd
             && let Some(ref work_dir) = config.work_dir
@@ -476,6 +482,12 @@ impl DockerSandbox {
         // Network configuration
         if !config.network {
             args.push("--network=none".to_string());
+        }
+
+        // Port mappings (-p host:container[/udp])
+        for pm in &config.ports {
+            args.push("-p".to_string());
+            args.push(pm.to_string());
         }
 
         // Mount working directory if requested

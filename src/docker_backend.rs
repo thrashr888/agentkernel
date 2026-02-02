@@ -232,6 +232,9 @@ impl ContainerSandbox {
             args.push("--network=none".to_string());
         }
 
+        // Port mappings are not supported in the legacy ephemeral path
+        // (use the unified backend::docker::DockerSandbox for port mapping)
+
         // Mount working directory if requested
         if perms.mount_cwd
             && let Ok(cwd) = std::env::current_dir()

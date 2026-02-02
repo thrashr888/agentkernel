@@ -162,6 +162,27 @@ impl KubernetesSandbox {
             ..Default::default()
         };
 
+        // Build container port specs
+        let container_ports: Option<Vec<k8s_openapi::api::core::v1::ContainerPort>> =
+            if config.ports.is_empty() {
+                None
+            } else {
+                Some(
+                    config
+                        .ports
+                        .iter()
+                        .map(|pm| k8s_openapi::api::core::v1::ContainerPort {
+                            container_port: pm.container_port as i32,
+                            protocol: Some(match pm.protocol {
+                                super::PortProtocol::Tcp => "TCP".to_string(),
+                                super::PortProtocol::Udp => "UDP".to_string(),
+                            }),
+                            ..Default::default()
+                        })
+                        .collect(),
+                )
+            };
+
         // Main container: sleep infinity as entrypoint
         let container = Container {
             name: "sandbox".to_string(),
@@ -173,6 +194,7 @@ impl KubernetesSandbox {
             ]),
             security_context: Some(security_context),
             resources: Some(resources),
+            ports: container_ports,
             stdin: Some(true),
             tty: Some(true),
             ..Default::default()

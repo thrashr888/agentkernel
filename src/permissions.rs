@@ -140,6 +140,9 @@ impl Permissions {
                 crate::policy::Action::Attach => {
                     // Deny attach - caller should check decision first
                 }
+                crate::policy::Action::PortMap => {
+                    // Deny port mapping - caller should check decision first
+                }
             }
         }
 

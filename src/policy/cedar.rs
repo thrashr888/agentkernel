@@ -63,6 +63,11 @@ namespace AgentKernel {
         principal: [User],
         resource: [Sandbox],
     };
+
+    action PortMap appliesTo {
+        principal: [User],
+        resource: [Sandbox],
+    };
 }
 "#;
 
@@ -75,6 +80,7 @@ pub enum Action {
     Attach,
     Mount,
     Network,
+    PortMap,
 }
 
 impl Action {
@@ -87,6 +93,7 @@ impl Action {
             Action::Attach => r#"AgentKernel::Action::"Attach""#.to_string(),
             Action::Mount => r#"AgentKernel::Action::"Mount""#.to_string(),
             Action::Network => r#"AgentKernel::Action::"Network""#.to_string(),
+            Action::PortMap => r#"AgentKernel::Action::"PortMap""#.to_string(),
         }
     }
 }
@@ -100,6 +107,7 @@ impl std::fmt::Display for Action {
             Action::Attach => write!(f, "Attach"),
             Action::Mount => write!(f, "Mount"),
             Action::Network => write!(f, "Network"),
+            Action::PortMap => write!(f, "PortMap"),
         }
     }
 }
@@ -603,6 +611,7 @@ permit(
         assert_eq!(Action::Attach.to_string(), "Attach");
         assert_eq!(Action::Mount.to_string(), "Mount");
         assert_eq!(Action::Network.to_string(), "Network");
+        assert_eq!(Action::PortMap.to_string(), "PortMap");
     }
 
     #[test]

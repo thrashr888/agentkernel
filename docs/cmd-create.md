@@ -26,6 +26,7 @@ agentkernel create [OPTIONS] [NAME]
 | `-B, --backend <BACKEND>` | Backend: `docker`, `podman`, `firecracker`, `apple` |
 | `--branch` | Auto-name from git project and branch |
 | `--ttl <DURATION>` | Auto-expire after duration (e.g. `1h`, `30m`, `3d`) |
+| `-p, --publish <PORT>` | Port mapping (e.g. `8080:80`, `3000`, `5353:53/udp`). Repeatable. |
 
 ## Examples
 
@@ -92,6 +93,29 @@ agentkernel create my-sandbox --ttl 0
 ```
 
 Run `agentkernel gc` to garbage-collect expired sandboxes.
+
+### Port mapping
+
+```bash
+# Map host port 8080 to container port 80
+agentkernel create web-app -p 8080:80
+
+# Multiple port mappings
+agentkernel create web-app -p 8080:80 -p 3000:3000
+
+# Container port only (host port auto-assigned)
+agentkernel create api -p 3000
+
+# UDP port mapping
+agentkernel create dns -p 5353:53/udp
+```
+
+Ports are also configurable in `agentkernel.toml`:
+
+```toml
+[network]
+ports = ["8080:80", "3000"]
+```
 
 ### Specify backend
 

@@ -94,6 +94,85 @@ impl std::str::FromStr for BackendType {
     }
 }
 
+/// Protocol for port mappings
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PortProtocol {
+    #[default]
+    Tcp,
+    Udp,
+}
+
+impl fmt::Display for PortProtocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PortProtocol::Tcp => write!(f, "tcp"),
+            PortProtocol::Udp => write!(f, "udp"),
+        }
+    }
+}
+
+/// A port mapping from host to container
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortMapping {
+    /// Host port (None = auto-assign)
+    pub host_port: Option<u16>,
+    /// Container port (required)
+    pub container_port: u16,
+    /// Protocol (default: tcp)
+    #[serde(default)]
+    pub protocol: PortProtocol,
+}
+
+impl PortMapping {
+    /// Parse a Docker-style port string: "host:container", "container", "host:container/udp"
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        let (port_part, protocol) = if let Some(stripped) = s.strip_suffix("/udp") {
+            (stripped, PortProtocol::Udp)
+        } else if let Some(stripped) = s.strip_suffix("/tcp") {
+            (stripped, PortProtocol::Tcp)
+        } else {
+            (s, PortProtocol::Tcp)
+        };
+
+        if let Some((host, container)) = port_part.split_once(':') {
+            let host_port: u16 = host
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid host port '{}' in '{}'", host, s))?;
+            let container_port: u16 = container.parse().map_err(|_| {
+                anyhow::anyhow!("Invalid container port '{}' in '{}'", container, s)
+            })?;
+            Ok(PortMapping {
+                host_port: Some(host_port),
+                container_port,
+                protocol,
+            })
+        } else {
+            let container_port: u16 = port_part
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid port '{}' in '{}'", port_part, s))?;
+            Ok(PortMapping {
+                host_port: None,
+                container_port,
+                protocol,
+            })
+        }
+    }
+}
+
+impl fmt::Display for PortMapping {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.host_port {
+            Some(hp) => write!(f, "{}:{}", hp, self.container_port)?,
+            None => write!(f, "{}", self.container_port)?,
+        }
+        if self.protocol == PortProtocol::Udp {
+            write!(f, "/udp")?;
+        }
+        Ok(())
+    }
+}
+
 /// File to inject into sandbox at startup
 #[derive(Debug, Clone)]
 pub struct FileInjection {
@@ -126,6 +205,8 @@ pub struct SandboxConfig {
     pub mount_home: bool,
     /// Files to inject after sandbox starts
     pub files: Vec<FileInjection>,
+    /// Port mappings (host:container)
+    pub ports: Vec<PortMapping>,
 }
 
 impl Default for SandboxConfig {
@@ -141,6 +222,7 @@ impl Default for SandboxConfig {
             read_only: false,
             mount_home: false,
             files: Vec::new(),
+            ports: Vec::new(),
         }
     }
 }
@@ -183,6 +265,12 @@ impl SandboxConfig {
     /// Add files to inject after sandbox starts
     pub fn with_files(mut self, files: Vec<FileInjection>) -> Self {
         self.files = files;
+        self
+    }
+
+    /// Set port mappings
+    pub fn with_ports(mut self, ports: Vec<PortMapping>) -> Self {
+        self.ports = ports;
         self
     }
 }
@@ -626,6 +714,7 @@ mod tests {
         assert!(!config.read_only);
         assert!(!config.mount_home);
         assert!(config.files.is_empty());
+        assert!(config.ports.is_empty());
     }
 
     #[test]
@@ -778,5 +867,111 @@ mod tests {
 
         let config = SandboxConfig::default().with_files(files);
         assert_eq!(config.files.len(), 2);
+    }
+
+    // === PortMapping tests ===
+
+    #[test]
+    fn test_port_mapping_parse_host_container() {
+        let pm = PortMapping::parse("8080:80").unwrap();
+        assert_eq!(pm.host_port, Some(8080));
+        assert_eq!(pm.container_port, 80);
+        assert_eq!(pm.protocol, PortProtocol::Tcp);
+    }
+
+    #[test]
+    fn test_port_mapping_parse_container_only() {
+        let pm = PortMapping::parse("3000").unwrap();
+        assert_eq!(pm.host_port, None);
+        assert_eq!(pm.container_port, 3000);
+        assert_eq!(pm.protocol, PortProtocol::Tcp);
+    }
+
+    #[test]
+    fn test_port_mapping_parse_udp() {
+        let pm = PortMapping::parse("5353:53/udp").unwrap();
+        assert_eq!(pm.host_port, Some(5353));
+        assert_eq!(pm.container_port, 53);
+        assert_eq!(pm.protocol, PortProtocol::Udp);
+    }
+
+    #[test]
+    fn test_port_mapping_parse_explicit_tcp() {
+        let pm = PortMapping::parse("8080:80/tcp").unwrap();
+        assert_eq!(pm.host_port, Some(8080));
+        assert_eq!(pm.container_port, 80);
+        assert_eq!(pm.protocol, PortProtocol::Tcp);
+    }
+
+    #[test]
+    fn test_port_mapping_parse_invalid_host() {
+        assert!(PortMapping::parse("abc:80").is_err());
+    }
+
+    #[test]
+    fn test_port_mapping_parse_invalid_container() {
+        assert!(PortMapping::parse("8080:abc").is_err());
+    }
+
+    #[test]
+    fn test_port_mapping_parse_invalid_single() {
+        assert!(PortMapping::parse("not-a-port").is_err());
+    }
+
+    #[test]
+    fn test_port_mapping_display() {
+        assert_eq!(
+            format!(
+                "{}",
+                PortMapping {
+                    host_port: Some(8080),
+                    container_port: 80,
+                    protocol: PortProtocol::Tcp
+                }
+            ),
+            "8080:80"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                PortMapping {
+                    host_port: None,
+                    container_port: 3000,
+                    protocol: PortProtocol::Tcp
+                }
+            ),
+            "3000"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                PortMapping {
+                    host_port: Some(5353),
+                    container_port: 53,
+                    protocol: PortProtocol::Udp
+                }
+            ),
+            "5353:53/udp"
+        );
+    }
+
+    #[test]
+    fn test_port_mapping_serialize_roundtrip() {
+        let pm = PortMapping::parse("8080:80").unwrap();
+        let json = serde_json::to_string(&pm).unwrap();
+        let pm2: PortMapping = serde_json::from_str(&json).unwrap();
+        assert_eq!(pm, pm2);
+    }
+
+    #[test]
+    fn test_sandbox_config_with_ports() {
+        let ports = vec![
+            PortMapping::parse("8080:80").unwrap(),
+            PortMapping::parse("3000").unwrap(),
+        ];
+        let config = SandboxConfig::default().with_ports(ports);
+        assert_eq!(config.ports.len(), 2);
+        assert_eq!(config.ports[0].container_port, 80);
+        assert_eq!(config.ports[1].container_port, 3000);
     }
 }

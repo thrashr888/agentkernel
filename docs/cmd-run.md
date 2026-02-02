@@ -23,6 +23,7 @@ agentkernel run [OPTIONS] <COMMAND>...
 | `--ttl <DURATION>` | TTL for kept sandboxes (e.g. `1h`, `30m`, `3d`; default: `1h`) |
 | `--branch` | Use git project+branch as sandbox name (reuses existing sandbox) |
 | `--no-network` | Disable network access |
+| `-P, --publish <PORT>` | Port mapping (e.g. `8080:80`, `3000`). Repeatable. Requires `--fast=false`. |
 
 ## Examples
 
@@ -80,6 +81,18 @@ agentkernel run --branch -- npm test
 # Subsequent runs reuse the same sandbox (faster, state preserved)
 agentkernel run --branch -- npm run lint
 ```
+
+### Port mapping
+
+```bash
+# Run a web server with port mapping (requires --fast=false)
+agentkernel run -p 8080:80 --fast=false python3 -m http.server 80
+
+# Multiple ports
+agentkernel run -p 8080:80 -p 3000:3000 --fast=false node server.js
+```
+
+Note: Port mapping is not compatible with `--fast` mode (container pool). Use `--fast=false` or omit `--fast` when using `-p`.
 
 ### From a template
 

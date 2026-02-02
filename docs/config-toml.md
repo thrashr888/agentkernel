@@ -105,7 +105,15 @@ Advanced network settings.
 ```toml
 [network]
 vsock_cid = 3                 # Vsock CID (Firecracker only)
+ports = ["8080:80", "3000"]   # Port mappings (host:container or container-only)
 ```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `vsock_cid` | int | auto | Vsock CID (Firecracker only) |
+| `ports` | array | `[]` | Port mappings. Format: `"host:container"`, `"container"`, or `"host:container/udp"` |
+
+Port mappings have no effect when network access is disabled (`[security] network = false` or `--no-network`).
 
 ## [[files]]
 
@@ -194,6 +202,9 @@ memory_mb = 2048
 profile = "moderate"
 network = true
 mount_cwd = true
+
+[network]
+ports = ["3000:3000", "8080:80"]
 
 [[files]]
 source = ".env.development"

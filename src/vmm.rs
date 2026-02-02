@@ -5,7 +5,8 @@
 
 use crate::audit::{AuditEvent, log_event};
 use crate::backend::{
-    BackendType, FileInjection, Sandbox, SandboxConfig, create_sandbox, detect_best_backend,
+    BackendType, FileInjection, PortMapping, Sandbox, SandboxConfig, create_sandbox,
+    detect_best_backend,
 };
 use crate::config::Config;
 use crate::docker_backend::detect_container_runtime;
@@ -60,6 +61,9 @@ pub struct SandboxState {
     /// When this sandbox expires (RFC3339). Computed from created_at + ttl_seconds.
     #[serde(default)]
     pub expires_at: Option<String>,
+    /// Port mappings (host:container)
+    #[serde(default)]
+    pub ports: Vec<PortMapping>,
 }
 
 /// VM Manager - manages sandboxes via unified Sandbox trait
@@ -414,7 +418,7 @@ impl VmManager {
         vcpus: u32,
         memory_mb: u64,
     ) -> Result<()> {
-        self.create_with_ttl(name, image, vcpus, memory_mb, None)
+        self.create_with_options(name, image, vcpus, memory_mb, None, Vec::new())
             .await
     }
 
@@ -426,6 +430,20 @@ impl VmManager {
         vcpus: u32,
         memory_mb: u64,
         ttl_seconds: Option<u64>,
+    ) -> Result<()> {
+        self.create_with_options(name, image, vcpus, memory_mb, ttl_seconds, Vec::new())
+            .await
+    }
+
+    /// Create a new sandbox with TTL and port mappings
+    pub async fn create_with_options(
+        &mut self,
+        name: &str,
+        image: &str,
+        vcpus: u32,
+        memory_mb: u64,
+        ttl_seconds: Option<u64>,
+        ports: Vec<PortMapping>,
     ) -> Result<()> {
         if self.sandboxes.contains_key(name) {
             bail!("Sandbox '{}' already exists", name);
@@ -469,6 +487,7 @@ impl VmManager {
             remote_namespace: None,
             ttl_seconds,
             expires_at,
+            ports,
         };
 
         self.save_sandbox(&state)?;
@@ -553,6 +572,7 @@ impl VmManager {
             read_only: perms.read_only_root,
             mount_home: perms.mount_home,
             files: files.to_vec(),
+            ports: state.ports.clone(),
         };
 
         sandbox.start(&config).await?;
@@ -820,6 +840,7 @@ impl VmManager {
             read_only: perms.read_only_root,
             mount_home: perms.mount_home,
             files: files.to_vec(),
+            ports: Vec::new(),
         };
 
         // Use optimized `docker/podman run --rm` for container backends
@@ -965,6 +986,7 @@ mod tests {
             remote_namespace: None,
             ttl_seconds: None,
             expires_at: None,
+            ports: Vec::new(),
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -1006,6 +1028,7 @@ mod tests {
             remote_namespace: None,
             ttl_seconds: None,
             expires_at: None,
+            ports: Vec::new(),
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -1056,6 +1079,7 @@ mod tests {
             remote_namespace: None,
             ttl_seconds: None,
             expires_at: None,
+            ports: Vec::new(),
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -1099,6 +1123,7 @@ mod tests {
                 remote_namespace: None,
                 ttl_seconds: None,
                 expires_at: None,
+                ports: Vec::new(),
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();

@@ -18,10 +18,10 @@ agentkernel list [OPTIONS]
 ## Output
 
 ```
-NAME                           STATUS     BACKEND
+NAME                           STATUS     BACKEND   PORTS
 my-project                     running    docker
 claude-sandbox                 stopped    docker
-test-env                       running    podman
+web-app                        running    docker    8080:80, 3000:3000
 myrepo-feature-auth            running    docker
 ```
 
@@ -32,6 +32,7 @@ myrepo-feature-auth            running    docker
 | NAME | Sandbox name |
 | STATUS | `running` or `stopped` |
 | BACKEND | Backend used: `docker`, `podman`, `firecracker`, `apple` |
+| PORTS | Port mappings (if any) |
 
 ## Examples
 

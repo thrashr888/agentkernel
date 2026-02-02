@@ -201,6 +201,27 @@ impl NomadSandbox {
         // Build network stanza
         let network = if !config.network {
             json!({ "mode": "none" })
+        } else if !config.ports.is_empty() {
+            // Use bridge mode with dynamic ports when port mappings are specified
+            let dynamic_ports: Vec<serde_json::Value> = config
+                .ports
+                .iter()
+                .enumerate()
+                .map(|(i, pm)| {
+                    let mut port = json!({
+                        "Label": format!("port{}", i),
+                        "To": pm.container_port,
+                    });
+                    if let Some(hp) = pm.host_port {
+                        port["Value"] = json!(hp);
+                    }
+                    port
+                })
+                .collect();
+            json!({
+                "Mode": "bridge",
+                "DynamicPorts": dynamic_ports
+            })
         } else {
             json!({})
         };

@@ -27,6 +27,7 @@ fn test_sandbox_config() -> agentkernel::backend::SandboxConfig {
         read_only: false,
         mount_home: false,
         files: Vec::new(),
+        ports: Vec::new(),
     }
 }
 
