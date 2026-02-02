@@ -30,6 +30,7 @@ COPY tests ./tests
 COPY guest-agent ./guest-agent
 COPY claude-plugin ./claude-plugin
 COPY plugins ./plugins
+COPY templates ./templates
 COPY images/build ./images/build
 COPY images/kernel/microvm.config ./images/kernel/microvm.config
 
