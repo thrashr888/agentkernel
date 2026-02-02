@@ -12,6 +12,7 @@ mod firecracker_client;
 mod git_utils;
 mod http_api;
 mod hyperlight_backend;
+mod images;
 mod languages;
 mod mcp;
 mod permissions;
@@ -288,6 +289,44 @@ enum Commands {
         #[arg(long, default_value = "alpine:3.20")]
         image: String,
     },
+    /// Run multiple jobs in parallel (fan-out, fan-in results)
+    Parallel {
+        /// Jobs in format "name:image:command" (repeatable)
+        #[arg(short, long, required = true)]
+        job: Vec<String>,
+        /// Backend to use
+        #[arg(short = 'B', long)]
+        backend: Option<String>,
+    },
+    /// Export a sandbox's filesystem as a tar archive
+    Export {
+        /// Sandbox name
+        name: String,
+        /// Output file (default: <name>.tar)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Export a sandbox's configuration as TOML (for sharing/re-import)
+    ExportConfig {
+        /// Sandbox name
+        name: String,
+    },
+    /// Import a sandbox configuration from TOML
+    ImportConfig {
+        /// Path to the TOML config file
+        file: PathBuf,
+        /// Name for the imported sandbox
+        #[arg(long, value_name = "NAME")]
+        r#as: Option<String>,
+        /// Backend to use
+        #[arg(short = 'B', long)]
+        backend: Option<String>,
+    },
+    /// Manage Docker image cache (list, prune, pull)
+    Images {
+        #[command(subcommand)]
+        action: ImagesAction,
+    },
     /// Run a multi-step agent pipeline (chain sandboxes with data flow)
     Pipeline {
         /// Path to pipeline.toml file
@@ -360,6 +399,27 @@ enum SecretAction {
     Delete {
         /// Secret key name
         key: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ImagesAction {
+    /// List Docker images (--all shows all images, default shows agentkernel images only)
+    List {
+        /// Show all images, not just agentkernel-related
+        #[arg(short, long)]
+        all: bool,
+    },
+    /// Remove unused images to free disk space
+    Prune {
+        /// Only prune agentkernel-built images (default: prune all dangling)
+        #[arg(long)]
+        agentkernel_only: bool,
+    },
+    /// Pre-pull a Docker image
+    Pull {
+        /// Image to pull (e.g. python:3.12-alpine)
+        image: String,
     },
 }
 
@@ -1635,6 +1695,249 @@ memory_mb = 512
             }
             benchmark::run_benchmark(&backend_list, iterations, &image).await?;
         }
+        Commands::Parallel { job, backend } => {
+            if job.is_empty() {
+                bail!("At least one --job is required");
+            }
+
+            // Parse jobs: "name:image:command"
+            let mut parsed_jobs: Vec<(String, String, String)> = Vec::new();
+            for j in &job {
+                let parts: Vec<&str> = j.splitn(3, ':').collect();
+                if parts.len() < 3 {
+                    bail!("Invalid job format: '{}'. Expected 'name:image:command'", j);
+                }
+                parsed_jobs.push((
+                    parts[0].to_string(),
+                    parts[1].to_string(),
+                    parts[2].to_string(),
+                ));
+            }
+
+            println!(
+                "Running {} job{} in parallel...\n",
+                parsed_jobs.len(),
+                if parsed_jobs.len() != 1 { "s" } else { "" }
+            );
+
+            let backend_type = if let Some(ref b) = backend {
+                Some(
+                    b.parse::<crate::backend::BackendType>()
+                        .map_err(|e| anyhow::anyhow!(e))?,
+                )
+            } else {
+                None
+            };
+
+            let total_start = std::time::Instant::now();
+
+            // Spawn all jobs concurrently
+            let mut handles = Vec::new();
+            for (name, image, command) in parsed_jobs {
+                let bt = backend_type;
+                handles.push(tokio::spawn(async move {
+                    let mut mgr = VmManager::with_backend(bt)?;
+                    let sandbox = format!(
+                        "parallel-{}-{}",
+                        name,
+                        &uuid::Uuid::new_v4().to_string()[..6]
+                    );
+                    let cmd: Vec<String> = command.split_whitespace().map(String::from).collect();
+
+                    let start = std::time::Instant::now();
+
+                    // Try ephemeral first
+                    let result = mgr
+                        .run_ephemeral(&image, &cmd, &crate::permissions::Permissions::default())
+                        .await;
+                    let elapsed = start.elapsed();
+
+                    match result {
+                        Ok(output) => Ok::<_, anyhow::Error>((name, elapsed, true, output)),
+                        Err(e) if e.to_string().contains("Ephemeral mode not supported") => {
+                            // Fallback to full lifecycle
+                            mgr.create(&sandbox, &image, 1, 512).await?;
+                            mgr.start(&sandbox).await?;
+                            let output = mgr
+                                .exec_cmd(&sandbox, &cmd)
+                                .await
+                                .unwrap_or_else(|e| format!("Error: {}", e));
+                            let _ = mgr.stop(&sandbox).await;
+                            let _ = mgr.remove(&sandbox).await;
+                            let elapsed = start.elapsed();
+                            Ok((name, elapsed, true, output))
+                        }
+                        Err(e) => Ok((name, elapsed, false, format!("Error: {}", e))),
+                    }
+                }));
+            }
+
+            // Collect results
+            let mut all_passed = true;
+            for handle in handles {
+                match handle.await {
+                    Ok(Ok((name, elapsed, success, _output))) => {
+                        let status = if success { "done" } else { "FAILED" };
+                        println!("  {} {} ({:.1}s)", name, status, elapsed.as_secs_f64());
+                        if !success {
+                            all_passed = false;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        eprintln!("  Job error: {}", e);
+                        all_passed = false;
+                    }
+                    Err(e) => {
+                        eprintln!("  Job panicked: {}", e);
+                        all_passed = false;
+                    }
+                }
+            }
+
+            let total_elapsed = total_start.elapsed();
+            if all_passed {
+                println!(
+                    "\nAll jobs passed ({:.1}s wall time)",
+                    total_elapsed.as_secs_f64()
+                );
+            } else {
+                bail!(
+                    "Some jobs failed ({:.1}s wall time)",
+                    total_elapsed.as_secs_f64()
+                );
+            }
+        }
+        Commands::Export { name, output } => {
+            validation::validate_sandbox_name(&name)?;
+            let output_file = output.unwrap_or_else(|| format!("{}.tar", name));
+
+            // Use docker export to get the full filesystem
+            println!("Exporting sandbox '{}' to {}...", name, output_file);
+            let status = std::process::Command::new("docker")
+                .args(["export", "-o", &output_file, &name])
+                .status()
+                .map_err(|e| anyhow::anyhow!("Failed to run docker export: {}", e))?;
+
+            if !status.success() {
+                bail!("docker export failed for sandbox '{}'", name);
+            }
+
+            let size = std::fs::metadata(&output_file)?.len();
+            let size_mb = size as f64 / 1_048_576.0;
+            println!("Exported {:.1} MB to {}", size_mb, output_file);
+        }
+        Commands::ExportConfig { name } => {
+            let manager = VmManager::new()?;
+            let state = manager
+                .get_state(&name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+
+            // Generate a TOML config from the sandbox state
+            let config = format!(
+                "[sandbox]\n\
+                 name = \"{}\"\n\
+                 base_image = \"{}\"\n\
+                 \n\
+                 [resources]\n\
+                 vcpus = {}\n\
+                 memory_mb = {}\n",
+                state.name, state.image, state.vcpus, state.memory_mb,
+            );
+
+            print!("{}", config);
+        }
+        Commands::ImportConfig {
+            file,
+            r#as: as_name,
+            backend,
+        } => {
+            if !file.exists() {
+                bail!("Config file not found: {}", file.display());
+            }
+
+            let cfg = Config::from_file(&file)?;
+            let name = as_name.unwrap_or_else(|| cfg.sandbox.name.clone());
+            validation::validate_sandbox_name(&name)?;
+
+            let backend_type = if let Some(ref b) = backend {
+                Some(
+                    b.parse::<crate::backend::BackendType>()
+                        .map_err(|e| anyhow::anyhow!(e))?,
+                )
+            } else {
+                None
+            };
+            let mut manager = VmManager::with_backend(backend_type)?;
+
+            let docker_image = cfg.docker_image();
+            println!(
+                "Importing config as sandbox '{}' (image: {})...",
+                name, docker_image
+            );
+            manager
+                .create(
+                    &name,
+                    &docker_image,
+                    cfg.resources.vcpus,
+                    cfg.resources.memory_mb,
+                )
+                .await?;
+
+            println!("Sandbox '{}' created from config.", name);
+            println!("\nNext steps:");
+            println!("  agentkernel start {}", name);
+        }
+        Commands::Images { action } => match action {
+            ImagesAction::List { all } => {
+                let imgs = images::list_images(all)?;
+                if imgs.is_empty() {
+                    if all {
+                        println!("No Docker images found.");
+                    } else {
+                        println!("No agentkernel images found. Use --all to show all images.");
+                    }
+                } else {
+                    println!(
+                        "{:<40} {:<15} {:<12} {:>10}",
+                        "REPOSITORY:TAG", "IMAGE ID", "USED BY", "SIZE"
+                    );
+                    let mut total_sandboxes = 0;
+                    for img in &imgs {
+                        let usage = images::sandbox_usage(&img.full_name()).unwrap_or(0);
+                        total_sandboxes += usage;
+                        let usage_str = if usage > 0 {
+                            format!("{} sandbox{}", usage, if usage != 1 { "s" } else { "" })
+                        } else {
+                            "unused".to_string()
+                        };
+                        println!(
+                            "{:<40} {:<15} {:<12} {:>10}",
+                            img.full_name(),
+                            img.image_id,
+                            usage_str,
+                            img.size
+                        );
+                    }
+                    println!(
+                        "\n{} image{}, {} sandbox reference{}",
+                        imgs.len(),
+                        if imgs.len() != 1 { "s" } else { "" },
+                        total_sandboxes,
+                        if total_sandboxes != 1 { "s" } else { "" }
+                    );
+                }
+            }
+            ImagesAction::Prune { agentkernel_only } => {
+                println!("Pruning images...");
+                let result = images::prune(agentkernel_only)?;
+                println!("{}", result);
+            }
+            ImagesAction::Pull { image } => {
+                println!("Pulling {}...", image);
+                images::pull(&image)?;
+                println!("Done.");
+            }
+        },
         Commands::Pipeline { file, backend } => {
             if !file.exists() {
                 bail!("Pipeline file not found: {}", file.display());
