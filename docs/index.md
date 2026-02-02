@@ -38,10 +38,13 @@ agentkernel run python3 -c "print('Hello from sandbox!')"
 agentkernel run npm test
 agentkernel run cargo build
 
-# Create a persistent sandbox for longer work
-agentkernel create my-project --dir .
+# Create from a template
+agentkernel create my-project --template python
 agentkernel start my-project
-agentkernel exec my-project pytest
+agentkernel exec my-project -- pytest
+
+# Or auto-name from your git branch
+agentkernel create --branch -B docker
 ```
 
 agentkernel auto-detects the runtime from your command or project files. Run `python3` and it pulls `python:3.12-alpine`. Run `cargo build` and it pulls `rust:1.85-alpine`. No configuration needed for 12+ languages -- JavaScript, Python, Rust, Go, Ruby, Java, C#, C/C++, PHP, Elixir, Terraform, and Shell.
@@ -113,6 +116,34 @@ agentkernel run --backend nomad -- echo "hello from nomad"
 ```
 
 Both backends support warm pools for fast acquisition (~570ms one-shot latency) and scale to dozens of concurrent sandboxes per node.
+
+## It has a complete workflow
+
+Templates, snapshots, sessions, pipelines, and parallel execution — everything you need for real development workflows.
+
+```bash
+# Templates: pre-configured sandbox environments
+agentkernel create ci --template rust-ci
+
+# Snapshots: save and restore sandbox state
+agentkernel snapshot take my-sandbox --name before-upgrade
+agentkernel restore before-upgrade --as rollback
+
+# Sessions: tie sandbox lifecycle to agent conversations
+agentkernel session start --name feature-x --agent claude -B docker
+agentkernel session save feature-x
+agentkernel session resume feature-x
+
+# Pipelines: chain sandboxes with data flow
+agentkernel pipeline pipeline.toml
+
+# Parallel: fan-out jobs across sandboxes
+agentkernel parallel \
+  --job "lint:node:22-alpine:npx eslint ." \
+  --job "test:node:22-alpine:npm test"
+```
+
+Per-branch sandboxes, image cache management, secrets vault, sandbox export/import, TTL-based auto-expiry, and garbage collection round out the developer experience.
 
 ## It's programmable
 
@@ -220,6 +251,11 @@ agentkernel run python3 -c "print('Hello from sandbox!')"
 - [Getting Started](getting-started) - Your first sandbox
 - [Commands](commands) - Full CLI reference
 - [Configuration](configuration) - Config file format
+- [Templates](cmd-templates) - Pre-configured sandbox environments
+- [Snapshots](cmd-snapshots) - Save and restore sandbox state
+- [Sessions](cmd-sessions) - Agent session lifecycle management
+- [Pipelines](cmd-pipelines) - Multi-step sandbox pipelines
+- [Secrets](cmd-secrets) - API key and credential management
 - [Agents](agents) - Running Claude Code, Codex, Gemini CLI
 - [HTTP API](api) - Programmatic access
 - [SDKs](sdks) - Client libraries for [Node.js](sdk-nodejs), [Python](sdk-python), [Go](sdk-golang), [Rust](sdk-rust), [Swift](sdk-swift)

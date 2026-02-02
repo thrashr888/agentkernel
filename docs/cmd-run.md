@@ -13,11 +13,16 @@ agentkernel run [OPTIONS] <COMMAND>...
 
 | Option | Description |
 |--------|-------------|
-| `--image <IMAGE>` | Docker image to use (auto-detected if not specified) |
-| `--profile <PROFILE>` | Security profile: `permissive`, `moderate`, `restrictive` |
-| `--keep` | Keep the sandbox after execution (for debugging) |
-| `--fast` | Use container pool for faster startup (default: true) |
-| `--config <FILE>` | Path to agentkernel.toml config file |
+| `-i, --image <IMAGE>` | Docker image to use (auto-detected if not specified) |
+| `-p, --profile <PROFILE>` | Security profile: `permissive`, `moderate`, `restrictive` |
+| `-k, --keep` | Keep the sandbox after execution (for debugging) |
+| `-F, --fast` | Use container pool for faster startup (default: true) |
+| `-c, --config <FILE>` | Path to agentkernel.toml config file |
+| `-B, --backend <BACKEND>` | Backend: `docker`, `podman`, `firecracker`, `apple`, etc. |
+| `--template <NAME>` | Use a template (built-in, local, `github:owner/repo/path`, or file) |
+| `--ttl <DURATION>` | TTL for kept sandboxes (e.g. `1h`, `30m`, `3d`; default: `1h`) |
+| `--branch` | Use git project+branch as sandbox name (reuses existing sandbox) |
+| `--no-network` | Disable network access |
 
 ## Examples
 
@@ -63,6 +68,24 @@ agentkernel run --keep python3 script.py
 # Later, inspect the sandbox
 agentkernel list
 agentkernel exec <sandbox-name> -- cat /tmp/debug.log
+```
+
+### Branch-aware execution
+
+```bash
+# Reuses sandbox named after your git project + branch
+# On branch "feature/auth" in project "myapp" → sandbox "myapp-feature-auth"
+agentkernel run --branch -- npm test
+
+# Subsequent runs reuse the same sandbox (faster, state preserved)
+agentkernel run --branch -- npm run lint
+```
+
+### From a template
+
+```bash
+agentkernel run --template python -- python3 -c "print('hello')"
+agentkernel run --template rust-ci -- cargo test
 ```
 
 ## Auto-Detection
