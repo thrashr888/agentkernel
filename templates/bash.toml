@@ -1,0 +1,13 @@
+# Bash/Shell sandbox template
+# Minimal Alpine-based sandbox for shell scripts
+
+[sandbox]
+name = "bash"
+base_image = "alpine:3.20"
+
+[resources]
+vcpus = 1
+memory_mb = 256
+
+[security]
+profile = "moderate"

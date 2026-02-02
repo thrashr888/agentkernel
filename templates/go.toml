@@ -1,0 +1,16 @@
+# Go sandbox template
+# Go toolchain for Go development
+
+[sandbox]
+name = "go"
+base_image = "golang:1.23-alpine"
+
+[resources]
+vcpus = 2
+memory_mb = 512
+
+[security]
+profile = "moderate"
+
+[security.domains]
+allow = ["proxy.golang.org", "sum.golang.org"]

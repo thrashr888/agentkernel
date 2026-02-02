@@ -1,0 +1,16 @@
+# Rust sandbox template
+# Rust toolchain for Rust development
+
+[sandbox]
+name = "rust"
+base_image = "rust:1.85-alpine"
+
+[resources]
+vcpus = 2
+memory_mb = 512
+
+[security]
+profile = "moderate"
+
+[security.domains]
+allow = ["crates.io", "static.crates.io", "index.crates.io"]
