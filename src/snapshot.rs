@@ -65,10 +65,11 @@ pub fn take(
     state: &SnapshotInput,
 ) -> Result<SnapshotMeta> {
     let image_tag = format!("agentkernel-snap:{}", snapshot_name);
+    let container_name = format!("agentkernel-{}", sandbox_name);
 
     // Docker commit the container
     let output = std::process::Command::new("docker")
-        .args(["commit", sandbox_name, &image_tag])
+        .args(["commit", &container_name, &image_tag])
         .output()
         .context("Failed to run docker commit")?;
 
