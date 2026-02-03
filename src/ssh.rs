@@ -264,6 +264,20 @@ pub fn sign_client_key_local(
             .context("Failed to add principal")?;
     }
 
+    // Add standard extensions (ssh-keygen includes these by default).
+    // Without permit-pty, sshd rejects PTY allocation requests.
+    for ext in &[
+        "permit-X11-forwarding",
+        "permit-agent-forwarding",
+        "permit-port-forwarding",
+        "permit-pty",
+        "permit-user-rc",
+    ] {
+        builder
+            .extension(*ext, "")
+            .context("Failed to add extension")?;
+    }
+
     let cert = builder
         .sign(&ca_key)
         .context("Failed to sign client certificate")?;
@@ -606,6 +620,16 @@ mod tests {
 
         // Certificate should be parseable and in OpenSSH format
         assert!(cert.contains("ssh-ed25519-cert-v01@openssh.com"));
+
+        // Verify the cert includes permit-pty and other standard extensions
+        let parsed = ssh_key::Certificate::from_openssh(&cert).unwrap();
+        let extensions = parsed.extensions();
+        assert!(
+            extensions.get("permit-pty").is_some(),
+            "Certificate must include permit-pty extension for PTY allocation"
+        );
+        assert!(extensions.get("permit-port-forwarding").is_some());
+        assert!(extensions.get("permit-agent-forwarding").is_some());
     }
 
     #[test]
