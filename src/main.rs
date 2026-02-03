@@ -1639,9 +1639,10 @@ memory_mb = 512
                 .arg("-p")
                 .arg(host_port.to_string());
 
-            // Request PTY for interactive sessions (no remote command)
+            // Force PTY for interactive sessions (no remote command).
+            // -tt forces allocation even when invoked via `cargo run`.
             if command.is_empty() {
-                ssh_cmd.arg("-t");
+                ssh_cmd.arg("-tt");
             }
 
             ssh_cmd.arg("sandbox@localhost");
