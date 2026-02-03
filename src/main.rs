@@ -953,7 +953,14 @@ memory_mb = 512
             println!("Starting sandbox '{}'...", name);
             manager.start(&name).await?;
             println!("Sandbox '{}' started.", name);
-            println!("\nTo attach: agentkernel attach {}", name);
+            if manager
+                .get_sandbox_state(&name)
+                .is_some_and(|s| s.ssh_enabled)
+            {
+                println!("\nTo connect: agentkernel ssh {}", name);
+            } else {
+                println!("\nTo attach: agentkernel attach {}", name);
+            }
         }
         Commands::Stop { name } => {
             validation::validate_sandbox_name(&name)?;
@@ -1630,8 +1637,14 @@ memory_mb = 512
                 .arg("-o")
                 .arg(format!("CertificateFile={}", cert_path.display()))
                 .arg("-p")
-                .arg(host_port.to_string())
-                .arg("sandbox@localhost");
+                .arg(host_port.to_string());
+
+            // Request PTY for interactive sessions (no remote command)
+            if command.is_empty() {
+                ssh_cmd.arg("-t");
+            }
+
+            ssh_cmd.arg("sandbox@localhost");
 
             // Append remote command if provided
             if !command.is_empty() {
