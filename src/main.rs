@@ -1646,10 +1646,12 @@ memory_mb = 512
                 .arg("-p")
                 .arg(host_port.to_string());
 
-            // Force PTY for interactive sessions (no remote command).
-            // -tt forces allocation even when invoked via `cargo run`.
+            // Request PTY for interactive sessions when we have a terminal
             if command.is_empty() {
-                ssh_cmd.arg("-tt");
+                use std::io::IsTerminal;
+                if std::io::stdin().is_terminal() {
+                    ssh_cmd.arg("-t");
+                }
             }
 
             ssh_cmd.arg("sandbox@localhost");
@@ -1741,31 +1743,36 @@ memory_mb = 512
                     std::process::exit(status.code().unwrap_or(1));
                 }
             } else {
-                // 8b. Non-recording mode: existing behavior with inherited stdio
-                let status = ssh_cmd
-                    .stdin(std::process::Stdio::inherit())
-                    .stdout(std::process::Stdio::inherit())
-                    .stderr(std::process::Stdio::inherit())
-                    .status()
-                    .map_err(|e| {
-                        anyhow::anyhow!(
-                            "Failed to execute ssh command: {}. Is OpenSSH installed?",
-                            e
-                        )
-                    })?;
+                // 8b. Non-recording mode: exec() replaces this process with ssh
+                //     for proper terminal/PTY handling
+                eprintln!(
+                    "  or: ssh -i {} -p {} sandbox@localhost",
+                    client_key_path.display(),
+                    host_port
+                );
+                use std::io::Write;
+                std::io::stderr().flush().ok();
 
-                // Audit: log SSH disconnect
-                let duration = start_time.elapsed().as_secs();
-                audit::log_event(audit::AuditEvent::SshDisconnected {
-                    sandbox: name.clone(),
-                    duration_secs: duration,
-                    recording: None,
-                });
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::CommandExt;
+                    let err = ssh_cmd.exec();
+                    bail!("Failed to exec ssh: {}", err);
+                }
 
-                // 9. Temp files cleaned up automatically when temp_dir drops
-
-                if !status.success() {
-                    std::process::exit(status.code().unwrap_or(1));
+                #[cfg(not(unix))]
+                {
+                    let status = ssh_cmd
+                        .stdin(std::process::Stdio::inherit())
+                        .stdout(std::process::Stdio::inherit())
+                        .stderr(std::process::Stdio::inherit())
+                        .status()
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to execute ssh: {}. Is OpenSSH installed?", e)
+                        })?;
+                    if !status.success() {
+                        std::process::exit(status.code().unwrap_or(1));
+                    }
                 }
             }
         }
