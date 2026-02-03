@@ -1592,7 +1592,7 @@ memory_mb = 512
             audit::log_event(audit::AuditEvent::SshConnected {
                 sandbox: name.clone(),
                 host_port,
-                user: "sandbox".to_string(),
+                ssh_user: "sandbox".to_string(),
             });
             let start_time = std::time::Instant::now();
 
@@ -2172,11 +2172,11 @@ memory_mb = 512
                         audit::AuditEvent::SshConnected {
                             sandbox,
                             host_port,
-                            user,
+                            ssh_user,
                         } => (
                             "ssh_connected",
                             sandbox.as_str(),
-                            format!("{}@localhost:{}", user, host_port),
+                            format!("{}@localhost:{}", ssh_user, host_port),
                         ),
                         audit::AuditEvent::SshDisconnected {
                             sandbox,
@@ -3393,9 +3393,11 @@ fn run_info(name: &str) -> Result<()> {
                     format!("policy  denied: {}", policy)
                 }
                 audit::AuditEvent::SshConnected {
-                    host_port, user, ..
+                    host_port,
+                    ssh_user,
+                    ..
                 } => {
-                    format!("ssh     {}@localhost:{}", user, host_port)
+                    format!("ssh     {}@localhost:{}", ssh_user, host_port)
                 }
                 audit::AuditEvent::SshDisconnected { duration_secs, .. } => {
                     format!("ssh-end {}s", duration_secs)
