@@ -1,0 +1,8 @@
+# cargo-audit configuration
+# https://github.com/rustsec/rustsec/tree/main/cargo-audit
+
+[advisories]
+# RUSTSEC-2023-0071: rsa timing side-channel (Marvin Attack)
+# No patch available. Transitive dep via ssh-key crate.
+# We don't use rsa for network-facing operations.
+ignore = ["RUSTSEC-2023-0071"]

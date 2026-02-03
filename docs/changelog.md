@@ -6,6 +6,79 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## [v0.8.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.8.0) — Secure Transport
+
+_February 3, 2026_
+
+### Added
+
+- **SSH certificate authentication** — ephemeral ed25519 certs with per-sandbox CA, sshd injection via `--ssh` flag, `agentkernel ssh` command for cert-authenticated shell access
+- **SSH config generation** — `agentkernel ssh-config` outputs `~/.ssh/config` entries for VS Code Remote-SSH and other IDEs
+- **SSH session recording** — `agentkernel ssh --record` captures sessions in asciicast v2 format
+- **SSH ProxyCommand** — `agentkernel ssh-proxy` enables transparent SSH through `agentkernel` without manual port management
+- **Vault SSH integration** — optional HashiCorp Vault CA for certificate signing instead of local per-sandbox CA
+- **TLS for HTTP API** — rustls-based HTTPS with auto-generated self-signed certs or custom cert/key via `--tls-cert`/`--tls-key`
+- **Container IP display** — `list`, `info`, HTTP API, and MCP output show Docker bridge IPs for running sandboxes
+- **Port mapping** — `-p`/`--publish` flag for host:container port forwarding (e.g. `-p 8080:80`)
+- **Transport security policy** — Cedar policy for SSH and TLS enforcement in enterprise mode
+- **`[ssh]` config section** — `enabled`, `port`, `user`, `cert_ttl`, and Vault settings in `agentkernel.toml`
+
+### Fixed
+
+- **PTY allocation** — SSH certificates now include all 5 standard OpenSSH extensions (`permit-pty`, `permit-X11-forwarding`, etc.)
+- **Audit log deserialization** — renamed `SshConnected.user` to `ssh_user` to fix `#[serde(flatten)]` field collision; legacy entries auto-repaired on read
+- **SSH cert auth** — fixed account unlock, file ownership, sshd_config Alpine compatibility, and auto-assigned port resolution
+- **`snapshot restore`** — moved restore under `snapshot restore` subcommand, fixed doc drift
+
+### Security
+
+- Certificates are ephemeral (default 30m TTL) and never stored long-term
+- No password authentication — certificate-only SSH access
+- Per-sandbox CA isolation — compromising one sandbox's CA doesn't affect others
+
+**Full Changelog**: [v0.7.1...v0.8.0](https://github.com/thrashr888/agentkernel/compare/v0.7.1...v0.8.0)
+
+---
+
+## [v0.7.1](https://github.com/thrashr888/agentkernel/releases/tag/v0.7.1) — CI Fix
+
+_February 2, 2026_
+
+### Fixed
+
+- **Docker build** — added templates directory to Docker build context
+
+**Full Changelog**: [v0.7.0...v0.7.1](https://github.com/thrashr888/agentkernel/compare/v0.7.0...v0.7.1)
+
+---
+
+## [v0.7.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.7.0) — OSS CLI Roadmap
+
+_February 2, 2026_
+
+### Added
+
+- **Templates** — `template list`, `template save`, `template add` (from GitHub), `template remove`; built-in templates for common runtimes
+- **Snapshots** — `snapshot take`, `snapshot list`, `snapshot delete`, `snapshot restore` for checkpoint/restore workflows
+- **Sessions** — `session start`, `session list`, `session stop`, `session save`, `session resume`, `session delete` for agent session management
+- **Pipelines** — `pipeline` command for multi-step TOML-defined workflows with dependencies
+- **Parallel execution** — `parallel` command for concurrent multi-job execution with `--job` syntax
+- **Secrets** — `secret set`, `secret get`, `secret list`, `secret delete` for secure credential storage
+- **Export/Import** — `export-config` and `import-config` for TOML-based sandbox portability
+- **Filesystem export** — `export` command to save sandbox filesystem as tar
+- **Garbage collection** — `gc` command for expired sandbox cleanup
+- **Per-branch sandboxes** — `create --branch` auto-names from git project + branch
+
+### Fixed
+
+- Container naming consistency across commands
+- Parallel job parsing and pipeline safety checks
+- TTL edge cases in snapshot expiry
+
+**Full Changelog**: [v0.6.0...v0.7.0](https://github.com/thrashr888/agentkernel/compare/v0.6.0...v0.7.0)
+
+---
+
 ## [v0.6.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.6.0) — Enterprise Policy Engine
 
 _February 1, 2026_
