@@ -26,8 +26,11 @@ mod secrets;
 mod session;
 mod setup;
 mod snapshot;
+#[allow(dead_code)]
+mod ssh;
 mod stats;
 mod template;
+mod tls;
 mod validation;
 mod vmm;
 mod vsock;
@@ -108,6 +111,9 @@ enum Commands {
         /// Publish a port (host:container, container, or host:container/udp). Can be repeated.
         #[arg(short = 'p', long = "publish")]
         publish: Vec<String>,
+        /// Enable SSH access to the sandbox
+        #[arg(long)]
+        ssh: bool,
     },
     /// Start a sandbox
     Start {
@@ -204,6 +210,9 @@ enum Commands {
         /// Publish a port (host:container, container, or host:container/udp). Can be repeated.
         #[arg(short = 'P', long = "publish")]
         publish: Vec<String>,
+        /// Enable SSH access to the sandbox
+        #[arg(long)]
+        ssh: bool,
     },
     /// Start MCP server for Claude Code integration (JSON-RPC over stdio)
     McpServer,
@@ -215,6 +224,18 @@ enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "18888")]
         port: u16,
+        /// Enable TLS for the API server
+        #[arg(long)]
+        tls: bool,
+        /// Path to TLS certificate PEM file
+        #[arg(long, requires = "tls")]
+        tls_cert: Option<String>,
+        /// Path to TLS private key PEM file
+        #[arg(long, requires = "tls")]
+        tls_key: Option<String>,
+        /// Require TLS (reject plain HTTP)
+        #[arg(long)]
+        require_tls: bool,
     },
     /// List supported AI agents and their availability
     Agents,
@@ -729,6 +750,8 @@ memory_mb = 512
             ttl,
             branch,
             publish,
+            ssh: ssh_flag,
+            ..
         } => {
             // Resolve sandbox name: --branch auto-derives from git, otherwise require explicit name
             let name = if branch {
@@ -822,6 +845,21 @@ memory_mb = 512
                 }
             }
 
+            // Handle --ssh flag: add SSH port mapping and configure SSH
+            let enable_ssh = ssh_flag || cfg.security.transport.ssh;
+            if enable_ssh {
+                // Auto-add SSH port mapping if not already present
+                let has_ssh_port = ports.iter().any(|p| p.container_port == 22);
+                if !has_ssh_port {
+                    ports.push(crate::backend::PortMapping {
+                        host_port: None, // auto-assign
+                        container_port: 22,
+                        protocol: crate::backend::PortProtocol::Tcp,
+                    });
+                }
+                println!("  SSH: enabled (certificate-only auth)");
+            }
+
             if !ports.is_empty() {
                 println!(
                     "  Ports: {}",
@@ -844,9 +882,17 @@ memory_mb = 512
                 )
                 .await?;
 
+            // If SSH enabled, update the sandbox state
+            if enable_ssh {
+                manager.set_ssh_enabled(&name, true)?;
+            }
+
             println!("\nSandbox '{}' created.", name);
             if let Some(secs) = ttl_secs {
                 println!("  TTL: {} (expires automatically)", format_ttl(secs));
+            }
+            if enable_ssh {
+                println!("  SSH: Start the sandbox, then connect with certificate auth");
             }
             println!("\nNext steps:");
             println!("  agentkernel start {}", name);
@@ -1092,10 +1138,7 @@ memory_mb = 512
                 }
                 println!("\nCreate one with: agentkernel create <name>");
             } else {
-                println!(
-                    "{:<30} {:<10} {:<10} PORTS",
-                    "NAME", "STATUS", "BACKEND"
-                );
+                println!("{:<30} {:<10} {:<10} PORTS", "NAME", "STATUS", "BACKEND");
                 for (name, running, backend) in filtered {
                     let status = if running { "running" } else { "stopped" };
                     let backend_str = backend
@@ -1131,9 +1174,19 @@ memory_mb = 512
             ttl,
             branch,
             publish,
+            ssh: ssh_flag,
+            ..
         } => {
             if command.is_empty() {
                 bail!("No command specified. Usage: agentkernel run [OPTIONS] <command...>");
+            }
+
+            // Warn if --ssh and --no-network are both set
+            if ssh_flag && no_network {
+                eprintln!(
+                    "Warning: --ssh and --no-network are both set. \
+                     SSH requires network access; port mapping will not work without it."
+                );
             }
 
             // Parse port mappings
@@ -1416,11 +1469,44 @@ memory_mb = 512
         Commands::McpServer => {
             mcp::run_server().await?;
         }
-        Commands::Serve { host, port } => {
+        Commands::Serve {
+            host,
+            port,
+            tls,
+            tls_cert,
+            tls_key,
+            require_tls,
+        } => {
             let addr: std::net::SocketAddr = format!("{}:{}", host, port)
                 .parse()
                 .expect("Invalid address");
-            http_api::run_server(addr).await?;
+
+            if require_tls && !tls {
+                bail!("--require-tls requires --tls to be enabled");
+            }
+
+            let tls_config = if tls {
+                let self_signed = tls_cert.is_none() && tls_key.is_none();
+                if self_signed {
+                    eprintln!("TLS enabled with self-signed certificate");
+                } else {
+                    eprintln!(
+                        "TLS enabled with cert={} key={}",
+                        tls_cert.as_deref().unwrap_or("?"),
+                        tls_key.as_deref().unwrap_or("?")
+                    );
+                }
+                Some(tls::TlsConfig {
+                    cert_path: tls_cert,
+                    key_path: tls_key,
+                    self_signed,
+                    require_tls,
+                })
+            } else {
+                None
+            };
+
+            http_api::run_server_with_tls(addr, tls_config).await?;
         }
         Commands::Agents => {
             println!("{:<15} {:<15} API KEY", "AGENT", "STATUS");

@@ -31,6 +31,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use crate::ssh::SshConfig;
+
 #[cfg(target_os = "macos")]
 pub use apple::AppleSandbox;
 pub use docker::{ContainerRuntime, DockerSandbox};
@@ -207,6 +209,8 @@ pub struct SandboxConfig {
     pub files: Vec<FileInjection>,
     /// Port mappings (host:container)
     pub ports: Vec<PortMapping>,
+    /// SSH configuration (None = SSH disabled)
+    pub ssh: Option<SshConfig>,
 }
 
 impl Default for SandboxConfig {
@@ -223,6 +227,7 @@ impl Default for SandboxConfig {
             mount_home: false,
             files: Vec::new(),
             ports: Vec::new(),
+            ssh: None,
         }
     }
 }
@@ -271,6 +276,12 @@ impl SandboxConfig {
     /// Set port mappings
     pub fn with_ports(mut self, ports: Vec<PortMapping>) -> Self {
         self.ports = ports;
+        self
+    }
+
+    /// Set SSH configuration
+    pub fn with_ssh(mut self, ssh: Option<SshConfig>) -> Self {
+        self.ssh = ssh;
         self
     }
 }
@@ -715,6 +726,7 @@ mod tests {
         assert!(!config.mount_home);
         assert!(config.files.is_empty());
         assert!(config.ports.is_empty());
+        assert!(config.ssh.is_none());
     }
 
     #[test]

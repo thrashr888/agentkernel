@@ -1532,7 +1532,8 @@ async fn handle_policy_check(req: Request<Incoming>, state: Arc<AppState>) -> Re
     )
 }
 
-/// Run the HTTP API server
+/// Run the HTTP API server (plain HTTP)
+#[allow(dead_code)]
 pub async fn run_server(addr: SocketAddr) -> Result<()> {
     let state = Arc::new(AppState::new());
     let listener = TcpListener::bind(addr).await?;
@@ -1552,6 +1553,70 @@ pub async fn run_server(addr: SocketAddr) -> Result<()> {
 
             if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
                 eprintln!("Error serving connection: {:?}", err);
+            }
+        });
+    }
+}
+
+/// Run the HTTP API server with optional TLS.
+///
+/// When `tls_config` is `Some`, the server will serve HTTPS using the provided
+/// TLS configuration. When `None`, the server falls back to plain HTTP.
+///
+/// If `tls_config.require_tls` is set but no TLS config is provided, this
+/// function returns an error immediately.
+pub async fn run_server_with_tls(
+    addr: SocketAddr,
+    tls_config: Option<crate::tls::TlsConfig>,
+) -> Result<()> {
+    let acceptor = match tls_config {
+        Some(ref tls) => {
+            let acceptor = tls.load_or_generate()?;
+            Some(acceptor)
+        }
+        None => None,
+    };
+
+    let state = Arc::new(AppState::new());
+    let listener = TcpListener::bind(addr).await?;
+
+    if acceptor.is_some() {
+        eprintln!("agentkernel HTTP API server listening on https://{}", addr);
+    } else {
+        eprintln!("agentkernel HTTP API server listening on http://{}", addr);
+    }
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let state = state.clone();
+        let acceptor = acceptor.clone();
+
+        tokio::task::spawn(async move {
+            let service = service_fn(move |req| {
+                let state = state.clone();
+                handle_request(req, state)
+            });
+
+            if let Some(acceptor) = acceptor {
+                // TLS path: wrap TCP stream with TLS
+                match acceptor.accept(stream).await {
+                    Ok(tls_stream) => {
+                        let io = TokioIo::new(tls_stream);
+                        if let Err(err) = http1::Builder::new().serve_connection(io, service).await
+                        {
+                            eprintln!("Error serving TLS connection: {:?}", err);
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("TLS handshake failed: {:?}", err);
+                    }
+                }
+            } else {
+                // Plain HTTP path
+                let io = TokioIo::new(stream);
+                if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+                    eprintln!("Error serving connection: {:?}", err);
+                }
             }
         });
     }

@@ -64,6 +64,12 @@ pub struct SandboxState {
     /// Port mappings (host:container)
     #[serde(default)]
     pub ports: Vec<PortMapping>,
+    /// Whether SSH access is enabled
+    #[serde(default)]
+    pub ssh_enabled: bool,
+    /// Host port mapped to sshd inside the sandbox
+    #[serde(default)]
+    pub ssh_host_port: Option<u16>,
 }
 
 /// VM Manager - manages sandboxes via unified Sandbox trait
@@ -488,6 +494,8 @@ impl VmManager {
             ttl_seconds,
             expires_at,
             ports,
+            ssh_enabled: false,
+            ssh_host_port: None,
         };
 
         self.save_sandbox(&state)?;
@@ -499,6 +507,23 @@ impl VmManager {
             backend: self.backend.to_string(),
         });
 
+        Ok(())
+    }
+
+    /// Set SSH enabled state for a sandbox
+    pub fn set_ssh_enabled(&mut self, name: &str, enabled: bool) -> Result<()> {
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.ssh_enabled = enabled;
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
         Ok(())
     }
 
@@ -561,6 +586,32 @@ impl VmManager {
             Vec::new()
         };
 
+        // Build SSH config if enabled
+        let ssh_config = if state.ssh_enabled {
+            let mut ssh_cfg = crate::ssh::SshConfig {
+                enabled: true,
+                ..Default::default()
+            };
+            // Check for VAULT_ADDR env var
+            if let Ok(vault_addr) = std::env::var("VAULT_ADDR") {
+                ssh_cfg.vault_addr = Some(vault_addr);
+            }
+            Some(ssh_cfg)
+        } else {
+            None
+        };
+
+        // Merge SSH file injections with user-provided files
+        let mut all_files = files.to_vec();
+        if let Some(ref ssh_cfg) = ssh_config {
+            let (ca_priv, ca_pub) = crate::ssh::generate_ca_keypair()?;
+            let ssh_files = crate::ssh::sshd_file_injections(&ca_pub, ssh_cfg)?;
+            all_files.extend(ssh_files);
+            // Store CA private key in the sandbox data dir for later signing
+            let ca_key_path = self.data_dir.join(format!("{}-ssh-ca.key", name));
+            std::fs::write(&ca_key_path, ca_priv)?;
+        }
+
         let config = SandboxConfig {
             image: state.image.clone(),
             vcpus: state.vcpus,
@@ -571,15 +622,54 @@ impl VmManager {
             network: perms.network,
             read_only: perms.read_only_root,
             mount_home: perms.mount_home,
-            files: files.to_vec(),
+            files: all_files.clone(),
             ports: state.ports.clone(),
+            ssh: ssh_config.clone(),
         };
 
         sandbox.start(&config).await?;
 
         // Inject files if any were specified
-        if !files.is_empty() {
-            sandbox.inject_files(files).await?;
+        if !all_files.is_empty() {
+            sandbox.inject_files(&all_files).await?;
+        }
+
+        // If SSH is enabled, install sshd and start it
+        if ssh_config.is_some() {
+            // Install openssh-server (Alpine/Debian/RHEL)
+            let install_result = sandbox
+                .exec(&[
+                    "sh",
+                    "-c",
+                    "apk add --no-cache openssh-server 2>/dev/null || true",
+                ])
+                .await;
+            if let Err(e) = install_result {
+                eprintln!("Warning: Failed to install sshd: {}", e);
+            }
+
+            // Make startup script executable and run it
+            let _ = sandbox.exec(&["chmod", "+x", "/tmp/start-sshd.sh"]).await;
+            let start_result = sandbox.exec(&["sh", "/tmp/start-sshd.sh"]).await;
+            if let Err(e) = start_result {
+                eprintln!("Warning: Failed to start sshd: {}", e);
+            } else if let Ok(ref result) = start_result
+                && !result.stderr.is_empty()
+            {
+                eprintln!("sshd: {}", result.stderr.trim());
+            }
+
+            // Find the mapped host port for SSH
+            let ssh_port = state
+                .ports
+                .iter()
+                .find(|p| p.container_port == 22)
+                .and_then(|p| p.host_port);
+            if let Some(port) = ssh_port {
+                eprintln!("SSH access: ssh -p {} sandbox@localhost", port);
+            } else {
+                eprintln!("SSH access: enabled on port 22 inside sandbox");
+            }
         }
 
         self.running.insert(name.to_string(), sandbox);
@@ -841,6 +931,7 @@ impl VmManager {
             mount_home: perms.mount_home,
             files: files.to_vec(),
             ports: Vec::new(),
+            ssh: None,
         };
 
         // Use optimized `docker/podman run --rm` for container backends
@@ -987,6 +1078,8 @@ mod tests {
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
+            ssh_enabled: false,
+            ssh_host_port: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -1029,6 +1122,8 @@ mod tests {
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
+            ssh_enabled: false,
+            ssh_host_port: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -1080,6 +1175,8 @@ mod tests {
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
+            ssh_enabled: false,
+            ssh_host_port: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -1124,6 +1221,8 @@ mod tests {
                 ttl_seconds: None,
                 expires_at: None,
                 ports: Vec::new(),
+                ssh_enabled: false,
+                ssh_host_port: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();

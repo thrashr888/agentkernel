@@ -36,6 +36,16 @@ wat = "1.225"  # WAT to WASM compiler for WebAssembly text format support
 tempfile = "3.0"  # Temporary directories for rootfs conversion
 dirs = "6.0.0"
 
+# SSH support (CA key generation and client key signing)
+ssh-key = { version = "0.6", features = ["ed25519", "rand_core"] }
+rand = "0.8"
+
+# TLS support for HTTP API
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
+tokio-rustls = "0.26"
+rcgen = "0.13"
+
 # Kubernetes backend (optional, behind "kubernetes" feature flag)
 kube = { version = "0.98", features = ["client", "runtime", "ws", "derive"], optional = true }
 k8s-openapi = { version = "0.24", features = ["latest"], optional = true }
