@@ -47,6 +47,18 @@ pub enum AuditEvent {
         policy: String,
         details: String,
     },
+    /// SSH session started
+    SshConnected {
+        sandbox: String,
+        host_port: u16,
+        user: String,
+    },
+    /// SSH session ended
+    SshDisconnected {
+        sandbox: String,
+        duration_secs: u64,
+        recording: Option<String>,
+    },
 }
 
 /// A logged audit entry with metadata
@@ -174,6 +186,8 @@ impl AuditLog {
                 AuditEvent::FileRead { sandbox: s, .. } => s == sandbox,
                 AuditEvent::SessionAttached { sandbox: s } => s == sandbox,
                 AuditEvent::PolicyViolation { sandbox: s, .. } => s == sandbox,
+                AuditEvent::SshConnected { sandbox: s, .. } => s == sandbox,
+                AuditEvent::SshDisconnected { sandbox: s, .. } => s == sandbox,
             })
             .collect())
     }
@@ -278,5 +292,46 @@ mod tests {
 
         let filtered = log.read_by_sandbox("test1").unwrap();
         assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn test_ssh_connected_event() {
+        let event = AuditEvent::SshConnected {
+            sandbox: "test-box".to_string(),
+            host_port: 2222,
+            user: "sandbox".to_string(),
+        };
+        let entry = AuditEntry::new(event);
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("ssh_connected"));
+        assert!(json.contains("test-box"));
+        assert!(json.contains("2222"));
+    }
+
+    #[test]
+    fn test_ssh_disconnected_event() {
+        let event = AuditEvent::SshDisconnected {
+            sandbox: "test-box".to_string(),
+            duration_secs: 120,
+            recording: Some("/tmp/session.cast".to_string()),
+        };
+        let entry = AuditEntry::new(event);
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("ssh_disconnected"));
+        assert!(json.contains("120"));
+        assert!(json.contains("session.cast"));
+    }
+
+    #[test]
+    fn test_ssh_disconnected_without_recording() {
+        let event = AuditEvent::SshDisconnected {
+            sandbox: "test-box".to_string(),
+            duration_secs: 60,
+            recording: None,
+        };
+        let entry = AuditEntry::new(event);
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("ssh_disconnected"));
+        assert!(!json.contains("session.cast"));
     }
 }
