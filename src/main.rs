@@ -915,12 +915,13 @@ memory_mb = 512
             if let Some(secs) = ttl_secs {
                 println!("  TTL: {} (expires automatically)", format_ttl(secs));
             }
-            if enable_ssh {
-                println!("  SSH: Start the sandbox, then connect with certificate auth");
-            }
             println!("\nNext steps:");
             println!("  agentkernel start {}", name);
-            println!("  agentkernel attach {}", name);
+            if enable_ssh {
+                println!("  agentkernel ssh {}", name);
+            } else {
+                println!("  agentkernel attach {}", name);
+            }
         }
         Commands::Start { name, backend } => {
             validation::validate_sandbox_name(&name)?;

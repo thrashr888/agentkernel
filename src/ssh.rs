@@ -51,7 +51,6 @@ pub fn generate_sshd_config(config: &SshConfig) -> String {
         r#"# agentkernel sshd configuration — certificate-only auth
 Port {port}
 ListenAddress 0.0.0.0
-Protocol 2
 
 # Host key
 HostKey /etc/ssh/ssh_host_ed25519_key
@@ -63,9 +62,7 @@ PubkeyAuthentication yes
 
 # Disable all other auth methods
 PasswordAuthentication no
-ChallengeResponseAuthentication no
 KbdInteractiveAuthentication no
-UsePAM no
 
 # Disable root login
 PermitRootLogin no

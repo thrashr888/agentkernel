@@ -659,16 +659,46 @@ impl VmManager {
                 eprintln!("sshd: {}", result.stderr.trim());
             }
 
-            // Find the mapped host port for SSH
-            let ssh_port = state
+            // Find the mapped host port for SSH.
+            // If the port was auto-assigned (host_port: None), query Docker for the actual port.
+            let mut ssh_port = state
                 .ports
                 .iter()
                 .find(|p| p.container_port == 22)
                 .and_then(|p| p.host_port);
+
+            if ssh_port.is_none() {
+                // Query Docker for the auto-assigned host port
+                let container_name = format!("agentkernel-{}", name);
+                if let Ok(output) = std::process::Command::new("docker")
+                    .args(["port", &container_name, "22"])
+                    .output()
+                {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    // Output format: "0.0.0.0:32768" or "[::]:32768"
+                    if let Some(port_str) = stdout.trim().rsplit(':').next()
+                        && let Ok(port) = port_str.parse::<u16>()
+                    {
+                        ssh_port = Some(port);
+                    }
+                }
+            }
+
+            // Save the resolved SSH port to state
             if let Some(port) = ssh_port {
-                eprintln!("SSH access: ssh -p {} sandbox@localhost", port);
+                if let Some(s) = self.sandboxes.get_mut(name) {
+                    s.ssh_host_port = Some(port);
+                    // Also update the port mapping so it's visible in list/info
+                    if let Some(pm) = s.ports.iter_mut().find(|p| p.container_port == 22) {
+                        pm.host_port = Some(port);
+                    }
+                }
+                self.save_sandbox(self.sandboxes.get(name).unwrap())?;
+                eprintln!("SSH access: agentkernel ssh {}", name);
+                eprintln!("  or: ssh -p {} sandbox@localhost", port);
             } else {
                 eprintln!("SSH access: enabled on port 22 inside sandbox");
+                eprintln!("  (host port could not be resolved — try explicit: -p 2222:22)");
             }
         }
 
