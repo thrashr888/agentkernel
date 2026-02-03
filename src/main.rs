@@ -1609,10 +1609,17 @@ memory_mb = 512
                 ttl_secs,
             )?;
 
-            // 6. Write cert and private key to temp files
-            let temp_dir = tempfile::tempdir()?;
-            let client_key_path = temp_dir.path().join("client_key");
-            let cert_path = temp_dir.path().join("client_key-cert.pub");
+            // 6. Write cert and private key to persistent location
+            //    (~/.agentkernel/ssh/{name}/ so raw `ssh -i` works too)
+            let ssh_dir = dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".agentkernel")
+                .join("ssh")
+                .join(&name);
+            std::fs::create_dir_all(&ssh_dir)?;
+
+            let client_key_path = ssh_dir.join("client_key");
+            let cert_path = ssh_dir.join("client_key-cert.pub");
             std::fs::write(&client_key_path, &client_private)?;
             std::fs::write(&cert_path, &cert)?;
 
