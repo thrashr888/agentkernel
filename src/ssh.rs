@@ -137,11 +137,15 @@ fi
 passwd -u {user} 2>/dev/null || \
     sed -i 's/^{user}:!/{user}:/' /etc/shadow 2>/dev/null || true
 
-# Set up .ssh directory
+# Set up .ssh directory and clean login profile
 mkdir -p /home/{user}/.ssh
 chmod 700 /home/{user}/.ssh
-chown -R {user}:{user} /home/{user}/.ssh 2>/dev/null || \
-    chown -R {user} /home/{user}/.ssh
+touch /home/{user}/.hushlogin
+cat > /home/{user}/.profile << 'PROFILE'
+export PS1="agentkernel:$(basename "$PWD")\$ "
+PROFILE
+chown -R {user}:{user} /home/{user} 2>/dev/null || \
+    chown -R {user} /home/{user}
 
 # Fix ownership and permissions on sshd files
 # (docker cp preserves host UID; sshd StrictModes requires root ownership)
