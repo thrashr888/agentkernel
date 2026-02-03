@@ -58,7 +58,7 @@ serde_yaml = { version = "0.9", optional = true }
 # Enterprise policy engine (optional, behind "enterprise" feature)
 cedar-policy = { version = "4", optional = true }
 ed25519-dalek = { version = "2", features = ["rand_core"], optional = true }
-jsonwebtoken = { version = "9", optional = true }
+jsonwebtoken = { version = "10", optional = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], optional = true }
 webpki-roots = "1.0.6"
 
