@@ -131,13 +131,22 @@ if ! id -u {user} >/dev/null 2>&1; then
         useradd -m -d /home/{user} -s /bin/sh {user} 2>/dev/null || true
 fi
 
+# Unlock the account for SSH cert auth.
+# adduser -D creates a locked account (shadow password '!').
+# OpenSSH without PAM rejects locked accounts even for cert/pubkey auth.
+passwd -u {user} 2>/dev/null || \
+    sed -i 's/^{user}:!/{user}:/' /etc/shadow 2>/dev/null || true
+
 # Set up .ssh directory
 mkdir -p /home/{user}/.ssh
 chmod 700 /home/{user}/.ssh
 chown -R {user}:{user} /home/{user}/.ssh 2>/dev/null || \
     chown -R {user} /home/{user}/.ssh
 
-# Fix permissions on sshd files
+# Fix ownership and permissions on sshd files
+# (docker cp preserves host UID; sshd StrictModes requires root ownership)
+chown root:root /etc/ssh/sshd_config /etc/ssh/ssh_host_ed25519_key \
+    /etc/ssh/ssh_host_ed25519_key.pub /etc/ssh/ca.pub /etc/ssh/principals
 chmod 600 /etc/ssh/ssh_host_ed25519_key
 chmod 644 /etc/ssh/ssh_host_ed25519_key.pub
 chmod 644 /etc/ssh/ca.pub

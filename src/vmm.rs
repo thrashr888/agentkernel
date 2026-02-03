@@ -601,17 +601,6 @@ impl VmManager {
             None
         };
 
-        // Merge SSH file injections with user-provided files
-        let mut all_files = files.to_vec();
-        if let Some(ref ssh_cfg) = ssh_config {
-            let (ca_priv, ca_pub) = crate::ssh::generate_ca_keypair()?;
-            let ssh_files = crate::ssh::sshd_file_injections(&ca_pub, ssh_cfg)?;
-            all_files.extend(ssh_files);
-            // Store CA private key in the sandbox data dir for later signing
-            let ca_key_path = self.data_dir.join(format!("{}-ssh-ca.key", name));
-            std::fs::write(&ca_key_path, ca_priv)?;
-        }
-
         let config = SandboxConfig {
             image: state.image.clone(),
             vcpus: state.vcpus,
@@ -622,31 +611,44 @@ impl VmManager {
             network: perms.network,
             read_only: perms.read_only_root,
             mount_home: perms.mount_home,
-            files: all_files.clone(),
+            files: files.to_vec(),
             ports: state.ports.clone(),
             ssh: ssh_config.clone(),
         };
 
         sandbox.start(&config).await?;
 
-        // Inject files if any were specified
-        if !all_files.is_empty() {
-            sandbox.inject_files(&all_files).await?;
+        // Inject non-SSH files first
+        if !files.is_empty() {
+            sandbox.inject_files(files).await?;
         }
 
-        // If SSH is enabled, install sshd and start it
-        if ssh_config.is_some() {
-            // Install openssh-server (Alpine/Debian/RHEL)
+        // If SSH is enabled, install sshd THEN inject SSH files
+        // (apk add openssh-server installs a default sshd_config that would
+        // overwrite our custom config if we inject first)
+        if let Some(ref ssh_cfg) = ssh_config {
+            // Install openssh-server (Alpine/Debian/RHEL) — must come BEFORE file injection
             let install_result = sandbox
                 .exec(&[
                     "sh",
                     "-c",
-                    "apk add --no-cache openssh-server 2>/dev/null || true",
+                    "apk add --no-cache openssh-server 2>/dev/null || \
+                     apt-get update -qq && apt-get install -y -qq openssh-server 2>/dev/null || \
+                     yum install -y openssh-server 2>/dev/null || true",
                 ])
                 .await;
             if let Err(e) = install_result {
                 eprintln!("Warning: Failed to install sshd: {}", e);
             }
+
+            // Now inject SSH config files (overwrites package defaults)
+            let (ca_priv, ca_pub) = crate::ssh::generate_ca_keypair()?;
+            let ssh_files = crate::ssh::sshd_file_injections(&ca_pub, ssh_cfg)?;
+            sandbox.inject_files(&ssh_files).await?;
+
+            // Store CA private key for later signing
+            let ca_key_path = self.data_dir.join(format!("{}-ssh-ca.key", name));
+            std::fs::write(&ca_key_path, ca_priv)?;
 
             // Make startup script executable and run it
             let _ = sandbox.exec(&["chmod", "+x", "/tmp/start-sshd.sh"]).await;

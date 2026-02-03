@@ -916,11 +916,11 @@ memory_mb = 512
                 println!("  TTL: {} (expires automatically)", format_ttl(secs));
             }
             println!("\nNext steps:");
-            println!("  agentkernel start {}", name);
+            println!("  1. agentkernel start {}", name);
             if enable_ssh {
-                println!("  agentkernel ssh {}", name);
+                println!("  2. agentkernel ssh {}", name);
             } else {
-                println!("  agentkernel attach {}", name);
+                println!("  2. agentkernel attach {}", name);
             }
         }
         Commands::Start { name, backend } => {
