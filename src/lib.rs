@@ -14,6 +14,8 @@ pub mod languages;
 pub mod permissions;
 pub mod rootfs;
 pub mod sandbox_pool;
+pub mod ssh;
+pub mod tls;
 pub mod vsock;
 
 // Enterprise modules (behind feature flag)

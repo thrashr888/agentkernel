@@ -151,6 +151,8 @@ struct SandboxInfo {
     status: String,
     backend: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     image: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vcpus: Option<u32>,
@@ -790,12 +792,18 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
             let ports = state_info
                 .map(|s| s.ports.iter().map(|p| p.to_string()).collect())
                 .unwrap_or_default();
+            let ip = if running {
+                manager.get_container_ip(name)
+            } else {
+                None
+            };
             SandboxInfo {
                 name: name.to_string(),
                 status: if running { "running" } else { "stopped" }.to_string(),
                 backend: backend
                     .map(|b| format!("{}", b))
                     .unwrap_or_else(|| "unknown".to_string()),
+                ip,
                 image: None,
                 vcpus: None,
                 memory_mb: None,
@@ -927,12 +935,14 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
     }
 
     let port_strings: Vec<String> = ports.iter().map(|p| p.to_string()).collect();
+    let ip = manager.get_container_ip(&body.name);
     json_response(
         StatusCode::CREATED,
         &ApiResponse::success(SandboxInfo {
             name: body.name,
             status: "running".to_string(),
             backend: format!("{}", manager.backend()),
+            ip,
             image: Some(image.to_string()),
             vcpus: Some(vcpus),
             memory_mb: Some(memory_mb),
@@ -968,6 +978,11 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
             let ports = state_info
                 .map(|s| s.ports.iter().map(|p| p.to_string()).collect())
                 .unwrap_or_default();
+            let ip = if *running {
+                manager.get_container_ip(name)
+            } else {
+                None
+            };
             return json_response(
                 StatusCode::OK,
                 &ApiResponse::success(SandboxInfo {
@@ -976,6 +991,7 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                     backend: backend
                         .map(|b| format!("{}", b))
                         .unwrap_or_else(|| "unknown".to_string()),
+                    ip,
                     image: state_info.map(|s| s.image.clone()),
                     vcpus: state_info.map(|s| s.vcpus),
                     memory_mb: state_info.map(|s| s.memory_mb),
@@ -1532,7 +1548,8 @@ async fn handle_policy_check(req: Request<Incoming>, state: Arc<AppState>) -> Re
     )
 }
 
-/// Run the HTTP API server
+/// Run the HTTP API server (plain HTTP)
+#[allow(dead_code)]
 pub async fn run_server(addr: SocketAddr) -> Result<()> {
     let state = Arc::new(AppState::new());
     let listener = TcpListener::bind(addr).await?;
@@ -1552,6 +1569,70 @@ pub async fn run_server(addr: SocketAddr) -> Result<()> {
 
             if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
                 eprintln!("Error serving connection: {:?}", err);
+            }
+        });
+    }
+}
+
+/// Run the HTTP API server with optional TLS.
+///
+/// When `tls_config` is `Some`, the server will serve HTTPS using the provided
+/// TLS configuration. When `None`, the server falls back to plain HTTP.
+///
+/// If `tls_config.require_tls` is set but no TLS config is provided, this
+/// function returns an error immediately.
+pub async fn run_server_with_tls(
+    addr: SocketAddr,
+    tls_config: Option<crate::tls::TlsConfig>,
+) -> Result<()> {
+    let acceptor = match tls_config {
+        Some(ref tls) => {
+            let acceptor = tls.load_or_generate()?;
+            Some(acceptor)
+        }
+        None => None,
+    };
+
+    let state = Arc::new(AppState::new());
+    let listener = TcpListener::bind(addr).await?;
+
+    if acceptor.is_some() {
+        eprintln!("agentkernel HTTP API server listening on https://{}", addr);
+    } else {
+        eprintln!("agentkernel HTTP API server listening on http://{}", addr);
+    }
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let state = state.clone();
+        let acceptor = acceptor.clone();
+
+        tokio::task::spawn(async move {
+            let service = service_fn(move |req| {
+                let state = state.clone();
+                handle_request(req, state)
+            });
+
+            if let Some(acceptor) = acceptor {
+                // TLS path: wrap TCP stream with TLS
+                match acceptor.accept(stream).await {
+                    Ok(tls_stream) => {
+                        let io = TokioIo::new(tls_stream);
+                        if let Err(err) = http1::Builder::new().serve_connection(io, service).await
+                        {
+                            eprintln!("Error serving TLS connection: {:?}", err);
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("TLS handshake failed: {:?}", err);
+                    }
+                }
+            } else {
+                // Plain HTTP path
+                let io = TokioIo::new(stream);
+                if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+                    eprintln!("Error serving connection: {:?}", err);
+                }
             }
         });
     }
@@ -1656,6 +1737,7 @@ mod tests {
             name: "test-sandbox".to_string(),
             status: "running".to_string(),
             backend: "docker".to_string(),
+            ip: None,
             image: None,
             vcpus: None,
             memory_mb: None,
@@ -1726,6 +1808,7 @@ mod tests {
             name: "test".to_string(),
             status: "running".to_string(),
             backend: "docker".to_string(),
+            ip: None,
             image: None,
             vcpus: None,
             memory_mb: None,
@@ -1821,6 +1904,7 @@ mod tests {
             name: "big".to_string(),
             status: "running".to_string(),
             backend: "docker".to_string(),
+            ip: None,
             image: Some("python:3.12".to_string()),
             vcpus: Some(4),
             memory_mb: Some(2048),
@@ -1840,6 +1924,7 @@ mod tests {
             name: "test".to_string(),
             status: "stopped".to_string(),
             backend: "docker".to_string(),
+            ip: None,
             image: None,
             vcpus: None,
             memory_mb: None,

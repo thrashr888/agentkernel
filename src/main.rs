@@ -26,8 +26,11 @@ mod secrets;
 mod session;
 mod setup;
 mod snapshot;
+#[allow(dead_code)]
+mod ssh;
 mod stats;
 mod template;
+mod tls;
 mod validation;
 mod vmm;
 mod vsock;
@@ -108,6 +111,9 @@ enum Commands {
         /// Publish a port (host:container, container, or host:container/udp). Can be repeated.
         #[arg(short = 'p', long = "publish")]
         publish: Vec<String>,
+        /// Enable SSH access to the sandbox
+        #[arg(long)]
+        ssh: bool,
     },
     /// Start a sandbox
     Start {
@@ -204,6 +210,9 @@ enum Commands {
         /// Publish a port (host:container, container, or host:container/udp). Can be repeated.
         #[arg(short = 'P', long = "publish")]
         publish: Vec<String>,
+        /// Enable SSH access to the sandbox
+        #[arg(long)]
+        ssh: bool,
     },
     /// Start MCP server for Claude Code integration (JSON-RPC over stdio)
     McpServer,
@@ -215,6 +224,42 @@ enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "18888")]
         port: u16,
+        /// Enable TLS for the API server
+        #[arg(long)]
+        tls: bool,
+        /// Path to TLS certificate PEM file
+        #[arg(long, requires = "tls")]
+        tls_cert: Option<String>,
+        /// Path to TLS private key PEM file
+        #[arg(long, requires = "tls")]
+        tls_key: Option<String>,
+        /// Require TLS (reject plain HTTP)
+        #[arg(long)]
+        require_tls: bool,
+    },
+    /// SSH into a running sandbox
+    Ssh {
+        /// Name of the sandbox
+        name: String,
+        /// Record session to asciicast v2 file (for replay with asciinema)
+        #[arg(long)]
+        record: Option<PathBuf>,
+        /// Command to execute (instead of interactive shell)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// Generate SSH config for IDE integration (VS Code Remote SSH, JetBrains, Cursor)
+    SshConfig {
+        /// Name of the sandbox (omit for all SSH-enabled sandboxes)
+        name: Option<String>,
+        /// Generate config for all SSH-enabled sandboxes
+        #[arg(long)]
+        all: bool,
+    },
+    /// SSH proxy command for ProxyCommand integration (handles cert signing transparently)
+    SshProxy {
+        /// Name of the sandbox
+        name: String,
     },
     /// List supported AI agents and their availability
     Agents,
@@ -729,6 +774,8 @@ memory_mb = 512
             ttl,
             branch,
             publish,
+            ssh: ssh_flag,
+            ..
         } => {
             // Resolve sandbox name: --branch auto-derives from git, otherwise require explicit name
             let name = if branch {
@@ -822,6 +869,21 @@ memory_mb = 512
                 }
             }
 
+            // Handle --ssh flag: add SSH port mapping and configure SSH
+            let enable_ssh = ssh_flag || cfg.security.transport.ssh;
+            if enable_ssh {
+                // Auto-add SSH port mapping if not already present
+                let has_ssh_port = ports.iter().any(|p| p.container_port == 22);
+                if !has_ssh_port {
+                    ports.push(crate::backend::PortMapping {
+                        host_port: None, // auto-assign
+                        container_port: 22,
+                        protocol: crate::backend::PortProtocol::Tcp,
+                    });
+                }
+                println!("  SSH: enabled (certificate-only auth)");
+            }
+
             if !ports.is_empty() {
                 println!(
                     "  Ports: {}",
@@ -844,13 +906,22 @@ memory_mb = 512
                 )
                 .await?;
 
+            // If SSH enabled, update the sandbox state
+            if enable_ssh {
+                manager.set_ssh_enabled(&name, true)?;
+            }
+
             println!("\nSandbox '{}' created.", name);
             if let Some(secs) = ttl_secs {
                 println!("  TTL: {} (expires automatically)", format_ttl(secs));
             }
             println!("\nNext steps:");
-            println!("  agentkernel start {}", name);
-            println!("  agentkernel attach {}", name);
+            println!("  1. agentkernel start {}", name);
+            if enable_ssh {
+                println!("  2. agentkernel ssh {}", name);
+            } else {
+                println!("  2. agentkernel attach {}", name);
+            }
         }
         Commands::Start { name, backend } => {
             validation::validate_sandbox_name(&name)?;
@@ -882,7 +953,14 @@ memory_mb = 512
             println!("Starting sandbox '{}'...", name);
             manager.start(&name).await?;
             println!("Sandbox '{}' started.", name);
-            println!("\nTo attach: agentkernel attach {}", name);
+            if manager
+                .get_sandbox_state(&name)
+                .is_some_and(|s| s.ssh_enabled)
+            {
+                println!("\nTo connect: agentkernel ssh {}", name);
+            } else {
+                println!("\nTo attach: agentkernel attach {}", name);
+            }
         }
         Commands::Stop { name } => {
             validation::validate_sandbox_name(&name)?;
@@ -1093,14 +1171,21 @@ memory_mb = 512
                 println!("\nCreate one with: agentkernel create <name>");
             } else {
                 println!(
-                    "{:<30} {:<10} {:<10} PORTS",
-                    "NAME", "STATUS", "BACKEND"
+                    "{:<30} {:<10} {:<10} {:<17} PORTS",
+                    "NAME", "STATUS", "BACKEND", "IP"
                 );
                 for (name, running, backend) in filtered {
                     let status = if running { "running" } else { "stopped" };
                     let backend_str = backend
                         .map(|b| format!("{}", b))
                         .unwrap_or_else(|| "unknown".to_string());
+                    let ip_str = if running {
+                        manager
+                            .get_container_ip(name)
+                            .unwrap_or_else(|| "-".to_string())
+                    } else {
+                        "-".to_string()
+                    };
                     let ports_str = manager
                         .get_state(name)
                         .map(|s| {
@@ -1112,8 +1197,8 @@ memory_mb = 512
                         })
                         .unwrap_or_default();
                     println!(
-                        "{:<30} {:<10} {:<10} {}",
-                        name, status, backend_str, ports_str
+                        "{:<30} {:<10} {:<10} {:<17} {}",
+                        name, status, backend_str, ip_str, ports_str
                     );
                 }
             }
@@ -1131,9 +1216,19 @@ memory_mb = 512
             ttl,
             branch,
             publish,
+            ssh: ssh_flag,
+            ..
         } => {
             if command.is_empty() {
                 bail!("No command specified. Usage: agentkernel run [OPTIONS] <command...>");
+            }
+
+            // Warn if --ssh and --no-network are both set
+            if ssh_flag && no_network {
+                eprintln!(
+                    "Warning: --ssh and --no-network are both set. \
+                     SSH requires network access; port mapping will not work without it."
+                );
             }
 
             // Parse port mappings
@@ -1416,11 +1511,454 @@ memory_mb = 512
         Commands::McpServer => {
             mcp::run_server().await?;
         }
-        Commands::Serve { host, port } => {
+        Commands::Serve {
+            host,
+            port,
+            tls,
+            tls_cert,
+            tls_key,
+            require_tls,
+        } => {
             let addr: std::net::SocketAddr = format!("{}:{}", host, port)
                 .parse()
                 .expect("Invalid address");
-            http_api::run_server(addr).await?;
+
+            if require_tls && !tls {
+                bail!("--require-tls requires --tls to be enabled");
+            }
+
+            let tls_config = if tls {
+                let self_signed = tls_cert.is_none() && tls_key.is_none();
+                if self_signed {
+                    eprintln!("TLS enabled with self-signed certificate");
+                } else {
+                    eprintln!(
+                        "TLS enabled with cert={} key={}",
+                        tls_cert.as_deref().unwrap_or("?"),
+                        tls_key.as_deref().unwrap_or("?")
+                    );
+                }
+                Some(tls::TlsConfig {
+                    cert_path: tls_cert,
+                    key_path: tls_key,
+                    self_signed,
+                    require_tls,
+                })
+            } else {
+                None
+            };
+
+            http_api::run_server_with_tls(addr, tls_config).await?;
+        }
+        Commands::Ssh {
+            name,
+            record,
+            command,
+        } => {
+            let manager = VmManager::new()?;
+
+            // 1. Look up the sandbox — it must exist and be SSH-enabled
+            let state = manager
+                .get_sandbox_state(&name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+
+            if !state.ssh_enabled {
+                bail!(
+                    "SSH is not enabled on sandbox '{}'. \
+                     Recreate it with --ssh to enable SSH access.",
+                    name
+                );
+            }
+
+            // 2. Determine the SSH host port
+            let host_port = state
+                .ssh_host_port
+                .or_else(|| {
+                    state
+                        .ports
+                        .iter()
+                        .find(|p| p.container_port == 22)
+                        .and_then(|p| p.host_port)
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No SSH host port found for sandbox '{}'. \
+                         The sandbox may need a port mapping for port 22.",
+                        name
+                    )
+                })?;
+
+            // Audit: log SSH connection
+            audit::log_event(audit::AuditEvent::SshConnected {
+                sandbox: name.clone(),
+                host_port,
+                ssh_user: "sandbox".to_string(),
+            });
+            let start_time = std::time::Instant::now();
+
+            // 3. Read the CA private key saved during sandbox start
+            let ca_key_path = manager.get_data_dir().join(format!("{}-ssh-ca.key", name));
+            let ca_private_key = std::fs::read_to_string(&ca_key_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to read CA key at {}: {}. \
+                     Was the sandbox started with --ssh?",
+                    ca_key_path.display(),
+                    e
+                )
+            })?;
+
+            // 4. Generate an ephemeral client keypair
+            let (client_private, client_public) = ssh::generate_client_keypair()?;
+
+            // 5. Sign the client public key with the stored CA key
+            let ttl_secs = ssh::parse_ttl_to_secs("30m")?;
+            let cert = ssh::sign_client_key_local(
+                &ca_private_key,
+                &client_public,
+                &["sandbox"],
+                ttl_secs,
+            )?;
+
+            // 6. Write cert and private key to persistent location
+            //    (~/.agentkernel/ssh/{name}/ so raw `ssh -i` works too)
+            let ssh_dir = dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".agentkernel")
+                .join("ssh")
+                .join(&name);
+            std::fs::create_dir_all(&ssh_dir)?;
+
+            let client_key_path = ssh_dir.join("client_key");
+            let cert_path = ssh_dir.join("client_key-cert.pub");
+            std::fs::write(&client_key_path, &client_private)?;
+            std::fs::write(&cert_path, &cert)?;
+
+            // Set permissions on the private key (owner read-only)
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&client_key_path, std::fs::Permissions::from_mode(0o600))?;
+            }
+
+            // 7. Build the ssh command
+            let mut ssh_cmd = std::process::Command::new("ssh");
+            ssh_cmd
+                .arg("-o")
+                .arg("StrictHostKeyChecking=no")
+                .arg("-o")
+                .arg("UserKnownHostsFile=/dev/null")
+                .arg("-o")
+                .arg("LogLevel=ERROR")
+                .arg("-i")
+                .arg(&client_key_path)
+                .arg("-o")
+                .arg(format!("CertificateFile={}", cert_path.display()))
+                .arg("-p")
+                .arg(host_port.to_string());
+
+            // Request PTY for interactive sessions when we have a terminal
+            if command.is_empty() {
+                use std::io::IsTerminal;
+                if std::io::stdin().is_terminal() {
+                    ssh_cmd.arg("-t");
+                }
+            }
+
+            ssh_cmd.arg("sandbox@localhost");
+
+            // Append remote command if provided
+            if !command.is_empty() {
+                ssh_cmd.arg("--");
+                for arg in &command {
+                    ssh_cmd.arg(arg);
+                }
+            }
+
+            // Resolve recording path (if a directory, generate a filename)
+            let record_path = record.map(|p| {
+                if p.is_dir() {
+                    p.join(asciicast::generate_recording_name(&name))
+                } else {
+                    p
+                }
+            });
+
+            if let Some(ref record_path) = record_path {
+                // 8a. Recording mode: capture output through pipes
+                if let Some(parent) = record_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+
+                let mut recorder = asciicast::AsciicastRecorder::with_header(
+                    record_path,
+                    asciicast::AsciicastHeader::from_terminal()
+                        .with_title(format!("agentkernel ssh {}", name))
+                        .with_command(format!("agentkernel ssh {}", name)),
+                );
+
+                let mut child = ssh_cmd
+                    .stdin(std::process::Stdio::inherit())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "Failed to execute ssh command: {}. Is OpenSSH installed?",
+                            e
+                        )
+                    })?;
+
+                // Read stdout and record it
+                if let Some(mut stdout) = child.stdout.take() {
+                    use std::io::Read;
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match stdout.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                let data = String::from_utf8_lossy(&buf[..n]);
+                                recorder.record_output(&*data);
+                                print!("{}", data);
+                                use std::io::Write;
+                                std::io::stdout().flush().ok();
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                            Err(_) => break,
+                        }
+                    }
+                }
+
+                let status = child.wait()?;
+                if let Err(e) = recorder.save() {
+                    eprintln!("Warning: Failed to save recording: {}", e);
+                } else {
+                    eprintln!("Session recording saved to: {}", record_path.display());
+                    eprintln!(
+                        "  Replay with: agentkernel replay {}",
+                        record_path.display()
+                    );
+                }
+
+                // Audit: log SSH disconnect
+                let duration = start_time.elapsed().as_secs();
+                audit::log_event(audit::AuditEvent::SshDisconnected {
+                    sandbox: name.clone(),
+                    duration_secs: duration,
+                    recording: Some(record_path.display().to_string()),
+                });
+
+                // 9. Temp files cleaned up automatically when temp_dir drops
+
+                if !status.success() {
+                    std::process::exit(status.code().unwrap_or(1));
+                }
+            } else {
+                // 8b. Non-recording mode: exec() replaces this process with ssh
+                //     for proper terminal/PTY handling
+                eprintln!(
+                    "  or: ssh -i {} -p {} sandbox@localhost",
+                    client_key_path.display(),
+                    host_port
+                );
+                use std::io::Write;
+                std::io::stderr().flush().ok();
+
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::CommandExt;
+                    let err = ssh_cmd.exec();
+                    bail!("Failed to exec ssh: {}", err);
+                }
+
+                #[cfg(not(unix))]
+                {
+                    let status = ssh_cmd
+                        .stdin(std::process::Stdio::inherit())
+                        .stdout(std::process::Stdio::inherit())
+                        .stderr(std::process::Stdio::inherit())
+                        .status()
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to execute ssh: {}. Is OpenSSH installed?", e)
+                        })?;
+                    if !status.success() {
+                        std::process::exit(status.code().unwrap_or(1));
+                    }
+                }
+            }
+        }
+        Commands::SshConfig { name, all } => {
+            if name.is_none() && !all {
+                bail!("Specify a sandbox name or use --all");
+            }
+
+            let manager = VmManager::new()?;
+
+            // Collect the sandbox names to generate config for
+            let names: Vec<String> = if all {
+                manager
+                    .list()
+                    .into_iter()
+                    .filter_map(|(n, _running, _backend)| {
+                        let state = manager.get_sandbox_state(n)?;
+                        if state.ssh_enabled {
+                            Some(n.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            } else {
+                vec![name.unwrap()]
+            };
+
+            if names.is_empty() {
+                bail!("No SSH-enabled sandboxes found");
+            }
+
+            // Resolve home directory for cert/key paths
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+
+            println!("# Generated by agentkernel ssh-config");
+
+            for sandbox_name in &names {
+                let state = match manager.get_sandbox_state(sandbox_name) {
+                    Some(s) => s,
+                    None => {
+                        eprintln!("Warning: sandbox '{}' not found, skipping", sandbox_name);
+                        continue;
+                    }
+                };
+
+                if !state.ssh_enabled {
+                    eprintln!("Warning: SSH not enabled on '{}', skipping", sandbox_name);
+                    continue;
+                }
+
+                // Resolve host port (same logic as Ssh command)
+                let host_port = state.ssh_host_port.or_else(|| {
+                    state
+                        .ports
+                        .iter()
+                        .find(|p| p.container_port == 22)
+                        .and_then(|p| p.host_port)
+                });
+
+                let host_port = match host_port {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("Warning: no SSH host port for '{}', skipping", sandbox_name);
+                        continue;
+                    }
+                };
+
+                let ssh_dir = home.join(".agentkernel").join("ssh").join(sandbox_name);
+
+                println!();
+                println!("Host agentkernel-{}", sandbox_name);
+                println!("    HostName localhost");
+                println!("    Port {}", host_port);
+                println!("    User sandbox");
+                println!("    IdentityFile {}", ssh_dir.join("client_key").display());
+                println!(
+                    "    CertificateFile {}",
+                    ssh_dir.join("client_key-cert.pub").display()
+                );
+                println!("    ProxyCommand agentkernel ssh-proxy {}", sandbox_name);
+                println!("    StrictHostKeyChecking no");
+                println!("    UserKnownHostsFile /dev/null");
+            }
+        }
+        Commands::SshProxy { name } => {
+            let manager = VmManager::new()?;
+
+            // 1. Look up the sandbox — it must exist and be SSH-enabled
+            let state = manager
+                .get_sandbox_state(&name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+
+            if !state.ssh_enabled {
+                bail!(
+                    "SSH is not enabled on sandbox '{}'. \
+                     Recreate it with --ssh to enable SSH access.",
+                    name
+                );
+            }
+
+            // 2. Resolve host port (same logic as Ssh command)
+            let host_port = state
+                .ssh_host_port
+                .or_else(|| {
+                    state
+                        .ports
+                        .iter()
+                        .find(|p| p.container_port == 22)
+                        .and_then(|p| p.host_port)
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No SSH host port found for sandbox '{}'. \
+                         The sandbox may need a port mapping for port 22.",
+                        name
+                    )
+                })?;
+
+            // 3. Read the CA private key saved during sandbox creation
+            let ca_key_path = manager.get_data_dir().join(format!("{}-ssh-ca.key", name));
+            let ca_private_key = std::fs::read_to_string(&ca_key_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to read CA key at {}: {}. \
+                     Was the sandbox started with --ssh?",
+                    ca_key_path.display(),
+                    e
+                )
+            })?;
+
+            // 4. Generate an ephemeral client keypair
+            let (client_private, client_public) = ssh::generate_client_keypair()?;
+
+            // 5. Sign the client public key with the stored CA key
+            let ttl_secs = ssh::parse_ttl_to_secs("30m")?;
+            let cert = ssh::sign_client_key_local(
+                &ca_private_key,
+                &client_public,
+                &["sandbox"],
+                ttl_secs,
+            )?;
+
+            // 6. Write cert and key to a well-known location for the SSH config
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+            let ssh_dir = home.join(".agentkernel").join("ssh").join(&name);
+            std::fs::create_dir_all(&ssh_dir)?;
+
+            let client_key_path = ssh_dir.join("client_key");
+            let cert_path = ssh_dir.join("client_key-cert.pub");
+            std::fs::write(&client_key_path, &client_private)?;
+            std::fs::write(&cert_path, &cert)?;
+
+            // Set permissions on the private key (owner read-only)
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&client_key_path, std::fs::Permissions::from_mode(0o600))?;
+            }
+
+            eprintln!(
+                "agentkernel ssh-proxy: signed cert for '{}', connecting to localhost:{}",
+                name, host_port
+            );
+
+            // 7. Raw TCP pipe: connect to localhost:{host_port} and pipe stdin/stdout
+            let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", host_port)).await?;
+            let (mut rd, mut wr) = stream.into_split();
+            let mut stdin = tokio::io::stdin();
+            let mut stdout = tokio::io::stdout();
+
+            tokio::select! {
+                result = tokio::io::copy(&mut stdin, &mut wr) => { result?; },
+                result = tokio::io::copy(&mut rd, &mut stdout) => { result?; },
+            };
         }
         Commands::Agents => {
             println!("{:<15} {:<15} API KEY", "AGENT", "STATUS");
@@ -1630,6 +2168,31 @@ memory_mb = 512
                             "policy_violation",
                             sandbox.as_str(),
                             format!("{}: {}", policy, details),
+                        ),
+                        audit::AuditEvent::SshConnected {
+                            sandbox,
+                            host_port,
+                            ssh_user,
+                        } => (
+                            "ssh_connected",
+                            sandbox.as_str(),
+                            format!("{}@localhost:{}", ssh_user, host_port),
+                        ),
+                        audit::AuditEvent::SshDisconnected {
+                            sandbox,
+                            duration_secs,
+                            recording,
+                        } => (
+                            "ssh_disconnected",
+                            sandbox.as_str(),
+                            format!(
+                                "duration={}s{}",
+                                duration_secs,
+                                recording
+                                    .as_ref()
+                                    .map(|r| format!(" recording={}", r))
+                                    .unwrap_or_default()
+                            ),
                         ),
                     };
                     println!(
@@ -2754,6 +3317,9 @@ fn run_info(name: &str) -> Result<()> {
     println!("Status:         {}", status_str);
     println!("Backend:        {}", backend_str);
     println!("Image:          {}", state.image);
+    if running && let Some(ip) = manager.get_container_ip(name) {
+        println!("IP:             {}", ip);
+    }
     println!(
         "Resources:      {} vCPU{}, {}MB RAM",
         state.vcpus,
@@ -2825,6 +3391,16 @@ fn run_info(name: &str) -> Result<()> {
                 audit::AuditEvent::SessionAttached { .. } => "attach".to_string(),
                 audit::AuditEvent::PolicyViolation { policy, .. } => {
                     format!("policy  denied: {}", policy)
+                }
+                audit::AuditEvent::SshConnected {
+                    host_port,
+                    ssh_user,
+                    ..
+                } => {
+                    format!("ssh     {}@localhost:{}", ssh_user, host_port)
+                }
+                audit::AuditEvent::SshDisconnected { duration_secs, .. } => {
+                    format!("ssh-end {}s", duration_secs)
                 }
             };
             println!("  {}  {}", ts, desc);

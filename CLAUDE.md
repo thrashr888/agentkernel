@@ -49,7 +49,8 @@ src/
 ├── config.rs         # Config parsing for agentkernel.toml
 ├── permissions.rs    # Security profiles and permission management
 ├── agents.rs         # Multi-agent support (Claude, Gemini, Codex, OpenCode)
-├── http_api.rs       # HTTP REST API server
+├── ssh.rs            # SSH cert auth: CA/client keygen, sshd config, cert signing
+├── http_api.rs       # HTTP REST API server (includes IP in responses)
 ├── mcp.rs            # MCP server for Claude Code integration
 ├── docker_backend.rs # Docker/Podman container backend
 ├── vmm.rs            # Virtual machine manager (abstracts backends)
@@ -107,6 +108,16 @@ mount_cwd = false         # Override: mount current directory
 
 [network]
 vsock_cid = 3             # Auto-assigned if not specified
+ports = ["8080:80"]       # Port mappings (host:container)
+
+[ssh]
+enabled = true            # Inject sshd into sandbox
+port = 22                 # sshd port inside container
+user = "sandbox"          # SSH login user
+cert_ttl = "30m"          # Client cert validity
+# vault_addr = "..."      # Optional: Vault for cert signing
+# vault_ssh_mount = "ssh"
+# vault_ssh_role = "agentkernel-client"
 ```
 
 ### Security Profiles
@@ -123,6 +134,8 @@ vsock_cid = 3             # Auto-assigned if not specified
 - `tokio` - async runtime
 - `anyhow` - error handling
 - `serde/toml` - config parsing
+- `ssh-key` - ed25519 keypair generation, SSH certificate signing
+- `rustls` - TLS for HTTPS API server
 - (Planned) Firecracker API client via REST/Unix socket
 
 ## Performance Targets
@@ -143,6 +156,8 @@ MicroVM isolation provides:
 - **No container escapes**: Not sharing host kernel
 - **Security profiles**: `restrictive` (default in examples), `moderate`, `permissive`
 - **Network control**: `--no-network` flag or config override
+- **SSH cert auth**: Ephemeral ed25519 certificates (no passwords), optional Vault CA
+- **Container IP visibility**: `list` and `info` show Docker bridge IPs for running sandboxes
 
 ## Release Policy
 

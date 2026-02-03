@@ -49,6 +49,24 @@ pub fn podman_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Get the IP address of a running container by name.
+pub fn get_container_ip(container_name: &str) -> Option<String> {
+    let output = Command::new("docker")
+        .args([
+            "inspect",
+            "-f",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+            container_name,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if ip.is_empty() { None } else { Some(ip) }
+}
+
 /// Detect the best available container runtime
 pub fn detect_container_runtime() -> Option<ContainerRuntime> {
     if podman_available() {

@@ -135,6 +135,31 @@ impl Default for OrchestratorConfig {
     }
 }
 
+/// TLS configuration for the `[api.tls]` section in agentkernel.toml
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ApiTlsConfig {
+    /// Enable TLS
+    #[serde(default)]
+    pub enabled: bool,
+    /// Certificate PEM path
+    #[serde(default)]
+    pub cert: Option<String>,
+    /// Private key PEM path
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Require TLS (no plain HTTP)
+    #[serde(default)]
+    pub require_tls: bool,
+}
+
+/// API server configuration for the `[api]` section in agentkernel.toml
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ApiConfig {
+    /// TLS configuration
+    #[serde(default)]
+    pub tls: ApiTlsConfig,
+}
+
 /// Trust anchor configuration for enterprise policy signing
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrustAnchorsConfig {
@@ -203,6 +228,53 @@ impl Default for EnterpriseConfig {
     }
 }
 
+/// Transport security configuration for sandbox access
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TransportConfig {
+    /// Enable SSH access for sandboxes
+    #[serde(default)]
+    pub ssh: bool,
+    /// Vault address for SSH CA (default: $VAULT_ADDR)
+    pub vault_addr: Option<String>,
+    /// Vault SSH secrets engine mount (default: "ssh")
+    #[serde(default = "default_ssh_mount")]
+    pub vault_ssh_mount: String,
+    /// Vault SSH role (default: "agentkernel-client")
+    #[serde(default = "default_ssh_role")]
+    pub vault_ssh_role: String,
+    /// Certificate TTL (default: "30m")
+    #[serde(default = "default_cert_ttl")]
+    pub cert_ttl: String,
+    /// Require encrypted transport for all port mappings
+    #[serde(default)]
+    pub require_encrypted: bool,
+}
+
+impl Default for TransportConfig {
+    fn default() -> Self {
+        Self {
+            ssh: false,
+            vault_addr: None,
+            vault_ssh_mount: default_ssh_mount(),
+            vault_ssh_role: default_ssh_role(),
+            cert_ttl: default_cert_ttl(),
+            require_encrypted: false,
+        }
+    }
+}
+
+fn default_ssh_mount() -> String {
+    "ssh".to_string()
+}
+
+fn default_ssh_role() -> String {
+    "agentkernel-client".to_string()
+}
+
+fn default_cert_ttl() -> String {
+    "30m".to_string()
+}
+
 /// Root configuration structure matching agentkernel.toml schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -227,6 +299,9 @@ pub struct Config {
     /// Enterprise policy management
     #[serde(default)]
     pub enterprise: EnterpriseConfig,
+    /// API server configuration
+    #[serde(default)]
+    pub api: ApiConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -247,6 +322,9 @@ pub struct SecurityConfig {
     /// Seccomp profile name or path
     #[serde(default)]
     pub seccomp: Option<String>,
+    /// Transport security (SSH access)
+    #[serde(default)]
+    pub transport: TransportConfig,
 }
 
 /// Domain filtering configuration for network access control
@@ -455,6 +533,7 @@ impl Config {
             files: Vec::new(),
             orchestrator: OrchestratorConfig::default(),
             enterprise: EnterpriseConfig::default(),
+            api: ApiConfig::default(),
         }
     }
 
@@ -550,6 +629,24 @@ impl Config {
             warnings.push(
                 "Domain filtering rules are configured but runtime DNS enforcement \
                  is not yet implemented. Rules are recorded for future use."
+                    .to_string(),
+            );
+        }
+
+        // Warn if require_encrypted is set but port mappings exist without TLS
+        if self.security.transport.require_encrypted && !self.network.ports.is_empty() {
+            warnings.push(
+                "Transport encryption is required but port mappings do not include \
+                 TLS termination. Consider using --ssh or adding a TLS proxy."
+                    .to_string(),
+            );
+        }
+
+        // Warn if SSH is enabled but security profile is restrictive (no network)
+        if self.security.transport.ssh && !perms.network {
+            warnings.push(
+                "SSH is enabled but the security profile is 'restrictive' (no network). \
+                 SSH requires network access."
                     .to_string(),
             );
         }
@@ -1048,5 +1145,183 @@ mod tests {
         assert_eq!(config.enterprise.offline_mode, "fail_closed");
         assert_eq!(config.enterprise.cache_max_age_hours, 48);
         assert_eq!(config.enterprise.trust_anchors.keys.len(), 2);
+    }
+
+    #[test]
+    fn test_api_tls_config_defaults() {
+        let toml = r#"
+            [sandbox]
+            name = "test"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(!config.api.tls.enabled);
+        assert!(config.api.tls.cert.is_none());
+        assert!(config.api.tls.key.is_none());
+        assert!(!config.api.tls.require_tls);
+    }
+
+    #[test]
+    fn test_api_tls_config_full() {
+        let toml = r#"
+            [sandbox]
+            name = "tls-app"
+
+            [api.tls]
+            enabled = true
+            cert = "/etc/certs/api.pem"
+            key = "/etc/certs/api-key.pem"
+            require_tls = true
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(config.api.tls.enabled);
+        assert_eq!(config.api.tls.cert, Some("/etc/certs/api.pem".to_string()));
+        assert_eq!(
+            config.api.tls.key,
+            Some("/etc/certs/api-key.pem".to_string())
+        );
+        assert!(config.api.tls.require_tls);
+    }
+
+    #[test]
+    fn test_api_tls_config_enabled_only() {
+        let toml = r#"
+            [sandbox]
+            name = "self-signed-app"
+
+            [api.tls]
+            enabled = true
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(config.api.tls.enabled);
+        assert!(config.api.tls.cert.is_none());
+        assert!(config.api.tls.key.is_none());
+        assert!(!config.api.tls.require_tls);
+    }
+
+    #[test]
+    fn test_transport_config_defaults() {
+        let toml = r#"
+            [sandbox]
+            name = "test"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(!config.security.transport.ssh);
+        assert!(config.security.transport.vault_addr.is_none());
+        assert_eq!(config.security.transport.vault_ssh_mount, "ssh");
+        assert_eq!(
+            config.security.transport.vault_ssh_role,
+            "agentkernel-client"
+        );
+        assert_eq!(config.security.transport.cert_ttl, "30m");
+    }
+
+    #[test]
+    fn test_transport_config_full() {
+        let toml = r#"
+            [sandbox]
+            name = "ssh-app"
+
+            [security.transport]
+            ssh = true
+            vault_addr = "https://vault.example.com"
+            vault_ssh_mount = "ssh-client"
+            vault_ssh_role = "my-role"
+            cert_ttl = "1h"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(config.security.transport.ssh);
+        assert_eq!(
+            config.security.transport.vault_addr,
+            Some("https://vault.example.com".to_string())
+        );
+        assert_eq!(config.security.transport.vault_ssh_mount, "ssh-client");
+        assert_eq!(config.security.transport.vault_ssh_role, "my-role");
+        assert_eq!(config.security.transport.cert_ttl, "1h");
+    }
+
+    #[test]
+    fn test_transport_config_ssh_only() {
+        let toml = r#"
+            [sandbox]
+            name = "ssh-only"
+
+            [security.transport]
+            ssh = true
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(config.security.transport.ssh);
+        // Defaults for vault fields
+        assert_eq!(config.security.transport.vault_ssh_mount, "ssh");
+        assert_eq!(
+            config.security.transport.vault_ssh_role,
+            "agentkernel-client"
+        );
+        assert_eq!(config.security.transport.cert_ttl, "30m");
+    }
+
+    #[test]
+    fn test_transport_config_require_encrypted() {
+        let toml = r#"
+            [sandbox]
+            name = "secure-app"
+
+            [security.transport]
+            require_encrypted = true
+            ssh = true
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(config.security.transport.require_encrypted);
+        assert!(config.security.transport.ssh);
+    }
+
+    #[test]
+    fn test_transport_config_require_encrypted_default() {
+        let toml = r#"
+            [sandbox]
+            name = "test"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(!config.security.transport.require_encrypted);
+    }
+
+    #[test]
+    fn test_validate_require_encrypted_with_ports() {
+        let toml = r#"
+            [sandbox]
+            name = "test"
+
+            [security]
+            profile = "permissive"
+
+            [security.transport]
+            require_encrypted = true
+
+            [network]
+            ports = ["8080:80"]
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        let warnings = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("encryption")));
+    }
+
+    #[test]
+    fn test_validate_ssh_restrictive_profile_warning() {
+        let toml = r#"
+            [sandbox]
+            name = "test"
+
+            [security]
+            profile = "restrictive"
+
+            [security.transport]
+            ssh = true
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        let warnings = config.validate();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("SSH") || w.contains("ssh"))
+        );
     }
 }

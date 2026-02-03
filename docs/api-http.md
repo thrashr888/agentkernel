@@ -143,11 +143,13 @@ curl http://localhost:18888/sandboxes
 {
   "success": true,
   "data": [
-    {"name": "my-sandbox", "status": "running", "backend": "docker"},
+    {"name": "my-sandbox", "status": "running", "backend": "docker", "ip": "172.17.0.3"},
     {"name": "test", "status": "stopped", "backend": "docker"}
   ]
 }
 ```
+
+The `ip` field contains the container's Docker bridge network IP address. It is only present for running sandboxes.
 
 ### Create Sandbox
 
@@ -203,6 +205,7 @@ curl http://localhost:18888/sandboxes/my-sandbox
     "name": "my-sandbox",
     "status": "running",
     "backend": "docker",
+    "ip": "172.17.0.3",
     "image": "python:3.12-alpine",
     "vcpus": 1,
     "memory_mb": 512,
@@ -211,7 +214,7 @@ curl http://localhost:18888/sandboxes/my-sandbox
 }
 ```
 
-The response includes resource limits and metadata when available. Fields that are unknown are omitted.
+The response includes resource limits and metadata when available. The `ip` field is only present for running sandboxes. Fields that are unknown are omitted.
 
 ### Execute in Sandbox
 

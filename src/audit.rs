@@ -47,6 +47,18 @@ pub enum AuditEvent {
         policy: String,
         details: String,
     },
+    /// SSH session started
+    SshConnected {
+        sandbox: String,
+        host_port: u16,
+        ssh_user: String,
+    },
+    /// SSH session ended
+    SshDisconnected {
+        sandbox: String,
+        duration_secs: u64,
+        recording: Option<String>,
+    },
 }
 
 /// A logged audit entry with metadata
@@ -152,7 +164,22 @@ impl AuditLog {
             }
             match serde_json::from_str(&line) {
                 Ok(entry) => entries.push(entry),
-                Err(e) => eprintln!("Warning: skipping malformed audit entry: {}", e),
+                Err(_) => {
+                    // Legacy ssh_connected entries have duplicate "user" keys
+                    // (AuditEntry.user + SshConnected.user before the rename to ssh_user).
+                    // Fix up the second occurrence and retry.
+                    if line.contains("\"ssh_connected\"")
+                        && let Some(second) = line.rfind("\"user\":")
+                    {
+                        let mut fixed = line.clone();
+                        fixed.replace_range(second..second + 7, "\"ssh_user\":");
+                        if let Ok(entry) = serde_json::from_str(&fixed) {
+                            entries.push(entry);
+                            continue;
+                        }
+                    }
+                    eprintln!("Warning: skipping malformed audit entry");
+                }
             }
         }
 
@@ -174,6 +201,8 @@ impl AuditLog {
                 AuditEvent::FileRead { sandbox: s, .. } => s == sandbox,
                 AuditEvent::SessionAttached { sandbox: s } => s == sandbox,
                 AuditEvent::PolicyViolation { sandbox: s, .. } => s == sandbox,
+                AuditEvent::SshConnected { sandbox: s, .. } => s == sandbox,
+                AuditEvent::SshDisconnected { sandbox: s, .. } => s == sandbox,
             })
             .collect())
     }
@@ -278,5 +307,57 @@ mod tests {
 
         let filtered = log.read_by_sandbox("test1").unwrap();
         assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn test_ssh_connected_event() {
+        let event = AuditEvent::SshConnected {
+            sandbox: "test-box".to_string(),
+            host_port: 2222,
+            ssh_user: "sandbox".to_string(),
+        };
+        let entry = AuditEntry::new(event);
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("ssh_connected"));
+        assert!(json.contains("test-box"));
+        assert!(json.contains("2222"));
+        assert!(json.contains("ssh_user"));
+
+        // Roundtrip: verify deserialization succeeds (no duplicate field error)
+        let parsed: AuditEntry = serde_json::from_str(&json).unwrap();
+        if let AuditEvent::SshConnected { ssh_user, .. } = &parsed.event {
+            assert_eq!(ssh_user, "sandbox");
+        } else {
+            panic!("Expected SshConnected event after roundtrip");
+        }
+        // AuditEntry.user (OS user) must not collide with ssh_user
+        assert!(parsed.user.is_some());
+    }
+
+    #[test]
+    fn test_ssh_disconnected_event() {
+        let event = AuditEvent::SshDisconnected {
+            sandbox: "test-box".to_string(),
+            duration_secs: 120,
+            recording: Some("/tmp/session.cast".to_string()),
+        };
+        let entry = AuditEntry::new(event);
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("ssh_disconnected"));
+        assert!(json.contains("120"));
+        assert!(json.contains("session.cast"));
+    }
+
+    #[test]
+    fn test_ssh_disconnected_without_recording() {
+        let event = AuditEvent::SshDisconnected {
+            sandbox: "test-box".to_string(),
+            duration_secs: 60,
+            recording: None,
+        };
+        let entry = AuditEntry::new(event);
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("ssh_disconnected"));
+        assert!(!json.contains("session.cast"));
     }
 }

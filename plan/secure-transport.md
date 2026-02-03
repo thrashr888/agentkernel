@@ -215,10 +215,16 @@ agentkernel serve --tls --acme --domain api.example.com  # Let's Encrypt
 - **Key agent forwarding opt-in** — disabled by default, explicit flag to enable
 - **Restrictive profile** — `--ssh` is incompatible with `restrictive` profile (no network)
 
+## Decisions
+
+1. **Vault is optional.** Ship a built-in local CA (`agentkernel ca init`) for non-Vault users. Vault integration is the recommended path for teams/enterprise, but solo developers shouldn't need Vault to use `--ssh`.
+2. **SSH/TLS is opt-in.** The `--ssh` flag and sshd injection only happen when explicitly requested. No default image bloat. Acceptable tradeoff for the ~2MB openssh-server addition.
+3. **Wildcard certs for ACME.** Use `*.sandboxes.example.com` to avoid per-sandbox cert issuance and Let's Encrypt rate limits. Vault PKI has no rate limits and is preferred for production.
+4. **SSH session recording promoted to Phase 1.** We already have the asciicast format in `src/asciicast.rs`. Hook it into SSH sessions for free audit logging alongside the ssh command.
+5. **TLS sidecar: investigate tradeoffs.** Envoy (~40MB) vs minimal Rust proxy (<1MB) vs HAProxy. Decision deferred to Phase 4 — needs benchmarking.
+
 ## Open Questions
 
 1. Should `--ssh` be implied when using `--profile permissive`?
-2. Do we want a built-in SSH CA for non-Vault users, or require Vault?
-3. Should the TLS sidecar use Envoy, HAProxy, or a custom Rust proxy?
-4. ACME rate limits — how do we handle many short-lived sandboxes needing certs?
-5. Should SSH session recordings be stored locally or shipped to a central audit log?
+2. Best Rust SSH library for ssh-proxy: `russh` vs shelling out to `ssh`?
+3. Should the built-in CA store keys in `~/.agentkernel/ca/` or `~/.config/agentkernel/ca/`?

@@ -16,9 +16,12 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 | [`remove`](cmd-start-stop) | Remove a sandbox |
 | [`exec`](cmd-exec-attach) | Execute a command in a running sandbox |
 | [`attach`](cmd-exec-attach) | Attach to a sandbox's interactive shell |
-| [`list`](cmd-list) | List all sandboxes |
+| `ssh` | SSH into a sandbox (certificate-authenticated) |
+| `ssh-config` | Generate SSH config entry for IDE integration |
+| `ssh-proxy` | ProxyCommand helper for SSH |
+| [`list`](cmd-list) | List all sandboxes (with IP addresses) |
 | `cp` | Copy files to/from a sandbox |
-| `info` | Show detailed information about a sandbox |
+| `info` | Show detailed information about a sandbox (with IP) |
 
 ### Templates & Configuration
 
@@ -153,6 +156,25 @@ agentkernel start dev
 agentkernel attach dev
 ```
 
+### SSH access
+```bash
+# Create with SSH enabled
+agentkernel create dev --ssh -B docker
+agentkernel start dev
+
+# SSH in (generates ephemeral cert automatically)
+agentkernel ssh dev
+
+# Run a command over SSH
+agentkernel ssh dev -- ls -la /
+
+# Record the session
+agentkernel ssh dev --record ./session.cast
+
+# Generate SSH config for VS Code Remote-SSH
+agentkernel ssh-config dev >> ~/.ssh/config
+```
+
 ### Session recording and playback
 ```bash
 # Record a session
@@ -191,4 +213,6 @@ The audit log is stored as JSONL at `~/.agentkernel/audit.jsonl`. Each line is a
 | `file_written` | sandbox, path | `cp` to sandbox |
 | `file_read` | sandbox, path | `cp` from sandbox |
 | `session_attached` | sandbox | `attach` |
+| `ssh_connected` | sandbox, user, cert_fingerprint | `ssh` (connect) |
+| `ssh_disconnected` | sandbox, duration_secs, recording | `ssh` (disconnect) |
 | `policy_violation` | sandbox, policy, details | Blocked command |

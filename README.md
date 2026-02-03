@@ -125,11 +125,16 @@ agentkernel exec my-project -- python -m pytest
 # Attach an interactive shell
 agentkernel attach my-project
 
+# SSH into a sandbox (certificate-authenticated)
+agentkernel create my-box --ssh -B docker
+agentkernel start my-box
+agentkernel ssh my-box
+
 # Stop and remove
 agentkernel stop my-project
 agentkernel remove my-project
 
-# List all sandboxes (or filter by project)
+# List all sandboxes (shows IP addresses for running containers)
 agentkernel list
 agentkernel list --project my-app
 ```
@@ -157,6 +162,38 @@ agentkernel run --no-network curl example.com  # Will fail
 | permissive | Yes | Yes | Yes | Yes | No |
 | moderate | Yes | No | No | No | No |
 | restrictive | No | No | No | No | Yes |
+
+## SSH Access
+
+SSH into sandboxes with automatic certificate authentication. No passwords, no manual key setup.
+
+```bash
+# Create an SSH-enabled sandbox
+agentkernel create dev --ssh -B docker
+agentkernel start dev
+
+# SSH in (ephemeral certs are generated automatically)
+agentkernel ssh dev
+
+# Run a command over SSH
+agentkernel ssh dev -- ls -la
+
+# Record a session (asciicast format)
+agentkernel ssh dev --record ./session.cast
+
+# Use the raw ssh command (printed on connect)
+ssh -i ~/.agentkernel/ssh/dev/client_key -p 52341 sandbox@localhost
+
+# Generate SSH config for IDE integration (VS Code Remote-SSH, etc.)
+agentkernel ssh-config dev >> ~/.ssh/config
+```
+
+**How it works:**
+- `--ssh` injects an OpenSSH server into the container at creation time
+- A CA keypair is generated per-sandbox; client certs are signed on each `ssh` connect
+- Certs are short-lived (30 minutes by default) and stored in `~/.agentkernel/ssh/<name>/`
+- Password and keyboard-interactive auth are disabled — cert-only
+- For Vault-based cert signing, set `vault_addr` and `vault_ssh_mount` in config
 
 ## Templates
 
@@ -302,9 +339,9 @@ agentkernel serve --host 127.0.0.1 --port 18888
 |--------|------|-------------|
 | GET | `/health` | Health check |
 | POST | `/run` | Run command in temporary sandbox |
-| GET | `/sandboxes` | List all sandboxes |
+| GET | `/sandboxes` | List all sandboxes (includes IP addresses) |
 | POST | `/sandboxes` | Create a sandbox |
-| GET | `/sandboxes/{name}` | Get sandbox info |
+| GET | `/sandboxes/{name}` | Get sandbox info (includes IP when running) |
 | DELETE | `/sandboxes/{name}` | Remove sandbox |
 | POST | `/sandboxes/{name}/exec` | Execute command in sandbox |
 
@@ -317,6 +354,11 @@ curl -X POST http://localhost:18888/run \
   -d '{"command": ["python3", "-c", "print(1+1)"], "profile": "restrictive"}'
 
 # Response: {"success": true, "data": {"output": "2\n"}}
+
+# Get sandbox info (includes IP for running containers)
+curl http://localhost:18888/sandboxes/my-sandbox
+
+# Response: {"success": true, "data": {"name": "my-sandbox", "status": "running", "backend": "docker", "ip": "172.17.0.3"}}
 ```
 
 ## Multi-Agent Support
