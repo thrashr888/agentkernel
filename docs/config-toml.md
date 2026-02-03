@@ -115,6 +115,33 @@ ports = ["8080:80", "3000"]   # Port mappings (host:container or container-only)
 
 Port mappings have no effect when network access is disabled (`[security] network = false` or `--no-network`).
 
+## [ssh]
+
+SSH access configuration. When enabled, an OpenSSH server is injected into the sandbox with certificate-only authentication.
+
+```toml
+[ssh]
+enabled = true                          # Enable SSH server in sandbox
+port = 22                               # sshd port inside container
+user = "sandbox"                        # SSH login user
+cert_ttl = "30m"                        # Client certificate validity
+# vault_addr = "https://vault:8200"     # Vault address for CA signing
+# vault_ssh_mount = "ssh"               # Vault SSH secrets engine mount
+# vault_ssh_role = "agentkernel-client" # Vault signing role
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Inject sshd into sandbox (same as `--ssh` flag) |
+| `port` | int | `22` | sshd listen port inside the container |
+| `user` | string | `sandbox` | Username for SSH login |
+| `cert_ttl` | string | `30m` | Client certificate time-to-live (e.g. `1h`, `30m`, `3600`) |
+| `vault_addr` | string | none | HashiCorp Vault address for certificate signing |
+| `vault_ssh_mount` | string | `ssh` | Vault SSH secrets engine mount path |
+| `vault_ssh_role` | string | `agentkernel-client` | Vault SSH signing role |
+
+Without Vault, a per-sandbox CA keypair is generated locally. Client certs are signed on each `agentkernel ssh` invocation and stored in `~/.agentkernel/ssh/<name>/`.
+
 ## [[files]]
 
 Inject files into the sandbox at startup.
@@ -205,6 +232,10 @@ mount_cwd = true
 
 [network]
 ports = ["3000:3000", "8080:80"]
+
+[ssh]
+enabled = true
+cert_ttl = "1h"
 
 [[files]]
 source = ".env.development"

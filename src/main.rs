@@ -3317,9 +3317,7 @@ fn run_info(name: &str) -> Result<()> {
     println!("Status:         {}", status_str);
     println!("Backend:        {}", backend_str);
     println!("Image:          {}", state.image);
-    if running
-        && let Some(ip) = manager.get_container_ip(name)
-    {
+    if running && let Some(ip) = manager.get_container_ip(name) {
         println!("IP:             {}", ip);
     }
     println!(
