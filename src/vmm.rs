@@ -1070,6 +1070,12 @@ impl VmManager {
         self.sandboxes.get(name)
     }
 
+    /// Get the IP address of a running sandbox (Docker backend only for now).
+    pub fn get_container_ip(&self, name: &str) -> Option<String> {
+        let container_name = format!("agentkernel-{}", name);
+        crate::backend::docker::get_container_ip(&container_name)
+    }
+
     /// Get the data directory path.
     ///
     /// Used by the SSH command to locate the stored CA private key.

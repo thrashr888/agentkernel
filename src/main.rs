@@ -1170,12 +1170,22 @@ memory_mb = 512
                 }
                 println!("\nCreate one with: agentkernel create <name>");
             } else {
-                println!("{:<30} {:<10} {:<10} PORTS", "NAME", "STATUS", "BACKEND");
+                println!(
+                    "{:<30} {:<10} {:<10} {:<17} PORTS",
+                    "NAME", "STATUS", "BACKEND", "IP"
+                );
                 for (name, running, backend) in filtered {
                     let status = if running { "running" } else { "stopped" };
                     let backend_str = backend
                         .map(|b| format!("{}", b))
                         .unwrap_or_else(|| "unknown".to_string());
+                    let ip_str = if running {
+                        manager
+                            .get_container_ip(name)
+                            .unwrap_or_else(|| "-".to_string())
+                    } else {
+                        "-".to_string()
+                    };
                     let ports_str = manager
                         .get_state(name)
                         .map(|s| {
@@ -1187,8 +1197,8 @@ memory_mb = 512
                         })
                         .unwrap_or_default();
                     println!(
-                        "{:<30} {:<10} {:<10} {}",
-                        name, status, backend_str, ports_str
+                        "{:<30} {:<10} {:<10} {:<17} {}",
+                        name, status, backend_str, ip_str, ports_str
                     );
                 }
             }
@@ -3307,6 +3317,11 @@ fn run_info(name: &str) -> Result<()> {
     println!("Status:         {}", status_str);
     println!("Backend:        {}", backend_str);
     println!("Image:          {}", state.image);
+    if running
+        && let Some(ip) = manager.get_container_ip(name)
+    {
+        println!("IP:             {}", ip);
+    }
     println!(
         "Resources:      {} vCPU{}, {}MB RAM",
         state.vcpus,

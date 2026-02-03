@@ -151,6 +151,8 @@ struct SandboxInfo {
     status: String,
     backend: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     image: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vcpus: Option<u32>,
@@ -790,12 +792,18 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
             let ports = state_info
                 .map(|s| s.ports.iter().map(|p| p.to_string()).collect())
                 .unwrap_or_default();
+            let ip = if running {
+                manager.get_container_ip(name)
+            } else {
+                None
+            };
             SandboxInfo {
                 name: name.to_string(),
                 status: if running { "running" } else { "stopped" }.to_string(),
                 backend: backend
                     .map(|b| format!("{}", b))
                     .unwrap_or_else(|| "unknown".to_string()),
+                ip,
                 image: None,
                 vcpus: None,
                 memory_mb: None,
@@ -927,12 +935,14 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
     }
 
     let port_strings: Vec<String> = ports.iter().map(|p| p.to_string()).collect();
+    let ip = manager.get_container_ip(&body.name);
     json_response(
         StatusCode::CREATED,
         &ApiResponse::success(SandboxInfo {
             name: body.name,
             status: "running".to_string(),
             backend: format!("{}", manager.backend()),
+            ip,
             image: Some(image.to_string()),
             vcpus: Some(vcpus),
             memory_mb: Some(memory_mb),
@@ -968,6 +978,11 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
             let ports = state_info
                 .map(|s| s.ports.iter().map(|p| p.to_string()).collect())
                 .unwrap_or_default();
+            let ip = if *running {
+                manager.get_container_ip(name)
+            } else {
+                None
+            };
             return json_response(
                 StatusCode::OK,
                 &ApiResponse::success(SandboxInfo {
@@ -976,6 +991,7 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                     backend: backend
                         .map(|b| format!("{}", b))
                         .unwrap_or_else(|| "unknown".to_string()),
+                    ip,
                     image: state_info.map(|s| s.image.clone()),
                     vcpus: state_info.map(|s| s.vcpus),
                     memory_mb: state_info.map(|s| s.memory_mb),
@@ -1721,6 +1737,7 @@ mod tests {
             name: "test-sandbox".to_string(),
             status: "running".to_string(),
             backend: "docker".to_string(),
+            ip: None,
             image: None,
             vcpus: None,
             memory_mb: None,
@@ -1791,6 +1808,7 @@ mod tests {
             name: "test".to_string(),
             status: "running".to_string(),
             backend: "docker".to_string(),
+            ip: None,
             image: None,
             vcpus: None,
             memory_mb: None,
@@ -1886,6 +1904,7 @@ mod tests {
             name: "big".to_string(),
             status: "running".to_string(),
             backend: "docker".to_string(),
+            ip: None,
             image: Some("python:3.12".to_string()),
             vcpus: Some(4),
             memory_mb: Some(2048),
@@ -1905,6 +1924,7 @@ mod tests {
             name: "test".to_string(),
             status: "stopped".to_string(),
             backend: "docker".to_string(),
+            ip: None,
             image: None,
             vcpus: None,
             memory_mb: None,

@@ -589,12 +589,19 @@ impl McpServer {
                     return Ok("No sandboxes found.".to_string());
                 }
 
-                let mut output = String::from("NAME\tSTATUS\tBACKEND\tPORTS\n");
+                let mut output = String::from("NAME\tSTATUS\tBACKEND\tIP\tPORTS\n");
                 for (name, running, backend) in &sandboxes {
                     let status = if *running { "running" } else { "stopped" };
                     let backend_str = backend
                         .map(|b| format!("{}", b))
                         .unwrap_or_else(|| "unknown".to_string());
+                    let ip_str = if *running {
+                        manager
+                            .get_container_ip(name)
+                            .unwrap_or_else(|| "-".to_string())
+                    } else {
+                        "-".to_string()
+                    };
                     let ports_str = manager
                         .get_state(name)
                         .map(|s| {
@@ -606,8 +613,8 @@ impl McpServer {
                         })
                         .unwrap_or_default();
                     output.push_str(&format!(
-                        "{}\t{}\t{}\t{}\n",
-                        name, status, backend_str, ports_str
+                        "{}\t{}\t{}\t{}\t{}\n",
+                        name, status, backend_str, ip_str, ports_str
                     ));
                 }
                 Ok(output)
