@@ -143,6 +143,9 @@ impl Permissions {
                 crate::policy::Action::PortMap => {
                     // Deny port mapping - caller should check decision first
                 }
+                crate::policy::Action::SSH => {
+                    // Deny SSH access - caller should check decision first
+                }
             }
         }
 

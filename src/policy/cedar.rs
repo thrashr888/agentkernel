@@ -68,6 +68,11 @@ namespace AgentKernel {
         principal: [User],
         resource: [Sandbox],
     };
+
+    action SSH appliesTo {
+        principal: [User],
+        resource: [Sandbox],
+    };
 }
 "#;
 
@@ -81,6 +86,7 @@ pub enum Action {
     Mount,
     Network,
     PortMap,
+    SSH,
 }
 
 impl Action {
@@ -94,6 +100,7 @@ impl Action {
             Action::Mount => r#"AgentKernel::Action::"Mount""#.to_string(),
             Action::Network => r#"AgentKernel::Action::"Network""#.to_string(),
             Action::PortMap => r#"AgentKernel::Action::"PortMap""#.to_string(),
+            Action::SSH => r#"AgentKernel::Action::"SSH""#.to_string(),
         }
     }
 }
@@ -108,6 +115,7 @@ impl std::fmt::Display for Action {
             Action::Mount => write!(f, "Mount"),
             Action::Network => write!(f, "Network"),
             Action::PortMap => write!(f, "PortMap"),
+            Action::SSH => write!(f, "SSH"),
         }
     }
 }
@@ -631,5 +639,64 @@ permit(
         let engine = CedarEngine::new("").unwrap();
         let decision = engine.evaluate(&test_principal(), Action::Run, &test_resource(), None);
         assert!(!decision.is_permit());
+    }
+
+    #[test]
+    fn test_ssh_action_evaluation() {
+        // Permit SSH for users with "developer" role
+        let policies = r#"
+permit(
+    principal is AgentKernel::User,
+    action == AgentKernel::Action::"SSH",
+    resource is AgentKernel::Sandbox
+) when {
+    principal.roles.contains("developer")
+};
+        "#;
+
+        let engine = CedarEngine::new(policies).unwrap();
+
+        // Developer should be permitted SSH
+        let decision = engine.evaluate(&test_principal(), Action::SSH, &test_resource(), None);
+        assert!(decision.is_permit());
+
+        // Non-developer should be denied SSH
+        let mut viewer = test_principal();
+        viewer.roles = vec!["viewer".to_string()];
+        let decision = engine.evaluate(&viewer, Action::SSH, &test_resource(), None);
+        assert!(!decision.is_permit());
+    }
+
+    #[test]
+    fn test_forbid_ssh_action() {
+        // Permit all actions, but explicitly forbid SSH
+        let policies = r#"
+permit(
+    principal is AgentKernel::User,
+    action,
+    resource is AgentKernel::Sandbox
+);
+forbid(
+    principal is AgentKernel::User,
+    action == AgentKernel::Action::"SSH",
+    resource is AgentKernel::Sandbox
+);
+        "#;
+
+        let engine = CedarEngine::new(policies).unwrap();
+
+        // SSH should be denied despite the broad permit
+        let decision = engine.evaluate(&test_principal(), Action::SSH, &test_resource(), None);
+        assert!(!decision.is_permit());
+
+        // Other actions should still be permitted
+        let decision = engine.evaluate(&test_principal(), Action::Run, &test_resource(), None);
+        assert!(decision.is_permit());
+    }
+
+    #[test]
+    fn test_ssh_action_display() {
+        assert_eq!(Action::SSH.to_string(), "SSH");
+        assert_eq!(Action::SSH.cedar_uid(), r#"AgentKernel::Action::"SSH""#);
     }
 }

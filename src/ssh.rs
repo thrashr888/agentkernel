@@ -261,6 +261,155 @@ pub fn sign_client_key_local(
     cert.to_openssh().context("Failed to encode certificate")
 }
 
+/// Generate an ephemeral ed25519 client keypair.
+///
+/// Returns `(private_key_openssh, public_key_openssh)`.
+pub fn generate_client_keypair() -> Result<(String, String)> {
+    let mut rng = rand::thread_rng();
+    let private_key = PrivateKey::random(&mut rng, Algorithm::Ed25519)
+        .context("Failed to generate client ed25519 keypair")?;
+
+    let private_pem = private_key
+        .to_openssh(LineEnding::LF)
+        .context("Failed to encode client private key")?;
+
+    let public_openssh = private_key
+        .public_key()
+        .to_openssh()
+        .context("Failed to encode client public key")?;
+
+    Ok((private_pem.to_string(), public_openssh))
+}
+
+/// Parse a TTL string (e.g. "30m", "1h", "5m", "2h30m") to seconds.
+///
+/// Supports:
+/// - `Ns` — seconds
+/// - `Nm` — minutes
+/// - `Nh` — hours
+/// - plain integer — treated as seconds
+pub fn parse_ttl_to_secs(ttl: &str) -> Result<u64> {
+    let ttl = ttl.trim();
+    if ttl.is_empty() {
+        bail!("TTL string is empty");
+    }
+
+    // Plain integer = seconds
+    if let Ok(secs) = ttl.parse::<u64>() {
+        return Ok(secs);
+    }
+
+    let mut total: u64 = 0;
+    let mut current_num = String::new();
+
+    for ch in ttl.chars() {
+        if ch.is_ascii_digit() {
+            current_num.push(ch);
+        } else {
+            if current_num.is_empty() {
+                bail!("Invalid TTL format: unexpected '{}' in \"{}\"", ch, ttl);
+            }
+            let n: u64 = current_num
+                .parse()
+                .context("Invalid number in TTL string")?;
+            current_num.clear();
+            match ch {
+                's' => total += n,
+                'm' => total += n * 60,
+                'h' => total += n * 3600,
+                _ => bail!("Unknown TTL unit '{}' in \"{}\"", ch, ttl),
+            }
+        }
+    }
+
+    // If there are trailing digits with no unit, reject (ambiguous)
+    if !current_num.is_empty() {
+        bail!(
+            "Invalid TTL format: trailing digits without unit in \"{}\"",
+            ttl
+        );
+    }
+
+    if total == 0 {
+        bail!("TTL resolves to 0 seconds: \"{}\"", ttl);
+    }
+
+    Ok(total)
+}
+
+/// Convenience wrapper that routes to Vault or local signing based on config.
+///
+/// If `ssh_config.vault_addr` is set, delegates to `sign_client_key_vault`
+/// (requires an async runtime and the enterprise/nomad feature).
+/// Otherwise, uses `sign_client_key_local` with the provided `ca_private_key`.
+pub fn sign_client_key(
+    ssh_config: &SshConfig,
+    ca_private_key: Option<&str>,
+    client_public_key: &str,
+    principals: &[&str],
+    ttl_secs: u64,
+) -> Result<String> {
+    if ssh_config.vault_addr.is_some() {
+        // Vault path — we can't call async from a sync function directly.
+        // Callers that need Vault signing should use sign_client_key_vault() directly
+        // in an async context. For now, we bail to indicate the intent.
+        bail!(
+            "Vault SSH signing requires calling sign_client_key_vault() \
+             in an async context. Set vault_addr=None to use local CA signing."
+        );
+    }
+
+    let ca_key = ca_private_key.ok_or_else(|| {
+        anyhow::anyhow!("Local CA signing requires a CA private key (ca_private_key is None)")
+    })?;
+
+    sign_client_key_local(ca_key, client_public_key, principals, ttl_secs)
+}
+
+/// Fetch the CA public key from Vault's SSH secrets engine.
+///
+/// Makes a GET request to `{vault_addr}/v1/{mount}/config/ca`.
+/// This is needed so that Vault-signed certificates can be verified by
+/// sshd inside sandboxes (inject the returned public key as `ca.pub`).
+#[cfg(any(feature = "enterprise", feature = "nomad"))]
+#[allow(dead_code)]
+pub async fn get_vault_ca_public_key(
+    vault_addr: &str,
+    vault_token: &str,
+    ssh_config: &SshConfig,
+) -> Result<String> {
+    let url = format!(
+        "{}/v1/{}/config/ca",
+        vault_addr.trim_end_matches('/'),
+        ssh_config.vault_ssh_mount,
+    );
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .header("X-Vault-Token", vault_token)
+        .send()
+        .await
+        .context("Failed to contact Vault for CA public key")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        bail!("Vault CA public key fetch failed ({}): {}", status, text);
+    }
+
+    let result: serde_json::Value = resp
+        .json()
+        .await
+        .context("Failed to parse Vault CA response")?;
+
+    let public_key = result["data"]["public_key"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Vault response missing data.public_key"))?;
+
+    Ok(public_key.to_string())
+}
+
 /// Sign a client public key via Vault SSH secrets engine.
 ///
 /// Makes an HTTP POST to `{vault_addr}/v1/{mount}/sign/{role}`.
@@ -470,5 +619,116 @@ mod tests {
         let (private_key, public_key) = generate_host_keypair().unwrap();
         assert!(private_key.contains("BEGIN OPENSSH PRIVATE KEY"));
         assert!(public_key.starts_with("ssh-ed25519 "));
+    }
+
+    #[test]
+    fn test_generate_client_keypair() {
+        let (private_key, public_key) = generate_client_keypair().unwrap();
+
+        // Private key should be in OpenSSH PEM format
+        assert!(private_key.contains("BEGIN OPENSSH PRIVATE KEY"));
+        assert!(private_key.contains("END OPENSSH PRIVATE KEY"));
+
+        // Public key should start with ssh-ed25519
+        assert!(public_key.starts_with("ssh-ed25519 "));
+    }
+
+    #[test]
+    fn test_generate_client_keypair_is_unique() {
+        let (priv1, pub1) = generate_client_keypair().unwrap();
+        let (priv2, pub2) = generate_client_keypair().unwrap();
+        // Each call should produce a different keypair
+        assert_ne!(priv1, priv2);
+        assert_ne!(pub1, pub2);
+    }
+
+    #[test]
+    fn test_parse_ttl_to_secs_minutes() {
+        assert_eq!(parse_ttl_to_secs("30m").unwrap(), 1800);
+        assert_eq!(parse_ttl_to_secs("5m").unwrap(), 300);
+        assert_eq!(parse_ttl_to_secs("1m").unwrap(), 60);
+    }
+
+    #[test]
+    fn test_parse_ttl_to_secs_hours() {
+        assert_eq!(parse_ttl_to_secs("1h").unwrap(), 3600);
+        assert_eq!(parse_ttl_to_secs("2h").unwrap(), 7200);
+    }
+
+    #[test]
+    fn test_parse_ttl_to_secs_seconds() {
+        assert_eq!(parse_ttl_to_secs("90s").unwrap(), 90);
+        assert_eq!(parse_ttl_to_secs("1s").unwrap(), 1);
+    }
+
+    #[test]
+    fn test_parse_ttl_to_secs_combined() {
+        assert_eq!(parse_ttl_to_secs("1h30m").unwrap(), 5400);
+        assert_eq!(parse_ttl_to_secs("2h15m30s").unwrap(), 8130);
+    }
+
+    #[test]
+    fn test_parse_ttl_to_secs_plain_integer() {
+        assert_eq!(parse_ttl_to_secs("3600").unwrap(), 3600);
+        assert_eq!(parse_ttl_to_secs("0").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_parse_ttl_to_secs_invalid() {
+        assert!(parse_ttl_to_secs("").is_err());
+        assert!(parse_ttl_to_secs("abc").is_err());
+        assert!(parse_ttl_to_secs("30x").is_err());
+        assert!(parse_ttl_to_secs("m30").is_err());
+    }
+
+    #[test]
+    fn test_parse_ttl_to_secs_trailing_digits_rejected() {
+        // "30m15" has trailing digits without a unit — ambiguous
+        assert!(parse_ttl_to_secs("30m15").is_err());
+    }
+
+    #[test]
+    fn test_sign_client_key_local_routing() {
+        let (ca_priv, _) = generate_ca_keypair().unwrap();
+        let (_, client_pub) = generate_client_keypair().unwrap();
+
+        let config = SshConfig::default();
+
+        // Local signing should work
+        let cert =
+            sign_client_key(&config, Some(&ca_priv), &client_pub, &["sandbox"], 1800).unwrap();
+        assert!(cert.contains("ssh-ed25519-cert-v01@openssh.com"));
+    }
+
+    #[test]
+    fn test_sign_client_key_vault_routing_errors() {
+        let (_, client_pub) = generate_client_keypair().unwrap();
+
+        // With vault_addr set, sign_client_key should bail (no async context)
+        let config = SshConfig {
+            vault_addr: Some("https://vault.example.com".to_string()),
+            ..SshConfig::default()
+        };
+        assert!(sign_client_key(&config, None, &client_pub, &["sandbox"], 1800).is_err());
+    }
+
+    #[test]
+    fn test_sign_client_key_no_ca_key_errors() {
+        let (_, client_pub) = generate_client_keypair().unwrap();
+        let config = SshConfig::default();
+
+        // No CA key provided for local signing should error
+        assert!(sign_client_key(&config, None, &client_pub, &["sandbox"], 1800).is_err());
+    }
+
+    #[test]
+    fn test_sign_client_key_with_generated_keypair() {
+        // End-to-end: generate CA, generate client, sign, verify format
+        let (ca_priv, _ca_pub) = generate_ca_keypair().unwrap();
+        let (_, client_pub) = generate_client_keypair().unwrap();
+
+        let cert =
+            sign_client_key_local(&ca_priv, &client_pub, &["sandbox", "agent"], 600).unwrap();
+        assert!(cert.contains("ssh-ed25519-cert-v01@openssh.com"));
     }
 }

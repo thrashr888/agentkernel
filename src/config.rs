@@ -245,6 +245,9 @@ pub struct TransportConfig {
     /// Certificate TTL (default: "30m")
     #[serde(default = "default_cert_ttl")]
     pub cert_ttl: String,
+    /// Require encrypted transport for all port mappings
+    #[serde(default)]
+    pub require_encrypted: bool,
 }
 
 impl Default for TransportConfig {
@@ -255,6 +258,7 @@ impl Default for TransportConfig {
             vault_ssh_mount: default_ssh_mount(),
             vault_ssh_role: default_ssh_role(),
             cert_ttl: default_cert_ttl(),
+            require_encrypted: false,
         }
     }
 }
@@ -625,6 +629,24 @@ impl Config {
             warnings.push(
                 "Domain filtering rules are configured but runtime DNS enforcement \
                  is not yet implemented. Rules are recorded for future use."
+                    .to_string(),
+            );
+        }
+
+        // Warn if require_encrypted is set but port mappings exist without TLS
+        if self.security.transport.require_encrypted && !self.network.ports.is_empty() {
+            warnings.push(
+                "Transport encryption is required but port mappings do not include \
+                 TLS termination. Consider using --ssh or adding a TLS proxy."
+                    .to_string(),
+            );
+        }
+
+        // Warn if SSH is enabled but security profile is restrictive (no network)
+        if self.security.transport.ssh && !perms.network {
+            warnings.push(
+                "SSH is enabled but the security profile is 'restrictive' (no network). \
+                 SSH requires network access."
                     .to_string(),
             );
         }
@@ -1235,5 +1257,71 @@ mod tests {
             "agentkernel-client"
         );
         assert_eq!(config.security.transport.cert_ttl, "30m");
+    }
+
+    #[test]
+    fn test_transport_config_require_encrypted() {
+        let toml = r#"
+            [sandbox]
+            name = "secure-app"
+
+            [security.transport]
+            require_encrypted = true
+            ssh = true
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(config.security.transport.require_encrypted);
+        assert!(config.security.transport.ssh);
+    }
+
+    #[test]
+    fn test_transport_config_require_encrypted_default() {
+        let toml = r#"
+            [sandbox]
+            name = "test"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(!config.security.transport.require_encrypted);
+    }
+
+    #[test]
+    fn test_validate_require_encrypted_with_ports() {
+        let toml = r#"
+            [sandbox]
+            name = "test"
+
+            [security]
+            profile = "permissive"
+
+            [security.transport]
+            require_encrypted = true
+
+            [network]
+            ports = ["8080:80"]
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        let warnings = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("encryption")));
+    }
+
+    #[test]
+    fn test_validate_ssh_restrictive_profile_warning() {
+        let toml = r#"
+            [sandbox]
+            name = "test"
+
+            [security]
+            profile = "restrictive"
+
+            [security.transport]
+            ssh = true
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        let warnings = config.validate();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("SSH") || w.contains("ssh"))
+        );
     }
 }

@@ -237,6 +237,14 @@ enum Commands {
         #[arg(long)]
         require_tls: bool,
     },
+    /// SSH into a running sandbox
+    Ssh {
+        /// Name of the sandbox
+        name: String,
+        /// Command to execute (instead of interactive shell)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
     /// List supported AI agents and their availability
     Agents,
     /// Manage agent plugins (install integration files for Claude, Codex, Gemini, etc.)
@@ -1507,6 +1515,121 @@ memory_mb = 512
             };
 
             http_api::run_server_with_tls(addr, tls_config).await?;
+        }
+        Commands::Ssh { name, command } => {
+            let manager = VmManager::new()?;
+
+            // 1. Look up the sandbox — it must exist and be SSH-enabled
+            let state = manager
+                .get_sandbox_state(&name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+
+            if !state.ssh_enabled {
+                bail!(
+                    "SSH is not enabled on sandbox '{}'. \
+                     Recreate it with --ssh to enable SSH access.",
+                    name
+                );
+            }
+
+            // 2. Determine the SSH host port
+            let host_port = state
+                .ssh_host_port
+                .or_else(|| {
+                    state
+                        .ports
+                        .iter()
+                        .find(|p| p.container_port == 22)
+                        .and_then(|p| p.host_port)
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No SSH host port found for sandbox '{}'. \
+                         The sandbox may need a port mapping for port 22.",
+                        name
+                    )
+                })?;
+
+            // 3. Read the CA private key saved during sandbox start
+            let ca_key_path = manager.get_data_dir().join(format!("{}-ssh-ca.key", name));
+            let ca_private_key = std::fs::read_to_string(&ca_key_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to read CA key at {}: {}. \
+                     Was the sandbox started with --ssh?",
+                    ca_key_path.display(),
+                    e
+                )
+            })?;
+
+            // 4. Generate an ephemeral client keypair
+            let (client_private, client_public) = ssh::generate_client_keypair()?;
+
+            // 5. Sign the client public key with the stored CA key
+            let ttl_secs = ssh::parse_ttl_to_secs("30m")?;
+            let cert = ssh::sign_client_key_local(
+                &ca_private_key,
+                &client_public,
+                &["sandbox"],
+                ttl_secs,
+            )?;
+
+            // 6. Write cert and private key to temp files
+            let temp_dir = tempfile::tempdir()?;
+            let client_key_path = temp_dir.path().join("client_key");
+            let cert_path = temp_dir.path().join("client_key-cert.pub");
+            std::fs::write(&client_key_path, &client_private)?;
+            std::fs::write(&cert_path, &cert)?;
+
+            // Set permissions on the private key (owner read-only)
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&client_key_path, std::fs::Permissions::from_mode(0o600))?;
+            }
+
+            // 7. Build the ssh command
+            let mut ssh_cmd = std::process::Command::new("ssh");
+            ssh_cmd
+                .arg("-o")
+                .arg("StrictHostKeyChecking=no")
+                .arg("-o")
+                .arg("UserKnownHostsFile=/dev/null")
+                .arg("-o")
+                .arg("LogLevel=ERROR")
+                .arg("-i")
+                .arg(&client_key_path)
+                .arg("-o")
+                .arg(format!("CertificateFile={}", cert_path.display()))
+                .arg("-p")
+                .arg(host_port.to_string())
+                .arg("sandbox@localhost");
+
+            // Append remote command if provided
+            if !command.is_empty() {
+                ssh_cmd.arg("--");
+                for arg in &command {
+                    ssh_cmd.arg(arg);
+                }
+            }
+
+            // 8. Execute ssh, forwarding stdin/stdout/stderr
+            let status = ssh_cmd
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .status()
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to execute ssh command: {}. Is OpenSSH installed?",
+                        e
+                    )
+                })?;
+
+            // 9. Temp files cleaned up automatically when temp_dir drops
+
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
+            }
         }
         Commands::Agents => {
             println!("{:<15} {:<15} API KEY", "AGENT", "STATUS");

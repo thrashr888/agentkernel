@@ -1030,6 +1030,22 @@ impl VmManager {
         self.sandboxes.get(name)
     }
 
+    /// Get a reference to the sandbox state (alias for get_state).
+    ///
+    /// Used by the SSH command to read ssh_enabled and ssh_host_port.
+    #[allow(dead_code)]
+    pub fn get_sandbox_state(&self, name: &str) -> Option<&SandboxState> {
+        self.sandboxes.get(name)
+    }
+
+    /// Get the data directory path.
+    ///
+    /// Used by the SSH command to locate the stored CA private key.
+    #[allow(dead_code)]
+    pub fn get_data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
     /// Delete a file from a running sandbox
     pub async fn delete_file(&mut self, name: &str, path: &str) -> Result<()> {
         let cmd = vec!["rm".to_string(), "-f".to_string(), path.to_string()];
