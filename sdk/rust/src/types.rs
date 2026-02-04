@@ -180,3 +180,31 @@ pub(crate) struct BatchFileWriteRequest {
 pub struct BatchFileWriteResponse {
     pub written: usize,
 }
+
+/// Status of a detached command.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DetachedStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+/// A detached (background) command running in a sandbox.
+#[derive(Debug, Deserialize)]
+pub struct DetachedCommand {
+    pub id: String,
+    pub sandbox: String,
+    pub command: Vec<String>,
+    pub pid: u32,
+    pub status: DetachedStatus,
+    pub exit_code: Option<i32>,
+    pub started_at: String,
+}
+
+/// Response from detached command logs.
+#[derive(Debug, Deserialize)]
+pub struct DetachedLogsResponse {
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+}

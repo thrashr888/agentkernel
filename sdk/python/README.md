@@ -100,6 +100,42 @@ with AgentKernel() as client:
     })
 ```
 
+## Detached Commands
+
+Run long-lived processes in the background and retrieve their output later:
+
+```python
+with AgentKernel() as client:
+    # Start a background process
+    cmd = client.exec_detached("my-sandbox", ["python3", "train.py"])
+    print(f"Started: {cmd.id} (pid {cmd.pid})")
+
+    # Check status
+    status = client.detached_status("my-sandbox", cmd.id)
+    print(status.status)  # "running" | "completed" | "failed"
+
+    # Get logs
+    logs = client.detached_logs("my-sandbox", cmd.id)
+    print(logs.stdout)
+
+    # Get stderr only
+    stderr = client.detached_logs("my-sandbox", cmd.id, stream="stderr")
+
+    # List all detached commands
+    all_cmds = client.detached_list("my-sandbox")
+
+    # Kill a running command
+    client.detached_kill("my-sandbox", cmd.id)
+```
+
+Async version:
+
+```python
+async with AsyncAgentKernel() as client:
+    cmd = await client.exec_detached("my-sandbox", ["python3", "train.py"])
+    logs = await client.detached_logs("my-sandbox", cmd.id)
+```
+
 ## Streaming
 
 ```python

@@ -24,6 +24,6 @@ pub use client::{AgentKernel, AgentKernelBuilder, SandboxHandle};
 pub use error::{Error, Result};
 pub use types::{
     BatchCommand, BatchFileWriteResponse, BatchResult, BatchRunResponse, CreateSandboxOptions,
-    ExecOptions, FileReadResponse, RunOptions, RunOutput, SandboxInfo, SecurityProfile,
-    StreamEvent,
+    DetachedCommand, DetachedLogsResponse, DetachedStatus, ExecOptions, FileReadResponse,
+    RunOptions, RunOutput, SandboxInfo, SecurityProfile, StreamEvent,
 };

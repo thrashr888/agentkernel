@@ -111,6 +111,37 @@ client.write_files("my-sandbox", files).await?;
 # }
 ```
 
+## Detached Commands
+
+Run long-lived processes in the background and retrieve their output later:
+
+```rust,no_run
+# async fn example() -> agentkernel_sdk::Result<()> {
+# let client = agentkernel_sdk::AgentKernel::builder().build()?;
+// Start a background process
+let cmd = client.exec_detached("my-sandbox", &["python3", "train.py"], None).await?;
+println!("Started: {} (pid {})", cmd.id, cmd.pid);
+
+// Check status
+let status = client.detached_status("my-sandbox", &cmd.id).await?;
+println!("Status: {:?}", status.status);
+
+// Get logs
+let logs = client.detached_logs("my-sandbox", &cmd.id, None).await?;
+if let Some(stdout) = &logs.stdout { println!("{}", stdout); }
+
+// Get stderr only
+let stderr = client.detached_logs("my-sandbox", &cmd.id, Some("stderr")).await?;
+
+// List all detached commands
+let all = client.detached_list("my-sandbox").await?;
+
+// Kill a running command
+client.detached_kill("my-sandbox", &cmd.id).await?;
+# Ok(())
+# }
+```
+
 ## Configuration
 
 ```rust,no_run

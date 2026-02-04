@@ -163,9 +163,34 @@ enum Commands {
         /// Run as root
         #[arg(long)]
         sudo: bool,
+        /// Run detached (in background). Returns a command ID for status/logs/kill.
+        #[arg(short, long)]
+        detach: bool,
         /// Command to execute
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
+    },
+    /// List detached commands in a sandbox
+    ExecList {
+        /// Name of the sandbox
+        name: String,
+    },
+    /// Get logs from a detached command
+    ExecLogs {
+        /// Name of the sandbox
+        name: String,
+        /// Command ID (from exec --detach)
+        id: String,
+        /// Show stderr instead of stdout
+        #[arg(long)]
+        stderr: bool,
+    },
+    /// Kill a detached command
+    ExecKill {
+        /// Name of the sandbox
+        name: String,
+        /// Command ID (from exec --detach)
+        id: String,
     },
     /// Copy files to/from a running sandbox
     ///
@@ -1123,6 +1148,7 @@ memory_mb = 512
             env,
             workdir,
             sudo,
+            detach,
             command,
         } => {
             validation::validate_sandbox_name(&name)?;
@@ -1142,8 +1168,33 @@ memory_mb = 512
                 workdir,
                 user: if sudo { Some("root".to_string()) } else { None },
             };
-            let output = manager.exec_cmd_full(&name, &command, &opts).await?;
+
+            if detach {
+                let cmd = manager.exec_detached(&name, &command, &opts).await?;
+                println!("{}", serde_json::to_string_pretty(&cmd)?);
+            } else {
+                let output = manager.exec_cmd_full(&name, &command, &opts).await?;
+                print!("{}", output);
+            }
+        }
+        Commands::ExecList { name } => {
+            validation::validate_sandbox_name(&name)?;
+            let manager = VmManager::new()?;
+            let commands = manager.detached_list(Some(&name));
+            println!("{}", serde_json::to_string_pretty(&commands)?);
+        }
+        Commands::ExecLogs { name, id, stderr } => {
+            validation::validate_sandbox_name(&name)?;
+            let mut manager = VmManager::new()?;
+            let stream = if stderr { Some("stderr") } else { None };
+            let output = manager.detached_logs(&id, stream).await?;
             print!("{}", output);
+        }
+        Commands::ExecKill { name, id } => {
+            validation::validate_sandbox_name(&name)?;
+            let mut manager = VmManager::new()?;
+            manager.detached_kill(&id).await?;
+            println!("Command {} killed", id);
         }
         Commands::Cp { source, dest } => {
             // Parse source and destination to determine direction

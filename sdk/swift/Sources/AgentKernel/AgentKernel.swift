@@ -216,6 +216,42 @@ public actor AgentKernel {
         return try await request(method: "POST", path: "/batch/run", body: body)
     }
 
+    /// Start a detached (background) command in a sandbox.
+    public func execDetached(
+        _ name: String,
+        command: [String],
+        options: ExecOptions? = nil
+    ) async throws -> DetachedCommand {
+        let body = ExecRequest(
+            command: command,
+            env: options?.env.isEmpty == false ? options?.env : nil,
+            workdir: options?.workdir,
+            sudo: options?.sudo
+        )
+        return try await request(method: "POST", path: "/sandboxes/\(name)/exec/detach", body: body)
+    }
+
+    /// Get the status of a detached command.
+    public func detachedStatus(_ name: String, cmdId: String) async throws -> DetachedCommand {
+        try await request(method: "GET", path: "/sandboxes/\(name)/exec/detached/\(cmdId)")
+    }
+
+    /// Get logs from a detached command.
+    public func detachedLogs(_ name: String, cmdId: String, stream: String? = nil) async throws -> DetachedLogsResponse {
+        let query = stream == "stderr" ? "?stream=stderr" : ""
+        return try await request(method: "GET", path: "/sandboxes/\(name)/exec/detached/\(cmdId)/logs\(query)")
+    }
+
+    /// Kill a detached command.
+    public func detachedKill(_ name: String, cmdId: String) async throws -> String {
+        try await request(method: "DELETE", path: "/sandboxes/\(name)/exec/detached/\(cmdId)")
+    }
+
+    /// List detached commands in a sandbox.
+    public func detachedList(_ name: String) async throws -> [DetachedCommand] {
+        try await request(method: "GET", path: "/sandboxes/\(name)/exec/detached")
+    }
+
     // MARK: - Internal
 
     private func request<T: Decodable>(

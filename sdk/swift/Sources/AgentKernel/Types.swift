@@ -181,6 +181,30 @@ public struct BatchFileWriteResponse: Codable, Sendable {
     public let written: Int
 }
 
+/// Status of a detached command.
+public enum DetachedStatus: String, Codable, Sendable {
+    case running
+    case completed
+    case failed
+}
+
+/// A detached (background) command running in a sandbox.
+public struct DetachedCommand: Codable, Sendable {
+    public let id: String
+    public let sandbox: String
+    public let command: [String]
+    public let pid: UInt32
+    public let status: DetachedStatus
+    public let exit_code: Int32?
+    public let started_at: String
+}
+
+/// Response from detached command logs.
+public struct DetachedLogsResponse: Codable, Sendable {
+    public let stdout: String?
+    public let stderr: String?
+}
+
 // MARK: - Type Erasure
 
 /// Type-erased `Encodable` wrapper for generic request bodies.

@@ -106,6 +106,26 @@ export interface BatchFileWriteResponse {
   written: number;
 }
 
+/** Status of a detached command. */
+export type DetachedStatus = "running" | "completed" | "failed";
+
+/** A detached (background) command running in a sandbox. */
+export interface DetachedCommand {
+  id: string;
+  sandbox: string;
+  command: string[];
+  pid: number;
+  status: DetachedStatus;
+  exit_code: number | null;
+  started_at: string;
+}
+
+/** Response from detached command logs. */
+export interface DetachedLogsResponse {
+  stdout?: string;
+  stderr?: string;
+}
+
 /** API response wrapper. */
 export interface ApiResponse<T> {
   success: boolean;

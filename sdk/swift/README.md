@@ -160,6 +160,33 @@ try await client.writeFiles("my-sandbox", files: [
 ])
 ```
 
+### Detached Commands
+
+Run long-lived processes in the background and retrieve their output later:
+
+```swift
+// Start a background process
+let cmd = try await client.execDetached("my-sandbox", command: ["python3", "train.py"])
+print("Started: \(cmd.id) (pid \(cmd.pid))")
+
+// Check status
+let status = try await client.detachedStatus("my-sandbox", cmdId: cmd.id)
+print(status.status) // .running, .completed, .failed
+
+// Get logs
+let logs = try await client.detachedLogs("my-sandbox", cmdId: cmd.id)
+if let stdout = logs.stdout { print(stdout) }
+
+// Get stderr only
+let stderr = try await client.detachedLogs("my-sandbox", cmdId: cmd.id, stream: "stderr")
+
+// List all detached commands
+let all = try await client.detachedList("my-sandbox")
+
+// Kill a running command
+try await client.detachedKill("my-sandbox", cmdId: cmd.id)
+```
+
 ## Error Handling
 
 ```swift

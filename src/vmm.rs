@@ -15,6 +15,7 @@ use crate::permissions::Permissions;
 use crate::pool::ContainerPool;
 use crate::validation;
 use anyhow::{Result, bail};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -72,6 +73,34 @@ pub struct SandboxState {
     pub ssh_host_port: Option<u16>,
 }
 
+/// Status of a detached command
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum DetachedStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+/// A detached (background) command running in a sandbox
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetachedCommand {
+    /// Unique command ID
+    pub id: String,
+    /// Sandbox name
+    pub sandbox: String,
+    /// Original command
+    pub command: Vec<String>,
+    /// PID inside the container
+    pub pid: u32,
+    /// Current status
+    pub status: DetachedStatus,
+    /// Exit code (set when completed/failed)
+    pub exit_code: Option<i32>,
+    /// When the command was started (RFC3339)
+    pub started_at: String,
+}
+
 /// VM Manager - manages sandboxes via unified Sandbox trait
 ///
 /// Supports multiple backends:
@@ -91,9 +120,17 @@ pub struct VmManager {
     rootfs_dir: Option<PathBuf>,
     /// Next vsock CID
     next_cid: u32,
+    /// Detached commands tracked by ID
+    detached: HashMap<String, DetachedCommand>,
     /// Enterprise policy engine (when enterprise feature is enabled)
     #[cfg(feature = "enterprise")]
     policy_engine: Option<crate::policy::PolicyEngine>,
+}
+
+/// Escape a string for use inside a single-quoted shell command.
+fn shell_escape(s: &str) -> String {
+    // Replace ' with '\'' (end quote, escaped quote, start quote)
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Run a command only when `names` is non-empty; returns `Err` (skip) when empty.
@@ -182,6 +219,7 @@ impl VmManager {
             data_dir,
             rootfs_dir,
             next_cid: max_cid + 1,
+            detached: HashMap::new(),
             #[cfg(feature = "enterprise")]
             policy_engine,
         };
@@ -805,6 +843,207 @@ impl VmManager {
         }
 
         Ok(result.output())
+    }
+
+    /// Start a detached (background) command in a sandbox.
+    ///
+    /// The command runs in the background with stdout/stderr captured to files
+    /// inside the container. Returns a `DetachedCommand` with an ID and PID
+    /// that can be used to check status, retrieve logs, or kill the process.
+    pub async fn exec_detached(
+        &mut self,
+        name: &str,
+        cmd: &[String],
+        opts: &crate::backend::ExecOptions,
+    ) -> Result<DetachedCommand> {
+        Self::enforce_command_policy(cmd)?;
+
+        #[cfg(feature = "enterprise")]
+        {
+            let image = self
+                .sandboxes
+                .get(name)
+                .map(|s| s.image.clone())
+                .unwrap_or_default();
+            self.check_enterprise_policy(crate::policy::Action::Exec, name, "unknown", &image)
+                .await?;
+        }
+
+        let sandbox = self.running.get_mut(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Sandbox '{}' is not running. Start it with: agentkernel start {}",
+                name,
+                name
+            )
+        })?;
+
+        let id = format!("{:08x}", rand::thread_rng().r#gen::<u32>());
+        let stdout_path = format!("/tmp/ak-{id}.out");
+        let stderr_path = format!("/tmp/ak-{id}.err");
+
+        // Wrap the command to run in background with output capture
+        let escaped_cmd: Vec<String> = cmd.iter().map(|c| shell_escape(c)).collect();
+        let wrapped = format!(
+            "nohup sh -c '{} > {} 2> {} & echo $!'",
+            escaped_cmd.join(" "),
+            stdout_path,
+            stderr_path,
+        );
+        let wrapper_cmd: Vec<&str> = vec!["sh", "-c", &wrapped];
+
+        let result = sandbox.exec_with_options(&wrapper_cmd, opts).await?;
+
+        if result.exit_code != 0 {
+            bail!("Failed to start detached command: {}", result.output());
+        }
+
+        let pid: u32 = result.stdout.trim().parse().map_err(|_| {
+            anyhow::anyhow!(
+                "Failed to parse PID from detached command output: '{}'",
+                result.stdout.trim()
+            )
+        })?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let detached_cmd = DetachedCommand {
+            id: id.clone(),
+            sandbox: name.to_string(),
+            command: cmd.to_vec(),
+            pid,
+            status: DetachedStatus::Running,
+            exit_code: None,
+            started_at: now,
+        };
+
+        log_event(AuditEvent::CommandExecuted {
+            sandbox: name.to_string(),
+            command: cmd.to_vec(),
+            exit_code: None,
+        });
+
+        self.detached.insert(id, detached_cmd.clone());
+        Ok(detached_cmd)
+    }
+
+    /// Get the status of a detached command, refreshing from the container.
+    pub async fn detached_status(&mut self, cmd_id: &str) -> Result<DetachedCommand> {
+        let cmd = self
+            .detached
+            .get(cmd_id)
+            .ok_or_else(|| anyhow::anyhow!("Detached command '{}' not found", cmd_id))?
+            .clone();
+
+        // If already finished, return cached status
+        if cmd.status != DetachedStatus::Running {
+            return Ok(cmd);
+        }
+
+        // Check if process is still running
+        let sandbox = self
+            .running
+            .get_mut(&cmd.sandbox)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' is not running", cmd.sandbox))?;
+
+        let check_cmd = format!(
+            "kill -0 {} 2>/dev/null && echo running || (wait {} 2>/dev/null; echo $?)",
+            cmd.pid, cmd.pid
+        );
+        let result = sandbox
+            .exec_with_options(
+                &["sh", "-c", &check_cmd],
+                &crate::backend::ExecOptions::default(),
+            )
+            .await?;
+
+        let output = result.stdout.trim().to_string();
+        if output == "running" {
+            return Ok(cmd);
+        }
+
+        // Process finished — parse exit code
+        let exit_code: i32 = output.parse().unwrap_or(1);
+        let status = if exit_code == 0 {
+            DetachedStatus::Completed
+        } else {
+            DetachedStatus::Failed
+        };
+
+        if let Some(tracked) = self.detached.get_mut(cmd_id) {
+            tracked.status = status;
+            tracked.exit_code = Some(exit_code);
+            return Ok(tracked.clone());
+        }
+        Ok(cmd)
+    }
+
+    /// Get stdout/stderr logs from a detached command.
+    pub async fn detached_logs(&mut self, cmd_id: &str, stream: Option<&str>) -> Result<String> {
+        let cmd = self
+            .detached
+            .get(cmd_id)
+            .ok_or_else(|| anyhow::anyhow!("Detached command '{}' not found", cmd_id))?
+            .clone();
+
+        let sandbox = self
+            .running
+            .get_mut(&cmd.sandbox)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' is not running", cmd.sandbox))?;
+
+        let file_path = match stream {
+            Some("stderr") => format!("/tmp/ak-{}.err", cmd_id),
+            _ => format!("/tmp/ak-{}.out", cmd_id),
+        };
+
+        let result = sandbox
+            .exec_with_options(
+                &["cat", &file_path],
+                &crate::backend::ExecOptions::default(),
+            )
+            .await?;
+
+        Ok(result.stdout)
+    }
+
+    /// Kill a detached command.
+    pub async fn detached_kill(&mut self, cmd_id: &str) -> Result<()> {
+        let cmd = self
+            .detached
+            .get(cmd_id)
+            .ok_or_else(|| anyhow::anyhow!("Detached command '{}' not found", cmd_id))?
+            .clone();
+
+        if cmd.status != DetachedStatus::Running {
+            return Ok(());
+        }
+
+        let sandbox = self
+            .running
+            .get_mut(&cmd.sandbox)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' is not running", cmd.sandbox))?;
+
+        let kill_cmd = format!("kill {} 2>/dev/null || true", cmd.pid);
+        sandbox
+            .exec_with_options(
+                &["sh", "-c", &kill_cmd],
+                &crate::backend::ExecOptions::default(),
+            )
+            .await?;
+
+        if let Some(tracked) = self.detached.get_mut(cmd_id) {
+            tracked.status = DetachedStatus::Failed;
+            tracked.exit_code = Some(137);
+        }
+
+        Ok(())
+    }
+
+    /// List detached commands, optionally filtered by sandbox name.
+    pub fn detached_list(&self, sandbox: Option<&str>) -> Vec<DetachedCommand> {
+        self.detached
+            .values()
+            .filter(|c| sandbox.is_none() || Some(c.sandbox.as_str()) == sandbox)
+            .cloned()
+            .collect()
     }
 
     /// Attach to a sandbox's interactive shell with optional environment variables

@@ -389,6 +389,98 @@ impl McpServer {
                         },
                         "required": ["name", "files"]
                     }
+                },
+                {
+                    "name": "sandbox_exec_detach",
+                    "description": "Start a detached (background) command in a sandbox. Returns a command ID for tracking.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the sandbox"
+                            },
+                            "command": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "The command and arguments to run"
+                            },
+                            "env": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Environment variables as KEY=VALUE pairs"
+                            },
+                            "workdir": {
+                                "type": "string",
+                                "description": "Working directory inside the sandbox"
+                            },
+                            "sudo": {
+                                "type": "boolean",
+                                "description": "Run the command as root"
+                            }
+                        },
+                        "required": ["name", "command"]
+                    }
+                },
+                {
+                    "name": "sandbox_exec_status",
+                    "description": "Get the status of a detached command (running, completed, failed).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "The detached command ID"
+                            }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
+                    "name": "sandbox_exec_logs",
+                    "description": "Get stdout/stderr from a detached command.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "The detached command ID"
+                            },
+                            "stream": {
+                                "type": "string",
+                                "description": "Which stream to read: stdout (default) or stderr",
+                                "enum": ["stdout", "stderr"]
+                            }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
+                    "name": "sandbox_exec_kill",
+                    "description": "Kill a detached command.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "The detached command ID"
+                            }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
+                    "name": "sandbox_exec_list",
+                    "description": "List all detached commands in a sandbox.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the sandbox (optional, lists all if omitted)"
+                            }
+                        }
+                    }
                 }
             ]
         });
@@ -416,6 +508,11 @@ impl McpServer {
             "sandbox_write_files" => self.tool_sandbox_write_files(&arguments),
             "sandbox_start" => self.tool_sandbox_start(&arguments),
             "sandbox_stop" => self.tool_sandbox_stop(&arguments),
+            "sandbox_exec_detach" => self.tool_sandbox_exec_detach(&arguments),
+            "sandbox_exec_status" => self.tool_sandbox_exec_status(&arguments),
+            "sandbox_exec_logs" => self.tool_sandbox_exec_logs(&arguments),
+            "sandbox_exec_kill" => self.tool_sandbox_exec_kill(&arguments),
+            "sandbox_exec_list" => self.tool_sandbox_exec_list(&arguments),
             _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
         };
 
@@ -910,6 +1007,100 @@ impl McpServer {
                 Ok(format!("Sandbox '{}' stopped.", name))
             })
         })
+    }
+
+    fn tool_sandbox_exec_detach(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+        let command: Vec<String> = args
+            .get("command")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow::anyhow!("command is required"))?
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        let env: Vec<String> = args
+            .get("env")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let workdir = args
+            .get("workdir")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let sudo = args.get("sudo").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                let opts = crate::backend::ExecOptions {
+                    env,
+                    workdir,
+                    user: if sudo { Some("root".to_string()) } else { None },
+                };
+                let cmd = manager.exec_detached(name, &command, &opts).await?;
+                Ok(serde_json::to_string_pretty(&cmd)?)
+            })
+        })
+    }
+
+    fn tool_sandbox_exec_status(&self, args: &Value) -> Result<String> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("id is required"))?;
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                let cmd = manager.detached_status(id).await?;
+                Ok(serde_json::to_string_pretty(&cmd)?)
+            })
+        })
+    }
+
+    fn tool_sandbox_exec_logs(&self, args: &Value) -> Result<String> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("id is required"))?;
+        let stream = args.get("stream").and_then(|v| v.as_str());
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                manager.detached_logs(id, stream).await
+            })
+        })
+    }
+
+    fn tool_sandbox_exec_kill(&self, args: &Value) -> Result<String> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("id is required"))?;
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                manager.detached_kill(id).await?;
+                Ok(format!("Command {} killed.", id))
+            })
+        })
+    }
+
+    fn tool_sandbox_exec_list(&self, args: &Value) -> Result<String> {
+        let name = args.get("name").and_then(|v| v.as_str());
+
+        let manager = VmManager::new()?;
+        let commands = manager.detached_list(name);
+        Ok(serde_json::to_string_pretty(&commands)?)
     }
 }
 

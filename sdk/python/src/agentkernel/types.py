@@ -95,3 +95,25 @@ class BatchFileWriteResponse(BaseModel):
     """Result of a batch file write."""
 
     written: int
+
+
+DetachedStatus = Literal["running", "completed", "failed"]
+
+
+class DetachedCommand(BaseModel):
+    """A detached (background) command running in a sandbox."""
+
+    id: str
+    sandbox: str
+    command: list[str]
+    pid: int
+    status: DetachedStatus
+    exit_code: int | None = None
+    started_at: str
+
+
+class DetachedLogsResponse(BaseModel):
+    """Response from detached command logs."""
+
+    stdout: str | None = None
+    stderr: str | None = None

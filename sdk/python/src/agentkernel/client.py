@@ -13,6 +13,8 @@ from .types import (
     BatchFileWriteResponse,
     BatchRunResponse,
     CreateSandboxOptions,
+    DetachedCommand,
+    DetachedLogsResponse,
     ExecOptions,
     FileReadResponse,
     RunOptions,
@@ -242,6 +244,50 @@ class AgentKernel:
         batch_commands = [{"command": cmd} for cmd in commands]
         data = self._request("POST", "/batch/run", json={"commands": batch_commands})
         return BatchRunResponse(**data)
+
+    def exec_detached(
+        self,
+        name: str,
+        command: list[str],
+        *,
+        env: list[str] | None = None,
+        workdir: str | None = None,
+        sudo: bool | None = None,
+    ) -> DetachedCommand:
+        """Start a detached (background) command in a sandbox."""
+        body: dict[str, Any] = {"command": command}
+        if env:
+            body["env"] = env
+        if workdir is not None:
+            body["workdir"] = workdir
+        if sudo is not None:
+            body["sudo"] = sudo
+        data = self._request("POST", f"/sandboxes/{name}/exec/detach", json=body)
+        return DetachedCommand(**data)
+
+    def detached_status(self, name: str, cmd_id: str) -> DetachedCommand:
+        """Get the status of a detached command."""
+        data = self._request("GET", f"/sandboxes/{name}/exec/detached/{cmd_id}")
+        return DetachedCommand(**data)
+
+    def detached_logs(
+        self, name: str, cmd_id: str, *, stream: str | None = None
+    ) -> DetachedLogsResponse:
+        """Get logs from a detached command."""
+        query = f"?stream={stream}" if stream == "stderr" else ""
+        data = self._request(
+            "GET", f"/sandboxes/{name}/exec/detached/{cmd_id}/logs{query}"
+        )
+        return DetachedLogsResponse(**data)
+
+    def detached_kill(self, name: str, cmd_id: str) -> str:
+        """Kill a detached command."""
+        return self._request("DELETE", f"/sandboxes/{name}/exec/detached/{cmd_id}")
+
+    def detached_list(self, name: str) -> list[DetachedCommand]:
+        """List detached commands in a sandbox."""
+        data = self._request("GET", f"/sandboxes/{name}/exec/detached")
+        return [DetachedCommand(**d) for d in data]
 
     def sandbox(
         self,

@@ -134,6 +134,15 @@ struct ExecRequest {
     sudo: Option<bool>,
 }
 
+/// Response for detached command logs
+#[derive(Debug, Serialize)]
+struct DetachedLogsResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stdout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stderr: Option<String>,
+}
+
 /// API response
 #[derive(Debug, Serialize)]
 struct ApiResponse<T: Serialize> {
@@ -432,6 +441,31 @@ async fn handle_request(
 
         // Execute in a sandbox
         (Method::POST, ["sandboxes", name, "exec"]) => handle_exec_sandbox(req, name, state).await,
+
+        // Detached exec: start a background command
+        (Method::POST, ["sandboxes", name, "exec", "detach"]) => {
+            handle_exec_detach(req, name, state).await
+        }
+
+        // List detached commands in a sandbox
+        (Method::GET, ["sandboxes", name, "exec", "detached"]) => {
+            handle_detached_list(name, state).await
+        }
+
+        // Get detached command status
+        (Method::GET, ["sandboxes", name, "exec", "detached", cmd_id]) => {
+            handle_detached_status(name, cmd_id, state).await
+        }
+
+        // Get detached command logs
+        (Method::GET, ["sandboxes", name, "exec", "detached", cmd_id, "logs"]) => {
+            handle_detached_logs(req, name, cmd_id, state).await
+        }
+
+        // Kill a detached command
+        (Method::DELETE, ["sandboxes", name, "exec", "detached", cmd_id]) => {
+            handle_detached_kill(name, cmd_id, state).await
+        }
 
         // Sandbox logs
         (Method::GET, ["sandboxes", name, "logs"]) => handle_sandbox_logs(name, state).await,
@@ -1135,6 +1169,170 @@ async fn handle_exec_sandbox(
         ),
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+// --- Detached command handlers ---
+
+async fn handle_exec_detach(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let body: ExecRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    if body.command.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("command is required"),
+        );
+    }
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let opts = crate::backend::ExecOptions {
+        env: body.env,
+        workdir: body.workdir,
+        user: if body.sudo.unwrap_or(false) {
+            Some("root".to_string())
+        } else {
+            None
+        },
+    };
+
+    match manager.exec_detached(name, &body.command, &opts).await {
+        Ok(cmd) => json_response(StatusCode::OK, &ApiResponse::success(cmd)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_detached_list(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    let manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let commands = manager.detached_list(Some(name));
+    json_response(StatusCode::OK, &ApiResponse::success(commands))
+}
+
+async fn handle_detached_status(
+    _name: &str,
+    cmd_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.detached_status(cmd_id).await {
+        Ok(cmd) => json_response(StatusCode::OK, &ApiResponse::success(cmd)),
+        Err(e) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_detached_logs(
+    req: Request<Incoming>,
+    _name: &str,
+    cmd_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    // Check for ?stream=stderr query param
+    let stream = req
+        .uri()
+        .query()
+        .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("stream=")))
+        .filter(|s| *s == "stderr");
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.detached_logs(cmd_id, stream).await {
+        Ok(output) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success(DetachedLogsResponse {
+                stdout: if stream.is_none() {
+                    Some(output.clone())
+                } else {
+                    None
+                },
+                stderr: if stream.is_some() {
+                    Some(output.clone())
+                } else {
+                    None
+                },
+            }),
+        ),
+        Err(e) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_detached_kill(
+    _name: &str,
+    cmd_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.detached_kill(cmd_id).await {
+        Ok(()) => json_response(StatusCode::OK, &ApiResponse::success("Command killed")),
+        Err(e) => json_response(
+            StatusCode::NOT_FOUND,
             &ApiResponse::<()>::error(e.to_string()),
         ),
     }

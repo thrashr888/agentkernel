@@ -267,6 +267,81 @@ impl AgentKernel {
         .await
     }
 
+    /// Start a detached (background) command in a sandbox.
+    pub async fn exec_detached(
+        &self,
+        name: &str,
+        command: &[&str],
+        opts: Option<ExecOptions>,
+    ) -> Result<DetachedCommand> {
+        let opts = opts.unwrap_or_default();
+        let body = ExecRequest {
+            command: command.iter().map(|s| s.to_string()).collect(),
+            env: opts.env,
+            workdir: opts.workdir,
+            sudo: opts.sudo,
+        };
+        self.request(
+            reqwest::Method::POST,
+            &format!("/sandboxes/{name}/exec/detach"),
+            Some(&body),
+        )
+        .await
+    }
+
+    /// Get the status of a detached command.
+    pub async fn detached_status(
+        &self,
+        name: &str,
+        cmd_id: &str,
+    ) -> Result<DetachedCommand> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/sandboxes/{name}/exec/detached/{cmd_id}"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Get logs from a detached command.
+    pub async fn detached_logs(
+        &self,
+        name: &str,
+        cmd_id: &str,
+        stream: Option<&str>,
+    ) -> Result<DetachedLogsResponse> {
+        let query = match stream {
+            Some(s) => format!("?stream={s}"),
+            None => String::new(),
+        };
+        self.request(
+            reqwest::Method::GET,
+            &format!("/sandboxes/{name}/exec/detached/{cmd_id}/logs{query}"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Kill a detached command.
+    pub async fn detached_kill(&self, name: &str, cmd_id: &str) -> Result<String> {
+        self.request(
+            reqwest::Method::DELETE,
+            &format!("/sandboxes/{name}/exec/detached/{cmd_id}"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// List detached commands in a sandbox.
+    pub async fn detached_list(&self, name: &str) -> Result<Vec<DetachedCommand>> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/sandboxes/{name}/exec/detached"),
+            None::<&()>,
+        )
+        .await
+    }
+
     /// Run multiple commands in parallel.
     pub async fn batch_run(&self, commands: Vec<BatchCommand>) -> Result<BatchRunResponse> {
         let body = BatchRunRequest { commands };

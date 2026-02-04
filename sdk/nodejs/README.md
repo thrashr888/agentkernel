@@ -93,6 +93,33 @@ await client.writeFiles("my-sandbox", {
 });
 ```
 
+## Detached Commands
+
+Run long-lived processes in the background and retrieve their output later:
+
+```typescript
+// Start a background process
+const cmd = await client.execDetached("my-sandbox", ["python3", "train.py"]);
+console.log(`Started: ${cmd.id} (pid ${cmd.pid})`);
+
+// Check status
+const status = await client.detachedStatus("my-sandbox", cmd.id);
+console.log(status.status); // "running" | "completed" | "failed"
+
+// Get logs
+const logs = await client.detachedLogs("my-sandbox", cmd.id);
+console.log(logs.stdout);
+
+// Get stderr only
+const stderr = await client.detachedLogs("my-sandbox", cmd.id, "stderr");
+
+// List all detached commands
+const all = await client.detachedList("my-sandbox");
+
+// Kill a running command
+await client.detachedKill("my-sandbox", cmd.id);
+```
+
 ## Streaming
 
 ```typescript
@@ -176,6 +203,26 @@ Delete a file from a sandbox.
 ### `client.writeFiles(name, files)`
 
 Write multiple files to a sandbox in one request. `files` is a `Record<string, string>` of path to content.
+
+### `client.execDetached(name, command, options?)`
+
+Start a detached (background) command. Returns a `DetachedCommand`.
+
+### `client.detachedStatus(name, cmdId)`
+
+Get the status of a detached command.
+
+### `client.detachedLogs(name, cmdId, stream?)`
+
+Get stdout/stderr from a detached command. Pass `"stderr"` to get only stderr.
+
+### `client.detachedKill(name, cmdId)`
+
+Kill a detached command.
+
+### `client.detachedList(name)`
+
+List all detached commands in a sandbox.
 
 ### `client.sandbox(name, options?)`
 
