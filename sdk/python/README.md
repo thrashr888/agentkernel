@@ -41,6 +41,65 @@ with AgentKernel() as client:
     # sandbox auto-removed
 ```
 
+## Exec Options
+
+Run commands with a working directory, environment variables, or as root:
+
+```python
+with AgentKernel() as client:
+    result = client.exec_in_sandbox(
+        "my-sandbox",
+        ["npm", "start"],
+        workdir="/app",
+        env=["NODE_ENV=production"],
+        sudo=True,
+    )
+```
+
+Works on sandbox sessions too:
+
+```python
+with client.sandbox("dev") as sb:
+    sb.run(["pip", "install", "-r", "requirements.txt"], workdir="/app", sudo=True)
+```
+
+## Git Source Cloning
+
+Clone a git repo into the sandbox at creation time:
+
+```python
+with AgentKernel() as client:
+    client.create_sandbox(
+        "my-project",
+        image="node:20-alpine",
+        source_url="https://github.com/user/repo.git",
+        source_ref="main",
+    )
+```
+
+## File Operations
+
+Read, write, and delete files in a sandbox:
+
+```python
+with AgentKernel() as client:
+    # Write a file
+    client.write_file("my-sandbox", "app/main.py", "print('hello')")
+
+    # Read a file
+    file = client.read_file("my-sandbox", "app/main.py")
+    print(file.content)
+
+    # Delete a file
+    client.delete_file("my-sandbox", "app/main.py")
+
+    # Batch write multiple files at once
+    client.write_files("my-sandbox", {
+        "/app/index.js": "console.log('hi')",
+        "/app/package.json": '{"name":"app"}',
+    })
+```
+
 ## Streaming
 
 ```python

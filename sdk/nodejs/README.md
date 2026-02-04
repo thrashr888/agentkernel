@@ -37,6 +37,62 @@ console.log(result.output);
 // sandbox auto-removed when scope exits
 ```
 
+## Exec Options
+
+Run commands with a working directory, environment variables, or as root:
+
+```typescript
+const result = await client.execInSandbox("my-sandbox", ["npm", "start"], {
+  workdir: "/app",
+  env: ["NODE_ENV=production"],
+  sudo: true,
+});
+```
+
+Works on sandbox sessions too:
+
+```typescript
+await using sb = await client.sandbox("dev");
+await sb.run(["pip", "install", "-r", "requirements.txt"], {
+  workdir: "/app",
+  sudo: true,
+});
+```
+
+## Git Source Cloning
+
+Clone a git repo into the sandbox at creation time:
+
+```typescript
+const sb = await client.createSandbox("my-project", {
+  image: "node:20-alpine",
+  source_url: "https://github.com/user/repo.git",
+  source_ref: "main",
+});
+```
+
+## File Operations
+
+Read, write, and delete files in a sandbox:
+
+```typescript
+// Write a file
+await client.writeFile("my-sandbox", "app/main.py", "print('hello')");
+
+// Read a file
+const file = await client.readFile("my-sandbox", "app/main.py");
+console.log(file.content);
+
+// Delete a file
+await client.deleteFile("my-sandbox", "app/main.py");
+
+// Batch write multiple files at once
+await client.writeFiles("my-sandbox", {
+  "/app/index.js": "console.log('hi')",
+  "/app/package.json": '{"name":"app"}',
+});
+```
+
 ## Streaming
 
 ```typescript
@@ -91,7 +147,7 @@ List all sandboxes.
 
 ### `client.createSandbox(name, options?)`
 
-Create a new sandbox.
+Create a new sandbox. Options: `image`, `vcpus`, `memory_mb`, `profile`, `source_url`, `source_ref`.
 
 ### `client.getSandbox(name)`
 
@@ -101,9 +157,25 @@ Get sandbox info.
 
 Remove a sandbox.
 
-### `client.execInSandbox(name, command)`
+### `client.execInSandbox(name, command, options?)`
 
-Run a command in an existing sandbox.
+Run a command in an existing sandbox. Options: `env`, `workdir`, `sudo`.
+
+### `client.readFile(name, path)`
+
+Read a file from a sandbox.
+
+### `client.writeFile(name, path, content, options?)`
+
+Write a file to a sandbox.
+
+### `client.deleteFile(name, path)`
+
+Delete a file from a sandbox.
+
+### `client.writeFiles(name, files)`
+
+Write multiple files to a sandbox in one request. `files` is a `Record<string, string>` of path to content.
 
 ### `client.sandbox(name, options?)`
 
