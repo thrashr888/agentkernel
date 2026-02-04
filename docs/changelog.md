@@ -6,6 +6,17 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## [Unreleased] — Sandbox DX
+
+### Added
+
+- **Per-command exec options** — `agentkernel exec` now supports `--workdir` (`-w`) and `--sudo` flags; HTTP API and MCP `sandbox_exec` tool accept `workdir`, `env`, and `sudo` parameters
+- **Git source cloning on create** — `agentkernel create --source git:URL [--git-ref REF]` clones a repo into `/workspace` at creation time; also available via HTTP API (`source_url`/`source_ref`) and MCP `sandbox_create`
+- **Batch file write** — `POST /sandboxes/{name}/files` accepts `{"files": {"/path": "content"}}` for multi-file writes; MCP `sandbox_write_files` tool for the same
+- **`ExecOptions` trait method** — `Sandbox::exec_with_options()` supports workdir, user, and env per-command across all backends
+
+---
+
 ## [v0.8.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.8.0) — Secure Transport
 
 _February 3, 2026_

@@ -236,6 +236,14 @@ impl McpServer {
                                 "type": "array",
                                 "items": { "type": "string" },
                                 "description": "Port mappings (e.g., [\"8080:80\", \"3000\", \"5353:53/udp\"])"
+                            },
+                            "source_url": {
+                                "type": "string",
+                                "description": "Git repo URL to clone into /workspace"
+                            },
+                            "source_ref": {
+                                "type": "string",
+                                "description": "Git ref to checkout after cloning (branch, tag, or commit)"
                             }
                         },
                         "required": ["name"]
@@ -255,6 +263,19 @@ impl McpServer {
                                 "type": "array",
                                 "items": { "type": "string" },
                                 "description": "The command and arguments to run"
+                            },
+                            "env": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Environment variables as KEY=VALUE pairs"
+                            },
+                            "workdir": {
+                                "type": "string",
+                                "description": "Working directory inside the sandbox"
+                            },
+                            "sudo": {
+                                "type": "boolean",
+                                "description": "Run the command as root"
                             }
                         },
                         "required": ["name", "command"]
@@ -349,6 +370,25 @@ impl McpServer {
                         },
                         "required": ["name"]
                     }
+                },
+                {
+                    "name": "sandbox_write_files",
+                    "description": "Write multiple files to a running sandbox in one call (writes to sandbox only).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the sandbox"
+                            },
+                            "files": {
+                                "type": "object",
+                                "description": "Map of absolute path to file content (e.g., {\"/app/main.py\": \"print('hello')\"})",
+                                "additionalProperties": { "type": "string" }
+                            }
+                        },
+                        "required": ["name", "files"]
+                    }
                 }
             ]
         });
@@ -373,6 +413,7 @@ impl McpServer {
             "sandbox_remove" => self.tool_sandbox_remove(&arguments),
             "sandbox_file_write" => self.tool_sandbox_file_write(&arguments),
             "sandbox_file_read" => self.tool_sandbox_file_read(&arguments),
+            "sandbox_write_files" => self.tool_sandbox_write_files(&arguments),
             "sandbox_start" => self.tool_sandbox_start(&arguments),
             "sandbox_stop" => self.tool_sandbox_stop(&arguments),
             _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
@@ -510,7 +551,6 @@ impl McpServer {
             .and_then(|v| v.as_str())
             .unwrap_or("alpine:3.20");
 
-        // Parse port mappings
         let ports: Vec<crate::backend::PortMapping> = args
             .get("ports")
             .and_then(|v| v.as_array())
@@ -522,6 +562,16 @@ impl McpServer {
             })
             .transpose()?
             .unwrap_or_default();
+
+        let source_url = args
+            .get("source_url")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let source_ref = args
+            .get("source_ref")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         let port_desc = if ports.is_empty() {
             String::new()
@@ -543,10 +593,45 @@ impl McpServer {
                     .create_with_options(name, image, 1, 512, None, ports)
                     .await?;
                 manager.start(name).await?;
-                Ok(format!(
+
+                let mut result = format!(
                     "Sandbox '{}' created and started with image '{}'{}",
                     name, image, port_desc
-                ))
+                );
+
+                // Clone git repo if source_url provided
+                if let Some(ref url) = source_url {
+                    let install = vec![
+                        "sh".to_string(),
+                        "-c".to_string(),
+                        "which git >/dev/null 2>&1 || apk add --no-cache git >/dev/null 2>&1 || apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1 || true".to_string(),
+                    ];
+                    let _ = manager.exec_cmd(name, &install).await;
+
+                    let clone = vec![
+                        "git".to_string(),
+                        "clone".to_string(),
+                        url.clone(),
+                        "/workspace".to_string(),
+                    ];
+                    manager.exec_cmd(name, &clone).await?;
+
+                    if let Some(ref git_ref) = source_ref {
+                        let checkout = vec![
+                            "git".to_string(),
+                            "-C".to_string(),
+                            "/workspace".to_string(),
+                            "checkout".to_string(),
+                            git_ref.clone(),
+                        ];
+                        manager.exec_cmd(name, &checkout).await?;
+                        result.push_str(&format!(". Cloned {} (ref: {}) into /workspace", url, git_ref));
+                    } else {
+                        result.push_str(&format!(". Cloned {} into /workspace", url));
+                    }
+                }
+
+                Ok(result)
             })
         })
     }
@@ -571,10 +656,33 @@ impl McpServer {
             anyhow::bail!("command is required");
         }
 
+        let env: Vec<String> = args
+            .get("env")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let workdir = args
+            .get("workdir")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let sudo = args.get("sudo").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let opts = crate::backend::ExecOptions {
+            env,
+            workdir,
+            user: if sudo { Some("root".to_string()) } else { None },
+        };
+
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
-                manager.exec_cmd(name, &command).await
+                manager.exec_cmd_full(name, &command, &opts).await
             })
         })
     }
@@ -711,6 +819,44 @@ impl McpServer {
                         ))
                     }
                 }
+            })
+        })
+    }
+
+    fn tool_sandbox_write_files(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        let files = args
+            .get("files")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| anyhow::anyhow!("files is required (object mapping path to content)"))?;
+
+        if files.is_empty() {
+            anyhow::bail!("files map is empty");
+        }
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+
+                if !manager.is_running(name) {
+                    anyhow::bail!(
+                        "Sandbox '{}' is not running. Start it first with sandbox_start.",
+                        name
+                    );
+                }
+
+                let mut count = 0;
+                for (path, content) in files {
+                    let text = content.as_str().unwrap_or("");
+                    manager.write_file(name, path, text.as_bytes()).await?;
+                    count += 1;
+                }
+
+                Ok(format!("Wrote {} file(s) to sandbox '{}'", count, name))
             })
         })
     }

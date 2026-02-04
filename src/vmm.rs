@@ -746,6 +746,24 @@ impl VmManager {
         cmd: &[String],
         env: &[String],
     ) -> Result<String> {
+        self.exec_cmd_full(
+            name,
+            cmd,
+            &crate::backend::ExecOptions {
+                env: env.to_vec(),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Execute a command with full options (env, workdir, user)
+    pub async fn exec_cmd_full(
+        &mut self,
+        name: &str,
+        cmd: &[String],
+        opts: &crate::backend::ExecOptions,
+    ) -> Result<String> {
         Self::enforce_command_policy(cmd)?;
 
         // Enterprise policy check for exec
@@ -768,10 +786,9 @@ impl VmManager {
             )
         })?;
 
-        // Convert &[String] to &[&str]
         let cmd_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
 
-        let result = sandbox.exec_with_env(&cmd_refs, env).await?;
+        let result = sandbox.exec_with_options(&cmd_refs, opts).await?;
 
         log_event(AuditEvent::CommandExecuted {
             sandbox: name.to_string(),

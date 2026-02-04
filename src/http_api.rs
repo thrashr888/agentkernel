@@ -64,6 +64,12 @@ struct CreateRequest {
     /// Port mappings (e.g., ["8080:80", "3000", "5353:53/udp"])
     #[serde(default)]
     ports: Vec<String>,
+    /// Git repo URL to clone into /workspace (e.g., "https://github.com/user/repo")
+    #[serde(default)]
+    source_url: Option<String>,
+    /// Git ref to checkout after cloning (branch, tag, or commit)
+    #[serde(default)]
+    source_ref: Option<String>,
 }
 
 /// Request to write a file
@@ -77,6 +83,12 @@ struct FileWriteRequest {
 
 fn default_encoding() -> String {
     "utf8".to_string()
+}
+
+/// Request to write multiple files at once
+#[derive(Debug, Deserialize)]
+struct BatchFileWriteRequest {
+    files: std::collections::HashMap<String, String>,
 }
 
 /// Response for file read
@@ -114,6 +126,12 @@ struct BatchResult {
 #[derive(Debug, Deserialize)]
 struct ExecRequest {
     command: Vec<String>,
+    #[serde(default)]
+    env: Vec<String>,
+    #[serde(default)]
+    workdir: Option<String>,
+    #[serde(default)]
+    sudo: Option<bool>,
 }
 
 /// API response
@@ -417,6 +435,11 @@ async fn handle_request(
 
         // Sandbox logs
         (Method::GET, ["sandboxes", name, "logs"]) => handle_sandbox_logs(name, state).await,
+
+        // Batch file write: POST /sandboxes/{name}/files
+        (Method::POST, ["sandboxes", name, "files"]) => {
+            handle_batch_file_write(req, name, state).await
+        }
 
         // File operations: GET /sandboxes/{name}/files/{path...}
         (Method::GET, ["sandboxes", name, "files", ..]) => {
@@ -934,6 +957,48 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         );
     }
 
+    // Clone git repo if source_url is specified
+    if let Some(ref url) = body.source_url {
+        // Install git
+        let install = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "which git >/dev/null 2>&1 || apk add --no-cache git >/dev/null 2>&1 || apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1 || true".to_string(),
+        ];
+        let _ = manager.exec_cmd(&body.name, &install).await;
+
+        let clone = vec![
+            "git".to_string(),
+            "clone".to_string(),
+            url.clone(),
+            "/workspace".to_string(),
+        ];
+        if let Err(e) = manager.exec_cmd(&body.name, &clone).await {
+            let _ = manager.remove(&body.name).await;
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!("Failed to clone {}: {}", url, e)),
+            );
+        }
+
+        if let Some(ref git_ref) = body.source_ref {
+            let checkout = vec![
+                "git".to_string(),
+                "-C".to_string(),
+                "/workspace".to_string(),
+                "checkout".to_string(),
+                git_ref.clone(),
+            ];
+            if let Err(e) = manager.exec_cmd(&body.name, &checkout).await {
+                let _ = manager.remove(&body.name).await;
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(format!("Failed to checkout {}: {}", git_ref, e)),
+                );
+            }
+        }
+    }
+
     let port_strings: Vec<String> = ports.iter().map(|p| p.to_string()).collect();
     let ip = manager.get_container_ip(&body.name);
     json_response(
@@ -1054,7 +1119,16 @@ async fn handle_exec_sandbox(
         }
     };
 
-    match manager.exec_cmd(name, &body.command).await {
+    let opts = crate::backend::ExecOptions {
+        env: body.env,
+        workdir: body.workdir,
+        user: if body.sudo.unwrap_or(false) {
+            Some("root".to_string())
+        } else {
+            None
+        },
+    };
+    match manager.exec_cmd_full(name, &body.command, &opts).await {
         Ok(output) => json_response(
             StatusCode::OK,
             &ApiResponse::success(RunResponse { output }),
@@ -1295,6 +1369,76 @@ async fn handle_file_delete(
             &ApiResponse::<()>::error(e.to_string()),
         ),
     }
+}
+
+async fn handle_batch_file_write(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = extract_identity(&req, &state).await;
+        if let Err(resp) =
+            enforce_policy(&state, &identity, crate::policy::Action::Mount, name).await
+        {
+            return resp;
+        }
+    }
+
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let body: BatchFileWriteRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    if body.files.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("files map is empty"),
+        );
+    }
+
+    // Validate all paths before writing any
+    for path in body.files.keys() {
+        if let Err(e) = crate::backend::validate_sandbox_path(path) {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(format!("{}: {}", path, e)),
+            );
+        }
+    }
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let count = body.files.len();
+    for (path, content) in &body.files {
+        if let Err(e) = manager.write_file(name, path, content.as_bytes()).await {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!("Failed to write {}: {}", path, e)),
+            );
+        }
+    }
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(format!("Wrote {} file(s)", count)),
+    )
 }
 
 // --- Sandbox logs handler ---

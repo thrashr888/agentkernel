@@ -114,6 +114,12 @@ enum Commands {
         /// Enable SSH access to the sandbox
         #[arg(long)]
         ssh: bool,
+        /// Clone a git repo into the sandbox (e.g. git:https://github.com/user/repo or just a URL)
+        #[arg(long)]
+        source: Option<String>,
+        /// Git ref to checkout after cloning (branch, tag, or commit)
+        #[arg(long)]
+        git_ref: Option<String>,
     },
     /// Start a sandbox
     Start {
@@ -151,6 +157,12 @@ enum Commands {
         /// Environment variables to set (KEY=VALUE format, can be repeated)
         #[arg(short, long = "env", value_name = "KEY=VALUE")]
         env: Vec<String>,
+        /// Working directory inside the sandbox
+        #[arg(short, long)]
+        workdir: Option<String>,
+        /// Run as root
+        #[arg(long)]
+        sudo: bool,
         /// Command to execute
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -775,7 +787,8 @@ memory_mb = 512
             branch,
             publish,
             ssh: ssh_flag,
-            ..
+            source,
+            git_ref,
         } => {
             // Resolve sandbox name: --branch auto-derives from git, otherwise require explicit name
             let name = if branch {
@@ -915,12 +928,60 @@ memory_mb = 512
             if let Some(secs) = ttl_secs {
                 println!("  TTL: {} (expires automatically)", format_ttl(secs));
             }
-            println!("\nNext steps:");
-            println!("  1. agentkernel start {}", name);
-            if enable_ssh {
-                println!("  2. agentkernel ssh {}", name);
+
+            // If --source provided, auto-start and clone the repo
+            if let Some(ref source_url) = source {
+                // Strip optional "git:" prefix
+                let url = source_url.strip_prefix("git:").unwrap_or(source_url);
+
+                println!("\nStarting sandbox and cloning {}...", url);
+                manager.start(&name).await?;
+
+                // Install git if needed, then clone
+                let install_cmd = vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "which git >/dev/null 2>&1 || apk add --no-cache git >/dev/null 2>&1 || apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1 || yum install -y git >/dev/null 2>&1 || true".to_string(),
+                ];
+                let _ = manager.exec_cmd(&name, &install_cmd).await;
+
+                let clone_cmd = vec![
+                    "git".to_string(),
+                    "clone".to_string(),
+                    url.to_string(),
+                    "/workspace".to_string(),
+                ];
+                manager.exec_cmd(&name, &clone_cmd).await?;
+
+                // Checkout specific ref if requested
+                if let Some(ref git_ref_val) = git_ref {
+                    let checkout_cmd = vec![
+                        "git".to_string(),
+                        "-C".to_string(),
+                        "/workspace".to_string(),
+                        "checkout".to_string(),
+                        git_ref_val.clone(),
+                    ];
+                    manager.exec_cmd(&name, &checkout_cmd).await?;
+                    println!("Cloned {} (ref: {}) into /workspace", url, git_ref_val);
+                } else {
+                    println!("Cloned {} into /workspace", url);
+                }
+
+                println!("\nTo connect:");
+                if enable_ssh {
+                    println!("  agentkernel ssh {}", name);
+                } else {
+                    println!("  agentkernel attach {}", name);
+                }
             } else {
-                println!("  2. agentkernel attach {}", name);
+                println!("\nNext steps:");
+                println!("  1. agentkernel start {}", name);
+                if enable_ssh {
+                    println!("  2. agentkernel ssh {}", name);
+                } else {
+                    println!("  2. agentkernel attach {}", name);
+                }
             }
         }
         Commands::Start { name, backend } => {
@@ -1057,7 +1118,13 @@ memory_mb = 512
                 std::process::exit(exit_code);
             }
         }
-        Commands::Exec { name, env, command } => {
+        Commands::Exec {
+            name,
+            env,
+            workdir,
+            sudo,
+            command,
+        } => {
             validation::validate_sandbox_name(&name)?;
 
             if command.is_empty() {
@@ -1070,7 +1137,12 @@ memory_mb = 512
                 bail!("Sandbox '{}' not found", name);
             }
 
-            let output = manager.exec_cmd_with_env(&name, &command, &env).await?;
+            let opts = crate::backend::ExecOptions {
+                env,
+                workdir,
+                user: if sudo { Some("root".to_string()) } else { None },
+            };
+            let output = manager.exec_cmd_full(&name, &command, &opts).await?;
             print!("{}", output);
         }
         Commands::Cp { source, dest } => {
