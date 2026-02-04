@@ -13,9 +13,11 @@ from .errors import (
 )
 from .types import (
     BatchCommand,
+    BatchFileWriteResponse,
     BatchResult,
     BatchRunResponse,
     CreateSandboxOptions,
+    ExecOptions,
     FileReadResponse,
     RunOptions,
     RunOutput,
@@ -38,9 +40,11 @@ __all__ = [
     "NetworkError",
     "StreamError",
     "BatchCommand",
+    "BatchFileWriteResponse",
     "BatchResult",
     "BatchRunResponse",
     "CreateSandboxOptions",
+    "ExecOptions",
     "FileReadResponse",
     "RunOptions",
     "RunOutput",

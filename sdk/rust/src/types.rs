@@ -64,6 +64,26 @@ pub(crate) struct RunRequest {
     pub fast: bool,
 }
 
+/// Options for creating a sandbox with a git source.
+#[derive(Debug, Default, Serialize)]
+pub struct CreateSandboxOptions {
+    /// Docker image to use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vcpus: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_mb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<SecurityProfile>,
+    /// Git repository URL to clone into the sandbox.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+    /// Git ref to checkout after cloning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+}
+
 /// Create sandbox request body (internal).
 #[derive(Serialize)]
 pub(crate) struct CreateRequest {
@@ -76,12 +96,36 @@ pub(crate) struct CreateRequest {
     pub memory_mb: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<SecurityProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+}
+
+/// Options for executing a command in a sandbox.
+#[derive(Debug, Default, Serialize)]
+pub struct ExecOptions {
+    /// Environment variables (`KEY=VALUE`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<String>,
+    /// Working directory inside the container.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
+    /// Run as root (maps to `--sudo` on CLI).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sudo: Option<bool>,
 }
 
 /// Exec request body (internal).
 #[derive(Serialize)]
 pub(crate) struct ExecRequest {
     pub command: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sudo: Option<bool>,
 }
 
 /// File write request body (internal).
@@ -123,4 +167,16 @@ pub struct BatchResult {
 #[derive(Debug, Deserialize)]
 pub struct BatchRunResponse {
     pub results: Vec<BatchResult>,
+}
+
+/// Batch file write request body (internal).
+#[derive(Serialize)]
+pub(crate) struct BatchFileWriteRequest {
+    pub files: std::collections::HashMap<String, String>,
+}
+
+/// Result of a batch file write.
+#[derive(Debug, Deserialize)]
+pub struct BatchFileWriteResponse {
+    pub written: usize,
 }

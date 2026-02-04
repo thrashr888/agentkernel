@@ -45,6 +45,16 @@ class CreateSandboxOptions(BaseModel):
     vcpus: int | None = None
     memory_mb: int | None = None
     profile: SecurityProfile | None = None
+    source_url: str | None = None
+    source_ref: str | None = None
+
+
+class ExecOptions(BaseModel):
+    """Options for executing a command in a sandbox."""
+
+    env: list[str] = []
+    workdir: str | None = None
+    sudo: bool | None = None
 
 
 class StreamEvent(BaseModel):
@@ -79,3 +89,9 @@ class BatchRunResponse(BaseModel):
     """Response from batch execution."""
 
     results: list[BatchResult]
+
+
+class BatchFileWriteResponse(BaseModel):
+    """Result of a batch file write."""
+
+    written: int

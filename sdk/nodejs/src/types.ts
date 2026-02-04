@@ -34,6 +34,20 @@ export interface CreateSandboxOptions {
   vcpus?: number;
   memory_mb?: number;
   profile?: SecurityProfile;
+  /** Git repository URL to clone into the sandbox. */
+  source_url?: string;
+  /** Git ref to checkout after cloning. */
+  source_ref?: string;
+}
+
+/** Options for executing a command in a sandbox. */
+export interface ExecOptions {
+  /** Environment variables (KEY=VALUE). */
+  env?: string[];
+  /** Working directory inside the container. */
+  workdir?: string;
+  /** Run as root. */
+  sudo?: boolean;
 }
 
 /** Output from a command execution. */
@@ -85,6 +99,11 @@ export interface BatchResult {
 /** Response from batch execution. */
 export interface BatchRunResponse {
   results: BatchResult[];
+}
+
+/** Result of a batch file write. */
+export interface BatchFileWriteResponse {
+  written: number;
 }
 
 /** API response wrapper. */

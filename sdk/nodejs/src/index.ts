@@ -11,8 +11,10 @@ export {
 } from "./errors.js";
 export type {
   AgentKernelOptions,
-  RunOptions,
+  BatchFileWriteResponse,
   CreateSandboxOptions,
+  ExecOptions,
+  RunOptions,
   RunOutput,
   SandboxInfo,
   StreamEvent,

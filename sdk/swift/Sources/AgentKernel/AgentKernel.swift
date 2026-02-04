@@ -107,7 +107,9 @@ public actor AgentKernel {
             image: options?.image,
             vcpus: options?.vcpus,
             memory_mb: options?.memoryMB,
-            profile: options?.profile
+            profile: options?.profile,
+            source_url: options?.sourceURL,
+            source_ref: options?.sourceRef
         )
         return try await request(method: "POST", path: "/sandboxes", body: body)
     }
@@ -123,8 +125,17 @@ public actor AgentKernel {
     }
 
     /// Run a command in an existing sandbox.
-    public func execInSandbox(_ name: String, command: [String]) async throws -> RunOutput {
-        let body = ExecRequest(command: command)
+    public func execInSandbox(
+        _ name: String,
+        command: [String],
+        options: ExecOptions? = nil
+    ) async throws -> RunOutput {
+        let body = ExecRequest(
+            command: command,
+            env: options?.env.isEmpty == false ? options?.env : nil,
+            workdir: options?.workdir,
+            sudo: options?.sudo
+        )
         return try await request(method: "POST", path: "/sandboxes/\(name)/exec", body: body)
     }
 
@@ -191,6 +202,12 @@ public actor AgentKernel {
             throw AgentKernelError.server(json["error"] as? String ?? "Unknown error")
         }
         return json["data"] as? [[String: Any]] ?? []
+    }
+
+    /// Write multiple files to a sandbox in one request.
+    public func writeFiles(_ name: String, files: [String: String]) async throws -> BatchFileWriteResponse {
+        let body = BatchFileWriteRequest(files: files)
+        return try await request(method: "POST", path: "/sandboxes/\(name)/files", body: body)
     }
 
     /// Run multiple commands in parallel.

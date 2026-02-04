@@ -114,21 +114,21 @@ impl AgentKernel {
             .await
     }
 
-    /// Create a new sandbox with optional resource limits.
+    /// Create a new sandbox with optional configuration.
     pub async fn create_sandbox(
         &self,
         name: &str,
-        image: Option<&str>,
-        vcpus: Option<u32>,
-        memory_mb: Option<u64>,
-        profile: Option<SecurityProfile>,
+        opts: Option<CreateSandboxOptions>,
     ) -> Result<SandboxInfo> {
+        let opts = opts.unwrap_or_default();
         let body = CreateRequest {
             name: name.to_string(),
-            image: image.map(String::from),
-            vcpus,
-            memory_mb,
-            profile,
+            image: opts.image,
+            vcpus: opts.vcpus,
+            memory_mb: opts.memory_mb,
+            profile: opts.profile,
+            source_url: opts.source_url,
+            source_ref: opts.source_ref,
         };
         self.request(reqwest::Method::POST, "/sandboxes", Some(&body))
             .await
@@ -157,9 +157,18 @@ impl AgentKernel {
     }
 
     /// Run a command in an existing sandbox.
-    pub async fn exec_in_sandbox(&self, name: &str, command: &[&str]) -> Result<RunOutput> {
+    pub async fn exec_in_sandbox(
+        &self,
+        name: &str,
+        command: &[&str],
+        opts: Option<ExecOptions>,
+    ) -> Result<RunOutput> {
+        let opts = opts.unwrap_or_default();
         let body = ExecRequest {
             command: command.iter().map(|s| s.to_string()).collect(),
+            env: opts.env,
+            workdir: opts.workdir,
+            sudo: opts.sudo,
         };
         self.request(
             reqwest::Method::POST,
@@ -172,12 +181,17 @@ impl AgentKernel {
     /// Create a sandbox and return a guard that removes it on drop.
     ///
     /// Use `with_sandbox` for guaranteed cleanup via a closure.
-    pub async fn with_sandbox<F, Fut, T>(&self, name: &str, image: Option<&str>, f: F) -> Result<T>
+    pub async fn with_sandbox<F, Fut, T>(
+        &self,
+        name: &str,
+        opts: Option<CreateSandboxOptions>,
+        f: F,
+    ) -> Result<T>
     where
         F: FnOnce(SandboxHandle) -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
     {
-        self.create_sandbox(name, image, None, None, None).await?;
+        self.create_sandbox(name, opts).await?;
         let handle = SandboxHandle {
             name: name.to_string(),
             client: self.clone(),
@@ -186,6 +200,21 @@ impl AgentKernel {
         // Always clean up
         let _ = self.remove_sandbox(name).await;
         result
+    }
+
+    /// Write multiple files to a sandbox in one request.
+    pub async fn write_files(
+        &self,
+        name: &str,
+        files: std::collections::HashMap<String, String>,
+    ) -> Result<BatchFileWriteResponse> {
+        let body = BatchFileWriteRequest { files };
+        self.request(
+            reqwest::Method::POST,
+            &format!("/sandboxes/{name}/files"),
+            Some(&body),
+        )
+        .await
     }
 
     /// Read a file from a sandbox.
@@ -295,7 +324,20 @@ impl SandboxHandle {
 
     /// Run a command in this sandbox.
     pub async fn run(&self, command: &[&str]) -> Result<RunOutput> {
-        self.client.exec_in_sandbox(&self.name, command).await
+        self.client
+            .exec_in_sandbox(&self.name, command, None)
+            .await
+    }
+
+    /// Run a command with options (workdir, env, sudo).
+    pub async fn run_with_options(
+        &self,
+        command: &[&str],
+        opts: ExecOptions,
+    ) -> Result<RunOutput> {
+        self.client
+            .exec_in_sandbox(&self.name, command, Some(opts))
+            .await
     }
 
     /// Get sandbox info.
@@ -309,8 +351,23 @@ impl SandboxHandle {
     }
 
     /// Write a file to this sandbox.
-    pub async fn write_file(&self, path: &str, content: &str, encoding: Option<&str>) -> Result<String> {
-        self.client.write_file(&self.name, path, content, encoding).await
+    pub async fn write_file(
+        &self,
+        path: &str,
+        content: &str,
+        encoding: Option<&str>,
+    ) -> Result<String> {
+        self.client
+            .write_file(&self.name, path, content, encoding)
+            .await
+    }
+
+    /// Write multiple files to this sandbox.
+    pub async fn write_files(
+        &self,
+        files: std::collections::HashMap<String, String>,
+    ) -> Result<BatchFileWriteResponse> {
+        self.client.write_files(&self.name, files).await
     }
 
     /// Delete a file from this sandbox.

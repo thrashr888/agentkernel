@@ -30,12 +30,41 @@ public struct CreateSandboxOptions: Sendable {
     public var vcpus: Int?
     public var memoryMB: Int?
     public var profile: SecurityProfile?
+    /// Git repository URL to clone into the sandbox.
+    public var sourceURL: String?
+    /// Git ref to checkout after cloning.
+    public var sourceRef: String?
 
-    public init(image: String? = nil, vcpus: Int? = nil, memoryMB: Int? = nil, profile: SecurityProfile? = nil) {
+    public init(
+        image: String? = nil,
+        vcpus: Int? = nil,
+        memoryMB: Int? = nil,
+        profile: SecurityProfile? = nil,
+        sourceURL: String? = nil,
+        sourceRef: String? = nil
+    ) {
         self.image = image
         self.vcpus = vcpus
         self.memoryMB = memoryMB
         self.profile = profile
+        self.sourceURL = sourceURL
+        self.sourceRef = sourceRef
+    }
+}
+
+/// Options for executing a command in a sandbox.
+public struct ExecOptions: Sendable {
+    /// Environment variables (KEY=VALUE).
+    public var env: [String]
+    /// Working directory inside the container.
+    public var workdir: String?
+    /// Run as root.
+    public var sudo: Bool?
+
+    public init(env: [String] = [], workdir: String? = nil, sudo: Bool? = nil) {
+        self.env = env
+        self.workdir = workdir
+        self.sudo = sudo
     }
 }
 
@@ -95,11 +124,16 @@ struct CreateRequest: Encodable {
     let vcpus: Int?
     let memory_mb: Int?
     let profile: SecurityProfile?
+    let source_url: String?
+    let source_ref: String?
 }
 
 /// Exec request body.
 struct ExecRequest: Encodable {
     let command: [String]
+    let env: [String]?
+    let workdir: String?
+    let sudo: Bool?
 }
 
 /// File write request body.
@@ -135,6 +169,16 @@ public struct BatchRunResponse: Codable, Sendable {
 /// Batch run request body.
 struct BatchRunRequest: Encodable {
     let commands: [BatchCommand]
+}
+
+/// Batch file write request body.
+struct BatchFileWriteRequest: Encodable {
+    let files: [String: String]
+}
+
+/// Result of a batch file write.
+public struct BatchFileWriteResponse: Codable, Sendable {
+    public let written: Int
 }
 
 // MARK: - Type Erasure

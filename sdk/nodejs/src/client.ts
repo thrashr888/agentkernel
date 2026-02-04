@@ -10,8 +10,10 @@ import type {
   AgentKernelOptions,
   ApiResponse,
   BatchCommand,
+  BatchFileWriteResponse,
   BatchRunResponse,
   CreateSandboxOptions,
+  ExecOptions,
   FileReadResponse,
   FileWriteOptions,
   RunOptions,
@@ -117,6 +119,8 @@ export class AgentKernel {
       vcpus: opts?.vcpus,
       memory_mb: opts?.memory_mb,
       profile: opts?.profile,
+      source_url: opts?.source_url,
+      source_ref: opts?.source_ref,
     });
   }
 
@@ -131,11 +135,20 @@ export class AgentKernel {
   }
 
   /** Run a command in an existing sandbox. */
-  async execInSandbox(name: string, command: string[]): Promise<RunOutput> {
+  async execInSandbox(
+    name: string,
+    command: string[],
+    opts?: ExecOptions,
+  ): Promise<RunOutput> {
     return this.request<RunOutput>(
       "POST",
       `/sandboxes/${encodeURIComponent(name)}/exec`,
-      { command },
+      {
+        command,
+        env: opts?.env,
+        workdir: opts?.workdir,
+        sudo: opts?.sudo,
+      },
     );
   }
 
@@ -177,6 +190,18 @@ export class AgentKernel {
     );
   }
 
+  /** Write multiple files to a sandbox in one request. */
+  async writeFiles(
+    name: string,
+    files: Record<string, string>,
+  ): Promise<BatchFileWriteResponse> {
+    return this.request<BatchFileWriteResponse>(
+      "POST",
+      `/sandboxes/${encodeURIComponent(name)}/files`,
+      { files },
+    );
+  }
+
   /** Run multiple commands in parallel. */
   async batchRun(commands: BatchCommand[]): Promise<BatchRunResponse> {
     return this.request<BatchRunResponse>("POST", "/batch/run", { commands });
@@ -202,9 +227,10 @@ export class AgentKernel {
     await this.createSandbox(name, opts);
     return new SandboxSession(
       name,
-      (n, cmd) => this.execInSandbox(n, cmd),
+      (n, cmd, o) => this.execInSandbox(n, cmd, o),
       (n) => this.removeSandbox(n),
       (n) => this.getSandbox(n),
+      (n, f) => this.writeFiles(n, f),
     );
   }
 
