@@ -5,35 +5,49 @@ Run [pi-coding-agent](https://github.com/badlogic/pi-mono) with agentkernel for 
 
 ## Quick Start
 
-Pi is an open-source coding agent that supports MCP. The agentkernel plugin gives Pi access to sandbox tools for isolated code execution.
+Pi is an open-source coding agent with its own extension system. The agentkernel extension overrides Pi's built-in `bash` tool so every shell command runs in a microVM sandbox instead of on your machine.
 
 ```bash
 # 1. Start agentkernel API server (pick one)
 brew services start thrashr888/agentkernel/agentkernel   # runs in background, survives reboots
 agentkernel serve                 # or run manually in a terminal
 
-# 2. Install the plugin into your project
+# 2. Install the extension into your project
 agentkernel plugin install pi
 
-# 3. Launch Pi — it picks up .mcp.json automatically
+# 3. Launch Pi — the extension loads automatically
 pi
 ```
 
-## Plugin Integration
+## Extension Integration
 
-Pi runs on your machine and delegates code execution to agentkernel via MCP tools. The plugin merges agentkernel's MCP server into your project's `.mcp.json`:
+Unlike MCP-based agents, Pi uses a native extension that replaces the built-in `bash` tool. When the extension loads:
+
+1. A persistent sandbox is created for the session
+2. Every `bash` call the LLM makes runs inside that sandbox via `POST /sandboxes/{name}/exec`
+3. State persists between calls — installed packages and files carry over
+4. The sandbox is removed when the session ends
+
+If agentkernel is not running, the extension falls back to local execution.
+
+The extension also provides:
+
+| Tool | Description |
+|------|-------------|
+| `bash` | Built-in tool override — routes all shell commands through the sandbox |
+| `sandbox_run` | One-shot command in a fresh sandbox (clean environment each time) |
+
+| Command | Description |
+|---------|-------------|
+| `/sandbox` | Show current sandbox status |
+
+### Install
 
 ```bash
 agentkernel plugin install pi
 ```
 
-For global installation (available in all projects):
-
-```bash
-agentkernel plugin install pi --global
-```
-
-Because Pi is open source, deeper integration is possible — a future plugin could swap Pi's built-in code runner for agentkernel sandboxes entirely, similar to the [OpenCode plugin](agent-opencode.md).
+This creates `.pi/extensions/agentkernel/` in your project with the extension source.
 
 ## Setup
 
@@ -44,10 +58,20 @@ brew tap thrashr888/agentkernel && brew install agentkernel
 # Or: curl -fsSL https://raw.githubusercontent.com/thrashr888/agentkernel/main/install.sh | sh
 ```
 
-### 2. Install the plugin
+### 2. Install the extension
 
 ```bash
 agentkernel plugin install pi
+```
+
+Your project should have:
+
+```
+.pi/
+  extensions/
+    agentkernel/
+      index.ts          # Extension source
+      package.json      # Metadata
 ```
 
 ### 3. Start agentkernel
@@ -66,9 +90,11 @@ agentkernel serve --host 127.0.0.1 --port 18888
 pi
 ```
 
+The extension loads automatically and notifies when the sandbox is ready.
+
 ## API Keys
 
-Pi supports multiple LLM providers. Pass your provider's API key as usual — it stays on your machine and is not forwarded to the sandbox unless you explicitly pass it:
+Pi supports multiple LLM providers. Pass your provider's API key as usual — it stays on your machine and is not forwarded to the sandbox:
 
 ```bash
 # Anthropic

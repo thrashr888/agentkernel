@@ -17,6 +17,10 @@ const MCP_GENERIC_JSON: &str = include_str!("../plugins/mcp/mcp.json");
 const OPENCODE_PACKAGE_JSON: &str = include_str!("../plugins/opencode/.opencode/package.json");
 const OPENCODE_PLUGIN_TS: &str =
     include_str!("../plugins/opencode/.opencode/plugins/agentkernel.ts");
+const PI_EXTENSION_INDEX_TS: &str =
+    include_str!("../plugins/pi/.pi/extensions/agentkernel/index.ts");
+const PI_EXTENSION_PACKAGE_JSON: &str =
+    include_str!("../plugins/pi/.pi/extensions/agentkernel/package.json");
 
 /// Plugin targets that can be installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +67,7 @@ impl PluginTarget {
             Self::Gemini => "Gemini CLI MCP server config",
             Self::OpenCode => "OpenCode TypeScript plugin",
             Self::Amp => "Amp MCP server config",
-            Self::Pi => "Pi MCP server config",
+            Self::Pi => "Pi native extension (bash sandbox override)",
             Self::Mcp => "Generic MCP server config",
         }
     }
@@ -83,7 +87,7 @@ impl PluginTarget {
     fn supports_global(&self) -> bool {
         matches!(
             self,
-            Self::Claude | Self::Codex | Self::Gemini | Self::Amp | Self::Pi | Self::Mcp
+            Self::Claude | Self::Codex | Self::Gemini | Self::Amp | Self::Mcp
         )
     }
 }
@@ -166,11 +170,18 @@ fn plugin_files(target: PluginTarget) -> Vec<PluginFile> {
             content: MCP_GENERIC_JSON,
             strategy: WriteStrategy::MergeJsonMcpServer,
         }],
-        PluginTarget::Pi => vec![PluginFile {
-            rel_path: ".mcp.json",
-            content: MCP_GENERIC_JSON,
-            strategy: WriteStrategy::MergeJsonMcpServer,
-        }],
+        PluginTarget::Pi => vec![
+            PluginFile {
+                rel_path: ".pi/extensions/agentkernel/index.ts",
+                content: PI_EXTENSION_INDEX_TS,
+                strategy: WriteStrategy::Create,
+            },
+            PluginFile {
+                rel_path: ".pi/extensions/agentkernel/package.json",
+                content: PI_EXTENSION_PACKAGE_JSON,
+                strategy: WriteStrategy::Create,
+            },
+        ],
         PluginTarget::Mcp => vec![PluginFile {
             rel_path: ".mcp.json",
             content: MCP_GENERIC_JSON,
@@ -258,7 +269,6 @@ fn global_root(target: PluginTarget) -> Result<PathBuf> {
         | PluginTarget::Codex
         | PluginTarget::Gemini
         | PluginTarget::Amp
-        | PluginTarget::Pi
         | PluginTarget::Mcp => Ok(home),
         _ => bail!("{} plugins are per-project only", target.name()),
     }
@@ -443,8 +453,10 @@ fn print_next_steps(target: PluginTarget) {
             println!("  The agentkernel MCP server will be available in Amp.");
         }
         PluginTarget::Pi => {
-            println!("Pi MCP config written.");
-            println!("  The agentkernel MCP server will be available in Pi.");
+            println!("Pi extension installed.");
+            println!("  Start the agentkernel server first: agentkernel serve");
+            println!("  Then launch Pi — the extension loads automatically.");
+            println!("  All bash commands will run in sandboxed microVMs.");
         }
         PluginTarget::Mcp => {
             println!("Generic MCP config written.");
@@ -559,6 +571,8 @@ mod tests {
             serde_json::from_str(MCP_GENERIC_JSON).expect("Generic mcp.json should parse");
         let _: serde_json::Value = serde_json::from_str(OPENCODE_PACKAGE_JSON)
             .expect("OpenCode package.json should parse");
+        let _: serde_json::Value =
+            serde_json::from_str(PI_EXTENSION_PACKAGE_JSON).expect("Pi package.json should parse");
     }
 
     #[test]
@@ -570,6 +584,8 @@ mod tests {
         assert!(!MCP_GENERIC_JSON.is_empty());
         assert!(!OPENCODE_PACKAGE_JSON.is_empty());
         assert!(!OPENCODE_PLUGIN_TS.is_empty());
+        assert!(!PI_EXTENSION_INDEX_TS.is_empty());
+        assert!(!PI_EXTENSION_PACKAGE_JSON.is_empty());
     }
 
     #[test]
