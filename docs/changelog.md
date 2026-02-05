@@ -16,6 +16,8 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 - **`ExecOptions` trait method** — `Sandbox::exec_with_options()` supports workdir, user, and env per-command across all backends
 - **Detached commands** — run long-lived processes in the background with `agentkernel exec --detach`, retrieve logs with `exec-logs`, check status, kill, and list; HTTP API routes at `/sandboxes/{name}/exec/detach` and `/sandboxes/{name}/exec/detached/{id}`; 5 new MCP tools (`sandbox_exec_detach`, `sandbox_exec_status`, `sandbox_exec_logs`, `sandbox_exec_kill`, `sandbox_exec_list`)
 - **SDK updates** — all four SDKs (Rust, Node.js, Python, Swift) now support exec options (`workdir`/`env`/`sudo`), git source cloning (`source_url`/`source_ref`), batch `writeFiles`/`write_files`, and detached commands (`execDetached`/`detachedStatus`/`detachedLogs`/`detachedKill`/`detachedList`)
+- **Amp agent support** — `AgentType::Amp` adapter for Sourcegraph's AmpCode CLI; plugin installer target with MCP JSON integration; `CompatibilityMode::Amp` with Sourcegraph-aware network policy
+- **Pi agent support** — `AgentType::Pi` adapter for pi-coding-agent CLI; plugin installer target with MCP JSON integration; `CompatibilityMode::Pi` with multi-provider network policy
 
 ---
 

@@ -388,6 +388,10 @@ pub enum CompatibilityMode {
     Codex,
     /// Gemini CLI compatible (Docker-style, project directory focus)
     Gemini,
+    /// Amp compatible (Sourcegraph, multi-model, proxy-style network)
+    Amp,
+    /// Pi compatible (multi-provider, project directory focus)
+    Pi,
 }
 
 impl CompatibilityMode {
@@ -399,6 +403,8 @@ impl CompatibilityMode {
             "claude" | "claude-code" | "claudecode" => Some(Self::ClaudeCode),
             "codex" | "openai-codex" => Some(Self::Codex),
             "gemini" | "gemini-cli" => Some(Self::Gemini),
+            "amp" | "ampcode" => Some(Self::Amp),
+            "pi" | "pi-coding-agent" => Some(Self::Pi),
             _ => None,
         }
     }
@@ -410,6 +416,8 @@ impl CompatibilityMode {
             Self::ClaudeCode => AgentProfile::claude_code(),
             Self::Codex => AgentProfile::codex(),
             Self::Gemini => AgentProfile::gemini(),
+            Self::Amp => AgentProfile::amp(),
+            Self::Pi => AgentProfile::pi(),
         }
     }
 }
@@ -501,6 +509,49 @@ impl NetworkPolicy {
             block: vec!["169.254.169.254".to_string()],
         }
     }
+
+    /// Create a policy for Amp (Anthropic API + Sourcegraph + common registries)
+    pub fn amp() -> Self {
+        Self {
+            enabled: true,
+            always_allow: vec![
+                "api.anthropic.com".to_string(),
+                "*.sourcegraph.com".to_string(),
+            ],
+            allow: vec![
+                "*.pypi.org".to_string(),
+                "*.npmjs.com".to_string(),
+                "*.github.com".to_string(),
+                "*.githubusercontent.com".to_string(),
+                "*.crates.io".to_string(),
+            ],
+            block: vec![
+                "169.254.169.254".to_string(),
+                "metadata.google.internal".to_string(),
+            ],
+        }
+    }
+
+    /// Create a policy for Pi (multi-provider, common registries)
+    pub fn pi() -> Self {
+        Self {
+            enabled: true,
+            always_allow: Vec::new(), // Pi supports many providers, no single always-allow
+            allow: vec![
+                "api.anthropic.com".to_string(),
+                "api.openai.com".to_string(),
+                "generativelanguage.googleapis.com".to_string(),
+                "*.pypi.org".to_string(),
+                "*.npmjs.com".to_string(),
+                "*.github.com".to_string(),
+                "*.githubusercontent.com".to_string(),
+            ],
+            block: vec![
+                "169.254.169.254".to_string(),
+                "metadata.google.internal".to_string(),
+            ],
+        }
+    }
 }
 
 /// Agent-specific profile combining permissions and network policy
@@ -577,6 +628,38 @@ impl AgentProfile {
         }
     }
 
+    /// Amp profile (multi-model, Sourcegraph-backed)
+    pub fn amp() -> Self {
+        let mut perms = SecurityProfile::Moderate.permissions();
+        perms.mount_cwd = true; // Amp needs project access
+        perms.pass_env = false;
+        perms.seccomp = Some("ai-agent".to_string());
+
+        Self {
+            mode: CompatibilityMode::Amp,
+            permissions: perms,
+            network_policy: NetworkPolicy::amp(),
+            api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
+            env_vars: Vec::new(),
+        }
+    }
+
+    /// Pi profile (multi-provider, project directory focus)
+    pub fn pi() -> Self {
+        let mut perms = SecurityProfile::Moderate.permissions();
+        perms.mount_cwd = true; // Pi needs project access
+        perms.pass_env = false;
+        perms.seccomp = Some("ai-agent".to_string());
+
+        Self {
+            mode: CompatibilityMode::Pi,
+            permissions: perms,
+            network_policy: NetworkPolicy::pi(),
+            api_key_env: None, // Pi supports multiple providers
+            env_vars: Vec::new(),
+        }
+    }
+
     /// Get Docker network arguments based on network policy
     #[allow(dead_code)]
     pub fn network_docker_args(&self) -> Vec<String> {
@@ -644,6 +727,14 @@ mod tests {
         assert_eq!(
             CompatibilityMode::from_str("native"),
             Some(CompatibilityMode::Native)
+        );
+        assert_eq!(
+            CompatibilityMode::from_str("amp"),
+            Some(CompatibilityMode::Amp)
+        );
+        assert_eq!(
+            CompatibilityMode::from_str("pi"),
+            Some(CompatibilityMode::Pi)
         );
         assert_eq!(CompatibilityMode::from_str("unknown"), None);
     }
