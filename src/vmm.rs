@@ -14,6 +14,7 @@ use crate::languages::docker_image_to_firecracker_runtime;
 use crate::permissions::Permissions;
 use crate::pool::ContainerPool;
 use crate::validation;
+use crate::volume::{VolumeManager, VolumeMount};
 use anyhow::{Result, bail};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -655,6 +656,27 @@ impl VmManager {
             None
         };
 
+        // Resolve volume mounts to docker -v arguments
+        let volume_args = if !state.volumes.is_empty() {
+            let volume_manager = VolumeManager::new()?;
+            let mut args = Vec::new();
+            for spec in &state.volumes {
+                let mount = VolumeMount::parse(spec)?;
+                // Validate volume exists
+                if !volume_manager.exists(&mount.slug) {
+                    bail!(
+                        "Volume '{}' not found. Create it with: agentkernel volume create {}",
+                        mount.slug,
+                        mount.slug
+                    );
+                }
+                args.push(mount.to_docker_arg(volume_manager.volumes_dir()));
+            }
+            args
+        } else {
+            Vec::new()
+        };
+
         let config = SandboxConfig {
             image: state.image.clone(),
             vcpus: state.vcpus,
@@ -668,6 +690,7 @@ impl VmManager {
             files: files.to_vec(),
             ports: state.ports.clone(),
             ssh: ssh_config.clone(),
+            volumes: volume_args,
         };
 
         sandbox.start(&config).await?;
@@ -1236,6 +1259,7 @@ impl VmManager {
             files: files.to_vec(),
             ports: Vec::new(),
             ssh: None,
+            volumes: Vec::new(),
         };
 
         // Use optimized `docker/podman run --rm` for container backends

@@ -211,6 +211,8 @@ pub struct SandboxConfig {
     pub ports: Vec<PortMapping>,
     /// SSH configuration (None = SSH disabled)
     pub ssh: Option<SshConfig>,
+    /// Volume mounts (slug:/path or slug:/path:ro)
+    pub volumes: Vec<String>,
 }
 
 impl Default for SandboxConfig {
@@ -228,6 +230,7 @@ impl Default for SandboxConfig {
             files: Vec::new(),
             ports: Vec::new(),
             ssh: None,
+            volumes: Vec::new(),
         }
     }
 }

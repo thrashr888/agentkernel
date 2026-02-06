@@ -129,7 +129,6 @@ impl VolumeMount {
     }
 
     /// Convert to Docker -v argument.
-    #[allow(dead_code)]
     pub fn to_docker_arg(&self, volumes_dir: &Path) -> String {
         let host_path = volumes_dir.join(&self.slug);
         let suffix = if self.read_only { ":ro" } else { "" };

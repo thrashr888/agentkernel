@@ -255,6 +255,12 @@ impl Sandbox for DockerSandbox {
             args.push(format!("{}:/home/user:ro", home.to_string_lossy()));
         }
 
+        // Mount persistent volumes
+        for volume_spec in &config.volumes {
+            args.push("-v".to_string());
+            args.push(volume_spec.clone());
+        }
+
         // Read-only root filesystem
         if config.read_only {
             args.push("--read-only".to_string());

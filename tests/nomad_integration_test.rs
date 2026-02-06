@@ -32,6 +32,7 @@ fn test_sandbox_config() -> agentkernel::backend::SandboxConfig {
         files: Vec::new(),
         ports: Vec::new(),
         ssh: None,
+        volumes: Vec::new(),
     }
 }
 
