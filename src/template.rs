@@ -33,6 +33,14 @@ const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
         "opencode-sandbox",
         include_str!("../templates/opencode-sandbox.toml"),
     ),
+    (
+        "amp-sandbox",
+        include_str!("../templates/amp-sandbox.toml"),
+    ),
+    (
+        "pi-sandbox",
+        include_str!("../templates/pi-sandbox.toml"),
+    ),
     // Language runtimes
     ("bash", include_str!("../templates/bash.toml")),
     ("c", include_str!("../templates/c.toml")),
