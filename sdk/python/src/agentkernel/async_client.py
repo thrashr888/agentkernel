@@ -17,15 +17,17 @@ from .types import (
     DetachedCommand,
     DetachedLogsResponse,
     ExecOptions,
+    ExtendTtlResponse,
     FileReadResponse,
     RunOptions,
     RunOutput,
     SandboxInfo,
     SecurityProfile,
+    SnapshotMeta,
     StreamEvent,
 )
 
-SDK_VERSION = "0.4.0"
+SDK_VERSION = "0.3.0"
 
 
 class AsyncSandboxSession:
@@ -178,6 +180,7 @@ class AsyncAgentKernel:
         profile: SecurityProfile | None = None,
         source_url: str | None = None,
         source_ref: str | None = None,
+        volumes: list[str] | None = None,
     ) -> SandboxInfo:
         """Create a new sandbox."""
         data = await self._request(
@@ -187,6 +190,7 @@ class AsyncAgentKernel:
                 "name": name, "image": image, "vcpus": vcpus,
                 "memory_mb": memory_mb, "profile": profile,
                 "source_url": source_url, "source_ref": source_ref,
+                "volumes": volumes,
             },
         )
         return SandboxInfo(**data)
@@ -302,6 +306,40 @@ class AsyncAgentKernel:
         """List detached commands in a sandbox."""
         data = await self._request("GET", f"/sandboxes/{name}/exec/detached")
         return [DetachedCommand(**d) for d in data]
+
+    async def extend_ttl(self, name: str, *, by: str) -> str | None:
+        """Extend a sandbox's TTL. Returns the new expiry time."""
+        data = await self._request("POST", f"/sandboxes/{name}/extend", json={"by": by})
+        return data.get("expires_at") if isinstance(data, dict) else data
+
+    async def list_snapshots(self) -> list[SnapshotMeta]:
+        """List all snapshots."""
+        data = await self._request("GET", "/snapshots")
+        return [SnapshotMeta(**s) for s in data]
+
+    async def take_snapshot(
+        self, sandbox: str, *, snapshot_name: str | None = None
+    ) -> SnapshotMeta:
+        """Take a snapshot of a sandbox."""
+        body: dict[str, Any] = {"sandbox": sandbox}
+        if snapshot_name is not None:
+            body["name"] = snapshot_name
+        data = await self._request("POST", "/snapshots", json=body)
+        return SnapshotMeta(**data)
+
+    async def get_snapshot(self, name: str) -> SnapshotMeta:
+        """Get info about a snapshot."""
+        data = await self._request("GET", f"/snapshots/{name}")
+        return SnapshotMeta(**data)
+
+    async def delete_snapshot(self, name: str) -> None:
+        """Delete a snapshot."""
+        await self._request("DELETE", f"/snapshots/{name}")
+
+    async def restore_snapshot(self, name: str) -> SandboxInfo:
+        """Restore a sandbox from a snapshot."""
+        data = await self._request("POST", f"/snapshots/{name}/restore")
+        return SandboxInfo(**data)
 
     async def sandbox(
         self,

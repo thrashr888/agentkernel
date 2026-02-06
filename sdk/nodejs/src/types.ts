@@ -134,3 +134,34 @@ export interface ApiResponse<T> {
   data?: T;
   error?: string;
 }
+
+/** Response from extending a sandbox's TTL. */
+export interface ExtendTtlResponse {
+  expires_at?: string;
+}
+
+/** Options for extending TTL. */
+export interface ExtendTtlOptions {
+  /** Duration string like "1h", "30m", "2d". */
+  by: string;
+}
+
+/** Metadata for a sandbox snapshot. */
+export interface SnapshotMeta {
+  name: string;
+  sandbox: string;
+  image_tag: string;
+  backend: string;
+  base_image?: string;
+  vcpus?: number;
+  memory_mb?: number;
+  created_at: string;
+}
+
+/** Options for taking a snapshot. */
+export interface TakeSnapshotOptions {
+  /** Name of the sandbox to snapshot. */
+  sandbox: string;
+  /** Optional snapshot name (auto-generated if not provided). */
+  name?: string;
+}

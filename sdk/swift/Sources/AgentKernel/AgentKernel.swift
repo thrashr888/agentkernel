@@ -14,7 +14,7 @@ public actor AgentKernel {
     private let session: URLSession
 
     /// SDK version string.
-    static let sdkVersion = "0.4.0"
+    static let sdkVersion = "0.3.0"
 
     /// Create a client with optional configuration.
     /// Resolution order: explicit options > environment variables > defaults.
@@ -109,7 +109,8 @@ public actor AgentKernel {
             memory_mb: options?.memoryMB,
             profile: options?.profile,
             source_url: options?.sourceURL,
-            source_ref: options?.sourceRef
+            source_ref: options?.sourceRef,
+            volumes: options?.volumes
         )
         return try await request(method: "POST", path: "/sandboxes", body: body)
     }
@@ -250,6 +251,41 @@ public actor AgentKernel {
     /// List detached commands in a sandbox.
     public func detachedList(_ name: String) async throws -> [DetachedCommand] {
         try await request(method: "GET", path: "/sandboxes/\(name)/exec/detached")
+    }
+
+    // MARK: - TTL Extension
+
+    /// Extend a sandbox's time-to-live. Returns the new expiry time.
+    public func extendTtl(_ name: String, by: String) async throws -> ExtendTtlResponse {
+        let body = ExtendTtlRequest(by: by)
+        return try await request(method: "POST", path: "/sandboxes/\(name)/extend", body: body)
+    }
+
+    // MARK: - Snapshots
+
+    /// List all snapshots.
+    public func listSnapshots() async throws -> [SnapshotMeta] {
+        try await request(method: "GET", path: "/snapshots")
+    }
+
+    /// Take a snapshot of a sandbox.
+    public func takeSnapshot(_ opts: TakeSnapshotOptions) async throws -> SnapshotMeta {
+        try await request(method: "POST", path: "/snapshots", body: opts)
+    }
+
+    /// Get info about a snapshot.
+    public func getSnapshot(_ name: String) async throws -> SnapshotMeta {
+        try await request(method: "GET", path: "/snapshots/\(name)")
+    }
+
+    /// Delete a snapshot.
+    public func deleteSnapshot(_ name: String) async throws {
+        let _: String = try await request(method: "DELETE", path: "/snapshots/\(name)")
+    }
+
+    /// Restore a sandbox from a snapshot.
+    public func restoreSnapshot(_ name: String) async throws -> SandboxInfo {
+        try await request(method: "POST", path: "/snapshots/\(name)/restore")
     }
 
     // MARK: - Internal

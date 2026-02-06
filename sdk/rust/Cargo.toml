@@ -1,8 +1,8 @@
 [package]
 name = "agentkernel-sdk"
-version = "0.2.0"
-edition = "2021"
-rust-version = "1.75"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.85"
 description = "Rust SDK for agentkernel — run AI coding agents in secure, isolated microVMs"
 license = "MIT"
 repository = "https://github.com/thrashr888/agentkernel/tree/main/sdk/rust"

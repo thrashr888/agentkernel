@@ -16,15 +16,19 @@ import type {
   DetachedCommand,
   DetachedLogsResponse,
   ExecOptions,
+  ExtendTtlOptions,
+  ExtendTtlResponse,
   FileReadResponse,
   FileWriteOptions,
   RunOptions,
   RunOutput,
   SandboxInfo,
+  SnapshotMeta,
   StreamEvent,
+  TakeSnapshotOptions,
 } from "./types.js";
 
-const SDK_VERSION = "0.4.0";
+const SDK_VERSION = "0.3.0";
 
 /**
  * Client for the agentkernel HTTP API.
@@ -123,6 +127,7 @@ export class AgentKernel {
       profile: opts?.profile,
       source_url: opts?.source_url,
       source_ref: opts?.source_ref,
+      volumes: opts?.volumes,
     });
   }
 
@@ -291,6 +296,51 @@ export class AgentKernel {
       (n) => this.removeSandbox(n),
       (n) => this.getSandbox(n),
       (n, f) => this.writeFiles(n, f),
+    );
+  }
+
+  // -- TTL & Snapshot methods --
+
+  /** Extend a sandbox's TTL. Returns the new expiry time. */
+  async extendTtl(name: string, opts: ExtendTtlOptions): Promise<ExtendTtlResponse> {
+    return this.request<ExtendTtlResponse>(
+      "POST",
+      `/sandboxes/${encodeURIComponent(name)}/extend`,
+      { by: opts.by },
+    );
+  }
+
+  /** List all snapshots. */
+  async listSnapshots(): Promise<SnapshotMeta[]> {
+    return this.request<SnapshotMeta[]>("GET", "/snapshots");
+  }
+
+  /** Take a snapshot of a sandbox. */
+  async takeSnapshot(opts: TakeSnapshotOptions): Promise<SnapshotMeta> {
+    return this.request<SnapshotMeta>("POST", "/snapshots", opts);
+  }
+
+  /** Get info about a snapshot. */
+  async getSnapshot(name: string): Promise<SnapshotMeta> {
+    return this.request<SnapshotMeta>(
+      "GET",
+      `/snapshots/${encodeURIComponent(name)}`,
+    );
+  }
+
+  /** Delete a snapshot. */
+  async deleteSnapshot(name: string): Promise<void> {
+    await this.request<string>(
+      "DELETE",
+      `/snapshots/${encodeURIComponent(name)}`,
+    );
+  }
+
+  /** Restore a sandbox from a snapshot. */
+  async restoreSnapshot(name: string): Promise<SandboxInfo> {
+    return this.request<SandboxInfo>(
+      "POST",
+      `/snapshots/${encodeURIComponent(name)}/restore`,
     );
   }
 

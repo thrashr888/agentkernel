@@ -130,6 +130,7 @@ struct CreateRequest: Encodable {
     let profile: SecurityProfile?
     let source_url: String?
     let source_ref: String?
+    let volumes: [String]?
 }
 
 /// Exec request body.
@@ -207,6 +208,43 @@ public struct DetachedCommand: Codable, Sendable {
 public struct DetachedLogsResponse: Codable, Sendable {
     public let stdout: String?
     public let stderr: String?
+}
+
+// MARK: - TTL Extension Types
+
+/// Response from extending a sandbox's TTL.
+public struct ExtendTtlResponse: Codable, Sendable {
+    public let expires_at: String?
+}
+
+/// Extend TTL request body.
+struct ExtendTtlRequest: Encodable {
+    let by: String
+}
+
+// MARK: - Snapshot Types
+
+/// Metadata for a sandbox snapshot.
+public struct SnapshotMeta: Codable, Sendable {
+    public let name: String
+    public let sandbox: String
+    public let image_tag: String
+    public let backend: String
+    public let base_image: String?
+    public let vcpus: Int?
+    public let memory_mb: Int?
+    public let created_at: String
+}
+
+/// Options for taking a snapshot.
+public struct TakeSnapshotOptions: Encodable, Sendable {
+    public let sandbox: String
+    public let name: String?
+
+    public init(sandbox: String, name: String? = nil) {
+        self.sandbox = sandbox
+        self.name = name
+    }
 }
 
 // MARK: - Type Erasure

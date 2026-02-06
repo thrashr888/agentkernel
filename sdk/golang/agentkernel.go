@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	sdkVersion     = "0.4.0"
+	sdkVersion     = "0.3.0"
 	defaultBaseURL = "http://localhost:18888"
 	defaultTimeout = 30 * time.Second
 )
@@ -186,6 +186,7 @@ func (c *Client) CreateSandbox(ctx context.Context, name string, opts *CreateSan
 		body.VCPUs = opts.VCPUs
 		body.MemoryMB = opts.MemoryMB
 		body.Profile = opts.Profile
+		body.Volumes = opts.Volumes
 	}
 	var result SandboxInfo
 	err := c.request(ctx, http.MethodPost, "/sandboxes", body, &result)
@@ -273,6 +274,60 @@ func (c *Client) BatchRun(ctx context.Context, commands []BatchCommand) (*BatchR
 	body := batchRunRequest{Commands: commands}
 	var result BatchRunResponse
 	err := c.request(ctx, http.MethodPost, "/batch/run", body, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// ExtendTTL extends a sandbox's time-to-live. Returns the new expiry time.
+func (c *Client) ExtendTTL(ctx context.Context, name string, by string) (*ExtendTtlResponse, error) {
+	body := extendTtlRequest{By: by}
+	var result ExtendTtlResponse
+	err := c.request(ctx, http.MethodPost, "/sandboxes/"+name+"/extend", body, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// ListSnapshots returns all snapshots.
+func (c *Client) ListSnapshots(ctx context.Context) ([]SnapshotMeta, error) {
+	var result []SnapshotMeta
+	err := c.request(ctx, http.MethodGet, "/snapshots", nil, &result)
+	return result, err
+}
+
+// TakeSnapshot creates a snapshot of a sandbox.
+func (c *Client) TakeSnapshot(ctx context.Context, opts *TakeSnapshotOptions) (*SnapshotMeta, error) {
+	var result SnapshotMeta
+	err := c.request(ctx, http.MethodPost, "/snapshots", opts, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// GetSnapshot returns info about a snapshot.
+func (c *Client) GetSnapshot(ctx context.Context, name string) (*SnapshotMeta, error) {
+	var result SnapshotMeta
+	err := c.request(ctx, http.MethodGet, "/snapshots/"+name, nil, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// DeleteSnapshot removes a snapshot.
+func (c *Client) DeleteSnapshot(ctx context.Context, name string) error {
+	var result string
+	return c.request(ctx, http.MethodDelete, "/snapshots/"+name, nil, &result)
+}
+
+// RestoreSnapshot restores a sandbox from a snapshot.
+func (c *Client) RestoreSnapshot(ctx context.Context, name string) (*SandboxInfo, error) {
+	var result SandboxInfo
+	err := c.request(ctx, http.MethodPost, "/snapshots/"+name+"/restore", nil, &result)
 	if err != nil {
 		return nil, err
 	}

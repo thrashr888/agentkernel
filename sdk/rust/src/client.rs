@@ -1,7 +1,7 @@
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use std::time::Duration;
 
-use crate::error::{error_from_status, Error, Result};
+use crate::error::{Error, Result, error_from_status};
 use crate::types::*;
 
 const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -129,6 +129,7 @@ impl AgentKernel {
             profile: opts.profile,
             source_url: opts.source_url,
             source_ref: opts.source_ref,
+            volumes: opts.volumes,
         };
         self.request(reqwest::Method::POST, "/sandboxes", Some(&body))
             .await
@@ -290,11 +291,7 @@ impl AgentKernel {
     }
 
     /// Get the status of a detached command.
-    pub async fn detached_status(
-        &self,
-        name: &str,
-        cmd_id: &str,
-    ) -> Result<DetachedCommand> {
+    pub async fn detached_status(&self, name: &str, cmd_id: &str) -> Result<DetachedCommand> {
         self.request(
             reqwest::Method::GET,
             &format!("/sandboxes/{name}/exec/detached/{cmd_id}"),
@@ -349,6 +346,61 @@ impl AgentKernel {
             .await
     }
 
+    /// Extend a sandbox's time-to-live.
+    pub async fn extend_ttl(&self, name: &str, by: &str) -> Result<ExtendTtlResponse> {
+        let body = ExtendTtlRequest { by: by.to_string() };
+        self.request(
+            reqwest::Method::POST,
+            &format!("/sandboxes/{name}/extend"),
+            Some(&body),
+        )
+        .await
+    }
+
+    /// List all snapshots.
+    pub async fn list_snapshots(&self) -> Result<Vec<SnapshotMeta>> {
+        self.request(reqwest::Method::GET, "/snapshots", None::<&()>)
+            .await
+    }
+
+    /// Take a snapshot of a sandbox.
+    pub async fn take_snapshot(&self, opts: TakeSnapshotOptions) -> Result<SnapshotMeta> {
+        self.request(reqwest::Method::POST, "/snapshots", Some(&opts))
+            .await
+    }
+
+    /// Get info about a snapshot.
+    pub async fn get_snapshot(&self, name: &str) -> Result<SnapshotMeta> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/snapshots/{name}"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Delete a snapshot.
+    pub async fn delete_snapshot(&self, name: &str) -> Result<()> {
+        let _: String = self
+            .request(
+                reqwest::Method::DELETE,
+                &format!("/snapshots/{name}"),
+                None::<&()>,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Restore a sandbox from a snapshot.
+    pub async fn restore_snapshot(&self, name: &str) -> Result<SandboxInfo> {
+        self.request(
+            reqwest::Method::POST,
+            &format!("/snapshots/{name}/restore"),
+            None::<&()>,
+        )
+        .await
+    }
+
     // -- Internal --
 
     async fn request<T: serde::de::DeserializeOwned>(
@@ -399,17 +451,11 @@ impl SandboxHandle {
 
     /// Run a command in this sandbox.
     pub async fn run(&self, command: &[&str]) -> Result<RunOutput> {
-        self.client
-            .exec_in_sandbox(&self.name, command, None)
-            .await
+        self.client.exec_in_sandbox(&self.name, command, None).await
     }
 
     /// Run a command with options (workdir, env, sudo).
-    pub async fn run_with_options(
-        &self,
-        command: &[&str],
-        opts: ExecOptions,
-    ) -> Result<RunOutput> {
+    pub async fn run_with_options(&self, command: &[&str], opts: ExecOptions) -> Result<RunOutput> {
         self.client
             .exec_in_sandbox(&self.name, command, Some(opts))
             .await

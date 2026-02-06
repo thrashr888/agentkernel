@@ -104,6 +104,9 @@ pub(crate) struct CreateRequest {
     pub source_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
+    pub volumes: Vec<String>,
 }
 
 /// Options for executing a command in a sandbox.
@@ -183,6 +186,39 @@ pub(crate) struct BatchFileWriteRequest {
 #[derive(Debug, Deserialize)]
 pub struct BatchFileWriteResponse {
     pub written: usize,
+}
+
+/// Response from extending a sandbox's TTL.
+#[derive(Debug, Deserialize)]
+pub struct ExtendTtlResponse {
+    pub expires_at: Option<String>,
+}
+
+/// Request body for extending TTL (internal).
+#[derive(Serialize)]
+pub(crate) struct ExtendTtlRequest {
+    pub by: String,
+}
+
+/// Metadata for a sandbox snapshot.
+#[derive(Debug, Deserialize)]
+pub struct SnapshotMeta {
+    pub name: String,
+    pub sandbox: String,
+    pub image_tag: String,
+    pub backend: String,
+    pub base_image: Option<String>,
+    pub vcpus: Option<u32>,
+    pub memory_mb: Option<u64>,
+    pub created_at: String,
+}
+
+/// Options for taking a snapshot.
+#[derive(Debug, Default, Serialize)]
+pub struct TakeSnapshotOptions {
+    pub sandbox: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// Status of a detached command.

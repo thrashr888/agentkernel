@@ -119,3 +119,22 @@ class DetachedLogsResponse(BaseModel):
 
     stdout: str | None = None
     stderr: str | None = None
+
+
+class ExtendTtlResponse(BaseModel):
+    """Response from extending sandbox TTL."""
+
+    expires_at: str | None = None
+
+
+class SnapshotMeta(BaseModel):
+    """Metadata for a sandbox snapshot."""
+
+    name: str
+    sandbox: str
+    image_tag: str
+    backend: str
+    base_image: str | None = None
+    vcpus: int | None = None
+    memory_mb: int | None = None
+    created_at: str

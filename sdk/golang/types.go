@@ -70,6 +70,7 @@ type createRequest struct {
 	VCPUs    int             `json:"vcpus,omitempty"`
 	MemoryMB int             `json:"memory_mb,omitempty"`
 	Profile  SecurityProfile `json:"profile,omitempty"`
+	Volumes  []string        `json:"volumes,omitempty"`
 }
 
 // execRequest is the POST /sandboxes/{name}/exec body.
@@ -109,4 +110,32 @@ type fileWriteRequest struct {
 // batchRunRequest is the POST /batch/run body.
 type batchRunRequest struct {
 	Commands []BatchCommand `json:"commands"`
+}
+
+// ExtendTtlResponse is the response from extending a sandbox's TTL.
+type ExtendTtlResponse struct {
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+// extendTtlRequest is the POST /sandboxes/{name}/extend body.
+type extendTtlRequest struct {
+	By string `json:"by"`
+}
+
+// SnapshotMeta describes a snapshot.
+type SnapshotMeta struct {
+	Name      string `json:"name"`
+	Sandbox   string `json:"sandbox"`
+	ImageTag  string `json:"image_tag"`
+	Backend   string `json:"backend"`
+	BaseImage string `json:"base_image,omitempty"`
+	VCPUs     int    `json:"vcpus,omitempty"`
+	MemoryMB  int    `json:"memory_mb,omitempty"`
+	CreatedAt string `json:"created_at"`
+}
+
+// TakeSnapshotOptions configures snapshot creation.
+type TakeSnapshotOptions struct {
+	Sandbox string `json:"sandbox"`
+	Name    string `json:"name,omitempty"`
 }
