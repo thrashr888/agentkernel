@@ -622,7 +622,7 @@ pub fn create_sandbox_with_config(
         ))),
         BackendType::Firecracker => Ok(Box::new(FirecrackerSandbox::new(name)?)),
         #[cfg(target_os = "macos")]
-        BackendType::Apple => Ok(Box::new(AppleSandbox::new(name))),
+        BackendType::Apple => Ok(Box::new(AppleSandbox::new_persistent(name))),
         #[cfg(not(target_os = "macos"))]
         BackendType::Apple => anyhow::bail!("Apple Containers only available on macOS"),
         BackendType::Hyperlight => Ok(Box::new(HyperlightSandbox::new(name))),

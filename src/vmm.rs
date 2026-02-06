@@ -242,6 +242,7 @@ impl VmManager {
         let mut podman_names: Vec<String> = Vec::new();
         let mut k8s_names: Vec<String> = Vec::new();
         let mut nomad_names: Vec<String> = Vec::new();
+        let mut apple_names: Vec<String> = Vec::new();
 
         for (name, state) in &self.sandboxes {
             match state.backend.unwrap_or(self.backend) {
@@ -249,6 +250,7 @@ impl VmManager {
                 BackendType::Podman => podman_names.push(name.clone()),
                 BackendType::Kubernetes => k8s_names.push(name.clone()),
                 BackendType::Nomad => nomad_names.push(name.clone()),
+                BackendType::Apple => apple_names.push(name.clone()),
                 _ => {}
             }
         }
@@ -307,6 +309,16 @@ impl VmManager {
                 .filter_map(|line| line.split_whitespace().next())
                 .collect();
             match_active(&nomad_names, &active, &mut running_set);
+        }
+
+        // Batch Apple: one `container ls` call for all Apple sandboxes
+        if let Ok(output) = batch_cmd(&apple_names, "container", &["ls"]) {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for name in &apple_names {
+                if stdout.contains(&format!("agentkernel-{}", name)) {
+                    running_set.insert(name.clone());
+                }
+            }
         }
 
         // Create sandbox objects for running sandboxes
