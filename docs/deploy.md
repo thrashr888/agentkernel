@@ -81,8 +81,6 @@ railway init
 railway up
 ```
 
-Or use the deploy button: [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/agentkernel)
-
 See [`examples/deploy/railway/`](../examples/deploy/railway/) for details.
 
 ## Hetzner Cloud

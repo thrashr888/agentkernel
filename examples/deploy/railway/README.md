@@ -4,11 +4,7 @@ Simple one-click deployment to Railway.
 
 ## Quick Start
 
-### Option 1: Deploy Button
-
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/agentkernel)
-
-### Option 2: CLI
+### Option 1: CLI
 
 ```bash
 # Install Railway CLI
@@ -24,7 +20,7 @@ railway init
 railway up
 ```
 
-### Option 3: GitHub Integration
+### Option 2: GitHub Integration
 
 1. Fork the agentkernel repository
 2. Connect Railway to your GitHub
