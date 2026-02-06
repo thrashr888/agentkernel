@@ -52,6 +52,10 @@ const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
     ),
     ("rust-ci", include_str!("../templates/rust-ci.toml")),
     ("secure", include_str!("../templates/secure.toml")),
+    // Dev tools
+    ("vscode", include_str!("../templates/vscode.toml")),
+    ("coder", include_str!("../templates/coder.toml")),
+    ("gitea", include_str!("../templates/gitea.toml")),
 ];
 
 /// Where a template was found
