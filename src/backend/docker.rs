@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use std::process::Command;
 
-use super::{BackendType, ExecResult, Sandbox, SandboxConfig};
+use super::{BackendType, ExecOptions, ExecResult, Sandbox, SandboxConfig};
 
 /// Container runtime to use
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,6 +255,12 @@ impl Sandbox for DockerSandbox {
             args.push(format!("{}:/home/user:ro", home.to_string_lossy()));
         }
 
+        // Mount persistent volumes
+        for volume_spec in &config.volumes {
+            args.push("-v".to_string());
+            args.push(volume_spec.clone());
+        }
+
         // Read-only root filesystem
         if config.read_only {
             args.push("--read-only".to_string());
@@ -294,17 +300,37 @@ impl Sandbox for DockerSandbox {
     }
 
     async fn exec(&mut self, cmd: &[&str]) -> Result<ExecResult> {
-        self.exec_with_env(cmd, &[]).await
+        self.exec_with_options(cmd, &ExecOptions::default()).await
     }
 
     async fn exec_with_env(&mut self, cmd: &[&str], env: &[String]) -> Result<ExecResult> {
+        self.exec_with_options(
+            cmd,
+            &ExecOptions {
+                env: env.to_vec(),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    async fn exec_with_options(&mut self, cmd: &[&str], opts: &ExecOptions) -> Result<ExecResult> {
         let runtime_cmd = self.runtime.cmd();
         let container_name = self.container_name();
 
         let mut args = vec!["exec".to_string()];
 
-        // Add environment variables
-        for e in env {
+        if let Some(ref workdir) = opts.workdir {
+            args.push("-w".to_string());
+            args.push(workdir.clone());
+        }
+
+        if let Some(ref user) = opts.user {
+            args.push("-u".to_string());
+            args.push(user.clone());
+        }
+
+        for e in &opts.env {
             args.push("-e".to_string());
             args.push(e.clone());
         }

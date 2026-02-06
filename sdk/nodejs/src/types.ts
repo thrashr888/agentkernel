@@ -34,6 +34,22 @@ export interface CreateSandboxOptions {
   vcpus?: number;
   memory_mb?: number;
   profile?: SecurityProfile;
+  /** Git repository URL to clone into the sandbox. */
+  source_url?: string;
+  /** Git ref to checkout after cloning. */
+  source_ref?: string;
+  /** Volume mounts (slug:/path or slug:/path:ro). Create volumes via CLI first. */
+  volumes?: string[];
+}
+
+/** Options for executing a command in a sandbox. */
+export interface ExecOptions {
+  /** Environment variables (KEY=VALUE). */
+  env?: string[];
+  /** Working directory inside the container. */
+  workdir?: string;
+  /** Run as root. */
+  sudo?: boolean;
 }
 
 /** Output from a command execution. */
@@ -85,6 +101,31 @@ export interface BatchResult {
 /** Response from batch execution. */
 export interface BatchRunResponse {
   results: BatchResult[];
+}
+
+/** Result of a batch file write. */
+export interface BatchFileWriteResponse {
+  written: number;
+}
+
+/** Status of a detached command. */
+export type DetachedStatus = "running" | "completed" | "failed";
+
+/** A detached (background) command running in a sandbox. */
+export interface DetachedCommand {
+  id: string;
+  sandbox: string;
+  command: string[];
+  pid: number;
+  status: DetachedStatus;
+  exit_code: number | null;
+  started_at: string;
+}
+
+/** Response from detached command logs. */
+export interface DetachedLogsResponse {
+  stdout?: string;
+  stderr?: string;
 }
 
 /** API response wrapper. */

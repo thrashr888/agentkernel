@@ -89,8 +89,10 @@ pub fn macos_version_supported() -> bool {
 /// Apple Containers sandbox
 pub struct AppleSandbox {
     name: String,
-    container_id: Option<String>,
+    /// Whether we started this container (controls Drop cleanup)
     running: bool,
+    /// Whether this sandbox should persist after Drop (like Docker)
+    persistent: bool,
 }
 
 impl AppleSandbox {
@@ -98,12 +100,21 @@ impl AppleSandbox {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            container_id: None,
             running: false,
+            persistent: false,
         }
     }
 
-    /// Get the container name
+    /// Create a new persistent Apple sandbox (won't be cleaned up on Drop)
+    pub fn new_persistent(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            running: false,
+            persistent: true,
+        }
+    }
+
+    /// Get the container name (always derived from sandbox name, like Docker)
     fn container_name(&self) -> String {
         format!("agentkernel-{}", self.name)
     }
@@ -177,7 +188,6 @@ impl Sandbox for AppleSandbox {
             bail!("Failed to start container: {}", stderr);
         }
 
-        self.container_id = Some(container_name);
         self.running = true;
         Ok(())
     }
@@ -187,10 +197,7 @@ impl Sandbox for AppleSandbox {
     }
 
     async fn exec_with_env(&mut self, cmd: &[&str], env: &[String]) -> Result<ExecResult> {
-        let container_id = self
-            .container_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Container not started"))?;
+        let container_name = self.container_name();
 
         let mut args = vec!["exec".to_string()];
 
@@ -200,7 +207,7 @@ impl Sandbox for AppleSandbox {
             args.push(e.clone());
         }
 
-        args.push(container_id.clone());
+        args.push(container_name);
         args.extend(cmd.iter().map(|s| s.to_string()));
 
         let output = Command::new("container")
@@ -220,19 +227,18 @@ impl Sandbox for AppleSandbox {
     }
 
     async fn stop(&mut self) -> Result<()> {
-        if let Some(container_id) = &self.container_id {
-            // Stop with short timeout
-            let _ = Command::new("container")
-                .args(["stop", "-t", "1", container_id])
-                .output();
+        let container_name = self.container_name();
 
-            // Force delete
-            let _ = Command::new("container")
-                .args(["delete", "-f", container_id])
-                .output();
-        }
+        // Stop with short timeout
+        let _ = Command::new("container")
+            .args(["stop", "-t", "1", &container_name])
+            .output();
 
-        self.container_id = None;
+        // Force delete
+        let _ = Command::new("container")
+            .args(["delete", "-f", &container_name])
+            .output();
+
         self.running = false;
         Ok(())
     }
@@ -246,26 +252,20 @@ impl Sandbox for AppleSandbox {
     }
 
     fn is_running(&self) -> bool {
-        if !self.running {
-            return false;
-        }
-
-        if let Some(container_id) = &self.container_id {
-            Command::new("container")
-                .args(["ls", "--filter", &format!("name={}", container_id)])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).contains(container_id))
-                .unwrap_or(false)
-        } else {
-            false
-        }
+        // Check container directly — don't rely on internal state since
+        // we might be reconnecting to an existing container.
+        // Note: Apple's `container ls` doesn't support --filter, so we
+        // list all containers and check if ours is present.
+        let container_name = self.container_name();
+        Command::new("container")
+            .args(["ls"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&container_name))
+            .unwrap_or(false)
     }
 
     async fn write_file_unchecked(&mut self, path: &str, content: &[u8]) -> Result<()> {
-        let container_id = self
-            .container_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Container not started"))?;
+        let container_name = self.container_name();
 
         // Create a temporary file to copy
         let temp_dir = std::env::temp_dir();
@@ -279,11 +279,11 @@ impl Sandbox for AppleSandbox {
             .unwrap_or_else(|| "/".to_string());
 
         let _ = Command::new("container")
-            .args(["exec", container_id, "mkdir", "-p", &parent])
+            .args(["exec", &container_name, "mkdir", "-p", &parent])
             .output();
 
         // Copy file into container
-        let dest = format!("{}:{}", container_id, path);
+        let dest = format!("{}:{}", container_name, path);
         let output = Command::new("container")
             .args(["cp", temp_file.to_str().unwrap(), &dest])
             .output()
@@ -300,15 +300,12 @@ impl Sandbox for AppleSandbox {
     }
 
     async fn read_file_unchecked(&mut self, path: &str) -> Result<Vec<u8>> {
-        let container_id = self
-            .container_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Container not started"))?;
+        let container_name = self.container_name();
 
         let temp_dir = std::env::temp_dir();
         let temp_file = temp_dir.join(format!("agentkernel-download-{}", uuid::Uuid::new_v4()));
 
-        let src = format!("{}:{}", container_id, path);
+        let src = format!("{}:{}", container_name, path);
         let output = Command::new("container")
             .args(["cp", &src, temp_file.to_str().unwrap()])
             .output()
@@ -326,13 +323,10 @@ impl Sandbox for AppleSandbox {
     }
 
     async fn remove_file_unchecked(&mut self, path: &str) -> Result<()> {
-        let container_id = self
-            .container_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Container not started"))?;
+        let container_name = self.container_name();
 
         let output = Command::new("container")
-            .args(["exec", container_id, "rm", "-f", path])
+            .args(["exec", &container_name, "rm", "-f", path])
             .output()
             .context("Failed to remove file in container")?;
 
@@ -345,12 +339,9 @@ impl Sandbox for AppleSandbox {
     }
 
     async fn mkdir_unchecked(&mut self, path: &str, recursive: bool) -> Result<()> {
-        let container_id = self
-            .container_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Container not started"))?;
+        let container_name = self.container_name();
 
-        let mut args = vec!["exec", container_id, "mkdir"];
+        let mut args = vec!["exec", &container_name, "mkdir"];
         if recursive {
             args.push("-p");
         }
@@ -372,9 +363,11 @@ impl Sandbox for AppleSandbox {
 
 impl Drop for AppleSandbox {
     fn drop(&mut self) {
-        if let Some(container_id) = &self.container_id {
+        // Only clean up if running and not marked as persistent
+        if self.running && !self.persistent {
+            let container_name = self.container_name();
             let _ = Command::new("container")
-                .args(["delete", "-f", container_id])
+                .args(["delete", "-f", &container_name])
                 .output();
         }
     }

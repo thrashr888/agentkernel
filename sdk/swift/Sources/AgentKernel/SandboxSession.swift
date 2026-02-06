@@ -16,8 +16,8 @@ public struct SandboxSession: Sendable {
     }
 
     /// Run a command in this sandbox.
-    public func run(_ command: [String]) async throws -> RunOutput {
-        try await client.execInSandbox(name, command: command)
+    public func run(_ command: [String], options: ExecOptions? = nil) async throws -> RunOutput {
+        try await client.execInSandbox(name, command: command, options: options)
     }
 
     /// Get info about this sandbox.
@@ -33,6 +33,11 @@ public struct SandboxSession: Sendable {
     /// Write a file to this sandbox.
     public func writeFile(path: String, content: String, encoding: String = "utf8") async throws -> String {
         try await client.writeFile(name, path: path, content: content, encoding: encoding)
+    }
+
+    /// Write multiple files to this sandbox.
+    public func writeFiles(_ files: [String: String]) async throws -> BatchFileWriteResponse {
+        try await client.writeFiles(name, files: files)
     }
 
     /// Delete a file from this sandbox.

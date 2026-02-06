@@ -39,6 +39,8 @@ tags:
     description: File operations inside sandboxes
   - name: Batch
     description: Parallel batch execution
+  - name: Snapshots
+    description: Snapshot and restore operations
 
 paths:
   /health:
@@ -327,6 +329,175 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /sandboxes/{name}/extend:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+
+    post:
+      tags: [Sandboxes]
+      summary: Extend sandbox TTL
+      description: |
+        Extends the sandbox's time-to-live by the specified duration.
+        If the sandbox has no current TTL, sets expiry from now.
+      operationId: extendSandboxTtl
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtendTtlRequest'
+            examples:
+              default:
+                summary: Extend by 1 hour (default)
+                value: {}
+              custom:
+                summary: Extend by 30 minutes
+                value:
+                  by: "30m"
+      responses:
+        '200':
+          description: TTL extended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtendTtlResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /snapshots:
+    get:
+      tags: [Snapshots]
+      summary: List all snapshots
+      description: Returns a list of all saved snapshots.
+      operationId: listSnapshots
+      responses:
+        '200':
+          description: List of snapshots
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotListResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [Snapshots]
+      summary: Take a snapshot
+      description: |
+        Creates a snapshot of a sandbox's current state.
+        Uses Docker commit internally.
+      operationId: takeSnapshot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TakeSnapshotRequest'
+            examples:
+              simple:
+                summary: Snapshot a sandbox
+                value:
+                  sandbox: "my-sandbox"
+                  name: "checkpoint-1"
+      responses:
+        '200':
+          description: Snapshot created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /snapshots/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: Name of the snapshot
+        schema:
+          type: string
+
+    get:
+      tags: [Snapshots]
+      summary: Get snapshot info
+      description: Returns information about a specific snapshot.
+      operationId: getSnapshot
+      responses:
+        '200':
+          description: Snapshot details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [Snapshots]
+      summary: Delete a snapshot
+      description: Removes the snapshot and its Docker image.
+      operationId: deleteSnapshot
+      responses:
+        '200':
+          description: Snapshot deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /snapshots/{name}/restore:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: Name of the snapshot to restore
+        schema:
+          type: string
+
+    post:
+      tags: [Snapshots]
+      summary: Restore from snapshot
+      description: |
+        Creates a new sandbox from a snapshot.
+        Defaults to naming the restored sandbox "{original}-restored".
+      operationId: restoreSnapshot
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RestoreSnapshotRequest'
+            examples:
+              default:
+                summary: Restore with default name
+                value: {}
+              custom:
+                summary: Restore with custom name
+                value:
+                  as_name: "my-restored-sandbox"
+      responses:
+        '200':
+          description: Sandbox restored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestoreSnapshotResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /batch/run:
     post:
       tags: [Batch]
@@ -603,6 +774,119 @@ components:
           items:
             type: object
             description: Audit log entry
+
+    ExtendTtlRequest:
+      type: object
+      properties:
+        by:
+          type: string
+          default: "1h"
+          description: Duration to extend by (e.g., "1h", "30m", "2d")
+          example: "1h"
+
+    ExtendTtlResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            expires_at:
+              type: string
+              nullable: true
+              description: New expiry time in RFC3339 format
+              example: "2026-02-05T15:00:00Z"
+
+    SnapshotInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "checkpoint-1"
+        sandbox:
+          type: string
+          description: Original sandbox name
+          example: "my-sandbox"
+        image_tag:
+          type: string
+          description: Docker image tag for the snapshot
+          example: "agentkernel-snap:checkpoint-1"
+        backend:
+          type: string
+          example: "docker"
+        base_image:
+          type: string
+          example: "python:3.12-alpine"
+        vcpus:
+          type: integer
+          example: 2
+        memory_mb:
+          type: integer
+          example: 512
+        created_at:
+          type: string
+          example: "2026-02-05T12:00:00Z"
+
+    SnapshotResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/SnapshotInfo'
+
+    SnapshotListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SnapshotInfo'
+
+    TakeSnapshotRequest:
+      type: object
+      required: [sandbox, name]
+      properties:
+        sandbox:
+          type: string
+          description: Name of the sandbox to snapshot
+          example: "my-sandbox"
+        name:
+          type: string
+          description: Name for the snapshot
+          example: "checkpoint-1"
+
+    RestoreSnapshotRequest:
+      type: object
+      properties:
+        as_name:
+          type: string
+          description: Name for the restored sandbox (defaults to original + "-restored")
+          example: "my-restored-sandbox"
+
+    RestoreSnapshotResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            sandbox:
+              type: string
+              description: Name of the restored sandbox
+              example: "my-sandbox-restored"
+            from_snapshot:
+              type: string
+              description: Snapshot that was restored
+              example: "checkpoint-1"
 
   parameters:
     SandboxName:

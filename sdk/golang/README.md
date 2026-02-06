@@ -48,6 +48,23 @@ err := client.WithSandbox(ctx, "test", &agentkernel.CreateSandboxOptions{
 // sandbox auto-removed
 ```
 
+## Persistent Volumes
+
+Mount volumes that persist across sandbox restarts:
+
+```go
+// First create volumes via CLI: agentkernel volume create mydata
+
+err := client.WithSandbox(ctx, "my-project", &agentkernel.CreateSandboxOptions{
+	Image:   "python:3.12-alpine",
+	Volumes: []string{"mydata:/data", "cache:/tmp/cache:ro"},
+}, func(session *agentkernel.SandboxSession) error {
+	// Data in /data persists across sandbox restarts
+	session.Run(ctx, []string{"sh", "-c", "echo hello > /data/test.txt"})
+	return nil
+})
+```
+
 ## Streaming
 
 ```go

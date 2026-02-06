@@ -211,6 +211,8 @@ pub struct SandboxConfig {
     pub ports: Vec<PortMapping>,
     /// SSH configuration (None = SSH disabled)
     pub ssh: Option<SshConfig>,
+    /// Volume mounts (slug:/path or slug:/path:ro)
+    pub volumes: Vec<String>,
 }
 
 impl Default for SandboxConfig {
@@ -228,6 +230,7 @@ impl Default for SandboxConfig {
             files: Vec::new(),
             ports: Vec::new(),
             ssh: None,
+            volumes: Vec::new(),
         }
     }
 }
@@ -333,6 +336,17 @@ impl ExecResult {
     }
 }
 
+/// Options for executing a command in a sandbox
+#[derive(Debug, Default, Clone)]
+pub struct ExecOptions {
+    /// Environment variables as KEY=VALUE pairs
+    pub env: Vec<String>,
+    /// Working directory inside the sandbox
+    pub workdir: Option<String>,
+    /// User to run the command as (e.g., "root")
+    pub user: Option<String>,
+}
+
 /// Unified sandbox interface for all backends
 ///
 /// Each backend implements this trait to provide a consistent API for:
@@ -348,13 +362,8 @@ pub trait Sandbox: Send + Sync {
     /// Execute a command in the sandbox
     async fn exec(&mut self, cmd: &[&str]) -> Result<ExecResult>;
 
-    /// Execute a command in the sandbox with environment variables
-    ///
-    /// # Arguments
-    /// * `cmd` - Command and arguments to execute
-    /// * `env` - Environment variables as KEY=VALUE pairs
+    /// Execute a command with environment variables
     async fn exec_with_env(&mut self, cmd: &[&str], env: &[String]) -> Result<ExecResult> {
-        // Default implementation ignores env vars (for backends that don't support it)
         if !env.is_empty() {
             eprintln!(
                 "Warning: This backend doesn't support environment variables, ignoring {} var(s)",
@@ -362,6 +371,14 @@ pub trait Sandbox: Send + Sync {
             );
         }
         self.exec(cmd).await
+    }
+
+    /// Execute a command with full options (env, workdir, user)
+    async fn exec_with_options(&mut self, cmd: &[&str], opts: &ExecOptions) -> Result<ExecResult> {
+        if opts.workdir.is_some() || opts.user.is_some() {
+            eprintln!("Warning: This backend doesn't support workdir/user options, ignoring");
+        }
+        self.exec_with_env(cmd, &opts.env).await
     }
 
     /// Stop the sandbox and clean up resources
@@ -608,7 +625,7 @@ pub fn create_sandbox_with_config(
         ))),
         BackendType::Firecracker => Ok(Box::new(FirecrackerSandbox::new(name)?)),
         #[cfg(target_os = "macos")]
-        BackendType::Apple => Ok(Box::new(AppleSandbox::new(name))),
+        BackendType::Apple => Ok(Box::new(AppleSandbox::new_persistent(name))),
         #[cfg(not(target_os = "macos"))]
         BackendType::Apple => anyhow::bail!("Apple Containers only available on macOS"),
         BackendType::Hyperlight => Ok(Box::new(HyperlightSandbox::new(name))),

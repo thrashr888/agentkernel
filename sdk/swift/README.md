@@ -95,10 +95,112 @@ try await client.removeSandbox("my-sandbox")
 `withSandbox` guarantees cleanup even if the closure throws:
 
 ```swift
-let result = try await client.withSandbox("temp", image: "node:20-alpine") { session in
+let result = try await client.withSandbox("temp", options: CreateSandboxOptions(
+    image: "node:20-alpine"
+)) { session in
     let output = try await session.run(["node", "-e", "console.log('hi')"])
     return output.output
 }
+```
+
+### Exec Options
+
+Run commands with a working directory, environment variables, or as root:
+
+```swift
+let output = try await client.execInSandbox("my-sandbox", command: ["npm", "start"], options: ExecOptions(
+    env: ["NODE_ENV=production"],
+    workdir: "/app",
+    sudo: true
+))
+```
+
+Works on sandbox sessions too:
+
+```swift
+try await client.withSandbox("dev") { session in
+    try await session.run(["pip", "install", "-r", "requirements.txt"], options: ExecOptions(
+        workdir: "/app",
+        sudo: true
+    ))
+}
+```
+
+### Git Source Cloning
+
+Clone a git repo into the sandbox at creation time:
+
+```swift
+let sb = try await client.createSandbox("my-project", options: CreateSandboxOptions(
+    image: "node:20-alpine",
+    sourceURL: "https://github.com/user/repo.git",
+    sourceRef: "main"
+))
+```
+
+### Persistent Volumes
+
+Mount volumes that persist across sandbox restarts:
+
+```swift
+// First create volumes via CLI: agentkernel volume create mydata
+
+let sb = try await client.createSandbox("my-project", options: CreateSandboxOptions(
+    image: "python:3.12-alpine",
+    volumes: ["mydata:/data", "cache:/tmp/cache:ro"]
+))
+
+// Data in /data persists across sandbox restarts
+try await client.execInSandbox("my-project", command: ["sh", "-c", "echo hello > /data/test.txt"])
+```
+
+### File Operations
+
+Read, write, and delete files in a sandbox:
+
+```swift
+// Write a file
+try await client.writeFile("my-sandbox", path: "app/main.py", content: "print('hello')")
+
+// Read a file
+let file = try await client.readFile("my-sandbox", path: "app/main.py")
+print(file.content)
+
+// Delete a file
+try await client.deleteFile("my-sandbox", path: "app/main.py")
+
+// Batch write multiple files at once
+try await client.writeFiles("my-sandbox", files: [
+    "/app/index.js": "console.log('hi')",
+    "/app/package.json": "{\"name\":\"app\"}"
+])
+```
+
+### Detached Commands
+
+Run long-lived processes in the background and retrieve their output later:
+
+```swift
+// Start a background process
+let cmd = try await client.execDetached("my-sandbox", command: ["python3", "train.py"])
+print("Started: \(cmd.id) (pid \(cmd.pid))")
+
+// Check status
+let status = try await client.detachedStatus("my-sandbox", cmdId: cmd.id)
+print(status.status) // .running, .completed, .failed
+
+// Get logs
+let logs = try await client.detachedLogs("my-sandbox", cmdId: cmd.id)
+if let stdout = logs.stdout { print(stdout) }
+
+// Get stderr only
+let stderr = try await client.detachedLogs("my-sandbox", cmdId: cmd.id, stream: "stderr")
+
+// List all detached commands
+let all = try await client.detachedList("my-sandbox")
+
+// Kill a running command
+try await client.detachedKill("my-sandbox", cmdId: cmd.id)
 ```
 
 ## Error Handling

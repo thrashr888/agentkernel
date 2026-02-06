@@ -1,0 +1,24 @@
+# Coder code-server sandbox template
+# Browser-based VS Code IDE using code-server
+# Access at http://localhost:8080 after starting
+
+[sandbox]
+name = "coder"
+base_image = "codercom/code-server:latest"
+
+[resources]
+vcpus = 2
+memory_mb = 2048
+
+[security]
+profile = "moderate"
+network = true
+mount_cwd = true
+
+[ports]
+# code-server web interface
+8080 = 8080
+
+[environment]
+# Disable password auth for local dev (set PASSWORD env var in production)
+PASSWORD = ""

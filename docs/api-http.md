@@ -255,6 +255,33 @@ DELETE /sandboxes/{name}
 curl -X DELETE http://localhost:18888/sandboxes/my-sandbox
 ```
 
+### Extend TTL
+
+Extend a sandbox's time-to-live.
+
+```
+POST /sandboxes/{name}/extend
+```
+
+```bash
+curl -X POST http://localhost:18888/sandboxes/my-sandbox/extend \
+  -H "Content-Type: application/json" \
+  -d '{"by": "1h"}'
+```
+
+```json
+{
+  "success": true,
+  "data": {"expires_at": "2026-02-05T15:00:00Z"}
+}
+```
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `by` | string | No | Duration to extend (default: "1h"). Examples: "30m", "2h", "1d" |
+
 ### File Operations
 
 Read, write, and delete files inside a running sandbox.
@@ -399,6 +426,128 @@ curl -X POST http://localhost:18888/batch/run \
 | `commands[].command` | array | Yes | Command and arguments |
 
 Each command runs in an isolated container from the pool. Results are returned in the same order as the input commands.
+
+### Snapshots
+
+#### List Snapshots
+
+```
+GET /snapshots
+```
+
+```bash
+curl http://localhost:18888/snapshots
+```
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "name": "checkpoint-1",
+      "sandbox": "my-sandbox",
+      "image_tag": "agentkernel-snap:checkpoint-1",
+      "backend": "docker",
+      "base_image": "python:3.12-alpine",
+      "vcpus": 2,
+      "memory_mb": 512,
+      "created_at": "2026-02-05T12:00:00Z"
+    }
+  ]
+}
+```
+
+#### Take Snapshot
+
+```
+POST /snapshots
+```
+
+```bash
+curl -X POST http://localhost:18888/snapshots \
+  -H "Content-Type: application/json" \
+  -d '{"sandbox": "my-sandbox", "name": "checkpoint-1"}'
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "name": "checkpoint-1",
+    "sandbox": "my-sandbox",
+    "image_tag": "agentkernel-snap:checkpoint-1",
+    "backend": "docker",
+    "base_image": "python:3.12-alpine",
+    "vcpus": 2,
+    "memory_mb": 512,
+    "created_at": "2026-02-05T12:00:00Z"
+  }
+}
+```
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sandbox` | string | Yes | Name of the sandbox to snapshot |
+| `name` | string | Yes | Name for the snapshot |
+
+#### Get Snapshot
+
+```
+GET /snapshots/{name}
+```
+
+```bash
+curl http://localhost:18888/snapshots/checkpoint-1
+```
+
+Returns snapshot details (same format as list).
+
+#### Delete Snapshot
+
+```
+DELETE /snapshots/{name}
+```
+
+```bash
+curl -X DELETE http://localhost:18888/snapshots/checkpoint-1
+```
+
+```json
+{
+  "success": true,
+  "data": "Snapshot deleted"
+}
+```
+
+#### Restore Snapshot
+
+```
+POST /snapshots/{name}/restore
+```
+
+```bash
+curl -X POST http://localhost:18888/snapshots/checkpoint-1/restore \
+  -H "Content-Type: application/json" \
+  -d '{"as_name": "restored-sandbox"}'
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "sandbox": "restored-sandbox",
+    "from_snapshot": "checkpoint-1"
+  }
+}
+```
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `as_name` | string | No | Name for the restored sandbox (defaults to `{original}-restored`) |
 
 ## Error Responses
 

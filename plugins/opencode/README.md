@@ -2,9 +2,42 @@
 
 Run OpenCode commands in hardware-isolated microVM sandboxes via agentkernel.
 
+## Quick Start
+
+**Option 1: Native API (recommended)**
+
+agentkernel implements OpenCode's native HTTP API — no plugin needed:
+
+```bash
+# Start agentkernel
+agentkernel serve
+
+# Connect OpenCode directly
+opencode --api-url http://localhost:18888/opencode
+```
+
+**Option 2: Plugin-based**
+
+```bash
+# Install the plugin into your project
+agentkernel plugin install opencode
+
+# Launch OpenCode — the plugin loads automatically
+opencode
+```
+
+## Native API vs Plugin
+
+| Feature | Native API | Plugin |
+|---------|-----------|--------|
+| Setup | Just `--api-url` flag | Install plugin files |
+| Session management | Automatic | Automatic |
+| Tool discovery | OpenCode's built-in tools | Adds custom tools |
+| Portability | Works anywhere | Per-project |
+
 ## Setup
 
-1. Install agentkernel:
+### 1. Install agentkernel
 
 ```bash
 brew tap thrashr888/agentkernel && brew install agentkernel
@@ -12,13 +45,7 @@ brew tap thrashr888/agentkernel && brew install agentkernel
 cargo install --git https://github.com/thrashr888/agentkernel
 ```
 
-2. Install the plugin into your project:
-
-```bash
-agentkernel plugin install opencode
-```
-
-3. Start agentkernel:
+### 2. Start agentkernel
 
 ```bash
 # As a background service (recommended)
@@ -28,11 +55,20 @@ brew services start thrashr888/agentkernel/agentkernel
 agentkernel serve
 ```
 
-4. Launch OpenCode — the plugin loads automatically.
+### 3. Launch OpenCode
 
-## Tools
+```bash
+# Native API (recommended)
+opencode --api-url http://localhost:18888/opencode
 
-The plugin adds three tools to OpenCode:
+# Or with plugin
+agentkernel plugin install opencode
+opencode
+```
+
+## Plugin Tools
+
+When using the plugin, it adds three tools to OpenCode:
 
 | Tool | Description |
 |------|-------------|
@@ -49,10 +85,8 @@ The plugin adds three tools to OpenCode:
 
 ## How It Works
 
-- On `session.created`: a persistent sandbox is created for the session
-- `sandbox_exec`: runs commands in the session sandbox (packages/files persist)
-- `sandbox_run`: runs one-shot commands in fresh sandboxes
-- On `session.deleted`: the session sandbox is automatically removed
+- **Native API**: Sessions map directly to agentkernel sandboxes. Messages are executed as shell commands.
+- **Plugin**: On `session.created`, a persistent sandbox is created. `sandbox_exec` runs commands in it.
 
 Each sandbox runs in its own microVM with a dedicated Linux kernel — not a shared kernel like containers.
 

@@ -1,8 +1,21 @@
-import type { RunOutput, SandboxInfo } from "./types.js";
+import type {
+  BatchFileWriteResponse,
+  ExecOptions,
+  RunOutput,
+  SandboxInfo,
+} from "./types.js";
 
-type ExecFn = (name: string, command: string[]) => Promise<RunOutput>;
+type ExecFn = (
+  name: string,
+  command: string[],
+  opts?: ExecOptions,
+) => Promise<RunOutput>;
 type RemoveFn = (name: string) => Promise<void>;
 type GetFn = (name: string) => Promise<SandboxInfo>;
+type WriteFilesFn = (
+  name: string,
+  files: Record<string, string>,
+) => Promise<BatchFileWriteResponse>;
 
 /**
  * A sandbox session that auto-removes the sandbox on dispose.
@@ -23,6 +36,7 @@ export class SandboxSession implements AsyncDisposable {
   private readonly _execInSandbox: ExecFn;
   private readonly _removeSandbox: RemoveFn;
   private readonly _getSandbox: GetFn;
+  private readonly _writeFiles: WriteFilesFn;
 
   /** @internal */
   constructor(
@@ -30,21 +44,30 @@ export class SandboxSession implements AsyncDisposable {
     execInSandbox: ExecFn,
     removeSandbox: RemoveFn,
     getSandbox: GetFn,
+    writeFiles: WriteFilesFn,
   ) {
     this.name = name;
     this._execInSandbox = execInSandbox;
     this._removeSandbox = removeSandbox;
     this._getSandbox = getSandbox;
+    this._writeFiles = writeFiles;
   }
 
   /** Run a command in this sandbox. */
-  async run(command: string[]): Promise<RunOutput> {
-    return this._execInSandbox(this.name, command);
+  async run(command: string[], opts?: ExecOptions): Promise<RunOutput> {
+    return this._execInSandbox(this.name, command, opts);
   }
 
   /** Get sandbox info. */
   async info(): Promise<SandboxInfo> {
     return this._getSandbox(this.name);
+  }
+
+  /** Write multiple files in one request. */
+  async writeFiles(
+    files: Record<string, string>,
+  ): Promise<BatchFileWriteResponse> {
+    return this._writeFiles(this.name, files);
   }
 
   /** Remove the sandbox. Idempotent. */

@@ -33,6 +33,8 @@ const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
         "opencode-sandbox",
         include_str!("../templates/opencode-sandbox.toml"),
     ),
+    ("amp-sandbox", include_str!("../templates/amp-sandbox.toml")),
+    ("pi-sandbox", include_str!("../templates/pi-sandbox.toml")),
     // Language runtimes
     ("bash", include_str!("../templates/bash.toml")),
     ("c", include_str!("../templates/c.toml")),
@@ -52,6 +54,10 @@ const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
     ),
     ("rust-ci", include_str!("../templates/rust-ci.toml")),
     ("secure", include_str!("../templates/secure.toml")),
+    // Dev tools
+    ("vscode", include_str!("../templates/vscode.toml")),
+    ("coder", include_str!("../templates/coder.toml")),
+    ("gitea", include_str!("../templates/gitea.toml")),
 ];
 
 /// Where a template was found
@@ -370,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_builtin_template_count() {
-        assert_eq!(BUILTIN_TEMPLATES.len(), 18);
+        assert_eq!(BUILTIN_TEMPLATES.len(), 23);
     }
 
     #[test]

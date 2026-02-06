@@ -255,6 +255,8 @@ impl FirecrackerPool {
                 CompatibilityMode::ClaudeCode => "claude",
                 CompatibilityMode::Codex => "codex",
                 CompatibilityMode::Gemini => "gemini",
+                CompatibilityMode::Amp => "amp",
+                CompatibilityMode::Pi => "pi",
             };
             *stats.entry(mode_str.to_string()).or_insert(0) += 1;
         }
@@ -391,6 +393,8 @@ impl FirecrackerPool {
             CompatibilityMode::ClaudeCode => "claude",
             CompatibilityMode::Codex => "codex",
             CompatibilityMode::Gemini => "gemini",
+            CompatibilityMode::Amp => "amp",
+            CompatibilityMode::Pi => "pi",
         };
         let id = format!("pool-{}-{}-{}", mode_str, runtime, cid);
 
@@ -587,6 +591,8 @@ impl FirecrackerPool {
                 CompatibilityMode::ClaudeCode => "claude",
                 CompatibilityMode::Codex => "codex",
                 CompatibilityMode::Gemini => "gemini",
+                CompatibilityMode::Amp => "amp",
+                CompatibilityMode::Pi => "pi",
             };
 
             // Count current VMs for this mode
@@ -631,6 +637,8 @@ impl FirecrackerPool {
             CompatibilityMode::ClaudeCode => "claude",
             CompatibilityMode::Codex => "codex",
             CompatibilityMode::Gemini => "gemini",
+            CompatibilityMode::Amp => "amp",
+            CompatibilityMode::Pi => "pi",
         };
 
         // Count current VMs for this mode

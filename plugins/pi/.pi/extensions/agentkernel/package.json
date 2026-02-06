@@ -1,0 +1,6 @@
+{
+  "name": "agentkernel-pi-extension",
+  "version": "0.8.0",
+  "description": "Route Pi coding agent commands through agentkernel microVM sandboxes",
+  "private": true
+}

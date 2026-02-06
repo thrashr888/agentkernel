@@ -1,0 +1,38 @@
+{
+  "name": "pi-agentkernel",
+  "version": "0.8.1",
+  "description": "Route Pi coding agent commands through agentkernel microVM sandboxes",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "agentkernel",
+    "sandbox",
+    "microvm",
+    "extension"
+  ],
+  "author": "Paul Thrasher <thrashr888@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thrashr888/agentkernel.git",
+    "directory": "packages/pi-agentkernel"
+  },
+  "homepage": "https://github.com/thrashr888/agentkernel/blob/main/docs/agent-pi.md",
+  "bugs": "https://github.com/thrashr888/agentkernel/issues",
+  "main": "index.ts",
+  "types": "index.ts",
+  "files": [
+    "index.ts",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": ">=0.49.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

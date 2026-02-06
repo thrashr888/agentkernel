@@ -11,8 +11,12 @@ import httpx
 from ._config import resolve_config
 from .errors import AgentKernelError, NetworkError, error_from_status
 from .types import (
+    BatchFileWriteResponse,
     BatchRunResponse,
     CreateSandboxOptions,
+    DetachedCommand,
+    DetachedLogsResponse,
+    ExecOptions,
     FileReadResponse,
     RunOptions,
     RunOutput,
@@ -32,13 +36,26 @@ class AsyncSandboxSession:
         self._client = client
         self._removed = False
 
-    async def run(self, command: list[str]) -> RunOutput:
+    async def run(
+        self,
+        command: list[str],
+        *,
+        env: list[str] | None = None,
+        workdir: str | None = None,
+        sudo: bool | None = None,
+    ) -> RunOutput:
         """Run a command in this sandbox."""
-        return await self._client.exec_in_sandbox(self.name, command)
+        return await self._client.exec_in_sandbox(
+            self.name, command, env=env, workdir=workdir, sudo=sudo,
+        )
 
     async def info(self) -> SandboxInfo:
         """Get sandbox info."""
         return await self._client.get_sandbox(self.name)
+
+    async def write_files(self, files: dict[str, str]) -> BatchFileWriteResponse:
+        """Write multiple files in one request."""
+        return await self._client.write_files(self.name, files)
 
     async def remove(self) -> None:
         """Remove the sandbox. Idempotent."""
@@ -159,12 +176,18 @@ class AsyncAgentKernel:
         vcpus: int | None = None,
         memory_mb: int | None = None,
         profile: SecurityProfile | None = None,
+        source_url: str | None = None,
+        source_ref: str | None = None,
     ) -> SandboxInfo:
         """Create a new sandbox."""
         data = await self._request(
             "POST",
             "/sandboxes",
-            json={"name": name, "image": image, "vcpus": vcpus, "memory_mb": memory_mb, "profile": profile},
+            json={
+                "name": name, "image": image, "vcpus": vcpus,
+                "memory_mb": memory_mb, "profile": profile,
+                "source_url": source_url, "source_ref": source_ref,
+            },
         )
         return SandboxInfo(**data)
 
@@ -177,9 +200,24 @@ class AsyncAgentKernel:
         """Remove a sandbox."""
         await self._request("DELETE", f"/sandboxes/{name}")
 
-    async def exec_in_sandbox(self, name: str, command: list[str]) -> RunOutput:
+    async def exec_in_sandbox(
+        self,
+        name: str,
+        command: list[str],
+        *,
+        env: list[str] | None = None,
+        workdir: str | None = None,
+        sudo: bool | None = None,
+    ) -> RunOutput:
         """Run a command in an existing sandbox."""
-        data = await self._request("POST", f"/sandboxes/{name}/exec", json={"command": command})
+        body: dict[str, Any] = {"command": command}
+        if env:
+            body["env"] = env
+        if workdir is not None:
+            body["workdir"] = workdir
+        if sudo is not None:
+            body["sudo"] = sudo
+        data = await self._request("POST", f"/sandboxes/{name}/exec", json=body)
         return RunOutput(**data)
 
     async def read_file(self, name: str, path: str) -> FileReadResponse:
@@ -206,6 +244,11 @@ class AsyncAgentKernel:
         """Delete a file from a sandbox."""
         return await self._request("DELETE", f"/sandboxes/{name}/files/{path}")
 
+    async def write_files(self, name: str, files: dict[str, str]) -> BatchFileWriteResponse:
+        """Write multiple files to a sandbox in one request."""
+        data = await self._request("POST", f"/sandboxes/{name}/files", json={"files": files})
+        return BatchFileWriteResponse(**data)
+
     async def get_sandbox_logs(self, name: str) -> list[dict]:
         """Get audit log entries for a sandbox."""
         return await self._request("GET", f"/sandboxes/{name}/logs")
@@ -215,6 +258,50 @@ class AsyncAgentKernel:
         batch_commands = [{"command": cmd} for cmd in commands]
         data = await self._request("POST", "/batch/run", json={"commands": batch_commands})
         return BatchRunResponse(**data)
+
+    async def exec_detached(
+        self,
+        name: str,
+        command: list[str],
+        *,
+        env: list[str] | None = None,
+        workdir: str | None = None,
+        sudo: bool | None = None,
+    ) -> DetachedCommand:
+        """Start a detached (background) command in a sandbox."""
+        body: dict[str, Any] = {"command": command}
+        if env:
+            body["env"] = env
+        if workdir is not None:
+            body["workdir"] = workdir
+        if sudo is not None:
+            body["sudo"] = sudo
+        data = await self._request("POST", f"/sandboxes/{name}/exec/detach", json=body)
+        return DetachedCommand(**data)
+
+    async def detached_status(self, name: str, cmd_id: str) -> DetachedCommand:
+        """Get the status of a detached command."""
+        data = await self._request("GET", f"/sandboxes/{name}/exec/detached/{cmd_id}")
+        return DetachedCommand(**data)
+
+    async def detached_logs(
+        self, name: str, cmd_id: str, *, stream: str | None = None
+    ) -> DetachedLogsResponse:
+        """Get logs from a detached command."""
+        query = f"?stream={stream}" if stream == "stderr" else ""
+        data = await self._request(
+            "GET", f"/sandboxes/{name}/exec/detached/{cmd_id}/logs{query}"
+        )
+        return DetachedLogsResponse(**data)
+
+    async def detached_kill(self, name: str, cmd_id: str) -> str:
+        """Kill a detached command."""
+        return await self._request("DELETE", f"/sandboxes/{name}/exec/detached/{cmd_id}")
+
+    async def detached_list(self, name: str) -> list[DetachedCommand]:
+        """List detached commands in a sandbox."""
+        data = await self._request("GET", f"/sandboxes/{name}/exec/detached")
+        return [DetachedCommand(**d) for d in data]
 
     async def sandbox(
         self,

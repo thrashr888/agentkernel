@@ -1,0 +1,27 @@
+# Gitea sandbox template
+# Self-hosted Git service with web UI
+# Access at http://localhost:3000 after starting
+
+[sandbox]
+name = "gitea"
+base_image = "gitea/gitea:latest"
+
+[resources]
+vcpus = 1
+memory_mb = 512
+
+[security]
+profile = "moderate"
+network = true
+
+[ports]
+# Gitea web interface
+3000 = 3000
+# SSH for git operations
+2222 = 22
+
+[environment]
+# Skip initial setup wizard
+GITEA__security__INSTALL_LOCK = "true"
+# Use SQLite for simplicity
+GITEA__database__DB_TYPE = "sqlite3"

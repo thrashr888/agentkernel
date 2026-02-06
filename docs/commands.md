@@ -20,6 +20,7 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 | `ssh-config` | Generate SSH config entry for IDE integration |
 | `ssh-proxy` | ProxyCommand helper for SSH |
 | [`list`](cmd-list) | List all sandboxes (with IP addresses) |
+| `extend-ttl` | Extend a sandbox's time-to-live |
 | `cp` | Copy files to/from a sandbox |
 | `info` | Show detailed information about a sandbox (with IP) |
 
@@ -56,11 +57,24 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 | [`pipeline`](cmd-pipelines) | Run a multi-step pipeline (TOML-defined) |
 | [`parallel`](cmd-parallel) | Run multiple jobs concurrently |
 
+### Volumes
+
+| Command | Description |
+|---------|-------------|
+| [`volume create`](cmd-volumes) | Create a persistent volume |
+| [`volume list`](cmd-volumes) | List all volumes |
+| [`volume info`](cmd-volumes) | Show volume details |
+| [`volume delete`](cmd-volumes) | Delete a volume |
+
 ### Image & Disk Management
 
 | Command | Description |
 |---------|-------------|
+| [`build`](cmd-images) | Build a custom image from Dockerfile |
 | [`images list`](cmd-images) | List Docker images (with sandbox usage) |
+| [`images local-list`](cmd-images) | List locally built images |
+| [`images local-delete`](cmd-images) | Delete a locally built image |
+| [`images local-sync`](cmd-images) | Sync metadata with Docker |
 | [`images prune`](cmd-images) | Remove unused images |
 | [`images pull`](cmd-images) | Pull a Docker image |
 | [`export`](cmd-export-import) | Export sandbox filesystem as tar |
@@ -127,6 +141,19 @@ agentkernel exec my-sandbox -- npm test
 agentkernel stop my-sandbox
 ```
 
+### Sandbox with TTL
+```bash
+# Create a sandbox with 2-hour TTL
+agentkernel create my-sandbox --ttl 2h
+agentkernel start my-sandbox
+
+# Extend the TTL by 1 hour (default)
+agentkernel extend-ttl my-sandbox
+
+# Extend by specific duration
+agentkernel extend-ttl my-sandbox --by 30m
+```
+
 ### Snapshot and restore
 ```bash
 agentkernel snapshot take my-sandbox --name my-checkpoint
@@ -154,6 +181,31 @@ agentkernel parallel \
 agentkernel create dev --config agentkernel.toml
 agentkernel start dev
 agentkernel attach dev
+```
+
+### Persistent volumes
+```bash
+# Create a volume
+agentkernel volume create mydata
+
+# Use it in a sandbox
+agentkernel create dev --volume mydata:/data
+agentkernel start dev
+agentkernel exec dev -- echo "hello" > /data/test.txt
+agentkernel stop dev
+
+# Data persists across restarts
+agentkernel start dev
+agentkernel exec dev -- cat /data/test.txt
+```
+
+### Custom images
+```bash
+# Build from Dockerfile
+agentkernel build -t my-tools .
+
+# Use in a sandbox
+agentkernel create dev --image my-tools
 ```
 
 ### SSH access

@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentkernel
+  labels:
+    app: agentkernel
+spec:
+  type: ClusterIP
+  ports:
+    - port: 18888
+      targetPort: 18888
+      protocol: TCP
+      name: http
+  selector:
+    app: agentkernel
+---
+# Optional: LoadBalancer for external access
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: agentkernel-lb
+# spec:
+#   type: LoadBalancer
+#   ports:
+#     - port: 443
+#       targetPort: 18888
+#   selector:
+#     app: agentkernel

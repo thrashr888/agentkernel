@@ -1,35 +1,70 @@
 
 # OpenCode
 
-Run [OpenCode](https://opencode.ai/) in an isolated sandbox.
+Run [OpenCode](https://opencode.ai/) with agentkernel as the execution backend.
 
 ## Quick Start
 
-OpenCode integrates with agentkernel through a TypeScript plugin that automatically sandboxes code execution.
+agentkernel implements OpenCode's native HTTP API, allowing OpenCode to connect directly without plugins.
 
 ```bash
 # 1. Start agentkernel API server (pick one)
 brew services start thrashr888/agentkernel/agentkernel   # runs in background, survives reboots
 agentkernel serve                 # or run manually in a terminal
 
-# 2. Install the plugin into your project
+# 2. Launch OpenCode with agentkernel as the backend
+opencode --api-url http://localhost:18888/opencode
+```
+
+## Native API Integration
+
+agentkernel implements OpenCode's server API at the `/opencode` path prefix. This provides seamless integration without any plugins or configuration files.
+
+### Endpoint Status
+
+| Endpoint | Status | Description |
+|----------|--------|-------------|
+| `GET /opencode/session` | ✓ | List all sessions |
+| `POST /opencode/session` | ✓ | Create a new session (creates sandbox) |
+| `GET /opencode/session/{id}` | ✓ | Get session details |
+| `POST /opencode/session/{id}/message` | ✓ | Execute command in sandbox |
+| `GET /opencode/session/{id}/message` | ✓ | Get message history |
+| `GET /opencode/event` | ✓ | SSE stream for session events |
+| `GET /opencode/global/event` | ✓ | SSE stream for global events |
+| `GET /opencode/permission` | ✓ | List pending permissions (auto-approved) |
+| `POST /opencode/permission/{id}/reply` | ✓ | Reply to permission |
+| `GET /opencode/question` | ✓ | List pending questions (none) |
+| `POST /opencode/question/{id}/reply` | ✓ | Reply to question |
+| `GET /opencode/provider` | − | Stub (returns empty) |
+| `GET /opencode/agent` | − | Stub |
+| `GET /opencode/config` | − | Stub |
+
+### How It Works
+
+1. **Session = Sandbox**: Each OpenCode session maps to an agentkernel sandbox
+2. **Messages = Commands**: Sending a message executes it as a shell command in the sandbox
+3. **State persists**: Installed packages and files persist between commands within a session
+4. **Auto-approval**: All tool permissions are auto-approved (sandboxed execution is safe)
+
+## Alternative: Plugin Integration
+
+For users who prefer plugin-based integration, agentkernel also provides an OpenCode plugin.
+
+```bash
+# Install the plugin into your project
 agentkernel plugin install opencode
 
-# 3. Launch OpenCode — the plugin loads automatically
+# Launch OpenCode — the plugin loads automatically
 opencode
 ```
 
-## Plugin Integration
-
-Unlike other agents that run inside a sandbox container, OpenCode runs on your machine and delegates execution to agentkernel via the HTTP API. The plugin adds three tools to OpenCode:
+The plugin adds tools to OpenCode:
 
 | Tool | Description |
 |------|-------------|
 | `sandbox_run` | One-shot command in a fresh sandbox |
 | `sandbox_exec` | Run in the session's persistent sandbox (state persists) |
 | `sandbox_list` | List all active sandboxes |
-
-When a session starts, the plugin creates a persistent sandbox. Commands via `sandbox_exec` run inside it, so installed packages and files persist between calls. The sandbox is automatically removed when the session ends.
 
 ## Setup
 
@@ -40,26 +75,7 @@ brew tap thrashr888/agentkernel && brew install agentkernel
 # Or: curl -fsSL https://raw.githubusercontent.com/thrashr888/agentkernel/main/install.sh | sh
 ```
 
-### 2. Install the plugin
-
-Install the OpenCode plugin files into your project:
-
-```bash
-agentkernel plugin install opencode
-```
-
-This creates the `.opencode/` directory with `package.json` and `plugins/agentkernel.ts`.
-
-Your project should have:
-
-```
-.opencode/
-  package.json              # Plugin dependency
-  plugins/
-    agentkernel.ts          # Plugin source
-```
-
-### 3. Start agentkernel
+### 2. Start agentkernel
 
 ```bash
 # As a background service (recommended — survives reboots)
@@ -69,13 +85,16 @@ brew services start thrashr888/agentkernel/agentkernel
 agentkernel serve --host 127.0.0.1 --port 18888
 ```
 
-### 4. Launch OpenCode
+### 3. Launch OpenCode
 
 ```bash
+# Native API (recommended)
+opencode --api-url http://localhost:18888/opencode
+
+# Or with plugin
+agentkernel plugin install opencode
 opencode
 ```
-
-The plugin loads automatically and logs `agentkernel plugin loaded` on startup.
 
 ## Sandbox-Based Workflow
 
@@ -96,7 +115,7 @@ opencode
 
 ## Configuration
 
-The example config at `examples/agents/opencode/agentkernel.toml`:
+Example config at `examples/agents/opencode/agentkernel.toml`:
 
 ```toml
 [sandbox]

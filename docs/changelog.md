@@ -6,6 +6,28 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## [v0.9.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.9.0) — Sandbox DX
+
+_February 5, 2026_
+
+### Added
+
+- **Persistent volumes** — `agentkernel volume create <slug>`, `volume list`, `volume delete`; mount via `--volume slug:/path` on `create` or `run`; volumes persist across sandbox lifecycle
+- **Custom image builder** — `agentkernel build -t name .` builds images from Dockerfile; `images local-list`, `images local-rm`; use built images with `create --image local:name`
+- **TTL extension** — `agentkernel extend-ttl <sandbox> --by 1h` to extend sandbox lifetime; `POST /sandboxes/:name/extend` HTTP endpoint; `sandbox_extend_ttl` MCP tool
+- **Snapshots via HTTP/MCP** — `GET/POST/DELETE /snapshots`, `POST /snapshots/:name/restore` HTTP endpoints; 5 MCP tools (`snapshot_list`, `snapshot_take`, `snapshot_get`, `snapshot_delete`, `snapshot_restore`)
+- **SDK volume support** — all SDKs (Rust, Node.js, Python, Go, Swift) now support `volumes` in `CreateSandboxOptions`
+- **Per-command exec options** — `agentkernel exec` now supports `--workdir` (`-w`) and `--sudo` flags; HTTP API and MCP `sandbox_exec` tool accept `workdir`, `env`, and `sudo` parameters
+- **Git source cloning on create** — `agentkernel create --source git:URL [--git-ref REF]` clones a repo into `/workspace` at creation time; also available via HTTP API (`source_url`/`source_ref`) and MCP `sandbox_create`
+- **Batch file write** — `POST /sandboxes/{name}/files` accepts `{"files": {"/path": "content"}}` for multi-file writes; MCP `sandbox_write_files` tool for the same
+- **`ExecOptions` trait method** — `Sandbox::exec_with_options()` supports workdir, user, and env per-command across all backends
+- **Detached commands** — run long-lived processes in the background with `agentkernel exec --detach`, retrieve logs with `exec-logs`, check status, kill, and list; HTTP API routes at `/sandboxes/{name}/exec/detach` and `/sandboxes/{name}/exec/detached/{id}`; 5 new MCP tools (`sandbox_exec_detach`, `sandbox_exec_status`, `sandbox_exec_logs`, `sandbox_exec_kill`, `sandbox_exec_list`)
+- **SDK updates** — all four SDKs (Rust, Node.js, Python, Swift) now support exec options (`workdir`/`env`/`sudo`), git source cloning (`source_url`/`source_ref`), batch `writeFiles`/`write_files`, and detached commands (`execDetached`/`detachedStatus`/`detachedLogs`/`detachedKill`/`detachedList`)
+- **Amp agent support** — `AgentType::Amp` adapter for Sourcegraph's AmpCode CLI; plugin installer target with MCP JSON integration; `CompatibilityMode::Amp` with Sourcegraph-aware network policy
+- **Pi agent support** — `AgentType::Pi` adapter for pi-coding-agent CLI; plugin installer target with MCP JSON integration; `CompatibilityMode::Pi` with multi-provider network policy
+
+---
+
 ## [v0.8.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.8.0) — Secure Transport
 
 _February 3, 2026_

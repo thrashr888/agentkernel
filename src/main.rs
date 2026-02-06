@@ -12,9 +12,11 @@ mod firecracker_client;
 mod git_utils;
 mod http_api;
 mod hyperlight_backend;
+mod image_builder;
 mod images;
 mod languages;
 mod mcp;
+mod opencode;
 mod permissions;
 mod pipeline;
 mod plugin_installer;
@@ -33,6 +35,7 @@ mod template;
 mod tls;
 mod validation;
 mod vmm;
+mod volume;
 mod vsock;
 
 // Enterprise modules (behind feature flag)
@@ -114,6 +117,15 @@ enum Commands {
         /// Enable SSH access to the sandbox
         #[arg(long)]
         ssh: bool,
+        /// Clone a git repo into the sandbox (e.g. git:https://github.com/user/repo or just a URL)
+        #[arg(long)]
+        source: Option<String>,
+        /// Git ref to checkout after cloning (branch, tag, or commit)
+        #[arg(long)]
+        git_ref: Option<String>,
+        /// Mount a persistent volume (slug:/path or slug:/path:ro). Can be repeated.
+        #[arg(short = 'v', long = "volume")]
+        volumes: Vec<String>,
     },
     /// Start a sandbox
     Start {
@@ -133,6 +145,14 @@ enum Commands {
         /// Name of the sandbox to remove
         name: String,
     },
+    /// Extend a sandbox's time-to-live
+    ExtendTtl {
+        /// Name of the sandbox
+        name: String,
+        /// Additional time (e.g. 1h, 30m, 2d). Adds to current expiry.
+        #[arg(long, default_value = "1h")]
+        by: String,
+    },
     /// Attach to a running sandbox (opens interactive shell)
     Attach {
         /// Name of the sandbox to attach to
@@ -151,9 +171,40 @@ enum Commands {
         /// Environment variables to set (KEY=VALUE format, can be repeated)
         #[arg(short, long = "env", value_name = "KEY=VALUE")]
         env: Vec<String>,
+        /// Working directory inside the sandbox
+        #[arg(short, long)]
+        workdir: Option<String>,
+        /// Run as root
+        #[arg(long)]
+        sudo: bool,
+        /// Run detached (in background). Returns a command ID for status/logs/kill.
+        #[arg(short, long)]
+        detach: bool,
         /// Command to execute
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
+    },
+    /// List detached commands in a sandbox
+    ExecList {
+        /// Name of the sandbox
+        name: String,
+    },
+    /// Get logs from a detached command
+    ExecLogs {
+        /// Name of the sandbox
+        name: String,
+        /// Command ID (from exec --detach)
+        id: String,
+        /// Show stderr instead of stdout
+        #[arg(long)]
+        stderr: bool,
+    },
+    /// Kill a detached command
+    ExecKill {
+        /// Name of the sandbox
+        name: String,
+        /// Command ID (from exec --detach)
+        id: String,
     },
     /// Copy files to/from a running sandbox
     ///
@@ -417,6 +468,50 @@ enum Commands {
         #[command(subcommand)]
         action: PolicyAction,
     },
+    /// Manage persistent volumes
+    Volume {
+        #[command(subcommand)]
+        action: VolumeAction,
+    },
+    /// Build a custom image from a Dockerfile
+    Build {
+        /// Name/tag for the built image
+        #[arg(short = 't', long = "tag")]
+        name: String,
+        /// Build context directory
+        #[arg(default_value = ".")]
+        context: PathBuf,
+        /// Path to Dockerfile (default: Dockerfile in context)
+        #[arg(short = 'f', long)]
+        dockerfile: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum VolumeAction {
+    /// Create a new volume
+    Create {
+        /// Volume slug (e.g., my-data)
+        slug: String,
+        /// Size limit (e.g., 2GB, 512MB). Default: unlimited
+        #[arg(short, long)]
+        size: Option<String>,
+    },
+    /// List all volumes
+    List,
+    /// Show volume details
+    Info {
+        /// Volume slug
+        slug: String,
+    },
+    /// Delete a volume
+    Delete {
+        /// Volume slug
+        slug: String,
+        /// Force delete without confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -461,6 +556,15 @@ enum ImagesAction {
         /// Image to pull (e.g. python:3.12-alpine)
         image: String,
     },
+    /// List locally built images (from 'agentkernel build')
+    LocalList,
+    /// Delete a locally built image
+    LocalDelete {
+        /// Image name
+        name: String,
+    },
+    /// Sync local image metadata with Docker (remove stale entries)
+    LocalSync,
 }
 
 #[derive(Subcommand)]
@@ -775,7 +879,9 @@ memory_mb = 512
             branch,
             publish,
             ssh: ssh_flag,
-            ..
+            source,
+            git_ref,
+            volumes,
         } => {
             // Resolve sandbox name: --branch auto-derives from git, otherwise require explicit name
             let name = if branch {
@@ -895,6 +1001,26 @@ memory_mb = 512
                 );
             }
 
+            // Parse volume mounts
+            let volume_mounts: Vec<volume::VolumeMount> = volumes
+                .iter()
+                .map(|s| volume::VolumeMount::parse(s))
+                .collect::<Result<Vec<_>>>()?;
+
+            // Validate volumes exist
+            if !volume_mounts.is_empty() {
+                let vol_manager = volume::VolumeManager::new()?;
+                vol_manager.validate_mounts(&volume_mounts)?;
+                println!(
+                    "  Volumes: {}",
+                    volume_mounts
+                        .iter()
+                        .map(|v| format!("{}:{}", v.slug, v.mount_path))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+
             manager
                 .create_with_options(
                     &name,
@@ -915,12 +1041,60 @@ memory_mb = 512
             if let Some(secs) = ttl_secs {
                 println!("  TTL: {} (expires automatically)", format_ttl(secs));
             }
-            println!("\nNext steps:");
-            println!("  1. agentkernel start {}", name);
-            if enable_ssh {
-                println!("  2. agentkernel ssh {}", name);
+
+            // If --source provided, auto-start and clone the repo
+            if let Some(ref source_url) = source {
+                // Strip optional "git:" prefix
+                let url = source_url.strip_prefix("git:").unwrap_or(source_url);
+
+                println!("\nStarting sandbox and cloning {}...", url);
+                manager.start(&name).await?;
+
+                // Install git if needed, then clone
+                let install_cmd = vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "which git >/dev/null 2>&1 || apk add --no-cache git >/dev/null 2>&1 || apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1 || yum install -y git >/dev/null 2>&1 || true".to_string(),
+                ];
+                let _ = manager.exec_cmd(&name, &install_cmd).await;
+
+                let clone_cmd = vec![
+                    "git".to_string(),
+                    "clone".to_string(),
+                    url.to_string(),
+                    "/workspace".to_string(),
+                ];
+                manager.exec_cmd(&name, &clone_cmd).await?;
+
+                // Checkout specific ref if requested
+                if let Some(ref git_ref_val) = git_ref {
+                    let checkout_cmd = vec![
+                        "git".to_string(),
+                        "-C".to_string(),
+                        "/workspace".to_string(),
+                        "checkout".to_string(),
+                        git_ref_val.clone(),
+                    ];
+                    manager.exec_cmd(&name, &checkout_cmd).await?;
+                    println!("Cloned {} (ref: {}) into /workspace", url, git_ref_val);
+                } else {
+                    println!("Cloned {} into /workspace", url);
+                }
+
+                println!("\nTo connect:");
+                if enable_ssh {
+                    println!("  agentkernel ssh {}", name);
+                } else {
+                    println!("  agentkernel attach {}", name);
+                }
             } else {
-                println!("  2. agentkernel attach {}", name);
+                println!("\nNext steps:");
+                println!("  1. agentkernel start {}", name);
+                if enable_ssh {
+                    println!("  2. agentkernel ssh {}", name);
+                } else {
+                    println!("  2. agentkernel attach {}", name);
+                }
             }
         }
         Commands::Start { name, backend } => {
@@ -982,6 +1156,22 @@ memory_mb = 512
             println!("Removing sandbox '{}'...", name);
             manager.remove(&name).await?;
             println!("Sandbox '{}' removed.", name);
+        }
+        Commands::ExtendTtl { name, by } => {
+            validation::validate_sandbox_name(&name)?;
+
+            let mut manager = VmManager::new()?;
+            if !manager.exists(&name) {
+                bail!("Sandbox '{}' not found", name);
+            }
+
+            let additional_secs = crate::ssh::parse_ttl_to_secs(&by)?;
+            let new_expiry = manager.extend_ttl(&name, additional_secs)?;
+
+            match new_expiry {
+                Some(exp) => println!("Extended TTL for '{}'. New expiry: {}", name, exp),
+                None => println!("Sandbox '{}' now has no expiry (TTL disabled).", name),
+            }
         }
         Commands::Attach { name, env, record } => {
             validation::validate_sandbox_name(&name)?;
@@ -1057,7 +1247,14 @@ memory_mb = 512
                 std::process::exit(exit_code);
             }
         }
-        Commands::Exec { name, env, command } => {
+        Commands::Exec {
+            name,
+            env,
+            workdir,
+            sudo,
+            detach,
+            command,
+        } => {
             validation::validate_sandbox_name(&name)?;
 
             if command.is_empty() {
@@ -1070,8 +1267,38 @@ memory_mb = 512
                 bail!("Sandbox '{}' not found", name);
             }
 
-            let output = manager.exec_cmd_with_env(&name, &command, &env).await?;
+            let opts = crate::backend::ExecOptions {
+                env,
+                workdir,
+                user: if sudo { Some("root".to_string()) } else { None },
+            };
+
+            if detach {
+                let cmd = manager.exec_detached(&name, &command, &opts).await?;
+                println!("{}", serde_json::to_string_pretty(&cmd)?);
+            } else {
+                let output = manager.exec_cmd_full(&name, &command, &opts).await?;
+                print!("{}", output);
+            }
+        }
+        Commands::ExecList { name } => {
+            validation::validate_sandbox_name(&name)?;
+            let manager = VmManager::new()?;
+            let commands = manager.detached_list(Some(&name));
+            println!("{}", serde_json::to_string_pretty(&commands)?);
+        }
+        Commands::ExecLogs { name, id, stderr } => {
+            validation::validate_sandbox_name(&name)?;
+            let mut manager = VmManager::new()?;
+            let stream = if stderr { Some("stderr") } else { None };
+            let output = manager.detached_logs(&id, stream).await?;
             print!("{}", output);
+        }
+        Commands::ExecKill { name, id } => {
+            validation::validate_sandbox_name(&name)?;
+            let mut manager = VmManager::new()?;
+            manager.detached_kill(&id).await?;
+            println!("Command {} killed", id);
         }
         Commands::Cp { source, dest } => {
             // Parse source and destination to determine direction
@@ -2581,7 +2808,152 @@ memory_mb = 512
                 images::pull(&image)?;
                 println!("Done.");
             }
+            ImagesAction::LocalList => {
+                let builder = image_builder::ImageBuilder::new()?;
+                let images = builder.list();
+
+                if images.is_empty() {
+                    println!("No locally built images.");
+                    println!("\nBuild one with: agentkernel build -t <name> <context>");
+                } else {
+                    println!("{:<20} {:<12} {:<24}", "NAME", "SIZE", "BUILT");
+                    for img in images {
+                        println!(
+                            "{:<20} {:<12} {:<24}",
+                            img.name,
+                            img.format_size(),
+                            &img.built_at[..19] // Trim to date/time only
+                        );
+                    }
+                    println!("\nUse with: agentkernel create <sandbox> --image <name>");
+                }
+            }
+            ImagesAction::LocalDelete { name } => {
+                let mut builder = image_builder::ImageBuilder::new()?;
+                builder.delete(&name)?;
+                println!("Deleted locally built image '{}'", name);
+            }
+            ImagesAction::LocalSync => {
+                let mut builder = image_builder::ImageBuilder::new()?;
+                let removed = builder.sync()?;
+                if removed.is_empty() {
+                    println!("All local images are in sync.");
+                } else {
+                    println!("Removed {} stale image entries:", removed.len());
+                    for name in &removed {
+                        println!("  - {}", name);
+                    }
+                }
+            }
         },
+        Commands::Volume { action } => match action {
+            VolumeAction::Create { slug, size } => {
+                let mut manager = volume::VolumeManager::new()?;
+
+                let size_bytes = if let Some(ref s) = size {
+                    Some(volume::parse_size(s)?)
+                } else {
+                    None
+                };
+
+                let vol = manager.create(&slug, size_bytes)?;
+                println!("Created volume '{}'", vol.slug);
+                if vol.size_bytes > 0 {
+                    println!(
+                        "  Size limit: {}",
+                        volume::Volume::format_size(vol.size_bytes)
+                    );
+                }
+                println!("  Path: {}", manager.volumes_dir().join(&slug).display());
+            }
+            VolumeAction::List => {
+                let manager = volume::VolumeManager::new()?;
+                let volumes = manager.list();
+
+                if volumes.is_empty() {
+                    println!("No volumes found.");
+                    println!("\nCreate one with: agentkernel volume create <slug>");
+                } else {
+                    println!(
+                        "{:<20} {:<12} {:<12} {:<10}",
+                        "SLUG", "SIZE", "USAGE", "MOUNTS"
+                    );
+                    for vol in volumes {
+                        let usage = vol.disk_usage(manager.volumes_dir()).unwrap_or(0);
+                        println!(
+                            "{:<20} {:<12} {:<12} {:<10}",
+                            vol.slug,
+                            volume::Volume::format_size(vol.size_bytes),
+                            volume::Volume::format_size(usage),
+                            vol.mount_count
+                        );
+                    }
+                }
+            }
+            VolumeAction::Info { slug } => {
+                let manager = volume::VolumeManager::new()?;
+                let vol = manager
+                    .get(&slug)
+                    .ok_or_else(|| anyhow::anyhow!("Volume '{}' not found", slug))?;
+
+                let usage = vol.disk_usage(manager.volumes_dir()).unwrap_or(0);
+                println!("Volume: {}", vol.slug);
+                println!(
+                    "  Size limit:  {}",
+                    volume::Volume::format_size(vol.size_bytes)
+                );
+                println!("  Disk usage:  {}", volume::Volume::format_size(usage));
+                println!("  Mount count: {}", vol.mount_count);
+                println!("  Created:     {}", vol.created_at);
+                if let Some(ref last) = vol.last_used {
+                    println!("  Last used:   {}", last);
+                }
+                println!(
+                    "  Path:        {}",
+                    manager.volumes_dir().join(&slug).display()
+                );
+            }
+            VolumeAction::Delete { slug, force } => {
+                let mut manager = volume::VolumeManager::new()?;
+
+                if !force {
+                    let vol = manager
+                        .get(&slug)
+                        .ok_or_else(|| anyhow::anyhow!("Volume '{}' not found", slug))?;
+                    let usage = vol.disk_usage(manager.volumes_dir()).unwrap_or(0);
+                    if usage > 0 {
+                        eprintln!(
+                            "Warning: Volume '{}' contains {} of data.",
+                            slug,
+                            volume::Volume::format_size(usage)
+                        );
+                        eprintln!("Use --force to delete anyway.");
+                        bail!("Volume not empty. Use --force to delete.");
+                    }
+                }
+
+                manager.delete(&slug)?;
+                println!("Deleted volume '{}'", slug);
+            }
+        },
+        Commands::Build {
+            name,
+            context,
+            dockerfile,
+        } => {
+            let mut builder = image_builder::ImageBuilder::new()?;
+
+            let df_path = dockerfile.as_deref();
+            let image = builder.build(&name, &context, df_path)?;
+
+            println!("\nImage '{}' ready.", name);
+            println!("  Docker tag: {}", image.docker_ref());
+            println!("  Size: {}", image.format_size());
+            println!(
+                "\nUse it with: agentkernel create my-sandbox --image {}",
+                name
+            );
+        }
         Commands::Pipeline { file, backend } => {
             if !file.exists() {
                 bail!("Pipeline file not found: {}", file.display());

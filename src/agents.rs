@@ -15,6 +15,8 @@ pub enum AgentType {
     Gemini,
     Codex,
     OpenCode,
+    Amp,
+    Pi,
 }
 
 impl AgentType {
@@ -25,6 +27,8 @@ impl AgentType {
             "gemini" | "gemini-cli" => Some(Self::Gemini),
             "codex" | "openai-codex" => Some(Self::Codex),
             "opencode" | "open-code" => Some(Self::OpenCode),
+            "amp" | "ampcode" => Some(Self::Amp),
+            "pi" | "pi-coding-agent" => Some(Self::Pi),
             _ => None,
         }
     }
@@ -36,6 +40,8 @@ impl AgentType {
             Self::Gemini => "Gemini CLI",
             Self::Codex => "Codex",
             Self::OpenCode => "OpenCode",
+            Self::Amp => "Amp",
+            Self::Pi => "Pi",
         }
     }
 
@@ -46,6 +52,8 @@ impl AgentType {
             Self::Gemini => "gemini",
             Self::Codex => "codex",
             Self::OpenCode => "opencode",
+            Self::Amp => "amp",
+            Self::Pi => "pi",
         }
     }
 }
@@ -283,6 +291,93 @@ impl Agent for OpenCodeAgent {
     }
 }
 
+/// Amp adapter
+pub struct AmpAgent {
+    config: AgentConfig,
+}
+
+impl AmpAgent {
+    pub fn new(config: AgentConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl Agent for AmpAgent {
+    fn agent_type(&self) -> AgentType {
+        AgentType::Amp
+    }
+
+    fn launch_command(&self) -> Vec<String> {
+        let mut cmd = vec!["amp".to_string()];
+        cmd.extend(self.config.args.clone());
+        cmd
+    }
+
+    fn env_vars(&self) -> &HashMap<String, String> {
+        &self.config.env_vars
+    }
+
+    fn api_key_env_var(&self) -> Option<&'static str> {
+        Some("ANTHROPIC_API_KEY")
+    }
+
+    fn is_available(&self) -> bool {
+        std::process::Command::new("amp")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn install_instructions(&self) -> &'static str {
+        "Install Amp: npm install -g @sourcegraph/amp"
+    }
+}
+
+/// Pi adapter
+pub struct PiAgent {
+    config: AgentConfig,
+}
+
+impl PiAgent {
+    pub fn new(config: AgentConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl Agent for PiAgent {
+    fn agent_type(&self) -> AgentType {
+        AgentType::Pi
+    }
+
+    fn launch_command(&self) -> Vec<String> {
+        let mut cmd = vec!["pi".to_string()];
+        cmd.extend(self.config.args.clone());
+        cmd
+    }
+
+    fn env_vars(&self) -> &HashMap<String, String> {
+        &self.config.env_vars
+    }
+
+    fn api_key_env_var(&self) -> Option<&'static str> {
+        // Pi supports multiple providers, no single required key
+        None
+    }
+
+    fn is_available(&self) -> bool {
+        std::process::Command::new("pi")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn install_instructions(&self) -> &'static str {
+        "Install Pi: npm install -g @mariozechner/pi-coding-agent"
+    }
+}
+
 /// Create an agent adapter from type
 pub fn create_agent(agent_type: AgentType, config: Option<AgentConfig>) -> Box<dyn Agent> {
     let config = config.unwrap_or_else(|| AgentConfig::for_agent(agent_type));
@@ -292,6 +387,8 @@ pub fn create_agent(agent_type: AgentType, config: Option<AgentConfig>) -> Box<d
         AgentType::Gemini => Box::new(GeminiAgent::new(config)),
         AgentType::Codex => Box::new(CodexAgent::new(config)),
         AgentType::OpenCode => Box::new(OpenCodeAgent::new(config)),
+        AgentType::Amp => Box::new(AmpAgent::new(config)),
+        AgentType::Pi => Box::new(PiAgent::new(config)),
     }
 }
 
@@ -360,6 +457,8 @@ pub fn list_agents() -> Vec<AgentStatus> {
         check_agent_availability(AgentType::Gemini),
         check_agent_availability(AgentType::Codex),
         check_agent_availability(AgentType::OpenCode),
+        check_agent_availability(AgentType::Amp),
+        check_agent_availability(AgentType::Pi),
     ]
 }
 
@@ -374,6 +473,10 @@ mod tests {
         assert_eq!(AgentType::from_str("gemini"), Some(AgentType::Gemini));
         assert_eq!(AgentType::from_str("codex"), Some(AgentType::Codex));
         assert_eq!(AgentType::from_str("opencode"), Some(AgentType::OpenCode));
+        assert_eq!(AgentType::from_str("amp"), Some(AgentType::Amp));
+        assert_eq!(AgentType::from_str("ampcode"), Some(AgentType::Amp));
+        assert_eq!(AgentType::from_str("pi"), Some(AgentType::Pi));
+        assert_eq!(AgentType::from_str("pi-coding-agent"), Some(AgentType::Pi));
         assert_eq!(AgentType::from_str("unknown"), None);
     }
 

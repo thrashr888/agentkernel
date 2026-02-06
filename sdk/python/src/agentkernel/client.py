@@ -10,8 +10,12 @@ import httpx
 from ._config import resolve_config
 from .errors import AgentKernelError, NetworkError, error_from_status
 from .types import (
+    BatchFileWriteResponse,
     BatchRunResponse,
     CreateSandboxOptions,
+    DetachedCommand,
+    DetachedLogsResponse,
+    ExecOptions,
     FileReadResponse,
     RunOptions,
     RunOutput,
@@ -31,13 +35,26 @@ class SandboxSession:
         self._client = client
         self._removed = False
 
-    def run(self, command: list[str]) -> RunOutput:
+    def run(
+        self,
+        command: list[str],
+        *,
+        env: list[str] | None = None,
+        workdir: str | None = None,
+        sudo: bool | None = None,
+    ) -> RunOutput:
         """Run a command in this sandbox."""
-        return self._client.exec_in_sandbox(self.name, command)
+        return self._client.exec_in_sandbox(
+            self.name, command, env=env, workdir=workdir, sudo=sudo,
+        )
 
     def info(self) -> SandboxInfo:
         """Get sandbox info."""
         return self._client.get_sandbox(self.name)
+
+    def write_files(self, files: dict[str, str]) -> BatchFileWriteResponse:
+        """Write multiple files in one request."""
+        return self._client.write_files(self.name, files)
 
     def remove(self) -> None:
         """Remove the sandbox. Idempotent."""
@@ -145,12 +162,18 @@ class AgentKernel:
         vcpus: int | None = None,
         memory_mb: int | None = None,
         profile: SecurityProfile | None = None,
+        source_url: str | None = None,
+        source_ref: str | None = None,
     ) -> SandboxInfo:
         """Create a new sandbox."""
         data = self._request(
             "POST",
             "/sandboxes",
-            json={"name": name, "image": image, "vcpus": vcpus, "memory_mb": memory_mb, "profile": profile},
+            json={
+                "name": name, "image": image, "vcpus": vcpus,
+                "memory_mb": memory_mb, "profile": profile,
+                "source_url": source_url, "source_ref": source_ref,
+            },
         )
         return SandboxInfo(**data)
 
@@ -163,9 +186,24 @@ class AgentKernel:
         """Remove a sandbox."""
         self._request("DELETE", f"/sandboxes/{name}")
 
-    def exec_in_sandbox(self, name: str, command: list[str]) -> RunOutput:
+    def exec_in_sandbox(
+        self,
+        name: str,
+        command: list[str],
+        *,
+        env: list[str] | None = None,
+        workdir: str | None = None,
+        sudo: bool | None = None,
+    ) -> RunOutput:
         """Run a command in an existing sandbox."""
-        data = self._request("POST", f"/sandboxes/{name}/exec", json={"command": command})
+        body: dict[str, Any] = {"command": command}
+        if env:
+            body["env"] = env
+        if workdir is not None:
+            body["workdir"] = workdir
+        if sudo is not None:
+            body["sudo"] = sudo
+        data = self._request("POST", f"/sandboxes/{name}/exec", json=body)
         return RunOutput(**data)
 
     def read_file(self, name: str, path: str) -> FileReadResponse:
@@ -192,6 +230,11 @@ class AgentKernel:
         """Delete a file from a sandbox."""
         return self._request("DELETE", f"/sandboxes/{name}/files/{path}")
 
+    def write_files(self, name: str, files: dict[str, str]) -> BatchFileWriteResponse:
+        """Write multiple files to a sandbox in one request."""
+        data = self._request("POST", f"/sandboxes/{name}/files", json={"files": files})
+        return BatchFileWriteResponse(**data)
+
     def get_sandbox_logs(self, name: str) -> list[dict]:
         """Get audit log entries for a sandbox."""
         return self._request("GET", f"/sandboxes/{name}/logs")
@@ -201,6 +244,50 @@ class AgentKernel:
         batch_commands = [{"command": cmd} for cmd in commands]
         data = self._request("POST", "/batch/run", json={"commands": batch_commands})
         return BatchRunResponse(**data)
+
+    def exec_detached(
+        self,
+        name: str,
+        command: list[str],
+        *,
+        env: list[str] | None = None,
+        workdir: str | None = None,
+        sudo: bool | None = None,
+    ) -> DetachedCommand:
+        """Start a detached (background) command in a sandbox."""
+        body: dict[str, Any] = {"command": command}
+        if env:
+            body["env"] = env
+        if workdir is not None:
+            body["workdir"] = workdir
+        if sudo is not None:
+            body["sudo"] = sudo
+        data = self._request("POST", f"/sandboxes/{name}/exec/detach", json=body)
+        return DetachedCommand(**data)
+
+    def detached_status(self, name: str, cmd_id: str) -> DetachedCommand:
+        """Get the status of a detached command."""
+        data = self._request("GET", f"/sandboxes/{name}/exec/detached/{cmd_id}")
+        return DetachedCommand(**data)
+
+    def detached_logs(
+        self, name: str, cmd_id: str, *, stream: str | None = None
+    ) -> DetachedLogsResponse:
+        """Get logs from a detached command."""
+        query = f"?stream={stream}" if stream == "stderr" else ""
+        data = self._request(
+            "GET", f"/sandboxes/{name}/exec/detached/{cmd_id}/logs{query}"
+        )
+        return DetachedLogsResponse(**data)
+
+    def detached_kill(self, name: str, cmd_id: str) -> str:
+        """Kill a detached command."""
+        return self._request("DELETE", f"/sandboxes/{name}/exec/detached/{cmd_id}")
+
+    def detached_list(self, name: str) -> list[DetachedCommand]:
+        """List detached commands in a sandbox."""
+        data = self._request("GET", f"/sandboxes/{name}/exec/detached")
+        return [DetachedCommand(**d) for d in data]
 
     def sandbox(
         self,

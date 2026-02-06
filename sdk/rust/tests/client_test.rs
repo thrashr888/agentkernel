@@ -78,7 +78,7 @@ async fn create_sandbox() {
         .await;
 
     let client = test_client(&server).await;
-    let info = client.create_sandbox("test", None, None, None, None).await.unwrap();
+    let info = client.create_sandbox("test", None).await.unwrap();
     assert_eq!(info.name, "test");
     assert_eq!(info.status, "running");
 }
@@ -131,7 +131,7 @@ async fn exec_in_sandbox() {
 
     let client = test_client(&server).await;
     let result = client
-        .exec_in_sandbox("mybox", &["echo", "hello"])
+        .exec_in_sandbox("mybox", &["echo", "hello"], None)
         .await
         .unwrap();
     assert_eq!(result.output, "executed");
@@ -181,7 +181,7 @@ async fn error_400() {
         .await;
 
     let client = test_client(&server).await;
-    let err = client.create_sandbox("", None, None, None, None).await.unwrap_err();
+    let err = client.create_sandbox("", None).await.unwrap_err();
     assert!(matches!(err, Error::Validation(_)));
 }
 

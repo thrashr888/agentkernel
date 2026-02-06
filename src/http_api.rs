@@ -26,6 +26,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::languages;
+use crate::opencode::OpenCodeState;
 use crate::permissions::SecurityProfile;
 use crate::validation;
 use crate::vmm::VmManager;
@@ -64,6 +65,12 @@ struct CreateRequest {
     /// Port mappings (e.g., ["8080:80", "3000", "5353:53/udp"])
     #[serde(default)]
     ports: Vec<String>,
+    /// Git repo URL to clone into /workspace (e.g., "https://github.com/user/repo")
+    #[serde(default)]
+    source_url: Option<String>,
+    /// Git ref to checkout after cloning (branch, tag, or commit)
+    #[serde(default)]
+    source_ref: Option<String>,
 }
 
 /// Request to write a file
@@ -77,6 +84,12 @@ struct FileWriteRequest {
 
 fn default_encoding() -> String {
     "utf8".to_string()
+}
+
+/// Request to write multiple files at once
+#[derive(Debug, Deserialize)]
+struct BatchFileWriteRequest {
+    files: std::collections::HashMap<String, String>,
 }
 
 /// Response for file read
@@ -114,6 +127,21 @@ struct BatchResult {
 #[derive(Debug, Deserialize)]
 struct ExecRequest {
     command: Vec<String>,
+    #[serde(default)]
+    env: Vec<String>,
+    #[serde(default)]
+    workdir: Option<String>,
+    #[serde(default)]
+    sudo: Option<bool>,
+}
+
+/// Response for detached command logs
+#[derive(Debug, Serialize)]
+struct DetachedLogsResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stdout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stderr: Option<String>,
 }
 
 /// API response
@@ -174,6 +202,8 @@ struct RunResponse {
 struct AppState {
     /// Optional API key for authentication
     api_key: Option<String>,
+    /// OpenCode API state
+    opencode: Arc<OpenCodeState>,
     /// Enterprise configuration (when enterprise feature is enabled)
     #[cfg(feature = "enterprise")]
     enterprise_config: Option<crate::config::EnterpriseConfig>,
@@ -195,6 +225,7 @@ impl AppState {
 
         Self {
             api_key,
+            opencode: Arc::new(OpenCodeState::new()),
             #[cfg(feature = "enterprise")]
             enterprise_config,
             #[cfg(feature = "enterprise")]
@@ -210,6 +241,7 @@ impl AppState {
         }
         Self {
             api_key,
+            opencode: Arc::new(OpenCodeState::new()),
             #[cfg(feature = "enterprise")]
             enterprise_config: None,
             #[cfg(feature = "enterprise")]
@@ -393,6 +425,21 @@ async fn handle_request(
         return Ok(resp);
     }
 
+    // Handle OpenCode API routes
+    if segments.first() == Some(&"opencode") {
+        let path_suffix = if segments.len() > 1 {
+            segments[1..].join("/")
+        } else {
+            String::new()
+        };
+        return Ok(crate::opencode::handle_opencode_request(
+            req,
+            &path_suffix,
+            state.opencode.clone(),
+        )
+        .await);
+    }
+
     let response = match (method, segments.as_slice()) {
         // Run a command in a temporary sandbox
         (Method::POST, ["run"]) => handle_run(req, state).await,
@@ -415,8 +462,38 @@ async fn handle_request(
         // Execute in a sandbox
         (Method::POST, ["sandboxes", name, "exec"]) => handle_exec_sandbox(req, name, state).await,
 
+        // Detached exec: start a background command
+        (Method::POST, ["sandboxes", name, "exec", "detach"]) => {
+            handle_exec_detach(req, name, state).await
+        }
+
+        // List detached commands in a sandbox
+        (Method::GET, ["sandboxes", name, "exec", "detached"]) => {
+            handle_detached_list(name, state).await
+        }
+
+        // Get detached command status
+        (Method::GET, ["sandboxes", name, "exec", "detached", cmd_id]) => {
+            handle_detached_status(name, cmd_id, state).await
+        }
+
+        // Get detached command logs
+        (Method::GET, ["sandboxes", name, "exec", "detached", cmd_id, "logs"]) => {
+            handle_detached_logs(req, name, cmd_id, state).await
+        }
+
+        // Kill a detached command
+        (Method::DELETE, ["sandboxes", name, "exec", "detached", cmd_id]) => {
+            handle_detached_kill(name, cmd_id, state).await
+        }
+
         // Sandbox logs
         (Method::GET, ["sandboxes", name, "logs"]) => handle_sandbox_logs(name, state).await,
+
+        // Batch file write: POST /sandboxes/{name}/files
+        (Method::POST, ["sandboxes", name, "files"]) => {
+            handle_batch_file_write(req, name, state).await
+        }
 
         // File operations: GET /sandboxes/{name}/files/{path...}
         (Method::GET, ["sandboxes", name, "files", ..]) => {
@@ -438,6 +515,18 @@ async fn handle_request(
 
         // Delete a sandbox
         (Method::DELETE, ["sandboxes", name]) => handle_delete_sandbox(name, state).await,
+
+        // Extend sandbox TTL
+        (Method::POST, ["sandboxes", name, "extend"]) => handle_extend_ttl(req, name, state).await,
+
+        // Snapshot endpoints
+        (Method::GET, ["snapshots"]) => handle_list_snapshots(state).await,
+        (Method::POST, ["snapshots"]) => handle_take_snapshot(req, state).await,
+        (Method::GET, ["snapshots", name]) => handle_get_snapshot(name).await,
+        (Method::DELETE, ["snapshots", name]) => handle_delete_snapshot(name).await,
+        (Method::POST, ["snapshots", name, "restore"]) => {
+            handle_restore_snapshot(req, name, state).await
+        }
 
         // Enterprise policy endpoints
         #[cfg(feature = "enterprise")]
@@ -934,6 +1023,48 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         );
     }
 
+    // Clone git repo if source_url is specified
+    if let Some(ref url) = body.source_url {
+        // Install git
+        let install = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "which git >/dev/null 2>&1 || apk add --no-cache git >/dev/null 2>&1 || apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1 || true".to_string(),
+        ];
+        let _ = manager.exec_cmd(&body.name, &install).await;
+
+        let clone = vec![
+            "git".to_string(),
+            "clone".to_string(),
+            url.clone(),
+            "/workspace".to_string(),
+        ];
+        if let Err(e) = manager.exec_cmd(&body.name, &clone).await {
+            let _ = manager.remove(&body.name).await;
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!("Failed to clone {}: {}", url, e)),
+            );
+        }
+
+        if let Some(ref git_ref) = body.source_ref {
+            let checkout = vec![
+                "git".to_string(),
+                "-C".to_string(),
+                "/workspace".to_string(),
+                "checkout".to_string(),
+                git_ref.clone(),
+            ];
+            if let Err(e) = manager.exec_cmd(&body.name, &checkout).await {
+                let _ = manager.remove(&body.name).await;
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(format!("Failed to checkout {}: {}", git_ref, e)),
+                );
+            }
+        }
+    }
+
     let port_strings: Vec<String> = ports.iter().map(|p| p.to_string()).collect();
     let ip = manager.get_container_ip(&body.name);
     json_response(
@@ -1054,13 +1185,186 @@ async fn handle_exec_sandbox(
         }
     };
 
-    match manager.exec_cmd(name, &body.command).await {
+    let opts = crate::backend::ExecOptions {
+        env: body.env,
+        workdir: body.workdir,
+        user: if body.sudo.unwrap_or(false) {
+            Some("root".to_string())
+        } else {
+            None
+        },
+    };
+    match manager.exec_cmd_full(name, &body.command, &opts).await {
         Ok(output) => json_response(
             StatusCode::OK,
             &ApiResponse::success(RunResponse { output }),
         ),
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+// --- Detached command handlers ---
+
+async fn handle_exec_detach(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let body: ExecRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    if body.command.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("command is required"),
+        );
+    }
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let opts = crate::backend::ExecOptions {
+        env: body.env,
+        workdir: body.workdir,
+        user: if body.sudo.unwrap_or(false) {
+            Some("root".to_string())
+        } else {
+            None
+        },
+    };
+
+    match manager.exec_detached(name, &body.command, &opts).await {
+        Ok(cmd) => json_response(StatusCode::OK, &ApiResponse::success(cmd)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_detached_list(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    let manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let commands = manager.detached_list(Some(name));
+    json_response(StatusCode::OK, &ApiResponse::success(commands))
+}
+
+async fn handle_detached_status(
+    _name: &str,
+    cmd_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.detached_status(cmd_id).await {
+        Ok(cmd) => json_response(StatusCode::OK, &ApiResponse::success(cmd)),
+        Err(e) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_detached_logs(
+    req: Request<Incoming>,
+    _name: &str,
+    cmd_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    // Check for ?stream=stderr query param
+    let stream = req
+        .uri()
+        .query()
+        .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("stream=")))
+        .filter(|s| *s == "stderr");
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.detached_logs(cmd_id, stream).await {
+        Ok(output) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success(DetachedLogsResponse {
+                stdout: if stream.is_none() {
+                    Some(output.clone())
+                } else {
+                    None
+                },
+                stderr: if stream.is_some() {
+                    Some(output.clone())
+                } else {
+                    None
+                },
+            }),
+        ),
+        Err(e) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_detached_kill(
+    _name: &str,
+    cmd_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.detached_kill(cmd_id).await {
+        Ok(()) => json_response(StatusCode::OK, &ApiResponse::success("Command killed")),
+        Err(e) => json_response(
+            StatusCode::NOT_FOUND,
             &ApiResponse::<()>::error(e.to_string()),
         ),
     }
@@ -1098,6 +1402,305 @@ async fn handle_delete_sandbox(name: &str, state: Arc<AppState>) -> Response<Box
 
     match manager.remove(name).await {
         Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox removed")),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+/// Request body for extending TTL
+#[derive(Debug, Deserialize)]
+struct ExtendTtlRequest {
+    /// Additional time in seconds (or time string like "1h", "30m")
+    #[serde(default = "default_extend_by")]
+    by: String,
+}
+
+fn default_extend_by() -> String {
+    "1h".to_string()
+}
+
+/// Response for extend TTL
+#[derive(Debug, Serialize)]
+struct ExtendTtlResponse {
+    expires_at: Option<String>,
+}
+
+async fn handle_extend_ttl(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    // Validate sandbox name
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    // Parse request body (optional - defaults to 1h if empty)
+    let body: ExtendTtlRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(_) => ExtendTtlRequest {
+            by: "1h".to_string(),
+        },
+    };
+
+    // Parse the time string into seconds
+    let additional_secs = match crate::ssh::parse_ttl_to_secs(&body.by) {
+        Ok(secs) => secs,
+        Err(e) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(format!("Invalid time format: {}", e)),
+            );
+        }
+    };
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    // Check if sandbox exists
+    if !manager.exists(name) {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("Sandbox '{}' not found", name)),
+        );
+    }
+
+    // Extend the TTL
+    match manager.extend_ttl(name, additional_secs) {
+        Ok(new_expiry) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success(ExtendTtlResponse {
+                expires_at: new_expiry,
+            }),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+// --- Snapshot handlers ---
+
+async fn handle_list_snapshots(_state: Arc<AppState>) -> Response<BoxBody> {
+    match crate::snapshot::list() {
+        Ok(snapshots) => json_response(StatusCode::OK, &ApiResponse::success(snapshots)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+/// Request body for taking a snapshot
+#[derive(Debug, Deserialize)]
+struct TakeSnapshotRequest {
+    /// Name of the sandbox to snapshot
+    sandbox: String,
+    /// Name for the snapshot
+    name: String,
+}
+
+async fn handle_take_snapshot(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    let body: TakeSnapshotRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    // Validate names
+    if let Err(e) = validation::validate_sandbox_name(&body.sandbox) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+    if let Err(e) = validation::validate_sandbox_name(&body.name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(format!("Invalid snapshot name: {}", e)),
+        );
+    }
+
+    // Get sandbox info
+    let manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let sandbox_state = match manager.get_state(&body.sandbox) {
+        Some(s) => s,
+        None => {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error(format!("Sandbox '{}' not found", body.sandbox)),
+            );
+        }
+    };
+
+    let input = crate::snapshot::SnapshotInput {
+        image: sandbox_state.image.clone(),
+        backend: sandbox_state
+            .backend
+            .map(|b| format!("{:?}", b).to_lowercase())
+            .unwrap_or_else(|| "docker".to_string()),
+        vcpus: sandbox_state.vcpus,
+        memory_mb: sandbox_state.memory_mb,
+    };
+
+    match crate::snapshot::take(&body.sandbox, &body.name, &input) {
+        Ok(meta) => json_response(StatusCode::OK, &ApiResponse::success(meta)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_get_snapshot(name: &str) -> Response<BoxBody> {
+    // Validate snapshot name
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    match crate::snapshot::get(name) {
+        Ok(Some(meta)) => json_response(StatusCode::OK, &ApiResponse::success(meta)),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("Snapshot '{}' not found", name)),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_delete_snapshot(name: &str) -> Response<BoxBody> {
+    // Validate snapshot name
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    match crate::snapshot::delete(name) {
+        Ok(()) => json_response(StatusCode::OK, &ApiResponse::success("Snapshot deleted")),
+        Err(e) => {
+            let status = if e.to_string().contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            json_response(status, &ApiResponse::<()>::error(e.to_string()))
+        }
+    }
+}
+
+/// Request body for restoring a snapshot
+#[derive(Debug, Deserialize)]
+struct RestoreSnapshotRequest {
+    /// Name for the restored sandbox (defaults to original + "-restored")
+    #[serde(default)]
+    as_name: Option<String>,
+}
+
+async fn handle_restore_snapshot(
+    req: Request<Incoming>,
+    snapshot_name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    // Validate snapshot name
+    if let Err(e) = validation::validate_sandbox_name(snapshot_name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    // Parse optional body
+    let body: RestoreSnapshotRequest = read_json_body(req)
+        .await
+        .unwrap_or(RestoreSnapshotRequest { as_name: None });
+
+    // Get snapshot metadata
+    let meta = match crate::snapshot::get(snapshot_name) {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error(format!("Snapshot '{}' not found", snapshot_name)),
+            );
+        }
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    // Determine restore name
+    let restore_name = body
+        .as_name
+        .unwrap_or_else(|| format!("{}-restored", meta.sandbox));
+
+    if let Err(e) = validation::validate_sandbox_name(&restore_name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(format!("Invalid restore name: {}", e)),
+        );
+    }
+
+    // Create the restored sandbox
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager
+        .create(&restore_name, &meta.image_tag, meta.vcpus, meta.memory_mb)
+        .await
+    {
+        Ok(()) => {
+            #[derive(Serialize)]
+            struct RestoreResponse {
+                sandbox: String,
+                from_snapshot: String,
+            }
+            json_response(
+                StatusCode::OK,
+                &ApiResponse::success(RestoreResponse {
+                    sandbox: restore_name,
+                    from_snapshot: snapshot_name.to_string(),
+                }),
+            )
+        }
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
@@ -1295,6 +1898,76 @@ async fn handle_file_delete(
             &ApiResponse::<()>::error(e.to_string()),
         ),
     }
+}
+
+async fn handle_batch_file_write(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = extract_identity(&req, &state).await;
+        if let Err(resp) =
+            enforce_policy(&state, &identity, crate::policy::Action::Mount, name).await
+        {
+            return resp;
+        }
+    }
+
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let body: BatchFileWriteRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    if body.files.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("files map is empty"),
+        );
+    }
+
+    // Validate all paths before writing any
+    for path in body.files.keys() {
+        if let Err(e) = crate::backend::validate_sandbox_path(path) {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(format!("{}: {}", path, e)),
+            );
+        }
+    }
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let count = body.files.len();
+    for (path, content) in &body.files {
+        if let Err(e) = manager.write_file(name, path, content.as_bytes()).await {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!("Failed to write {}: {}", path, e)),
+            );
+        }
+    }
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(format!("Wrote {} file(s)", count)),
+    )
 }
 
 // --- Sandbox logs handler ---

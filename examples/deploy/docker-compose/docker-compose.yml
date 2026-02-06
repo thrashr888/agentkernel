@@ -1,0 +1,54 @@
+# agentkernel Docker Compose deployment
+# Local multi-container setup for development and small teams
+#
+# Usage:
+#   docker-compose up -d
+#   curl http://localhost:18888/health
+
+services:
+  agentkernel:
+    image: ghcr.io/thrashr888/agentkernel:latest
+    container_name: agentkernel
+    restart: unless-stopped
+    ports:
+      - "18888:18888"
+    volumes:
+      # Persist sandbox state
+      - agentkernel_data:/data
+      # Docker socket for container backend
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # Optional: API key authentication
+      # AGENTKERNEL_API_KEY: "your-secret-key"
+
+      # Optional: TLS configuration
+      # AGENTKERNEL_TLS_CERT: "/certs/cert.pem"
+      # AGENTKERNEL_TLS_KEY: "/certs/key.pem"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18888/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Reverse proxy with automatic HTTPS
+  caddy:
+    image: caddy:2-alpine
+    container_name: agentkernel-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - agentkernel
+    profiles:
+      - with-proxy
+
+volumes:
+  agentkernel_data:
+  caddy_data:
+  caddy_config:

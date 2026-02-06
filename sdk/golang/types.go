@@ -22,6 +22,8 @@ type CreateSandboxOptions struct {
 	VCPUs    int             `json:"vcpus,omitempty"`
 	MemoryMB int             `json:"memory_mb,omitempty"`
 	Profile  SecurityProfile `json:"profile,omitempty"`
+	// Volumes are mount specs (slug:/path or slug:/path:ro). Create volumes via CLI first.
+	Volumes []string `json:"volumes,omitempty"`
 }
 
 // RunOutput is the result of a run or exec command.

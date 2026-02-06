@@ -17,6 +17,10 @@ const MCP_GENERIC_JSON: &str = include_str!("../plugins/mcp/mcp.json");
 const OPENCODE_PACKAGE_JSON: &str = include_str!("../plugins/opencode/.opencode/package.json");
 const OPENCODE_PLUGIN_TS: &str =
     include_str!("../plugins/opencode/.opencode/plugins/agentkernel.ts");
+const PI_EXTENSION_INDEX_TS: &str =
+    include_str!("../plugins/pi/.pi/extensions/agentkernel/index.ts");
+const PI_EXTENSION_PACKAGE_JSON: &str =
+    include_str!("../plugins/pi/.pi/extensions/agentkernel/package.json");
 
 /// Plugin targets that can be installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +29,8 @@ pub enum PluginTarget {
     Codex,
     Gemini,
     OpenCode,
+    Amp,
+    Pi,
     Mcp,
 }
 
@@ -35,6 +41,8 @@ impl PluginTarget {
             "codex" => Some(Self::Codex),
             "gemini" | "gemini-cli" => Some(Self::Gemini),
             "opencode" | "open-code" => Some(Self::OpenCode),
+            "amp" | "ampcode" => Some(Self::Amp),
+            "pi" | "pi-coding-agent" => Some(Self::Pi),
             "mcp" => Some(Self::Mcp),
             _ => None,
         }
@@ -46,6 +54,8 @@ impl PluginTarget {
             Self::Codex => "codex",
             Self::Gemini => "gemini",
             Self::OpenCode => "opencode",
+            Self::Amp => "amp",
+            Self::Pi => "pi",
             Self::Mcp => "mcp",
         }
     }
@@ -56,6 +66,8 @@ impl PluginTarget {
             Self::Codex => "Codex MCP server config",
             Self::Gemini => "Gemini CLI MCP server config",
             Self::OpenCode => "OpenCode TypeScript plugin",
+            Self::Amp => "Amp MCP server config",
+            Self::Pi => "Pi native extension (bash sandbox override)",
             Self::Mcp => "Generic MCP server config",
         }
     }
@@ -66,12 +78,17 @@ impl PluginTarget {
             Self::Codex,
             Self::Gemini,
             Self::OpenCode,
+            Self::Amp,
+            Self::Pi,
             Self::Mcp,
         ]
     }
 
     fn supports_global(&self) -> bool {
-        matches!(self, Self::Claude | Self::Codex | Self::Gemini | Self::Mcp)
+        matches!(
+            self,
+            Self::Claude | Self::Codex | Self::Gemini | Self::Amp | Self::Mcp
+        )
     }
 }
 
@@ -145,6 +162,23 @@ fn plugin_files(target: PluginTarget) -> Vec<PluginFile> {
             PluginFile {
                 rel_path: ".opencode/plugins/agentkernel.ts",
                 content: OPENCODE_PLUGIN_TS,
+                strategy: WriteStrategy::Create,
+            },
+        ],
+        PluginTarget::Amp => vec![PluginFile {
+            rel_path: ".mcp.json",
+            content: MCP_GENERIC_JSON,
+            strategy: WriteStrategy::MergeJsonMcpServer,
+        }],
+        PluginTarget::Pi => vec![
+            PluginFile {
+                rel_path: ".pi/extensions/agentkernel/index.ts",
+                content: PI_EXTENSION_INDEX_TS,
+                strategy: WriteStrategy::Create,
+            },
+            PluginFile {
+                rel_path: ".pi/extensions/agentkernel/package.json",
+                content: PI_EXTENSION_PACKAGE_JSON,
                 strategy: WriteStrategy::Create,
             },
         ],
@@ -231,9 +265,11 @@ fn global_root(target: PluginTarget) -> Result<PathBuf> {
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
 
     match target {
-        PluginTarget::Claude | PluginTarget::Codex | PluginTarget::Gemini | PluginTarget::Mcp => {
-            Ok(home)
-        }
+        PluginTarget::Claude
+        | PluginTarget::Codex
+        | PluginTarget::Gemini
+        | PluginTarget::Amp
+        | PluginTarget::Mcp => Ok(home),
         _ => bail!("{} plugins are per-project only", target.name()),
     }
 }
@@ -412,6 +448,16 @@ fn print_next_steps(target: PluginTarget) {
             println!("  Start the agentkernel server first: agentkernel serve");
             println!("  Then launch OpenCode -- the plugin loads automatically.");
         }
+        PluginTarget::Amp => {
+            println!("Amp MCP config written.");
+            println!("  The agentkernel MCP server will be available in Amp.");
+        }
+        PluginTarget::Pi => {
+            println!("Pi extension installed.");
+            println!("  Start the agentkernel server first: agentkernel serve");
+            println!("  Then launch Pi — the extension loads automatically.");
+            println!("  All bash commands will run in sandboxed microVMs.");
+        }
         PluginTarget::Mcp => {
             println!("Generic MCP config written.");
             println!("  Any MCP-compatible agent can now use the agentkernel server.");
@@ -434,6 +480,8 @@ const AGENT_COMMANDS: &[(&str, PluginTarget)] = &[
     ("codex", PluginTarget::Codex),
     ("gemini", PluginTarget::Gemini),
     ("opencode", PluginTarget::OpenCode),
+    ("amp", PluginTarget::Amp),
+    ("pi", PluginTarget::Pi),
 ];
 
 /// Detect agents whose CLI is installed but whose plugin is missing.
@@ -491,6 +539,13 @@ mod tests {
             PluginTarget::from_str("open-code"),
             Some(PluginTarget::OpenCode)
         );
+        assert_eq!(PluginTarget::from_str("amp"), Some(PluginTarget::Amp));
+        assert_eq!(PluginTarget::from_str("ampcode"), Some(PluginTarget::Amp));
+        assert_eq!(PluginTarget::from_str("pi"), Some(PluginTarget::Pi));
+        assert_eq!(
+            PluginTarget::from_str("pi-coding-agent"),
+            Some(PluginTarget::Pi)
+        );
         assert_eq!(PluginTarget::from_str("mcp"), Some(PluginTarget::Mcp));
         assert_eq!(PluginTarget::from_str("unknown"), None);
         assert_eq!(PluginTarget::from_str("CLAUDE"), Some(PluginTarget::Claude));
@@ -499,9 +554,11 @@ mod tests {
     #[test]
     fn test_plugin_target_all() {
         let all = PluginTarget::all();
-        assert_eq!(all.len(), 5);
+        assert_eq!(all.len(), 7);
         assert_eq!(all[0], PluginTarget::Claude);
-        assert_eq!(all[4], PluginTarget::Mcp);
+        assert_eq!(all[4], PluginTarget::Amp);
+        assert_eq!(all[5], PluginTarget::Pi);
+        assert_eq!(all[6], PluginTarget::Mcp);
     }
 
     #[test]
@@ -514,6 +571,8 @@ mod tests {
             serde_json::from_str(MCP_GENERIC_JSON).expect("Generic mcp.json should parse");
         let _: serde_json::Value = serde_json::from_str(OPENCODE_PACKAGE_JSON)
             .expect("OpenCode package.json should parse");
+        let _: serde_json::Value =
+            serde_json::from_str(PI_EXTENSION_PACKAGE_JSON).expect("Pi package.json should parse");
     }
 
     #[test]
@@ -525,6 +584,8 @@ mod tests {
         assert!(!MCP_GENERIC_JSON.is_empty());
         assert!(!OPENCODE_PACKAGE_JSON.is_empty());
         assert!(!OPENCODE_PLUGIN_TS.is_empty());
+        assert!(!PI_EXTENSION_INDEX_TS.is_empty());
+        assert!(!PI_EXTENSION_PACKAGE_JSON.is_empty());
     }
 
     #[test]

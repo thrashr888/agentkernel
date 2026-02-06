@@ -236,6 +236,14 @@ impl McpServer {
                                 "type": "array",
                                 "items": { "type": "string" },
                                 "description": "Port mappings (e.g., [\"8080:80\", \"3000\", \"5353:53/udp\"])"
+                            },
+                            "source_url": {
+                                "type": "string",
+                                "description": "Git repo URL to clone into /workspace"
+                            },
+                            "source_ref": {
+                                "type": "string",
+                                "description": "Git ref to checkout after cloning (branch, tag, or commit)"
                             }
                         },
                         "required": ["name"]
@@ -255,6 +263,19 @@ impl McpServer {
                                 "type": "array",
                                 "items": { "type": "string" },
                                 "description": "The command and arguments to run"
+                            },
+                            "env": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Environment variables as KEY=VALUE pairs"
+                            },
+                            "workdir": {
+                                "type": "string",
+                                "description": "Working directory inside the sandbox"
+                            },
+                            "sudo": {
+                                "type": "boolean",
+                                "description": "Run the command as root"
                             }
                         },
                         "required": ["name", "command"]
@@ -349,6 +370,207 @@ impl McpServer {
                         },
                         "required": ["name"]
                     }
+                },
+                {
+                    "name": "sandbox_write_files",
+                    "description": "Write multiple files to a running sandbox in one call (writes to sandbox only).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the sandbox"
+                            },
+                            "files": {
+                                "type": "object",
+                                "description": "Map of absolute path to file content (e.g., {\"/app/main.py\": \"print('hello')\"})",
+                                "additionalProperties": { "type": "string" }
+                            }
+                        },
+                        "required": ["name", "files"]
+                    }
+                },
+                {
+                    "name": "sandbox_exec_detach",
+                    "description": "Start a detached (background) command in a sandbox. Returns a command ID for tracking.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the sandbox"
+                            },
+                            "command": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "The command and arguments to run"
+                            },
+                            "env": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Environment variables as KEY=VALUE pairs"
+                            },
+                            "workdir": {
+                                "type": "string",
+                                "description": "Working directory inside the sandbox"
+                            },
+                            "sudo": {
+                                "type": "boolean",
+                                "description": "Run the command as root"
+                            }
+                        },
+                        "required": ["name", "command"]
+                    }
+                },
+                {
+                    "name": "sandbox_exec_status",
+                    "description": "Get the status of a detached command (running, completed, failed).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "The detached command ID"
+                            }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
+                    "name": "sandbox_exec_logs",
+                    "description": "Get stdout/stderr from a detached command.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "The detached command ID"
+                            },
+                            "stream": {
+                                "type": "string",
+                                "description": "Which stream to read: stdout (default) or stderr",
+                                "enum": ["stdout", "stderr"]
+                            }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
+                    "name": "sandbox_exec_kill",
+                    "description": "Kill a detached command.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "The detached command ID"
+                            }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
+                    "name": "sandbox_exec_list",
+                    "description": "List all detached commands in a sandbox.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the sandbox (optional, lists all if omitted)"
+                            }
+                        }
+                    }
+                },
+                {
+                    "name": "sandbox_extend_ttl",
+                    "description": "Extend a sandbox's time-to-live. Adds additional time to the current expiry.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the sandbox"
+                            },
+                            "by": {
+                                "type": "string",
+                                "description": "Additional time (e.g., '1h', '30m', '2d'). Default: 1h"
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "snapshot_list",
+                    "description": "List all snapshots.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                },
+                {
+                    "name": "snapshot_take",
+                    "description": "Take a snapshot of a sandbox.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "sandbox": {
+                                "type": "string",
+                                "description": "Name of the sandbox to snapshot"
+                            },
+                            "name": {
+                                "type": "string",
+                                "description": "Name for the snapshot"
+                            }
+                        },
+                        "required": ["sandbox", "name"]
+                    }
+                },
+                {
+                    "name": "snapshot_get",
+                    "description": "Get information about a snapshot.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the snapshot"
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "snapshot_delete",
+                    "description": "Delete a snapshot.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the snapshot to delete"
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "snapshot_restore",
+                    "description": "Restore a sandbox from a snapshot.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the snapshot to restore"
+                            },
+                            "as_name": {
+                                "type": "string",
+                                "description": "Name for the restored sandbox (defaults to original + '-restored')"
+                            }
+                        },
+                        "required": ["name"]
+                    }
                 }
             ]
         });
@@ -373,8 +595,20 @@ impl McpServer {
             "sandbox_remove" => self.tool_sandbox_remove(&arguments),
             "sandbox_file_write" => self.tool_sandbox_file_write(&arguments),
             "sandbox_file_read" => self.tool_sandbox_file_read(&arguments),
+            "sandbox_write_files" => self.tool_sandbox_write_files(&arguments),
             "sandbox_start" => self.tool_sandbox_start(&arguments),
             "sandbox_stop" => self.tool_sandbox_stop(&arguments),
+            "sandbox_exec_detach" => self.tool_sandbox_exec_detach(&arguments),
+            "sandbox_exec_status" => self.tool_sandbox_exec_status(&arguments),
+            "sandbox_exec_logs" => self.tool_sandbox_exec_logs(&arguments),
+            "sandbox_exec_kill" => self.tool_sandbox_exec_kill(&arguments),
+            "sandbox_exec_list" => self.tool_sandbox_exec_list(&arguments),
+            "sandbox_extend_ttl" => self.tool_sandbox_extend_ttl(&arguments),
+            "snapshot_list" => self.tool_snapshot_list(),
+            "snapshot_take" => self.tool_snapshot_take(&arguments),
+            "snapshot_get" => self.tool_snapshot_get(&arguments),
+            "snapshot_delete" => self.tool_snapshot_delete(&arguments),
+            "snapshot_restore" => self.tool_snapshot_restore(&arguments),
             _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
         };
 
@@ -510,7 +744,6 @@ impl McpServer {
             .and_then(|v| v.as_str())
             .unwrap_or("alpine:3.20");
 
-        // Parse port mappings
         let ports: Vec<crate::backend::PortMapping> = args
             .get("ports")
             .and_then(|v| v.as_array())
@@ -522,6 +755,16 @@ impl McpServer {
             })
             .transpose()?
             .unwrap_or_default();
+
+        let source_url = args
+            .get("source_url")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let source_ref = args
+            .get("source_ref")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         let port_desc = if ports.is_empty() {
             String::new()
@@ -543,10 +786,45 @@ impl McpServer {
                     .create_with_options(name, image, 1, 512, None, ports)
                     .await?;
                 manager.start(name).await?;
-                Ok(format!(
+
+                let mut result = format!(
                     "Sandbox '{}' created and started with image '{}'{}",
                     name, image, port_desc
-                ))
+                );
+
+                // Clone git repo if source_url provided
+                if let Some(ref url) = source_url {
+                    let install = vec![
+                        "sh".to_string(),
+                        "-c".to_string(),
+                        "which git >/dev/null 2>&1 || apk add --no-cache git >/dev/null 2>&1 || apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1 || true".to_string(),
+                    ];
+                    let _ = manager.exec_cmd(name, &install).await;
+
+                    let clone = vec![
+                        "git".to_string(),
+                        "clone".to_string(),
+                        url.clone(),
+                        "/workspace".to_string(),
+                    ];
+                    manager.exec_cmd(name, &clone).await?;
+
+                    if let Some(ref git_ref) = source_ref {
+                        let checkout = vec![
+                            "git".to_string(),
+                            "-C".to_string(),
+                            "/workspace".to_string(),
+                            "checkout".to_string(),
+                            git_ref.clone(),
+                        ];
+                        manager.exec_cmd(name, &checkout).await?;
+                        result.push_str(&format!(". Cloned {} (ref: {}) into /workspace", url, git_ref));
+                    } else {
+                        result.push_str(&format!(". Cloned {} into /workspace", url));
+                    }
+                }
+
+                Ok(result)
             })
         })
     }
@@ -571,10 +849,33 @@ impl McpServer {
             anyhow::bail!("command is required");
         }
 
+        let env: Vec<String> = args
+            .get("env")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let workdir = args
+            .get("workdir")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let sudo = args.get("sudo").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let opts = crate::backend::ExecOptions {
+            env,
+            workdir,
+            user: if sudo { Some("root".to_string()) } else { None },
+        };
+
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
-                manager.exec_cmd(name, &command).await
+                manager.exec_cmd_full(name, &command, &opts).await
             })
         })
     }
@@ -715,6 +1016,44 @@ impl McpServer {
         })
     }
 
+    fn tool_sandbox_write_files(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        let files = args
+            .get("files")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| anyhow::anyhow!("files is required (object mapping path to content)"))?;
+
+        if files.is_empty() {
+            anyhow::bail!("files map is empty");
+        }
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+
+                if !manager.is_running(name) {
+                    anyhow::bail!(
+                        "Sandbox '{}' is not running. Start it first with sandbox_start.",
+                        name
+                    );
+                }
+
+                let mut count = 0;
+                for (path, content) in files {
+                    let text = content.as_str().unwrap_or("");
+                    manager.write_file(name, path, text.as_bytes()).await?;
+                    count += 1;
+                }
+
+                Ok(format!("Wrote {} file(s) to sandbox '{}'", count, name))
+            })
+        })
+    }
+
     fn tool_sandbox_start(&self, args: &Value) -> Result<String> {
         let name = args
             .get("name")
@@ -762,6 +1101,218 @@ impl McpServer {
 
                 manager.stop(name).await?;
                 Ok(format!("Sandbox '{}' stopped.", name))
+            })
+        })
+    }
+
+    fn tool_sandbox_exec_detach(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+        let command: Vec<String> = args
+            .get("command")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow::anyhow!("command is required"))?
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        let env: Vec<String> = args
+            .get("env")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let workdir = args
+            .get("workdir")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let sudo = args.get("sudo").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                let opts = crate::backend::ExecOptions {
+                    env,
+                    workdir,
+                    user: if sudo { Some("root".to_string()) } else { None },
+                };
+                let cmd = manager.exec_detached(name, &command, &opts).await?;
+                Ok(serde_json::to_string_pretty(&cmd)?)
+            })
+        })
+    }
+
+    fn tool_sandbox_exec_status(&self, args: &Value) -> Result<String> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("id is required"))?;
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                let cmd = manager.detached_status(id).await?;
+                Ok(serde_json::to_string_pretty(&cmd)?)
+            })
+        })
+    }
+
+    fn tool_sandbox_exec_logs(&self, args: &Value) -> Result<String> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("id is required"))?;
+        let stream = args.get("stream").and_then(|v| v.as_str());
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                manager.detached_logs(id, stream).await
+            })
+        })
+    }
+
+    fn tool_sandbox_exec_kill(&self, args: &Value) -> Result<String> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("id is required"))?;
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                manager.detached_kill(id).await?;
+                Ok(format!("Command {} killed.", id))
+            })
+        })
+    }
+
+    fn tool_sandbox_exec_list(&self, args: &Value) -> Result<String> {
+        let name = args.get("name").and_then(|v| v.as_str());
+
+        let manager = VmManager::new()?;
+        let commands = manager.detached_list(name);
+        Ok(serde_json::to_string_pretty(&commands)?)
+    }
+
+    fn tool_sandbox_extend_ttl(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        let by = args.get("by").and_then(|v| v.as_str()).unwrap_or("1h");
+
+        // Parse the time string into seconds
+        let additional_secs = crate::ssh::parse_ttl_to_secs(by)?;
+
+        let mut manager = VmManager::new()?;
+        if !manager.exists(name) {
+            anyhow::bail!("Sandbox '{}' not found", name);
+        }
+
+        let new_expiry = manager.extend_ttl(name, additional_secs)?;
+
+        match new_expiry {
+            Some(exp) => Ok(format!(
+                "Extended TTL for sandbox '{}'. New expiry: {}",
+                name, exp
+            )),
+            None => Ok(format!(
+                "Sandbox '{}' now has no expiry (TTL disabled).",
+                name
+            )),
+        }
+    }
+
+    fn tool_snapshot_list(&self) -> Result<String> {
+        let snapshots = crate::snapshot::list()?;
+        Ok(serde_json::to_string_pretty(&snapshots)?)
+    }
+
+    fn tool_snapshot_take(&self, args: &Value) -> Result<String> {
+        let sandbox = args
+            .get("sandbox")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("sandbox is required"))?;
+
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        // Get sandbox state
+        let manager = VmManager::new()?;
+        let sandbox_state = manager
+            .get_state(sandbox)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", sandbox))?;
+
+        let input = crate::snapshot::SnapshotInput {
+            image: sandbox_state.image.clone(),
+            backend: sandbox_state
+                .backend
+                .map(|b| format!("{:?}", b).to_lowercase())
+                .unwrap_or_else(|| "docker".to_string()),
+            vcpus: sandbox_state.vcpus,
+            memory_mb: sandbox_state.memory_mb,
+        };
+
+        let meta = crate::snapshot::take(sandbox, name, &input)?;
+        Ok(serde_json::to_string_pretty(&meta)?)
+    }
+
+    fn tool_snapshot_get(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        match crate::snapshot::get(name)? {
+            Some(meta) => Ok(serde_json::to_string_pretty(&meta)?),
+            None => anyhow::bail!("Snapshot '{}' not found", name),
+        }
+    }
+
+    fn tool_snapshot_delete(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        crate::snapshot::delete(name)?;
+        Ok(format!("Snapshot '{}' deleted.", name))
+    }
+
+    fn tool_snapshot_restore(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        let as_name = args.get("as_name").and_then(|v| v.as_str());
+
+        // Get snapshot metadata
+        let meta = crate::snapshot::get(name)?
+            .ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", name))?;
+
+        let restore_name = as_name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("{}-restored", meta.sandbox));
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                manager
+                    .create(&restore_name, &meta.image_tag, meta.vcpus, meta.memory_mb)
+                    .await?;
+                Ok(format!(
+                    "Restored snapshot '{}' as sandbox '{}'.",
+                    name, restore_name
+                ))
             })
         })
     }
