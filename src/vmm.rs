@@ -582,6 +582,57 @@ impl VmManager {
         Ok(())
     }
 
+    /// Extend a sandbox's time-to-live by additional seconds.
+    /// Returns the new expiry time in RFC3339 format, or None if TTL is disabled.
+    pub fn extend_ttl(&mut self, name: &str, additional_secs: u64) -> Result<Option<String>> {
+        use chrono::{DateTime, Duration, Utc};
+
+        let new_expiry = {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+
+            // Calculate new expiry based on current state
+            let now = Utc::now();
+            let base_time = if let Some(ref expires_at) = state.expires_at {
+                // Extend from current expiry (if not already expired)
+                expires_at
+                    .parse::<DateTime<Utc>>()
+                    .ok()
+                    .filter(|exp| *exp > now)
+                    .unwrap_or(now)
+            } else {
+                // No current expiry, extend from now
+                now
+            };
+
+            let new_exp = base_time + Duration::seconds(additional_secs as i64);
+            let new_expiry_str = new_exp.to_rfc3339();
+
+            // Update state
+            state.expires_at = Some(new_expiry_str.clone());
+            // Also update ttl_seconds to reflect total TTL from creation
+            if let Ok(created) = state.created_at.parse::<DateTime<Utc>>() {
+                let total_secs = (new_exp - created).num_seconds();
+                if total_secs > 0 {
+                    state.ttl_seconds = Some(total_secs as u64);
+                }
+            }
+
+            Some(new_expiry_str)
+        };
+
+        // Save the updated state
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+
+        Ok(new_expiry)
+    }
+
     /// Start a sandbox
     pub async fn start(&mut self, name: &str) -> Result<()> {
         self.start_with_permissions(name, &Permissions::default())

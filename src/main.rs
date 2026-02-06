@@ -145,6 +145,14 @@ enum Commands {
         /// Name of the sandbox to remove
         name: String,
     },
+    /// Extend a sandbox's time-to-live
+    ExtendTtl {
+        /// Name of the sandbox
+        name: String,
+        /// Additional time (e.g. 1h, 30m, 2d). Adds to current expiry.
+        #[arg(long, default_value = "1h")]
+        by: String,
+    },
     /// Attach to a running sandbox (opens interactive shell)
     Attach {
         /// Name of the sandbox to attach to
@@ -1148,6 +1156,22 @@ memory_mb = 512
             println!("Removing sandbox '{}'...", name);
             manager.remove(&name).await?;
             println!("Sandbox '{}' removed.", name);
+        }
+        Commands::ExtendTtl { name, by } => {
+            validation::validate_sandbox_name(&name)?;
+
+            let mut manager = VmManager::new()?;
+            if !manager.exists(&name) {
+                bail!("Sandbox '{}' not found", name);
+            }
+
+            let additional_secs = crate::ssh::parse_ttl_to_secs(&by)?;
+            let new_expiry = manager.extend_ttl(&name, additional_secs)?;
+
+            match new_expiry {
+                Some(exp) => println!("Extended TTL for '{}'. New expiry: {}", name, exp),
+                None => println!("Sandbox '{}' now has no expiry (TTL disabled).", name),
+            }
         }
         Commands::Attach { name, env, record } => {
             validation::validate_sandbox_name(&name)?;

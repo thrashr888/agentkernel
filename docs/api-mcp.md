@@ -140,6 +140,100 @@ Read a file from a sandbox.
 }
 ```
 
+### sandbox_extend_ttl
+
+Extend a sandbox's time-to-live.
+
+```json
+{
+  "name": "sandbox_extend_ttl",
+  "arguments": {
+    "name": "my-sandbox",
+    "by": "1h"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Sandbox name |
+| `by` | string | No | Duration to extend (default: "1h") |
+
+### snapshot_list
+
+List all snapshots.
+
+```json
+{
+  "name": "snapshot_list",
+  "arguments": {}
+}
+```
+
+### snapshot_take
+
+Take a snapshot of a sandbox.
+
+```json
+{
+  "name": "snapshot_take",
+  "arguments": {
+    "sandbox": "my-sandbox",
+    "name": "checkpoint-1"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sandbox` | string | Yes | Sandbox to snapshot |
+| `name` | string | Yes | Snapshot name |
+
+### snapshot_get
+
+Get information about a snapshot.
+
+```json
+{
+  "name": "snapshot_get",
+  "arguments": {
+    "name": "checkpoint-1"
+  }
+}
+```
+
+### snapshot_delete
+
+Delete a snapshot.
+
+```json
+{
+  "name": "snapshot_delete",
+  "arguments": {
+    "name": "checkpoint-1"
+  }
+}
+```
+
+### snapshot_restore
+
+Restore a sandbox from a snapshot.
+
+```json
+{
+  "name": "snapshot_restore",
+  "arguments": {
+    "name": "checkpoint-1",
+    "as_name": "restored-sandbox"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Snapshot to restore |
+| `as_name` | string | No | Name for restored sandbox (default: "{original}-restored") |
+
 ## Example Conversation
 
 With MCP configured, you can have conversations like:

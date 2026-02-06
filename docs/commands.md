@@ -20,6 +20,7 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 | `ssh-config` | Generate SSH config entry for IDE integration |
 | `ssh-proxy` | ProxyCommand helper for SSH |
 | [`list`](cmd-list) | List all sandboxes (with IP addresses) |
+| `extend-ttl` | Extend a sandbox's time-to-live |
 | `cp` | Copy files to/from a sandbox |
 | `info` | Show detailed information about a sandbox (with IP) |
 
@@ -138,6 +139,19 @@ agentkernel create my-sandbox
 agentkernel start my-sandbox
 agentkernel exec my-sandbox -- npm test
 agentkernel stop my-sandbox
+```
+
+### Sandbox with TTL
+```bash
+# Create a sandbox with 2-hour TTL
+agentkernel create my-sandbox --ttl 2h
+agentkernel start my-sandbox
+
+# Extend the TTL by 1 hour (default)
+agentkernel extend-ttl my-sandbox
+
+# Extend by specific duration
+agentkernel extend-ttl my-sandbox --by 30m
 ```
 
 ### Snapshot and restore

@@ -10,6 +10,11 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ### Added
 
+- **Persistent volumes** — `agentkernel volume create <slug>`, `volume list`, `volume delete`; mount via `--volume slug:/path` on `create` or `run`; volumes persist across sandbox lifecycle
+- **Custom image builder** — `agentkernel build -t name .` builds images from Dockerfile; `images local-list`, `images local-rm`; use built images with `create --image local:name`
+- **TTL extension** — `agentkernel extend-ttl <sandbox> --by 1h` to extend sandbox lifetime; `POST /sandboxes/:name/extend` HTTP endpoint; `sandbox_extend_ttl` MCP tool
+- **Snapshots via HTTP/MCP** — `GET/POST/DELETE /snapshots`, `POST /snapshots/:name/restore` HTTP endpoints; 5 MCP tools (`snapshot_list`, `snapshot_take`, `snapshot_get`, `snapshot_delete`, `snapshot_restore`)
+- **SDK volume support** — all SDKs (Rust, Node.js, Python, Go, Swift) now support `volumes` in `CreateSandboxOptions`
 - **Per-command exec options** — `agentkernel exec` now supports `--workdir` (`-w`) and `--sudo` flags; HTTP API and MCP `sandbox_exec` tool accept `workdir`, `env`, and `sudo` parameters
 - **Git source cloning on create** — `agentkernel create --source git:URL [--git-ref REF]` clones a repo into `/workspace` at creation time; also available via HTTP API (`source_url`/`source_ref`) and MCP `sandbox_create`
 - **Batch file write** — `POST /sandboxes/{name}/files` accepts `{"files": {"/path": "content"}}` for multi-file writes; MCP `sandbox_write_files` tool for the same

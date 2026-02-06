@@ -481,6 +481,96 @@ impl McpServer {
                             }
                         }
                     }
+                },
+                {
+                    "name": "sandbox_extend_ttl",
+                    "description": "Extend a sandbox's time-to-live. Adds additional time to the current expiry.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the sandbox"
+                            },
+                            "by": {
+                                "type": "string",
+                                "description": "Additional time (e.g., '1h', '30m', '2d'). Default: 1h"
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "snapshot_list",
+                    "description": "List all snapshots.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                },
+                {
+                    "name": "snapshot_take",
+                    "description": "Take a snapshot of a sandbox.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "sandbox": {
+                                "type": "string",
+                                "description": "Name of the sandbox to snapshot"
+                            },
+                            "name": {
+                                "type": "string",
+                                "description": "Name for the snapshot"
+                            }
+                        },
+                        "required": ["sandbox", "name"]
+                    }
+                },
+                {
+                    "name": "snapshot_get",
+                    "description": "Get information about a snapshot.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the snapshot"
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "snapshot_delete",
+                    "description": "Delete a snapshot.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the snapshot to delete"
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "snapshot_restore",
+                    "description": "Restore a sandbox from a snapshot.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the snapshot to restore"
+                            },
+                            "as_name": {
+                                "type": "string",
+                                "description": "Name for the restored sandbox (defaults to original + '-restored')"
+                            }
+                        },
+                        "required": ["name"]
+                    }
                 }
             ]
         });
@@ -513,6 +603,12 @@ impl McpServer {
             "sandbox_exec_logs" => self.tool_sandbox_exec_logs(&arguments),
             "sandbox_exec_kill" => self.tool_sandbox_exec_kill(&arguments),
             "sandbox_exec_list" => self.tool_sandbox_exec_list(&arguments),
+            "sandbox_extend_ttl" => self.tool_sandbox_extend_ttl(&arguments),
+            "snapshot_list" => self.tool_snapshot_list(),
+            "snapshot_take" => self.tool_snapshot_take(&arguments),
+            "snapshot_get" => self.tool_snapshot_get(&arguments),
+            "snapshot_delete" => self.tool_snapshot_delete(&arguments),
+            "snapshot_restore" => self.tool_snapshot_restore(&arguments),
             _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
         };
 
@@ -1101,6 +1197,124 @@ impl McpServer {
         let manager = VmManager::new()?;
         let commands = manager.detached_list(name);
         Ok(serde_json::to_string_pretty(&commands)?)
+    }
+
+    fn tool_sandbox_extend_ttl(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        let by = args.get("by").and_then(|v| v.as_str()).unwrap_or("1h");
+
+        // Parse the time string into seconds
+        let additional_secs = crate::ssh::parse_ttl_to_secs(by)?;
+
+        let mut manager = VmManager::new()?;
+        if !manager.exists(name) {
+            anyhow::bail!("Sandbox '{}' not found", name);
+        }
+
+        let new_expiry = manager.extend_ttl(name, additional_secs)?;
+
+        match new_expiry {
+            Some(exp) => Ok(format!(
+                "Extended TTL for sandbox '{}'. New expiry: {}",
+                name, exp
+            )),
+            None => Ok(format!(
+                "Sandbox '{}' now has no expiry (TTL disabled).",
+                name
+            )),
+        }
+    }
+
+    fn tool_snapshot_list(&self) -> Result<String> {
+        let snapshots = crate::snapshot::list()?;
+        Ok(serde_json::to_string_pretty(&snapshots)?)
+    }
+
+    fn tool_snapshot_take(&self, args: &Value) -> Result<String> {
+        let sandbox = args
+            .get("sandbox")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("sandbox is required"))?;
+
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        // Get sandbox state
+        let manager = VmManager::new()?;
+        let sandbox_state = manager
+            .get_state(sandbox)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", sandbox))?;
+
+        let input = crate::snapshot::SnapshotInput {
+            image: sandbox_state.image.clone(),
+            backend: sandbox_state
+                .backend
+                .map(|b| format!("{:?}", b).to_lowercase())
+                .unwrap_or_else(|| "docker".to_string()),
+            vcpus: sandbox_state.vcpus,
+            memory_mb: sandbox_state.memory_mb,
+        };
+
+        let meta = crate::snapshot::take(sandbox, name, &input)?;
+        Ok(serde_json::to_string_pretty(&meta)?)
+    }
+
+    fn tool_snapshot_get(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        match crate::snapshot::get(name)? {
+            Some(meta) => Ok(serde_json::to_string_pretty(&meta)?),
+            None => anyhow::bail!("Snapshot '{}' not found", name),
+        }
+    }
+
+    fn tool_snapshot_delete(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        crate::snapshot::delete(name)?;
+        Ok(format!("Snapshot '{}' deleted.", name))
+    }
+
+    fn tool_snapshot_restore(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        let as_name = args.get("as_name").and_then(|v| v.as_str());
+
+        // Get snapshot metadata
+        let meta = crate::snapshot::get(name)?
+            .ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", name))?;
+
+        let restore_name = as_name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("{}-restored", meta.sandbox));
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                manager
+                    .create(&restore_name, &meta.image_tag, meta.vcpus, meta.memory_mb)
+                    .await?;
+                Ok(format!(
+                    "Restored snapshot '{}' as sandbox '{}'.",
+                    name, restore_name
+                ))
+            })
+        })
     }
 }
 

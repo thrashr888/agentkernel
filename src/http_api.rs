@@ -516,6 +516,18 @@ async fn handle_request(
         // Delete a sandbox
         (Method::DELETE, ["sandboxes", name]) => handle_delete_sandbox(name, state).await,
 
+        // Extend sandbox TTL
+        (Method::POST, ["sandboxes", name, "extend"]) => handle_extend_ttl(req, name, state).await,
+
+        // Snapshot endpoints
+        (Method::GET, ["snapshots"]) => handle_list_snapshots(state).await,
+        (Method::POST, ["snapshots"]) => handle_take_snapshot(req, state).await,
+        (Method::GET, ["snapshots", name]) => handle_get_snapshot(name).await,
+        (Method::DELETE, ["snapshots", name]) => handle_delete_snapshot(name).await,
+        (Method::POST, ["snapshots", name, "restore"]) => {
+            handle_restore_snapshot(req, name, state).await
+        }
+
         // Enterprise policy endpoints
         #[cfg(feature = "enterprise")]
         (Method::GET, ["policy", "status"]) => handle_policy_status(state).await,
@@ -1390,6 +1402,305 @@ async fn handle_delete_sandbox(name: &str, state: Arc<AppState>) -> Response<Box
 
     match manager.remove(name).await {
         Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox removed")),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+/// Request body for extending TTL
+#[derive(Debug, Deserialize)]
+struct ExtendTtlRequest {
+    /// Additional time in seconds (or time string like "1h", "30m")
+    #[serde(default = "default_extend_by")]
+    by: String,
+}
+
+fn default_extend_by() -> String {
+    "1h".to_string()
+}
+
+/// Response for extend TTL
+#[derive(Debug, Serialize)]
+struct ExtendTtlResponse {
+    expires_at: Option<String>,
+}
+
+async fn handle_extend_ttl(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    // Validate sandbox name
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    // Parse request body (optional - defaults to 1h if empty)
+    let body: ExtendTtlRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(_) => ExtendTtlRequest {
+            by: "1h".to_string(),
+        },
+    };
+
+    // Parse the time string into seconds
+    let additional_secs = match crate::ssh::parse_ttl_to_secs(&body.by) {
+        Ok(secs) => secs,
+        Err(e) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(format!("Invalid time format: {}", e)),
+            );
+        }
+    };
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    // Check if sandbox exists
+    if !manager.exists(name) {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("Sandbox '{}' not found", name)),
+        );
+    }
+
+    // Extend the TTL
+    match manager.extend_ttl(name, additional_secs) {
+        Ok(new_expiry) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success(ExtendTtlResponse {
+                expires_at: new_expiry,
+            }),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+// --- Snapshot handlers ---
+
+async fn handle_list_snapshots(_state: Arc<AppState>) -> Response<BoxBody> {
+    match crate::snapshot::list() {
+        Ok(snapshots) => json_response(StatusCode::OK, &ApiResponse::success(snapshots)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+/// Request body for taking a snapshot
+#[derive(Debug, Deserialize)]
+struct TakeSnapshotRequest {
+    /// Name of the sandbox to snapshot
+    sandbox: String,
+    /// Name for the snapshot
+    name: String,
+}
+
+async fn handle_take_snapshot(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    let body: TakeSnapshotRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    // Validate names
+    if let Err(e) = validation::validate_sandbox_name(&body.sandbox) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+    if let Err(e) = validation::validate_sandbox_name(&body.name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(format!("Invalid snapshot name: {}", e)),
+        );
+    }
+
+    // Get sandbox info
+    let manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let sandbox_state = match manager.get_state(&body.sandbox) {
+        Some(s) => s,
+        None => {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error(format!("Sandbox '{}' not found", body.sandbox)),
+            );
+        }
+    };
+
+    let input = crate::snapshot::SnapshotInput {
+        image: sandbox_state.image.clone(),
+        backend: sandbox_state
+            .backend
+            .map(|b| format!("{:?}", b).to_lowercase())
+            .unwrap_or_else(|| "docker".to_string()),
+        vcpus: sandbox_state.vcpus,
+        memory_mb: sandbox_state.memory_mb,
+    };
+
+    match crate::snapshot::take(&body.sandbox, &body.name, &input) {
+        Ok(meta) => json_response(StatusCode::OK, &ApiResponse::success(meta)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_get_snapshot(name: &str) -> Response<BoxBody> {
+    // Validate snapshot name
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    match crate::snapshot::get(name) {
+        Ok(Some(meta)) => json_response(StatusCode::OK, &ApiResponse::success(meta)),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("Snapshot '{}' not found", name)),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_delete_snapshot(name: &str) -> Response<BoxBody> {
+    // Validate snapshot name
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    match crate::snapshot::delete(name) {
+        Ok(()) => json_response(StatusCode::OK, &ApiResponse::success("Snapshot deleted")),
+        Err(e) => {
+            let status = if e.to_string().contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            json_response(status, &ApiResponse::<()>::error(e.to_string()))
+        }
+    }
+}
+
+/// Request body for restoring a snapshot
+#[derive(Debug, Deserialize)]
+struct RestoreSnapshotRequest {
+    /// Name for the restored sandbox (defaults to original + "-restored")
+    #[serde(default)]
+    as_name: Option<String>,
+}
+
+async fn handle_restore_snapshot(
+    req: Request<Incoming>,
+    snapshot_name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    // Validate snapshot name
+    if let Err(e) = validation::validate_sandbox_name(snapshot_name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    // Parse optional body
+    let body: RestoreSnapshotRequest = read_json_body(req)
+        .await
+        .unwrap_or(RestoreSnapshotRequest { as_name: None });
+
+    // Get snapshot metadata
+    let meta = match crate::snapshot::get(snapshot_name) {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error(format!("Snapshot '{}' not found", snapshot_name)),
+            );
+        }
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    // Determine restore name
+    let restore_name = body
+        .as_name
+        .unwrap_or_else(|| format!("{}-restored", meta.sandbox));
+
+    if let Err(e) = validation::validate_sandbox_name(&restore_name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(format!("Invalid restore name: {}", e)),
+        );
+    }
+
+    // Create the restored sandbox
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager
+        .create(&restore_name, &meta.image_tag, meta.vcpus, meta.memory_mb)
+        .await
+    {
+        Ok(()) => {
+            #[derive(Serialize)]
+            struct RestoreResponse {
+                sandbox: String,
+                from_snapshot: String,
+            }
+            json_response(
+                StatusCode::OK,
+                &ApiResponse::success(RestoreResponse {
+                    sandbox: restore_name,
+                    from_snapshot: snapshot_name.to_string(),
+                }),
+            )
+        }
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
