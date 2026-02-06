@@ -15,6 +15,7 @@ mod hyperlight_backend;
 mod images;
 mod languages;
 mod mcp;
+mod opencode;
 mod permissions;
 mod pipeline;
 mod plugin_installer;

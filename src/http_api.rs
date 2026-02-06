@@ -26,6 +26,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::languages;
+use crate::opencode::OpenCodeState;
 use crate::permissions::SecurityProfile;
 use crate::validation;
 use crate::vmm::VmManager;
@@ -201,6 +202,8 @@ struct RunResponse {
 struct AppState {
     /// Optional API key for authentication
     api_key: Option<String>,
+    /// OpenCode API state
+    opencode: Arc<OpenCodeState>,
     /// Enterprise configuration (when enterprise feature is enabled)
     #[cfg(feature = "enterprise")]
     enterprise_config: Option<crate::config::EnterpriseConfig>,
@@ -222,6 +225,7 @@ impl AppState {
 
         Self {
             api_key,
+            opencode: Arc::new(OpenCodeState::new()),
             #[cfg(feature = "enterprise")]
             enterprise_config,
             #[cfg(feature = "enterprise")]
@@ -237,6 +241,7 @@ impl AppState {
         }
         Self {
             api_key,
+            opencode: Arc::new(OpenCodeState::new()),
             #[cfg(feature = "enterprise")]
             enterprise_config: None,
             #[cfg(feature = "enterprise")]
@@ -418,6 +423,21 @@ async fn handle_request(
     // Check authentication for all other endpoints
     if let Err(resp) = state.check_auth(&req) {
         return Ok(resp);
+    }
+
+    // Handle OpenCode API routes
+    if segments.first() == Some(&"opencode") {
+        let path_suffix = if segments.len() > 1 {
+            segments[1..].join("/")
+        } else {
+            String::new()
+        };
+        return Ok(crate::opencode::handle_opencode_request(
+            req,
+            &path_suffix,
+            state.opencode.clone(),
+        )
+        .await);
     }
 
     let response = match (method, segments.as_slice()) {
