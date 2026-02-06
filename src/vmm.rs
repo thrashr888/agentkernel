@@ -71,6 +71,9 @@ pub struct SandboxState {
     /// Host port mapped to sshd inside the sandbox
     #[serde(default)]
     pub ssh_host_port: Option<u16>,
+    /// Volume mounts (slug:/path format)
+    #[serde(default)]
+    pub volumes: Vec<String>,
 }
 
 /// Status of a detached command
@@ -546,6 +549,7 @@ impl VmManager {
             ports,
             ssh_enabled: false,
             ssh_host_port: None,
+            volumes: Vec::new(),
         };
 
         self.save_sandbox(&state)?;
@@ -1402,6 +1406,7 @@ mod tests {
             ports: Vec::new(),
             ssh_enabled: false,
             ssh_host_port: None,
+            volumes: Vec::new(),
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -1446,6 +1451,7 @@ mod tests {
             ports: Vec::new(),
             ssh_enabled: false,
             ssh_host_port: None,
+            volumes: Vec::new(),
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -1499,6 +1505,7 @@ mod tests {
             ports: Vec::new(),
             ssh_enabled: false,
             ssh_host_port: None,
+            volumes: Vec::new(),
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -1545,6 +1552,7 @@ mod tests {
                 ports: Vec::new(),
                 ssh_enabled: false,
                 ssh_host_port: None,
+                volumes: Vec::new(),
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();

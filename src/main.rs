@@ -12,6 +12,7 @@ mod firecracker_client;
 mod git_utils;
 mod http_api;
 mod hyperlight_backend;
+mod image_builder;
 mod images;
 mod languages;
 mod mcp;
@@ -34,6 +35,7 @@ mod template;
 mod tls;
 mod validation;
 mod vmm;
+mod volume;
 mod vsock;
 
 // Enterprise modules (behind feature flag)
@@ -121,6 +123,9 @@ enum Commands {
         /// Git ref to checkout after cloning (branch, tag, or commit)
         #[arg(long)]
         git_ref: Option<String>,
+        /// Mount a persistent volume (slug:/path or slug:/path:ro). Can be repeated.
+        #[arg(short = 'v', long = "volume")]
+        volumes: Vec<String>,
     },
     /// Start a sandbox
     Start {
@@ -455,6 +460,50 @@ enum Commands {
         #[command(subcommand)]
         action: PolicyAction,
     },
+    /// Manage persistent volumes
+    Volume {
+        #[command(subcommand)]
+        action: VolumeAction,
+    },
+    /// Build a custom image from a Dockerfile
+    Build {
+        /// Name/tag for the built image
+        #[arg(short = 't', long = "tag")]
+        name: String,
+        /// Build context directory
+        #[arg(default_value = ".")]
+        context: PathBuf,
+        /// Path to Dockerfile (default: Dockerfile in context)
+        #[arg(short = 'f', long)]
+        dockerfile: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum VolumeAction {
+    /// Create a new volume
+    Create {
+        /// Volume slug (e.g., my-data)
+        slug: String,
+        /// Size limit (e.g., 2GB, 512MB). Default: unlimited
+        #[arg(short, long)]
+        size: Option<String>,
+    },
+    /// List all volumes
+    List,
+    /// Show volume details
+    Info {
+        /// Volume slug
+        slug: String,
+    },
+    /// Delete a volume
+    Delete {
+        /// Volume slug
+        slug: String,
+        /// Force delete without confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -499,6 +548,15 @@ enum ImagesAction {
         /// Image to pull (e.g. python:3.12-alpine)
         image: String,
     },
+    /// List locally built images (from 'agentkernel build')
+    LocalList,
+    /// Delete a locally built image
+    LocalDelete {
+        /// Image name
+        name: String,
+    },
+    /// Sync local image metadata with Docker (remove stale entries)
+    LocalSync,
 }
 
 #[derive(Subcommand)]
@@ -815,6 +873,7 @@ memory_mb = 512
             ssh: ssh_flag,
             source,
             git_ref,
+            volumes,
         } => {
             // Resolve sandbox name: --branch auto-derives from git, otherwise require explicit name
             let name = if branch {
@@ -929,6 +988,26 @@ memory_mb = 512
                     ports
                         .iter()
                         .map(|p| p.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+
+            // Parse volume mounts
+            let volume_mounts: Vec<volume::VolumeMount> = volumes
+                .iter()
+                .map(|s| volume::VolumeMount::parse(s))
+                .collect::<Result<Vec<_>>>()?;
+
+            // Validate volumes exist
+            if !volume_mounts.is_empty() {
+                let vol_manager = volume::VolumeManager::new()?;
+                vol_manager.validate_mounts(&volume_mounts)?;
+                println!(
+                    "  Volumes: {}",
+                    volume_mounts
+                        .iter()
+                        .map(|v| format!("{}:{}", v.slug, v.mount_path))
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
@@ -2705,7 +2784,152 @@ memory_mb = 512
                 images::pull(&image)?;
                 println!("Done.");
             }
+            ImagesAction::LocalList => {
+                let builder = image_builder::ImageBuilder::new()?;
+                let images = builder.list();
+
+                if images.is_empty() {
+                    println!("No locally built images.");
+                    println!("\nBuild one with: agentkernel build -t <name> <context>");
+                } else {
+                    println!("{:<20} {:<12} {:<24}", "NAME", "SIZE", "BUILT");
+                    for img in images {
+                        println!(
+                            "{:<20} {:<12} {:<24}",
+                            img.name,
+                            img.format_size(),
+                            &img.built_at[..19] // Trim to date/time only
+                        );
+                    }
+                    println!("\nUse with: agentkernel create <sandbox> --image <name>");
+                }
+            }
+            ImagesAction::LocalDelete { name } => {
+                let mut builder = image_builder::ImageBuilder::new()?;
+                builder.delete(&name)?;
+                println!("Deleted locally built image '{}'", name);
+            }
+            ImagesAction::LocalSync => {
+                let mut builder = image_builder::ImageBuilder::new()?;
+                let removed = builder.sync()?;
+                if removed.is_empty() {
+                    println!("All local images are in sync.");
+                } else {
+                    println!("Removed {} stale image entries:", removed.len());
+                    for name in &removed {
+                        println!("  - {}", name);
+                    }
+                }
+            }
         },
+        Commands::Volume { action } => match action {
+            VolumeAction::Create { slug, size } => {
+                let mut manager = volume::VolumeManager::new()?;
+
+                let size_bytes = if let Some(ref s) = size {
+                    Some(volume::parse_size(s)?)
+                } else {
+                    None
+                };
+
+                let vol = manager.create(&slug, size_bytes)?;
+                println!("Created volume '{}'", vol.slug);
+                if vol.size_bytes > 0 {
+                    println!(
+                        "  Size limit: {}",
+                        volume::Volume::format_size(vol.size_bytes)
+                    );
+                }
+                println!("  Path: {}", manager.volumes_dir().join(&slug).display());
+            }
+            VolumeAction::List => {
+                let manager = volume::VolumeManager::new()?;
+                let volumes = manager.list();
+
+                if volumes.is_empty() {
+                    println!("No volumes found.");
+                    println!("\nCreate one with: agentkernel volume create <slug>");
+                } else {
+                    println!(
+                        "{:<20} {:<12} {:<12} {:<10}",
+                        "SLUG", "SIZE", "USAGE", "MOUNTS"
+                    );
+                    for vol in volumes {
+                        let usage = vol.disk_usage(manager.volumes_dir()).unwrap_or(0);
+                        println!(
+                            "{:<20} {:<12} {:<12} {:<10}",
+                            vol.slug,
+                            volume::Volume::format_size(vol.size_bytes),
+                            volume::Volume::format_size(usage),
+                            vol.mount_count
+                        );
+                    }
+                }
+            }
+            VolumeAction::Info { slug } => {
+                let manager = volume::VolumeManager::new()?;
+                let vol = manager
+                    .get(&slug)
+                    .ok_or_else(|| anyhow::anyhow!("Volume '{}' not found", slug))?;
+
+                let usage = vol.disk_usage(manager.volumes_dir()).unwrap_or(0);
+                println!("Volume: {}", vol.slug);
+                println!(
+                    "  Size limit:  {}",
+                    volume::Volume::format_size(vol.size_bytes)
+                );
+                println!("  Disk usage:  {}", volume::Volume::format_size(usage));
+                println!("  Mount count: {}", vol.mount_count);
+                println!("  Created:     {}", vol.created_at);
+                if let Some(ref last) = vol.last_used {
+                    println!("  Last used:   {}", last);
+                }
+                println!(
+                    "  Path:        {}",
+                    manager.volumes_dir().join(&slug).display()
+                );
+            }
+            VolumeAction::Delete { slug, force } => {
+                let mut manager = volume::VolumeManager::new()?;
+
+                if !force {
+                    let vol = manager
+                        .get(&slug)
+                        .ok_or_else(|| anyhow::anyhow!("Volume '{}' not found", slug))?;
+                    let usage = vol.disk_usage(manager.volumes_dir()).unwrap_or(0);
+                    if usage > 0 {
+                        eprintln!(
+                            "Warning: Volume '{}' contains {} of data.",
+                            slug,
+                            volume::Volume::format_size(usage)
+                        );
+                        eprintln!("Use --force to delete anyway.");
+                        bail!("Volume not empty. Use --force to delete.");
+                    }
+                }
+
+                manager.delete(&slug)?;
+                println!("Deleted volume '{}'", slug);
+            }
+        },
+        Commands::Build {
+            name,
+            context,
+            dockerfile,
+        } => {
+            let mut builder = image_builder::ImageBuilder::new()?;
+
+            let df_path = dockerfile.as_deref();
+            let image = builder.build(&name, &context, df_path)?;
+
+            println!("\nImage '{}' ready.", name);
+            println!("  Docker tag: {}", image.docker_ref());
+            println!("  Size: {}", image.format_size());
+            println!(
+                "\nUse it with: agentkernel create my-sandbox --image {}",
+                name
+            );
+        }
         Commands::Pipeline { file, backend } => {
             if !file.exists() {
                 bail!("Pipeline file not found: {}", file.display());
