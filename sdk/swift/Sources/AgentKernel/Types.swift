@@ -34,6 +34,8 @@ public struct CreateSandboxOptions: Sendable {
     public var sourceURL: String?
     /// Git ref to checkout after cloning.
     public var sourceRef: String?
+    /// Volume mounts (slug:/path or slug:/path:ro). Create volumes via CLI first.
+    public var volumes: [String]?
 
     public init(
         image: String? = nil,
@@ -41,7 +43,8 @@ public struct CreateSandboxOptions: Sendable {
         memoryMB: Int? = nil,
         profile: SecurityProfile? = nil,
         sourceURL: String? = nil,
-        sourceRef: String? = nil
+        sourceRef: String? = nil,
+        volumes: [String]? = nil
     ) {
         self.image = image
         self.vcpus = vcpus
@@ -49,6 +52,7 @@ public struct CreateSandboxOptions: Sendable {
         self.profile = profile
         self.sourceURL = sourceURL
         self.sourceRef = sourceRef
+        self.volumes = volumes
     }
 }
 

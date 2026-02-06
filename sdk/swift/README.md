@@ -138,6 +138,22 @@ let sb = try await client.createSandbox("my-project", options: CreateSandboxOpti
 ))
 ```
 
+### Persistent Volumes
+
+Mount volumes that persist across sandbox restarts:
+
+```swift
+// First create volumes via CLI: agentkernel volume create mydata
+
+let sb = try await client.createSandbox("my-project", options: CreateSandboxOptions(
+    image: "python:3.12-alpine",
+    volumes: ["mydata:/data", "cache:/tmp/cache:ro"]
+))
+
+// Data in /data persists across sandbox restarts
+try await client.execInSandbox("my-project", command: ["sh", "-c", "echo hello > /data/test.txt"])
+```
+
 ### File Operations
 
 Read, write, and delete files in a sandbox:

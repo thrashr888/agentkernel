@@ -82,6 +82,10 @@ pub struct CreateSandboxOptions {
     /// Git ref to checkout after cloning.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<String>,
+    /// Volume mounts (slug:/path or slug:/path:ro). Create volumes via CLI first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
+    pub volumes: Vec<String>,
 }
 
 /// Create sandbox request body (internal).

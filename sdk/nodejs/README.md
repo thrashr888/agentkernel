@@ -71,6 +71,22 @@ const sb = await client.createSandbox("my-project", {
 });
 ```
 
+## Persistent Volumes
+
+Mount volumes that persist across sandbox restarts:
+
+```typescript
+// First create volumes via CLI: agentkernel volume create mydata
+
+const sb = await client.createSandbox("my-project", {
+  image: "node:20-alpine",
+  volumes: ["mydata:/data", "cache:/tmp/cache:ro"],
+});
+
+// Data in /data persists across sandbox restarts
+await sb.run(["sh", "-c", "echo hello > /data/test.txt"]);
+```
+
 ## File Operations
 
 Read, write, and delete files in a sandbox:
@@ -174,7 +190,7 @@ List all sandboxes.
 
 ### `client.createSandbox(name, options?)`
 
-Create a new sandbox. Options: `image`, `vcpus`, `memory_mb`, `profile`, `source_url`, `source_ref`.
+Create a new sandbox. Options: `image`, `vcpus`, `memory_mb`, `profile`, `source_url`, `source_ref`, `volumes`.
 
 ### `client.getSandbox(name)`
 

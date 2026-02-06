@@ -87,6 +87,30 @@ client.create_sandbox("my-project", Some(opts)).await?;
 # }
 ```
 
+## Persistent Volumes
+
+Mount volumes that persist across sandbox restarts:
+
+```rust,no_run
+# async fn example() -> agentkernel_sdk::Result<()> {
+# let client = agentkernel_sdk::AgentKernel::builder().build()?;
+use agentkernel_sdk::CreateSandboxOptions;
+
+// First create volumes via CLI: agentkernel volume create mydata
+
+let opts = CreateSandboxOptions {
+    image: Some("python:3.12-alpine".to_string()),
+    volumes: vec!["mydata:/data".to_string(), "cache:/tmp/cache:ro".to_string()],
+    ..Default::default()
+};
+client.create_sandbox("my-project", Some(opts)).await?;
+
+// Data in /data persists across sandbox restarts
+client.exec_in_sandbox("my-project", &["sh", "-c", "echo hello > /data/test.txt"], None).await?;
+# Ok(())
+# }
+```
+
 ## File Operations
 
 Read, write, and delete files. Batch write multiple files at once:

@@ -77,6 +77,24 @@ with AgentKernel() as client:
     )
 ```
 
+## Persistent Volumes
+
+Mount volumes that persist across sandbox restarts:
+
+```python
+# First create volumes via CLI: agentkernel volume create mydata
+
+with AgentKernel() as client:
+    client.create_sandbox(
+        "my-project",
+        image="python:3.12-alpine",
+        volumes=["mydata:/data", "cache:/tmp/cache:ro"],
+    )
+
+    # Data in /data persists across sandbox restarts
+    client.exec_in_sandbox("my-project", ["sh", "-c", "echo hello > /data/test.txt"])
+```
+
 ## File Operations
 
 Read, write, and delete files in a sandbox:

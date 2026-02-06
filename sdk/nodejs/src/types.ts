@@ -38,6 +38,8 @@ export interface CreateSandboxOptions {
   source_url?: string;
   /** Git ref to checkout after cloning. */
   source_ref?: string;
+  /** Volume mounts (slug:/path or slug:/path:ro). Create volumes via CLI first. */
+  volumes?: string[];
 }
 
 /** Options for executing a command in a sandbox. */

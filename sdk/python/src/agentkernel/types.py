@@ -47,6 +47,8 @@ class CreateSandboxOptions(BaseModel):
     profile: SecurityProfile | None = None
     source_url: str | None = None
     source_ref: str | None = None
+    volumes: list[str] | None = None
+    """Volume mounts (slug:/path or slug:/path:ro). Create volumes via CLI first."""
 
 
 class ExecOptions(BaseModel):
