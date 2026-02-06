@@ -6,7 +6,9 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
-## [Unreleased] — Sandbox DX
+## [v0.9.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.9.0) — Sandbox DX
+
+_February 5, 2026_
 
 ### Added
 
