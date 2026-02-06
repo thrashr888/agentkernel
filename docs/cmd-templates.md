@@ -14,7 +14,9 @@ Manage sandbox templates. Templates are pre-configured `agentkernel.toml` config
 
 ## Built-in Templates
 
-agentkernel ships with 18+ built-in templates:
+agentkernel ships with 21 built-in templates:
+
+### Language Runtimes
 
 | Template | Image | Use Case |
 |----------|-------|----------|
@@ -32,10 +34,23 @@ agentkernel ships with 18+ built-in templates:
 | `bash` | `alpine:3.20` | Shell scripting |
 | `c` | `gcc:14-bookworm` | C/C++ development |
 | `secure` | `alpine:3.20` | Restrictive (no network) |
+
+### AI Agent Sandboxes
+
+| Template | Image | Use Case |
+|----------|-------|----------|
 | `claude-sandbox` | `python:3.12-alpine` | Claude Code agent |
 | `codex-sandbox` | `node:22-alpine` | Codex agent |
 | `gemini-sandbox` | `python:3.12-alpine` | Gemini CLI agent |
 | `opencode-sandbox` | `golang:1.23-alpine` | OpenCode agent |
+
+### Dev Tools
+
+| Template | Image | Ports | Use Case |
+|----------|-------|-------|----------|
+| `vscode` | `gitpod/openvscode-server` | 3000 | Browser-based VS Code IDE |
+| `coder` | `codercom/code-server` | 8080 | Browser-based VS Code IDE |
+| `gitea` | `gitea/gitea` | 3000, 2222 | Self-hosted Git service |
 
 ## Examples
 
@@ -58,6 +73,22 @@ my-custom            local      ubuntu:24.04
 ```bash
 agentkernel create my-sandbox --template python
 agentkernel create ci-runner --template rust-ci -B docker
+```
+
+### Spin up a browser IDE
+
+```bash
+agentkernel create my-ide --template vscode
+agentkernel start my-ide
+# Open http://localhost:3000
+```
+
+### Self-hosted Git server
+
+```bash
+agentkernel create my-git --template gitea
+agentkernel start my-git
+# Open http://localhost:3000
 ```
 
 ### Save a sandbox as a template
