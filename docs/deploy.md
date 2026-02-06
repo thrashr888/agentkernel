@@ -81,6 +81,8 @@ railway init
 railway up
 ```
 
+Or use the deploy button: [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/v6tIeu?referralCode=gieWq1)
+
 See [`examples/deploy/railway/`](../examples/deploy/railway/) for details.
 
 ## Hetzner Cloud
@@ -190,5 +192,3 @@ All deployments support the `/health` endpoint for health checks:
 ```bash
 curl http://localhost:18888/health
 ```
-
-For metrics and observability, see [Telemetry](telemetry.md) (coming soon).
