@@ -12,8 +12,9 @@ Pi is an open-source coding agent with its own extension system. The agentkernel
 brew services start thrashr888/agentkernel/agentkernel   # runs in background, survives reboots
 agentkernel serve                 # or run manually in a terminal
 
-# 2. Install the extension into your project
-agentkernel plugin install pi
+# 2. Install the extension (pick one)
+pi install npm:pi-agentkernel     # via Pi's package manager (recommended)
+agentkernel plugin install pi     # or via agentkernel CLI
 
 # 3. Launch Pi — the extension loads automatically
 pi
@@ -43,11 +44,17 @@ The extension also provides:
 
 ### Install
 
+**Via Pi's package manager (recommended):**
+```bash
+pi install npm:pi-agentkernel
+```
+
+**Or via agentkernel CLI:**
 ```bash
 agentkernel plugin install pi
 ```
 
-This creates `.pi/extensions/agentkernel/` in your project with the extension source.
+The first method installs globally. The second creates `.pi/extensions/agentkernel/` in your project.
 
 ## Setup
 
