@@ -83,11 +83,11 @@ Generate client SDKs using OpenAPI Generator:
 
 ```bash
 # Python client
-openapi-generator generate -i docs/openapi.yaml -g python -o sdk/python
+openapi-generator generate -i api/openapi.yaml -g python -o sdk/python
 
 # TypeScript client
-openapi-generator generate -i docs/openapi.yaml -g typescript-fetch -o sdk/typescript
+openapi-generator generate -i api/openapi.yaml -g typescript-fetch -o sdk/typescript
 
 # Go client
-openapi-generator generate -i docs/openapi.yaml -g go -o sdk/go
+openapi-generator generate -i api/openapi.yaml -g go -o sdk/go
 ```
