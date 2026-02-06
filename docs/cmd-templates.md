@@ -39,11 +39,11 @@ agentkernel ships with 23 built-in templates:
 
 | Template | Image | Use Case |
 |----------|-------|----------|
+| `amp-sandbox` | `node:22-alpine` | Amp (Sourcegraph) agent |
 | `claude-sandbox` | `node:22-alpine` | Claude Code agent |
 | `codex-sandbox` | `node:22-alpine` | Codex agent |
 | `gemini-sandbox` | `python:3.12-alpine` | Gemini CLI agent |
 | `opencode-sandbox` | `golang:1.23-alpine` | OpenCode agent |
-| `amp-sandbox` | `node:22-alpine` | Amp (Sourcegraph) agent |
 | `pi-sandbox` | `node:22-alpine` | Pi coding agent |
 
 ### Dev Tools

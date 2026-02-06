@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentkernel
+  labels:
+    app: agentkernel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agentkernel
+  template:
+    metadata:
+      labels:
+        app: agentkernel
+    spec:
+      containers:
+        - name: agentkernel
+          image: ghcr.io/thrashr888/agentkernel:latest
+          args: ["serve", "--host", "0.0.0.0", "--port", "18888"]
+          ports:
+            - containerPort: 18888
+              name: http
+          envFrom:
+            - configMapRef:
+                name: agentkernel-config
+            - secretRef:
+                name: agentkernel-secrets
+                optional: true
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 18888
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 18888
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            privileged: true  # Required for Docker socket access
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: agentkernel-data
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket

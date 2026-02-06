@@ -1,0 +1,11 @@
+# Caddyfile for agentkernel with automatic HTTPS
+# Replace agentkernel.example.com with your domain
+
+agentkernel.example.com {
+    reverse_proxy agentkernel:18888
+
+    # Optional: Basic auth
+    # basicauth {
+    #     admin $2a$14$... # Use `caddy hash-password` to generate
+    # }
+}

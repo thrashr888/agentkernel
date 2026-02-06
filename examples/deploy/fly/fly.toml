@@ -1,0 +1,49 @@
+# Fly.io deployment for agentkernel
+# https://fly.io/docs/reference/configuration/
+#
+# Deploy:
+#   fly launch --copy-config
+#   fly deploy
+
+app = "agentkernel"
+primary_region = "ord"  # Chicago - change to nearest region
+
+[build]
+image = "ghcr.io/thrashr888/agentkernel:latest"
+
+[http_service]
+internal_port = 18888
+force_https = true
+auto_start_machines = true
+auto_stop_machines = true
+min_machines_running = 1
+
+[http_service.concurrency]
+type = "connections"
+hard_limit = 100
+soft_limit = 80
+
+[checks]
+  [checks.health]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    port = 18888
+    timeout = "5s"
+    type = "http"
+
+[mounts]
+source = "agentkernel_data"
+destination = "/data"
+
+[[vm]]
+size = "shared-cpu-2x"
+memory = "1gb"
+cpus = 2
+
+# For Firecracker support, use dedicated CPU:
+# [[vm]]
+# size = "dedicated-cpu-2x"
+# memory = "4gb"
+# kernel_args = ["kvm.enable_virt_at_load=1"]
