@@ -18,5 +18,8 @@
   "files": ["index.ts", "README.md"],
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": ">=0.49.0"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
   }
 }
