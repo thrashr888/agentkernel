@@ -1,51 +1,49 @@
-// Sandbox types matching Rust backend
+// Sandbox types matching Rust backend / agentkernel HTTP API
 export interface SandboxInfo {
   name: string;
   status: string;
-  image: string;
-  created_at: string;
-  vcpus: number;
-  memory_mb: number;
-  ttl_seconds: number;
-  expires_at: string | null;
-  pid: number | null;
+  backend: string;
+  image?: string;
+  vcpus?: number;
+  memory_mb?: number;
+  created_at?: string;
+  ip?: string;
+  ports?: string[];
 }
 
 export interface RunOutput {
-  exit_code: number;
-  stdout: string;
-  stderr: string;
+  output: string;
 }
 
 export interface SnapshotMeta {
   name: string;
-  sandbox_name: string;
+  sandbox: string;
+  image_tag: string;
+  backend: string;
+  base_image?: string;
+  vcpus?: number;
+  memory_mb?: number;
   created_at: string;
-  size_bytes: number;
 }
 
 export interface ExtendTtlResponse {
-  name: string;
-  new_expires_at: string;
-  ttl_seconds: number;
+  expires_at?: string;
 }
 
 // Detached command types
 export interface DetachedCommand {
   id: string;
-  sandbox_name: string;
+  sandbox: string;
   command: string[];
-  started_at: string;
+  pid: number;
   status: string;
-  exit_code: number | null;
+  exit_code?: number;
+  started_at: string;
 }
 
 export interface DetachedLogsResponse {
-  id: string;
-  stdout: string;
-  stderr: string;
-  status: string;
-  exit_code: number | null;
+  stdout?: string;
+  stderr?: string;
 }
 
 // Request types
@@ -54,21 +52,22 @@ export interface CreateSandboxRequest {
   image?: string;
   vcpus?: number;
   memory_mb?: number;
-  ttl_seconds?: number;
-  env?: Record<string, string>;
-  network?: boolean;
+  profile?: string;
+  source_url?: string;
+  source_ref?: string;
+  volumes?: string[];
 }
 
 export interface ExecRequest {
-  name: string;
   command: string[];
-  env?: Record<string, string>;
+  env?: string[];
   workdir?: string;
+  sudo?: boolean;
 }
 
 export interface TakeSnapshotRequest {
-  sandbox_name: string;
-  snapshot_name: string;
+  sandbox: string;
+  name?: string;
 }
 
 // Template types

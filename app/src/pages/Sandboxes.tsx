@@ -73,7 +73,7 @@ export function Sandboxes() {
 
   const snapshotMutation = useMutation({
     mutationFn: ({ sandboxName, snapshotName }: { sandboxName: string; snapshotName: string }) =>
-      api.takeSnapshot({ sandbox_name: sandboxName, snapshot_name: snapshotName }),
+      api.takeSnapshot(sandboxName, snapshotName),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["snapshots"] });
     },
@@ -251,7 +251,7 @@ export function Sandboxes() {
                     <SandboxStatusBadge status={sandbox.status} />
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {sandbox.image}
+                    {sandbox.image ?? sandbox.backend}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {formatRelativeDate(sandbox.created_at)}

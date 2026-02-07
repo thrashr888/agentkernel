@@ -2355,6 +2355,24 @@
           "markdownDescription": "Denies the unminimize command without any pre-configured scope."
         },
         {
+          "description": "Default permissions for the debug bridge plugin. Allows the eval callback command.\n#### This default permission set includes:\n\n- `allow-eval-callback`",
+          "type": "string",
+          "const": "debug-bridge:default",
+          "markdownDescription": "Default permissions for the debug bridge plugin. Allows the eval callback command.\n#### This default permission set includes:\n\n- `allow-eval-callback`"
+        },
+        {
+          "description": "Enables the eval_callback command without any pre-configured scope.",
+          "type": "string",
+          "const": "debug-bridge:allow-eval-callback",
+          "markdownDescription": "Enables the eval_callback command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the eval_callback command without any pre-configured scope.",
+          "type": "string",
+          "const": "debug-bridge:deny-eval-callback",
+          "markdownDescription": "Denies the eval_callback command without any pre-configured scope."
+        },
+        {
           "description": "This permission set configures which\nshell functionality is exposed by default.\n\n#### Granted Permissions\n\nIt allows to use the `open` functionality with a reasonable\nscope pre-configured. It will allow opening `http(s)://`,\n`tel:` and `mailto:` links.\n\n#### This default permission set includes:\n\n- `allow-open`",
           "type": "string",
           "const": "shell:default",

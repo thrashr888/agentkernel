@@ -7,41 +7,39 @@ import type {
   DetachedCommand,
   DetachedLogsResponse,
   CreateSandboxRequest,
-  ExecRequest,
-  TakeSnapshotRequest,
   TemplateInfo,
   Settings,
 } from "./types";
 
 export const api = {
-  // Health
-  checkConnection: () => invoke<boolean>("check_connection"),
+  // Health — returns "ok" string on success
+  checkConnection: () => invoke<string>("check_connection"),
 
   // Sandboxes
   listSandboxes: () => invoke<SandboxInfo[]>("list_sandboxes"),
   getSandbox: (name: string) => invoke<SandboxInfo>("get_sandbox", { name }),
-  createSandbox: (request: CreateSandboxRequest) =>
-    invoke<SandboxInfo>("create_sandbox", { request }),
+  createSandbox: (req: CreateSandboxRequest) =>
+    invoke<SandboxInfo>("create_sandbox", { req }),
   removeSandbox: (name: string) => invoke<void>("remove_sandbox", { name }),
-  extendTtl: (name: string, seconds: number) =>
-    invoke<ExtendTtlResponse>("extend_ttl", { name, seconds }),
+  extendTtl: (name: string, by: string) =>
+    invoke<ExtendTtlResponse>("extend_ttl", { name, by }),
 
-  // Execution
-  execCommand: (request: ExecRequest) =>
-    invoke<RunOutput>("exec_command", { request }),
+  // Execution — params are flat, not a nested struct
+  execCommand: (name: string, command: string[], env?: string[], workdir?: string) =>
+    invoke<RunOutput>("exec_command", { name, command, env: env ?? [], workdir }),
   execDetached: (name: string, command: string[]) =>
     invoke<DetachedCommand>("exec_detached", { name, command }),
   listDetached: (name: string) =>
     invoke<DetachedCommand[]>("list_detached", { name }),
-  getDetachedLogs: (name: string, id: string) =>
-    invoke<DetachedLogsResponse>("get_detached_logs", { name, id }),
-  killDetached: (name: string, id: string) =>
-    invoke<void>("kill_detached", { name, id }),
+  getDetachedLogs: (name: string, cmdId: string) =>
+    invoke<DetachedLogsResponse>("get_detached_logs", { name, cmdId }),
+  killDetached: (name: string, cmdId: string) =>
+    invoke<void>("kill_detached", { name, cmdId }),
 
   // Snapshots
   listSnapshots: () => invoke<SnapshotMeta[]>("list_snapshots"),
-  takeSnapshot: (request: TakeSnapshotRequest) =>
-    invoke<SnapshotMeta>("take_snapshot", { request }),
+  takeSnapshot: (sandbox: string, name?: string) =>
+    invoke<SnapshotMeta>("take_snapshot", { sandbox, name }),
   deleteSnapshot: (name: string) => invoke<void>("delete_snapshot", { name }),
   restoreSnapshot: (name: string) =>
     invoke<SandboxInfo>("restore_snapshot", { name }),

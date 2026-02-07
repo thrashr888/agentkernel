@@ -9,7 +9,6 @@ import {
   HardDrive,
   Image,
   Server,
-  Timer,
   Calendar,
 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -69,7 +68,7 @@ export function SandboxDetail() {
 
   const extendMutation = useMutation({
     mutationFn: ({ sandboxName, seconds }: { sandboxName: string; seconds: number }) =>
-      api.extendTtl(sandboxName, seconds),
+      api.extendTtl(sandboxName, `${seconds}s`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sandbox", name] });
       setExtendDialogOpen(false);
@@ -181,67 +180,83 @@ export function SandboxDetail() {
 
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Backend</CardTitle>
+                <Server className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm font-mono">{sandbox.backend}</p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                 <CardTitle className="text-sm font-medium">Image</CardTitle>
                 <Image className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <p className="text-sm font-mono">{sandbox.image}</p>
+                <p className="text-sm font-mono">{sandbox.image ?? "—"}</p>
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">vCPUs</CardTitle>
-                <Cpu className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-bold">{sandbox.vcpus}</p>
-              </CardContent>
-            </Card>
+            {sandbox.vcpus != null && (
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">vCPUs</CardTitle>
+                  <Cpu className="h-4 w-4 text-muted-foreground" />
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-bold">{sandbox.vcpus}</p>
+                </CardContent>
+              </Card>
+            )}
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Memory</CardTitle>
-                <HardDrive className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-bold">{sandbox.memory_mb} MB</p>
-              </CardContent>
-            </Card>
+            {sandbox.memory_mb != null && (
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Memory</CardTitle>
+                  <HardDrive className="h-4 w-4 text-muted-foreground" />
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-bold">{sandbox.memory_mb} MB</p>
+                </CardContent>
+              </Card>
+            )}
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Created At</CardTitle>
-                <Calendar className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm">{formatDate(sandbox.created_at)}</p>
-              </CardContent>
-            </Card>
+            {sandbox.created_at && (
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Created At</CardTitle>
+                  <Calendar className="h-4 w-4 text-muted-foreground" />
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm">{formatDate(sandbox.created_at)}</p>
+                </CardContent>
+              </Card>
+            )}
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">TTL</CardTitle>
-                <Timer className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm">{sandbox.ttl_seconds}s</p>
-              </CardContent>
-            </Card>
+            {sandbox.ip && (
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">IP Address</CardTitle>
+                  <Server className="h-4 w-4 text-muted-foreground" />
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm font-mono">{sandbox.ip}</p>
+                </CardContent>
+              </Card>
+            )}
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Expires At</CardTitle>
-                <Clock className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm">
-                  {sandbox.expires_at
-                    ? formatDate(sandbox.expires_at)
-                    : "No expiration"}
-                </p>
-              </CardContent>
-            </Card>
+            {sandbox.ports && sandbox.ports.length > 0 && (
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Ports</CardTitle>
+                  <Server className="h-4 w-4 text-muted-foreground" />
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm font-mono">{sandbox.ports.join(", ")}</p>
+                </CardContent>
+              </Card>
+            )}
 
             <Card className="flex items-center justify-center">
               <CardContent className="pt-6">
@@ -333,19 +348,11 @@ export function SandboxDetail() {
               history.map((entry, i) => (
                 <div key={i} className="mb-4">
                   <div className="text-green-400">$ {entry.command}</div>
-                  {entry.output.stdout && (
+                  {entry.output.output && (
                     <pre className="whitespace-pre-wrap text-neutral-200">
-                      {entry.output.stdout}
+                      {entry.output.output}
                     </pre>
                   )}
-                  {entry.output.stderr && (
-                    <pre className="whitespace-pre-wrap text-red-400">
-                      {entry.output.stderr}
-                    </pre>
-                  )}
-                  <div className="text-neutral-500">
-                    exit code: {entry.output.exit_code}
-                  </div>
                   {i < history.length - 1 && (
                     <Separator className="my-2 bg-neutral-800" />
                   )}

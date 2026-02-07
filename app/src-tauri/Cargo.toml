@@ -23,7 +23,9 @@ tokio = { version = "1", features = ["rt", "macros"] }
 anyhow = "1"
 thiserror = "2"
 dirs = "6"
+tauri-plugin-debug-bridge = { version = "0.2.3", optional = true }
 
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+debug-bridge = ["tauri-plugin-debug-bridge"]

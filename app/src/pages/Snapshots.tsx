@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatRelativeDate, formatBytes } from "@/lib/utils";
+import { formatRelativeDate } from "@/lib/utils";
 
 type ConfirmAction =
   | { type: "restore"; name: string }
@@ -102,7 +102,7 @@ export function Snapshots() {
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead>Source Sandbox</TableHead>
-                <TableHead>Size</TableHead>
+                <TableHead>Backend</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead className="w-[120px]">Actions</TableHead>
               </TableRow>
@@ -114,10 +114,10 @@ export function Snapshots() {
                     {snapshot.name}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {snapshot.sandbox_name}
+                    {snapshot.sandbox}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {formatBytes(snapshot.size_bytes)}
+                    {snapshot.backend}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {formatRelativeDate(snapshot.created_at)}

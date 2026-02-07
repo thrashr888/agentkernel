@@ -10,8 +10,13 @@ use state::AppState;
 /// Registers all IPC commands and injects shared `AppState`.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init());
+
+    #[cfg(feature = "debug-bridge")]
+    let builder = builder.plugin(tauri_plugin_debug_bridge::init());
+
+    builder
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             // health

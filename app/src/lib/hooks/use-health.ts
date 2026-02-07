@@ -11,6 +11,6 @@ export function useHealth() {
 
   return {
     ...query,
-    isConnected: query.data === true,
+    isConnected: query.data === "ok",
   };
 }

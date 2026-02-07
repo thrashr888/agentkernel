@@ -19,15 +19,7 @@ export function Dashboard() {
   const { data: sandboxes, isLoading, error } = useSandboxes();
   const { isConnected } = useHealth();
 
-  const recentSandboxes = sandboxes
-    ? [...sandboxes]
-        .sort(
-          (a, b) =>
-            new Date(b.created_at).getTime() -
-            new Date(a.created_at).getTime()
-        )
-        .slice(0, 5)
-    : [];
+  const recentSandboxes = sandboxes ? [...sandboxes].slice(0, 5) : [];
 
   return (
     <div className="space-y-6">
@@ -122,14 +114,16 @@ export function Dashboard() {
                       <div>
                         <p className="font-medium">{sandbox.name}</p>
                         <p className="text-sm text-muted-foreground">
-                          {sandbox.image}
+                          {sandbox.image ?? sandbox.backend}
                         </p>
                       </div>
                     </div>
                     <div className="flex items-center gap-4">
-                      <span className="text-sm text-muted-foreground">
-                        {formatRelativeDate(sandbox.created_at)}
-                      </span>
+                      {sandbox.created_at && (
+                        <span className="text-sm text-muted-foreground">
+                          {formatRelativeDate(sandbox.created_at)}
+                        </span>
+                      )}
                       <SandboxStatusBadge status={sandbox.status} />
                     </div>
                   </CardContent>

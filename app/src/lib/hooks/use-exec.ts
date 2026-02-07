@@ -1,9 +1,16 @@
 import { useMutation } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { ExecRequest } from "@/lib/types";
+
+interface ExecParams {
+  name: string;
+  command: string[];
+  env?: string[];
+  workdir?: string;
+}
 
 export function useExec() {
   return useMutation({
-    mutationFn: (request: ExecRequest) => api.execCommand(request),
+    mutationFn: ({ name, command, env, workdir }: ExecParams) =>
+      api.execCommand(name, command, env, workdir),
   });
 }
