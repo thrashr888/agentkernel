@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, MoreHorizontal, Trash2, Camera, Square } from "lucide-react";
+import { Plus, MoreHorizontal, Trash2, Camera, Square, Play } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSandboxes } from "@/lib/hooks/use-sandboxes";
 import { api } from "@/lib/api";
@@ -66,6 +66,13 @@ export function Sandboxes() {
 
   const removeMutation = useMutation({
     mutationFn: (name: string) => api.removeSandbox(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+    },
+  });
+
+  const startMutation = useMutation({
+    mutationFn: (name: string) => api.startSandbox(name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
     },
@@ -237,7 +244,7 @@ export function Sandboxes() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sandboxes.map((sandbox) => (
+              {[...sandboxes].sort((a, b) => a.name.localeCompare(b.name)).map((sandbox) => (
                 <TableRow key={sandbox.name}>
                   <TableCell>
                     <Link
@@ -265,6 +272,17 @@ export function Sandboxes() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
+                        {sandbox.status.toLowerCase() !== "running" && (
+                          <>
+                            <DropdownMenuItem
+                              onClick={() => startMutation.mutate(sandbox.name)}
+                            >
+                              <Play className="mr-2 h-4 w-4" />
+                              Start
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                          </>
+                        )}
                         {sandbox.status.toLowerCase() === "running" && (
                           <>
                             <DropdownMenuItem

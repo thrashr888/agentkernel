@@ -19,7 +19,9 @@ export function Dashboard() {
   const { data: sandboxes, isLoading, error } = useSandboxes();
   const { isConnected } = useHealth();
 
-  const recentSandboxes = sandboxes ? [...sandboxes].slice(0, 5) : [];
+  const recentSandboxes = sandboxes
+    ? [...sandboxes].sort((a, b) => a.name.localeCompare(b.name)).slice(0, 5)
+    : [];
 
   return (
     <div className="space-y-6">

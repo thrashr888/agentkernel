@@ -4,7 +4,7 @@ use crate::types::TemplateInfo;
 ///
 /// The data here mirrors `BUILTIN_TEMPLATES` in `src/template.rs` so the
 /// desktop app does not need to link against the main agentkernel crate.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn list_templates() -> Result<Vec<TemplateInfo>, String> {
     Ok(builtin_templates())
 }

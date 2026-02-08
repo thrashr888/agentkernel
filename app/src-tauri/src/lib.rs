@@ -26,6 +26,7 @@ pub fn run() {
             commands::sandboxes::get_sandbox,
             commands::sandboxes::create_sandbox,
             commands::sandboxes::remove_sandbox,
+            commands::sandboxes::start_sandbox,
             commands::sandboxes::extend_ttl,
             // exec
             commands::exec::exec_command,

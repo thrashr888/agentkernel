@@ -4,14 +4,14 @@ use crate::api_client::ApiClient;
 use crate::state::{AppState, Settings};
 
 /// Return the current settings.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
     let settings = state.settings.lock().map_err(|e| e.to_string())?;
     Ok(settings.clone())
 }
 
 /// Persist new settings and rebuild the API client.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn save_settings(
     new_settings: Settings,
     state: State<'_, AppState>,

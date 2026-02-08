@@ -4,7 +4,7 @@ use crate::state::AppState;
 use crate::types::{DetachedCommand, DetachedLogsResponse, RunOutput};
 
 /// Execute a command inside an existing sandbox.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn exec_command(
     name: String,
     command: Vec<String>,
@@ -20,7 +20,7 @@ pub async fn exec_command(
 }
 
 /// Start a detached (background) command in a sandbox.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn exec_detached(
     name: String,
     command: Vec<String>,
@@ -34,7 +34,7 @@ pub async fn exec_detached(
 }
 
 /// List detached commands in a sandbox.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn list_detached(
     name: String,
     state: State<'_, AppState>,
@@ -44,7 +44,7 @@ pub async fn list_detached(
 }
 
 /// Get logs from a detached command.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_detached_logs(
     name: String,
     cmd_id: String,
@@ -58,7 +58,7 @@ pub async fn get_detached_logs(
 }
 
 /// Kill a detached command.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn kill_detached(
     name: String,
     cmd_id: String,

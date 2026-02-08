@@ -4,14 +4,14 @@ use crate::state::AppState;
 use crate::types::{SandboxInfo, SnapshotMeta};
 
 /// List all snapshots.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn list_snapshots(state: State<'_, AppState>) -> Result<Vec<SnapshotMeta>, String> {
     let client = state.client.lock().map_err(|e| e.to_string())?.clone();
     client.list_snapshots().await.map_err(|e| e.to_string())
 }
 
 /// Take a snapshot of a sandbox.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn take_snapshot(
     sandbox: String,
     name: Option<String>,
@@ -25,14 +25,14 @@ pub async fn take_snapshot(
 }
 
 /// Delete a snapshot.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn delete_snapshot(name: String, state: State<'_, AppState>) -> Result<(), String> {
     let client = state.client.lock().map_err(|e| e.to_string())?.clone();
     client.delete_snapshot(&name).await.map_err(|e| e.to_string())
 }
 
 /// Restore a sandbox from a snapshot.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn restore_snapshot(
     name: String,
     state: State<'_, AppState>,

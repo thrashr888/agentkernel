@@ -21,6 +21,7 @@ export const api = {
   createSandbox: (req: CreateSandboxRequest) =>
     invoke<SandboxInfo>("create_sandbox", { req }),
   removeSandbox: (name: string) => invoke<void>("remove_sandbox", { name }),
+  startSandbox: (name: string) => invoke<void>("start_sandbox", { name }),
   extendTtl: (name: string, by: string) =>
     invoke<ExtendTtlResponse>("extend_ttl", { name, by }),
 
@@ -32,9 +33,9 @@ export const api = {
   listDetached: (name: string) =>
     invoke<DetachedCommand[]>("list_detached", { name }),
   getDetachedLogs: (name: string, cmdId: string) =>
-    invoke<DetachedLogsResponse>("get_detached_logs", { name, cmdId }),
+    invoke<DetachedLogsResponse>("get_detached_logs", { name, cmd_id: cmdId }),
   killDetached: (name: string, cmdId: string) =>
-    invoke<void>("kill_detached", { name, cmdId }),
+    invoke<void>("kill_detached", { name, cmd_id: cmdId }),
 
   // Snapshots
   listSnapshots: () => invoke<SnapshotMeta[]>("list_snapshots"),
@@ -50,5 +51,5 @@ export const api = {
   // Settings
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) =>
-    invoke<void>("save_settings", { settings }),
+    invoke<void>("save_settings", { new_settings: settings }),
 };
