@@ -55,6 +55,24 @@ export interface AuditLogEntry {
   [key: string]: unknown;
 }
 
+// Diagnostics types
+export interface StatusInfo {
+  version: string;
+  backend: string;
+  api_key_configured: boolean;
+}
+
+export interface HealthCheck {
+  name: string;
+  status: string;
+  message: string;
+}
+
+export interface DoctorResult {
+  checks: HealthCheck[];
+  healthy: boolean;
+}
+
 // Request types
 export interface CreateSandboxRequest {
   name: string;

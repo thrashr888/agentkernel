@@ -14,6 +14,8 @@ import {
   Copy,
   Check,
   Terminal,
+  Loader2,
+  X,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSandbox } from "@/lib/hooks/use-sandbox";
@@ -48,6 +50,8 @@ import type { RunOutput, DetachedCommand, AuditLogEntry } from "@/lib/types";
 interface CommandEntry {
   command: string;
   output: RunOutput;
+  /** When set, this entry shows streaming output from a detached job */
+  detachedJobId?: string;
 }
 
 export function SandboxDetail() {
@@ -63,6 +67,8 @@ export function SandboxDetail() {
   const [extendDialogOpen, setExtendDialogOpen] = useState(false);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [runInBackground, setRunInBackground] = useState(false);
+  const [activeDetachedJobId, setActiveDetachedJobId] = useState<string | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
 
   function copyToClipboard(text: string, field: string) {
@@ -73,37 +79,46 @@ export function SandboxDetail() {
 
   const startMutation = useMutation({
     mutationFn: () => api.startSandbox(name ?? ""),
-    onSuccess: () => {
+    onMutate: () => {
+      return { toastId: toast("Starting sandbox...") };
+    },
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, "Sandbox started!", "success");
       queryClient.invalidateQueries({ queryKey: ["sandbox", name] });
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
-      toast.success("Sandbox started");
     },
-    onError: (err: unknown) => {
-      toast.error(err instanceof Error ? err.message : String(err));
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
     },
   });
 
   const stopMutation = useMutation({
     mutationFn: () => api.stopSandbox(name ?? ""),
-    onSuccess: () => {
+    onMutate: () => {
+      return { toastId: toast("Stopping sandbox...") };
+    },
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, "Sandbox stopped!", "success");
       queryClient.invalidateQueries({ queryKey: ["sandbox", name] });
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
-      toast.success("Sandbox stopped");
     },
-    onError: (err: unknown) => {
-      toast.error(err instanceof Error ? err.message : String(err));
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
     },
   });
 
   const removeMutation = useMutation({
     mutationFn: (sandboxName: string) => api.removeSandbox(sandboxName),
-    onSuccess: () => {
+    onMutate: () => {
+      return { toastId: toast("Removing sandbox...") };
+    },
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, "Sandbox removed!", "success");
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
       navigate("/sandboxes");
-      toast.success("Sandbox removed");
     },
-    onError: (err: unknown) => {
-      toast.error(err instanceof Error ? err.message : String(err));
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
     },
   });
 
@@ -152,30 +167,105 @@ export function SandboxDetail() {
     },
   });
 
+  const execDetachedMutation = useMutation({
+    mutationFn: ({ sandboxName, command }: { sandboxName: string; command: string[] }) =>
+      api.execDetached(sandboxName, command),
+    onSuccess: (job) => {
+      setActiveDetachedJobId(job.id);
+      setHistory((prev) => [
+        ...prev,
+        {
+          command: `[background] ${job.command.join(" ")}`,
+          output: { output: "" },
+          detachedJobId: job.id,
+        },
+      ]);
+      queryClient.invalidateQueries({ queryKey: ["detached", name] });
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
+    },
+  });
+
+  // Poll active detached job output and update the corresponding history entry
+  const { data: activeJobLogs } = useQuery({
+    queryKey: ["exec-detached-logs", name, activeDetachedJobId],
+    queryFn: () => api.getDetachedLogs(name ?? "", activeDetachedJobId ?? ""),
+    enabled: !!name && !!activeDetachedJobId,
+    refetchInterval: 1000,
+  });
+
+  // Also poll the job status to know when it finishes
+  const { data: activeJobStatus } = useQuery({
+    queryKey: ["exec-detached-status", name, activeDetachedJobId],
+    queryFn: async () => {
+      const jobs = await api.listDetached(name ?? "");
+      return jobs.find((j) => j.id === activeDetachedJobId) ?? null;
+    },
+    enabled: !!name && !!activeDetachedJobId,
+    refetchInterval: 1000,
+  });
+
+  // Update history entry with latest logs from the active detached job
+  useEffect(() => {
+    if (!activeDetachedJobId || !activeJobLogs) return;
+    const combined =
+      (activeJobLogs.stdout || "") +
+      (activeJobLogs.stderr ? `\n${activeJobLogs.stderr}` : "");
+    setHistory((prev) =>
+      prev.map((entry) =>
+        entry.detachedJobId === activeDetachedJobId
+          ? { ...entry, output: { output: combined } }
+          : entry
+      )
+    );
+  }, [activeDetachedJobId, activeJobLogs]);
+
+  // Stop polling when the job finishes
+  useEffect(() => {
+    if (activeJobStatus && activeJobStatus.status !== "running") {
+      setActiveDetachedJobId(null);
+      queryClient.invalidateQueries({ queryKey: ["detached", name] });
+    }
+  }, [activeJobStatus, name, queryClient]);
+
   useEffect(() => {
     if (outputRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
     }
   }, [history]);
 
+  const isExecBusy =
+    execMutation.isPending ||
+    execDetachedMutation.isPending ||
+    !!activeDetachedJobId;
+
   function handleExec() {
     if (!commandInput.trim() || !name) return;
     const cmd = commandInput.trim();
     setCommandInput("");
-    execMutation.mutate(
-      {
-        name,
+
+    if (runInBackground) {
+      execDetachedMutation.mutate({
+        sandboxName: name,
         command: ["sh", "-c", cmd],
-      },
-      {
-        onSuccess: (output) => {
-          setHistory((prev) => [...prev, { command: cmd, output }]);
+      });
+    } else {
+      execMutation.mutate(
+        {
+          name,
+          command: ["sh", "-c", cmd],
         },
-        onError: (err: unknown) => {
-          toast.error(err instanceof Error ? err.message : String(err));
-        },
-      }
-    );
+        {
+          onSuccess: (output) => {
+            setHistory((prev) => [...prev, { command: cmd, output }]);
+          },
+          onError: (err: unknown) => {
+            toast.error(err instanceof Error ? err.message : String(err));
+          },
+        }
+      );
+    }
   }
 
   if (isLoading) {
@@ -485,39 +575,89 @@ export function SandboxDetail() {
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleExec();
               }}
-              disabled={execMutation.isPending}
+              disabled={isExecBusy}
             />
             <Button
               onClick={handleExec}
-              disabled={!commandInput.trim() || execMutation.isPending}
+              disabled={!commandInput.trim() || isExecBusy}
             >
-              <Play className="mr-2 h-4 w-4" />
-              {execMutation.isPending ? "Running..." : "Run"}
+              {isExecBusy ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="mr-2 h-4 w-4" />
+              )}
+              {isExecBusy ? "Running..." : "Run"}
             </Button>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={runInBackground}
+                onChange={(e) => setRunInBackground(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-neutral-400 accent-neutral-700"
+              />
+              <span className="text-xs text-muted-foreground">
+                Run in background
+              </span>
+            </label>
+            {history.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => setHistory([])}
+              >
+                <X className="mr-1 h-3 w-3" />
+                Clear
+              </Button>
+            )}
           </div>
 
           <div
             ref={outputRef}
             className="h-[400px] overflow-auto rounded-md border bg-neutral-950 p-4 font-mono text-sm text-neutral-200"
           >
-            {history.length === 0 ? (
+            {history.length === 0 && !isExecBusy ? (
               <p className="text-neutral-500">
                 Run a command to see output here.
               </p>
             ) : (
-              history.map((entry, i) => (
-                <div key={i} className="mb-4">
-                  <div className="text-green-400">$ {entry.command}</div>
-                  {entry.output.output && (
-                    <pre className="whitespace-pre-wrap text-neutral-200">
-                      {entry.output.output}
-                    </pre>
-                  )}
-                  {i < history.length - 1 && (
-                    <Separator className="my-2 bg-neutral-800" />
-                  )}
-                </div>
-              ))
+              <>
+                {history.map((entry, i) => (
+                  <div key={i} className="mb-4">
+                    <div className="flex items-center gap-2 text-green-400">
+                      <span>$ {entry.command}</span>
+                      {entry.detachedJobId &&
+                        entry.detachedJobId === activeDetachedJobId && (
+                          <Loader2 className="h-3 w-3 animate-spin text-neutral-400" />
+                        )}
+                    </div>
+                    {entry.output.output && (
+                      <pre className="whitespace-pre-wrap text-neutral-200">
+                        {entry.output.output}
+                      </pre>
+                    )}
+                    {entry.detachedJobId &&
+                      !entry.output.output &&
+                      entry.detachedJobId === activeDetachedJobId && (
+                        <span className="text-neutral-500 text-xs">
+                          Waiting for output...
+                        </span>
+                      )}
+                    {i < history.length - 1 && (
+                      <Separator className="my-2 bg-neutral-800" />
+                    )}
+                  </div>
+                ))}
+                {execMutation.isPending && !runInBackground && (
+                  <div className="flex items-center gap-2 text-neutral-500">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    <span className="text-xs">Executing...</span>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </TabsContent>

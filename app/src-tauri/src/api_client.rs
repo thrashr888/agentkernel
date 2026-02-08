@@ -51,6 +51,22 @@ impl ApiClient {
     }
 
     // -----------------------------------------------------------------
+    // Diagnostics
+    // -----------------------------------------------------------------
+
+    /// Get system status information.
+    pub async fn get_status(&self) -> anyhow::Result<StatusInfo> {
+        self.request(reqwest::Method::GET, "/status", None::<&()>)
+            .await
+    }
+
+    /// Run health checks.
+    pub async fn get_doctor(&self) -> anyhow::Result<DoctorResult> {
+        self.request(reqwest::Method::GET, "/doctor", None::<&()>)
+            .await
+    }
+
+    // -----------------------------------------------------------------
     // Sandboxes
     // -----------------------------------------------------------------
 
@@ -137,6 +153,26 @@ impl ApiClient {
             Some(&body),
         )
         .await
+    }
+
+    // -----------------------------------------------------------------
+    // Quick Run
+    // -----------------------------------------------------------------
+
+    /// Run a command in a temporary sandbox (`POST /run`).
+    pub async fn quick_run(
+        &self,
+        command: Vec<String>,
+        image: Option<String>,
+        profile: Option<String>,
+    ) -> anyhow::Result<RunOutput> {
+        let body = QuickRunRequest {
+            command,
+            image,
+            profile,
+        };
+        self.request(reqwest::Method::POST, "/run", Some(&body))
+            .await
     }
 
     // -----------------------------------------------------------------

@@ -136,6 +136,16 @@ pub struct ExtendTtlRequest {
     pub by: String,
 }
 
+/// Request body for the quick-run endpoint (`POST /run`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuickRunRequest {
+    pub command: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Audit / sandbox logs
 // ---------------------------------------------------------------------------
@@ -159,6 +169,33 @@ pub struct AuditLogEntry {
     /// All remaining fields from the flattened event (name, image, command, …).
     #[serde(flatten)]
     pub details: std::collections::HashMap<String, serde_json::Value>,
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics types
+// ---------------------------------------------------------------------------
+
+/// System status information from GET /status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusInfo {
+    pub version: String,
+    pub backend: String,
+    pub api_key_configured: bool,
+}
+
+/// A single health check result from GET /doctor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthCheck {
+    pub name: String,
+    pub status: String,
+    pub message: String,
+}
+
+/// Aggregated doctor results from GET /doctor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoctorResult {
+    pub checks: Vec<HealthCheck>,
+    pub healthy: bool,
 }
 
 // ---------------------------------------------------------------------------

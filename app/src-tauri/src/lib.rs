@@ -22,6 +22,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // health
             commands::health::check_connection,
+            // diagnostics
+            commands::diagnostics::get_status,
+            commands::diagnostics::get_doctor,
             // sandboxes
             commands::sandboxes::list_sandboxes,
             commands::sandboxes::get_sandbox,
@@ -37,6 +40,7 @@ pub fn run() {
             commands::exec::list_detached,
             commands::exec::get_detached_logs,
             commands::exec::kill_detached,
+            commands::exec::quick_run,
             // snapshots
             commands::snapshots::list_snapshots,
             commands::snapshots::take_snapshot,

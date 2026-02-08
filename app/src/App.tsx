@@ -6,6 +6,7 @@ import { SandboxDetail } from "@/pages/SandboxDetail";
 import { Templates } from "@/pages/Templates";
 import { Snapshots } from "@/pages/Snapshots";
 import { Settings } from "@/pages/Settings";
+import { Diagnostics } from "@/pages/Diagnostics";
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
         <Route path="/sandboxes/:name" element={<SandboxDetail />} />
         <Route path="/templates" element={<Templates />} />
         <Route path="/snapshots" element={<Snapshots />} />
+        <Route path="/diagnostics" element={<Diagnostics />} />
         <Route path="/settings" element={<Settings />} />
       </Routes>
     </AppShell>

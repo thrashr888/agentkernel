@@ -1,3 +1,4 @@
+pub mod diagnostics;
 pub mod exec;
 pub mod health;
 pub mod sandboxes;

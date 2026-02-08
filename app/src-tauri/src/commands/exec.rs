@@ -70,3 +70,18 @@ pub async fn kill_detached(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// Quick run: execute a command in a temporary sandbox and clean up.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn quick_run(
+    command: Vec<String>,
+    image: Option<String>,
+    profile: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<RunOutput, String> {
+    let client = state.client.lock().map_err(|e| e.to_string())?.clone();
+    client
+        .quick_run(command, image, profile)
+        .await
+        .map_err(|e| e.to_string())
+}

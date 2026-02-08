@@ -37,26 +37,32 @@ export function Snapshots() {
 
   const restoreMutation = useMutation({
     mutationFn: (name: string) => api.restoreSnapshot(name),
-    onSuccess: () => {
+    onMutate: () => {
+      return { toastId: toast("Restoring snapshot...") };
+    },
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, "Snapshot restored!", "success");
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
       queryClient.invalidateQueries({ queryKey: ["snapshots"] });
       setConfirmAction(null);
-      toast.success("Snapshot restored");
     },
-    onError: (err: unknown) => {
-      toast.error(err instanceof Error ? err.message : String(err));
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: (name: string) => api.deleteSnapshot(name),
-    onSuccess: () => {
+    onMutate: () => {
+      return { toastId: toast("Deleting snapshot...") };
+    },
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, "Snapshot deleted!", "success");
       queryClient.invalidateQueries({ queryKey: ["snapshots"] });
       setConfirmAction(null);
-      toast.success("Snapshot deleted");
     },
-    onError: (err: unknown) => {
-      toast.error(err instanceof Error ? err.message : String(err));
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
     },
   });
 

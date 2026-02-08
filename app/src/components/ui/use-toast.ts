@@ -37,12 +37,19 @@ function dismissToast(id: string) {
   notifyListeners();
 }
 
+function updateToast(id: string, message: string, type: ToastType = "default") {
+  toasts = toasts.map((t) => (t.id === id ? { ...t, message, type } : t));
+  notifyListeners();
+}
+
 export function toast(message: string, type: ToastType = "default") {
   return addToast(message, type);
 }
 
 toast.success = (message: string) => addToast(message, "success");
 toast.error = (message: string) => addToast(message, "error");
+toast.update = (id: string, message: string, type?: ToastType) =>
+  updateToast(id, message, type ?? "default");
 
 export function useToast() {
   const [currentToasts, setCurrentToasts] = useState<Toast[]>(toasts);
@@ -58,9 +65,17 @@ export function useToast() {
     dismissToast(id);
   }, []);
 
+  const update = useCallback(
+    (id: string, message: string, type?: ToastType) => {
+      updateToast(id, message, type ?? "default");
+    },
+    []
+  );
+
   return {
     toasts: currentToasts,
     toast,
     dismiss,
+    update,
   };
 }

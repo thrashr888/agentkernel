@@ -534,6 +534,12 @@ async fn handle_request(
             handle_restore_snapshot(req, name, state).await
         }
 
+        // Diagnostics: installation status
+        (Method::GET, ["status"]) => handle_status(state).await,
+
+        // Diagnostics: health checks
+        (Method::GET, ["doctor"]) => handle_doctor(state).await,
+
         // Enterprise policy endpoints
         #[cfg(feature = "enterprise")]
         (Method::GET, ["policy", "status"]) => handle_policy_status(state).await,
@@ -2411,6 +2417,122 @@ pub async fn run_server_with_tls(
             }
         });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics handlers
+// ---------------------------------------------------------------------------
+
+async fn handle_status(state: Arc<AppState>) -> Response<BoxBody> {
+    let manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let backend = manager.backend().to_string();
+    let version = env!("CARGO_PKG_VERSION").to_string();
+
+    #[derive(serde::Serialize)]
+    struct StatusInfo {
+        version: String,
+        backend: String,
+        api_key_configured: bool,
+    }
+
+    let info = StatusInfo {
+        version,
+        backend,
+        api_key_configured: state.api_key.is_some(),
+    };
+
+    json_response(StatusCode::OK, &ApiResponse::success(info))
+}
+
+async fn handle_doctor(state: Arc<AppState>) -> Response<BoxBody> {
+    #[derive(serde::Serialize)]
+    struct HealthCheck {
+        name: String,
+        status: String,
+        message: String,
+    }
+
+    #[derive(serde::Serialize)]
+    struct DoctorResult {
+        checks: Vec<HealthCheck>,
+        healthy: bool,
+    }
+
+    let mut checks = Vec::new();
+
+    // Check backend availability
+    let manager = state.get_manager().await;
+    let (backend_status, backend_message) = match &manager {
+        Ok(m) => (
+            "ok".to_string(),
+            format!("Backend {} is available", m.backend()),
+        ),
+        Err(e) => ("error".to_string(), format!("Backend error: {e}")),
+    };
+    checks.push(HealthCheck {
+        name: "backend".to_string(),
+        status: backend_status,
+        message: backend_message,
+    });
+
+    // Check Docker/container CLI availability
+    let docker_available = std::process::Command::new("docker")
+        .arg("version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    checks.push(HealthCheck {
+        name: "docker".to_string(),
+        status: if docker_available {
+            "ok".to_string()
+        } else {
+            "warning".to_string()
+        },
+        message: if docker_available {
+            "Docker is available".to_string()
+        } else {
+            "Docker not found".to_string()
+        },
+    });
+
+    // Check if Apple containers available (macOS)
+    #[cfg(target_os = "macos")]
+    {
+        let apple_available = std::process::Command::new("container")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        checks.push(HealthCheck {
+            name: "apple_containers".to_string(),
+            status: if apple_available {
+                "ok".to_string()
+            } else {
+                "info".to_string()
+            },
+            message: if apple_available {
+                "Apple Containers available".to_string()
+            } else {
+                "Apple Containers not available".to_string()
+            },
+        });
+    }
+
+    let healthy = checks
+        .iter()
+        .all(|c| c.status == "ok" || c.status == "info" || c.status == "warning");
+
+    let result = DoctorResult { checks, healthy };
+    json_response(StatusCode::OK, &ApiResponse::success(result))
 }
 
 #[cfg(test)]

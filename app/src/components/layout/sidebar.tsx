@@ -4,6 +4,7 @@ import {
   Box,
   FileCode,
   Camera,
+  Activity,
   Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -14,6 +15,7 @@ const navItems = [
   { to: "/sandboxes", label: "Sandboxes", icon: Box },
   { to: "/templates", label: "Templates", icon: FileCode },
   { to: "/snapshots", label: "Snapshots", icon: Camera },
+  { to: "/diagnostics", label: "Diagnostics", icon: Activity },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

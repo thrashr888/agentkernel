@@ -10,11 +10,17 @@ import type {
   TemplateInfo,
   Settings,
   AuditLogEntry,
+  StatusInfo,
+  DoctorResult,
 } from "./types";
 
 export const api = {
   // Health — returns "ok" string on success
   checkConnection: () => invoke<string>("check_connection"),
+
+  // Diagnostics
+  getStatus: () => invoke<StatusInfo>("get_status"),
+  getDoctor: () => invoke<DoctorResult>("get_doctor"),
 
   // Sandboxes
   listSandboxes: () => invoke<SandboxInfo[]>("list_sandboxes"),
@@ -28,6 +34,10 @@ export const api = {
     invoke<ExtendTtlResponse>("extend_ttl", { name, by }),
   getSandboxLogs: (name: string) =>
     invoke<AuditLogEntry[]>("get_sandbox_logs", { name }),
+
+  // Quick Run — temporary sandbox, execute, clean up
+  quickRun: (command: string[], image?: string, profile?: string) =>
+    invoke<RunOutput>("quick_run", { command, image, profile }),
 
   // Execution — params are flat, not a nested struct
   execCommand: (name: string, command: string[], env?: string[], workdir?: string) =>

@@ -58,59 +58,74 @@ export function Sandboxes() {
 
   const createMutation = useMutation({
     mutationFn: (req: CreateSandboxRequest) => api.createSandbox(req),
-    onSuccess: () => {
+    onMutate: () => {
+      return { toastId: toast("Creating sandbox...") };
+    },
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, "Sandbox created!", "success");
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
       setDialogOpen(false);
       resetForm();
-      toast.success("Sandbox created");
     },
-    onError: (err: unknown) => {
-      toast.error(err instanceof Error ? err.message : String(err));
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
     },
   });
 
   const removeMutation = useMutation({
     mutationFn: (name: string) => api.removeSandbox(name),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
-      toast.success("Sandbox removed");
+    onMutate: () => {
+      return { toastId: toast("Removing sandbox...") };
     },
-    onError: (err: unknown) => {
-      toast.error(err instanceof Error ? err.message : String(err));
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, "Sandbox removed!", "success");
+      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+    },
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
     },
   });
 
   const startMutation = useMutation({
     mutationFn: (name: string) => api.startSandbox(name),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
-      toast.success("Sandbox started");
+    onMutate: () => {
+      return { toastId: toast("Starting sandbox...") };
     },
-    onError: (err: unknown) => {
-      toast.error(err instanceof Error ? err.message : String(err));
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, "Sandbox started!", "success");
+      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+    },
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
     },
   });
 
   const stopMutation = useMutation({
     mutationFn: (name: string) => api.stopSandbox(name),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
-      toast.success("Sandbox stopped");
+    onMutate: () => {
+      return { toastId: toast("Stopping sandbox...") };
     },
-    onError: (err: unknown) => {
-      toast.error(err instanceof Error ? err.message : String(err));
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, "Sandbox stopped!", "success");
+      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+    },
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
     },
   });
 
   const snapshotMutation = useMutation({
     mutationFn: ({ sandboxName, snapshotName }: { sandboxName: string; snapshotName: string }) =>
       api.takeSnapshot(sandboxName, snapshotName),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["snapshots"] });
-      toast.success("Snapshot created");
+    onMutate: () => {
+      return { toastId: toast("Taking snapshot...") };
     },
-    onError: (err: unknown) => {
-      toast.error(err instanceof Error ? err.message : String(err));
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, "Snapshot created!", "success");
+      queryClient.invalidateQueries({ queryKey: ["snapshots"] });
+    },
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
     },
   });
 
