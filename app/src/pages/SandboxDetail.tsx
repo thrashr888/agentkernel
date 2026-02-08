@@ -552,7 +552,7 @@ export function SandboxDetail() {
                   return (
                     <div key={i} className="leading-6">
                       <span className="text-neutral-500">{ts}</span>{" "}
-                      <span className="text-blue-400">[{eventType}]</span>{" "}
+                      <span className="text-neutral-400">[{eventType}]</span>{" "}
                       <span>{detail}</span>
                     </div>
                   );

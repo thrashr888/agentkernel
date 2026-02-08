@@ -41,7 +41,7 @@ export function statusColor(status: string): string {
       return "text-red-500";
     case "creating":
     case "starting":
-      return "text-blue-500";
+      return "text-yellow-500";
     default:
       return "text-muted-foreground";
   }

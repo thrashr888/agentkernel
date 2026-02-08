@@ -46,10 +46,10 @@ export function StatusCards({ sandboxes }: StatusCardsProps) {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
           <CardTitle className="text-sm font-medium">Total</CardTitle>
-          <Box className="h-4 w-4 text-blue-500" />
+          <Box className="h-4 w-4 text-foreground" />
         </CardHeader>
         <CardContent>
-          <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
+          <div className="text-2xl font-bold">
             {total}
           </div>
         </CardContent>
