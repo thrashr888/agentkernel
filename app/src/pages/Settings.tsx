@@ -221,8 +221,8 @@ export function Settings() {
         <Button onClick={handleSave} disabled={isSaving}>
           {isSaving ? "Saving..." : "Save Settings"}
         </Button>
-        {saveError && (
-          <p className="text-sm text-destructive">{saveError.message}</p>
+        {!!saveError && (
+          <p className="text-sm text-destructive">{saveError instanceof Error ? saveError.message : String(saveError)}</p>
         )}
       </div>
     </div>

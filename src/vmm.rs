@@ -1417,10 +1417,14 @@ impl VmManager {
         self.sandboxes.get(name)
     }
 
-    /// Get the IP address of a running sandbox (Docker backend only for now).
+    /// Get the IP address of a running sandbox.
     pub fn get_container_ip(&self, name: &str) -> Option<String> {
         let container_name = format!("agentkernel-{}", name);
-        crate::backend::docker::get_container_ip(&container_name)
+        let backend = self.sandboxes.get(name).and_then(|s| s.backend);
+        match backend {
+            Some(BackendType::Apple) => crate::backend::apple::get_container_ip(&container_name),
+            _ => crate::backend::docker::get_container_ip(&container_name),
+        }
     }
 
     /// Get the data directory path.

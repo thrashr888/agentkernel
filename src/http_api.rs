@@ -2307,7 +2307,17 @@ async fn handle_policy_check(req: Request<Incoming>, state: Arc<AppState>) -> Re
 #[allow(dead_code)]
 pub async fn run_server(addr: SocketAddr) -> Result<()> {
     let state = Arc::new(AppState::new());
-    let listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind(addr).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AddrInUse {
+            anyhow::anyhow!(
+                "Port {} is already in use. Is another agentkernel server running?\n\
+                 Try: kill the existing process or use --port to pick a different port.",
+                addr.port()
+            )
+        } else {
+            anyhow::anyhow!("Failed to bind to {}: {}", addr, e)
+        }
+    })?;
 
     eprintln!("agentkernel HTTP API server listening on http://{}", addr);
 
@@ -2349,7 +2359,17 @@ pub async fn run_server_with_tls(
     };
 
     let state = Arc::new(AppState::new());
-    let listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind(addr).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AddrInUse {
+            anyhow::anyhow!(
+                "Port {} is already in use. Is another agentkernel server running?\n\
+                 Try: kill the existing process or use --port to pick a different port.",
+                addr.port()
+            )
+        } else {
+            anyhow::anyhow!("Failed to bind to {}: {}", addr, e)
+        }
+    })?;
 
     if acceptor.is_some() {
         eprintln!("agentkernel HTTP API server listening on https://{}", addr);

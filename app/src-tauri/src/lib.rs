@@ -11,7 +11,8 @@ use state::AppState;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init());
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_window_state::Builder::new().build());
 
     #[cfg(feature = "debug-bridge")]
     let builder = builder.plugin(tauri_plugin_debug_bridge::init());

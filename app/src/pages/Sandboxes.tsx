@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
+import { toast } from "@/components/ui/use-toast";
 import { formatRelativeDate } from "@/lib/utils";
 
 export function Sandboxes() {
@@ -61,6 +62,10 @@ export function Sandboxes() {
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
       setDialogOpen(false);
       resetForm();
+      toast.success("Sandbox created");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -68,6 +73,10 @@ export function Sandboxes() {
     mutationFn: (name: string) => api.removeSandbox(name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+      toast.success("Sandbox removed");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -75,6 +84,10 @@ export function Sandboxes() {
     mutationFn: (name: string) => api.startSandbox(name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+      toast.success("Sandbox started");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -82,6 +95,10 @@ export function Sandboxes() {
     mutationFn: (name: string) => api.stopSandbox(name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+      toast.success("Sandbox stopped");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -90,6 +107,10 @@ export function Sandboxes() {
       api.takeSnapshot(sandboxName, snapshotName),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["snapshots"] });
+      toast.success("Snapshot created");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -188,11 +209,16 @@ export function Sandboxes() {
                     <SelectItem value="restrictive">Restrictive</SelectItem>
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground">
+                  {formProfile === "permissive" && "Network + mount cwd + mount home + pass env vars"}
+                  {formProfile === "moderate" && "Network only — no mounts, no env pass-through"}
+                  {formProfile === "restrictive" && "No network, no mounts, read-only filesystem"}
+                </p>
               </div>
             </div>
-            {createMutation.error && (
+            {!!createMutation.error && (
               <p className="text-sm text-destructive">
-                {createMutation.error.message}
+                {createMutation.error instanceof Error ? createMutation.error.message : String(createMutation.error)}
               </p>
             )}
             <DialogFooter>

@@ -86,6 +86,94 @@ pub fn macos_version_supported() -> bool {
     false
 }
 
+/// Check whether an image tag refers to a local-only image that should never be
+/// pulled from a remote registry (e.g. snapshot images created via `docker commit`).
+fn is_local_image(image: &str) -> bool {
+    image.starts_with("agentkernel-snap:")
+        || (image.starts_with("agentkernel-")
+            && !image.contains('/')
+            && !image.contains(".io")
+            && !image.contains(".com"))
+}
+
+/// Check if an image exists in the Apple container image store.
+fn apple_image_exists(image: &str) -> bool {
+    Command::new("container")
+        .args(["image", "inspect", image])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Import a Docker-local image into the Apple container image store.
+///
+/// Uses `docker save <tag> | container image load` to transfer images that
+/// exist in Docker (e.g. from `docker commit`) but not in the Apple store.
+fn import_image_from_docker(image: &str) -> Result<()> {
+    use std::process::Stdio;
+
+    // Verify the image exists in Docker first
+    let docker_check = Command::new("docker")
+        .args(["image", "inspect", image])
+        .output()
+        .context("Failed to check Docker for image")?;
+
+    if !docker_check.status.success() {
+        bail!(
+            "Image '{}' not found in Docker or Apple container stores. \
+             Was the snapshot created on this machine?",
+            image
+        );
+    }
+
+    eprintln!(
+        "Importing image '{}' from Docker into Apple containers...",
+        image
+    );
+
+    // Pipe: docker save <image> | container image load
+    let docker_save = Command::new("docker")
+        .args(["save", image])
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("Failed to run docker save")?;
+
+    let load_output = Command::new("container")
+        .args(["image", "load"])
+        .stdin(docker_save.stdout.unwrap())
+        .output()
+        .context("Failed to run container image load")?;
+
+    if !load_output.status.success() {
+        let stderr = String::from_utf8_lossy(&load_output.stderr);
+        bail!("Failed to import image into Apple containers: {}", stderr);
+    }
+
+    Ok(())
+}
+
+/// Get the IP address of an Apple container by parsing `container inspect` JSON.
+pub fn get_container_ip(container_name: &str) -> Option<String> {
+    let output = Command::new("container")
+        .args(["inspect", container_name])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // Parse the JSON array; extract .networks[0].address and strip the CIDR suffix.
+    let text = String::from_utf8_lossy(&output.stdout);
+    let arr: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    let addr = arr
+        .get(0)?
+        .get("networks")?
+        .get(0)?
+        .get("address")?
+        .as_str()?;
+    // Strip "/24" CIDR suffix if present
+    Some(addr.split('/').next().unwrap_or(addr).to_string())
+}
+
 /// Apple Containers sandbox
 pub struct AppleSandbox {
     name: String,
@@ -127,6 +215,14 @@ impl Sandbox for AppleSandbox {
         start_apple_system()?;
 
         let container_name = self.container_name();
+
+        // For local/snapshot images (e.g. "agentkernel-snap:my-snap"), ensure the
+        // image is available in the Apple container store. These images are created
+        // via `docker commit` and live only in Docker's image store, so Apple's
+        // `container run` would try (and fail) to pull them from a registry.
+        if is_local_image(&config.image) && !apple_image_exists(&config.image) {
+            import_image_from_docker(&config.image)?;
+        }
 
         // Remove any existing container
         let _ = Command::new("container")
@@ -370,5 +466,32 @@ impl Drop for AppleSandbox {
                 .args(["delete", "-f", &container_name])
                 .output();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_local_image_snapshot_tags() {
+        assert!(is_local_image("agentkernel-snap:test-snap"));
+        assert!(is_local_image("agentkernel-snap:my-snapshot"));
+        assert!(is_local_image("agentkernel-snap:v1"));
+    }
+
+    #[test]
+    fn test_is_local_image_other_agentkernel_tags() {
+        assert!(is_local_image("agentkernel-my-tools"));
+        assert!(is_local_image("agentkernel-custom:latest"));
+    }
+
+    #[test]
+    fn test_is_local_image_rejects_registry_images() {
+        assert!(!is_local_image("alpine:3.20"));
+        assert!(!is_local_image("python:3.12-alpine"));
+        assert!(!is_local_image("docker.io/library/alpine"));
+        assert!(!is_local_image("ghcr.io/user/image:latest"));
+        assert!(!is_local_image("registry.example.com/foo"));
     }
 }

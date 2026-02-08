@@ -4,12 +4,15 @@ import {
   ArrowLeft,
   Trash2,
   Play,
+  Square,
   Clock,
   Cpu,
   HardDrive,
   Image,
   Server,
   Calendar,
+  Copy,
+  Check,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSandbox } from "@/lib/hooks/use-sandbox";
@@ -37,6 +40,7 @@ import {
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
+import { toast } from "@/components/ui/use-toast";
 import { formatDate } from "@/lib/utils";
 import type { RunOutput, DetachedCommand } from "@/lib/types";
 
@@ -57,13 +61,48 @@ export function SandboxDetail() {
   const [extendSeconds, setExtendSeconds] = useState(300);
   const [extendDialogOpen, setExtendDialogOpen] = useState(false);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
+
+  function copyToClipboard(text: string, field: string) {
+    navigator.clipboard.writeText(text);
+    setCopiedField(field);
+    setTimeout(() => setCopiedField(null), 2000);
+  }
+
+  const startMutation = useMutation({
+    mutationFn: () => api.startSandbox(name ?? ""),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sandbox", name] });
+      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+      toast.success("Sandbox started");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
+    },
+  });
+
+  const stopMutation = useMutation({
+    mutationFn: () => api.stopSandbox(name ?? ""),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sandbox", name] });
+      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+      toast.success("Sandbox stopped");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
+    },
+  });
 
   const removeMutation = useMutation({
     mutationFn: (sandboxName: string) => api.removeSandbox(sandboxName),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
       navigate("/sandboxes");
+      toast.success("Sandbox removed");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -73,6 +112,10 @@ export function SandboxDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sandbox", name] });
       setExtendDialogOpen(false);
+      toast.success("TTL extended");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -94,6 +137,10 @@ export function SandboxDetail() {
     mutationFn: (cmdId: string) => api.killDetached(name ?? "", cmdId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["detached", name] });
+      toast.success("Job killed");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -115,6 +162,9 @@ export function SandboxDetail() {
       {
         onSuccess: (output) => {
           setHistory((prev) => [...prev, { command: cmd, output }]);
+        },
+        onError: (err: unknown) => {
+          toast.error(err instanceof Error ? err.message : String(err));
         },
       }
     );
@@ -171,14 +221,35 @@ export function SandboxDetail() {
             </div>
           </div>
         </div>
-        <Button
-          variant="destructive"
-          onClick={() => removeMutation.mutate(sandbox.name)}
-          disabled={removeMutation.isPending}
-        >
-          <Trash2 className="mr-2 h-4 w-4" />
-          {removeMutation.isPending ? "Removing..." : "Remove"}
-        </Button>
+        <div className="flex items-center gap-2">
+          {sandbox.status.toLowerCase() === "running" ? (
+            <Button
+              variant="outline"
+              onClick={() => stopMutation.mutate()}
+              disabled={stopMutation.isPending}
+            >
+              <Square className="mr-2 h-4 w-4" />
+              {stopMutation.isPending ? "Stopping..." : "Stop"}
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              onClick={() => startMutation.mutate()}
+              disabled={startMutation.isPending}
+            >
+              <Play className="mr-2 h-4 w-4" />
+              {startMutation.isPending ? "Starting..." : "Start"}
+            </Button>
+          )}
+          <Button
+            variant="destructive"
+            onClick={() => removeMutation.mutate(sandbox.name)}
+            disabled={removeMutation.isPending}
+          >
+            <Trash2 className="mr-2 h-4 w-4" />
+            {removeMutation.isPending ? "Removing..." : "Remove"}
+          </Button>
+        </div>
       </div>
 
       <Tabs defaultValue="info">
@@ -216,7 +287,23 @@ export function SandboxDetail() {
                 <Image className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <p className="text-sm font-mono">{sandbox.image ?? "—"}</p>
+                {sandbox.image ? (
+                  <button
+                    type="button"
+                    className="group flex items-center gap-1.5 text-sm font-mono hover:text-foreground"
+                    onClick={() => copyToClipboard(sandbox.image!, "image")}
+                    title="Copy to clipboard"
+                  >
+                    <span className="truncate">{sandbox.image}</span>
+                    {copiedField === "image" ? (
+                      <Check className="h-3 w-3 shrink-0 text-green-500" />
+                    ) : (
+                      <Copy className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50" />
+                    )}
+                  </button>
+                ) : (
+                  <p className="text-sm font-mono">—</p>
+                )}
               </CardContent>
             </Card>
 
@@ -263,7 +350,19 @@ export function SandboxDetail() {
                   <Server className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm font-mono">{sandbox.ip}</p>
+                  <button
+                    type="button"
+                    className="group flex items-center gap-1.5 text-sm font-mono hover:text-foreground"
+                    onClick={() => copyToClipboard(sandbox.ip!, "ip")}
+                    title="Copy to clipboard"
+                  >
+                    <span>{sandbox.ip}</span>
+                    {copiedField === "ip" ? (
+                      <Check className="h-3 w-3 shrink-0 text-green-500" />
+                    ) : (
+                      <Copy className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50" />
+                    )}
+                  </button>
                 </CardContent>
               </Card>
             )}
@@ -307,9 +406,9 @@ export function SandboxDetail() {
                         onChange={(e) => setExtendSeconds(Number(e.target.value))}
                       />
                     </div>
-                    {extendMutation.error && (
+                    {!!extendMutation.error && (
                       <p className="text-sm text-destructive">
-                        {extendMutation.error.message}
+                        {extendMutation.error instanceof Error ? extendMutation.error.message : String(extendMutation.error)}
                       </p>
                     )}
                     <DialogFooter>

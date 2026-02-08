@@ -32,10 +32,14 @@ pub struct SandboxInfo {
     pub name: String,
     pub status: String,
     pub backend: String,
+    #[serde(default)]
+    pub ip: Option<String>,
     pub image: Option<String>,
     pub vcpus: Option<u32>,
     pub memory_mb: Option<u64>,
     pub created_at: Option<String>,
+    #[serde(default)]
+    pub ports: Vec<String>,
 }
 
 /// Output from a command execution.

@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "@/components/ui/use-toast";
 import { formatRelativeDate } from "@/lib/utils";
 
 type ConfirmAction =
@@ -40,6 +41,10 @@ export function Snapshots() {
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
       queryClient.invalidateQueries({ queryKey: ["snapshots"] });
       setConfirmAction(null);
+      toast.success("Snapshot restored");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -48,6 +53,10 @@ export function Snapshots() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["snapshots"] });
       setConfirmAction(null);
+      toast.success("Snapshot deleted");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -178,8 +187,8 @@ export function Snapshots() {
                 : `This will permanently delete snapshot "${confirmAction?.name}". This action cannot be undone.`}
             </DialogDescription>
           </DialogHeader>
-          {actionError && (
-            <p className="text-sm text-destructive">{actionError.message}</p>
+          {!!actionError && (
+            <p className="text-sm text-destructive">{actionError instanceof Error ? actionError.message : String(actionError)}</p>
           )}
           <DialogFooter>
             <Button
