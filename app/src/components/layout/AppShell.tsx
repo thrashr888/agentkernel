@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { useSettings } from "@/lib/hooks/use-settings";
 import { Sidebar } from "./sidebar";
 import { Header } from "./header";
 import { Toaster } from "@/components/ui/toast";
@@ -7,6 +9,25 @@ interface AppShellProps {
 }
 
 export function AppShell({ children }: AppShellProps) {
+  const { settings } = useSettings();
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!settings) return;
+
+    if (settings.theme === "dark") {
+      root.classList.add("dark");
+    } else if (settings.theme === "light") {
+      root.classList.remove("dark");
+    } else {
+      // system
+      const prefersDark = window.matchMedia(
+        "(prefers-color-scheme: dark)"
+      ).matches;
+      root.classList.toggle("dark", prefersDark);
+    }
+  }, [settings?.theme]);
+
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar />

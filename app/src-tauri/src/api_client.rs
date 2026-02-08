@@ -88,6 +88,18 @@ impl ApiClient {
         Ok(())
     }
 
+    /// Stop a running sandbox.
+    pub async fn stop_sandbox(&self, name: &str) -> anyhow::Result<()> {
+        let _: String = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/sandboxes/{name}/stop"),
+                None::<&()>,
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Remove a sandbox.
     pub async fn remove_sandbox(&self, name: &str) -> anyhow::Result<()> {
         let _: String = self

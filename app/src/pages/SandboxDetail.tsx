@@ -11,7 +11,7 @@ import {
   Server,
   Calendar,
 } from "lucide-react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSandbox } from "@/lib/hooks/use-sandbox";
 import { useExec } from "@/lib/hooks/use-exec";
 import { api } from "@/lib/api";
@@ -38,7 +38,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { formatDate } from "@/lib/utils";
-import type { RunOutput } from "@/lib/types";
+import type { RunOutput, DetachedCommand } from "@/lib/types";
 
 interface CommandEntry {
   command: string;
@@ -56,6 +56,7 @@ export function SandboxDetail() {
   const [history, setHistory] = useState<CommandEntry[]>([]);
   const [extendSeconds, setExtendSeconds] = useState(300);
   const [extendDialogOpen, setExtendDialogOpen] = useState(false);
+  const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
 
   const removeMutation = useMutation({
@@ -72,6 +73,27 @@ export function SandboxDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sandbox", name] });
       setExtendDialogOpen(false);
+    },
+  });
+
+  const { data: detachedJobs } = useQuery({
+    queryKey: ["detached", name],
+    queryFn: () => api.listDetached(name ?? ""),
+    enabled: !!name,
+    refetchInterval: 5000,
+  });
+
+  const { data: jobLogs } = useQuery({
+    queryKey: ["detached-logs", name, selectedJob],
+    queryFn: () => api.getDetachedLogs(name ?? "", selectedJob ?? ""),
+    enabled: !!name && !!selectedJob,
+    refetchInterval: 3000,
+  });
+
+  const killJobMutation = useMutation({
+    mutationFn: (cmdId: string) => api.killDetached(name ?? "", cmdId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["detached", name] });
     },
   });
 
@@ -363,11 +385,72 @@ export function SandboxDetail() {
         </TabsContent>
 
         <TabsContent value="logs" className="space-y-4">
-          <div className="h-[400px] overflow-auto rounded-md border bg-neutral-950 p-4 font-mono text-sm text-neutral-200">
-            <p className="text-neutral-500">
-              Logs are streamed from the sandbox. Use the Exec tab to run
-              commands and view output.
-            </p>
+          <div className="flex gap-4">
+            <div className="w-64 space-y-2">
+              <p className="text-sm font-medium">Background Jobs</p>
+              {!detachedJobs || detachedJobs.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No background jobs. Use the Exec tab or CLI to run detached commands.
+                </p>
+              ) : (
+                detachedJobs.map((job: DetachedCommand) => (
+                  <div
+                    key={job.id}
+                    className={`cursor-pointer rounded-md border p-2 text-xs ${
+                      selectedJob === job.id
+                        ? "border-primary bg-primary/10"
+                        : "hover:bg-muted"
+                    }`}
+                    onClick={() => setSelectedJob(job.id)}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono truncate">{job.command.join(" ")}</span>
+                      <span
+                        className={`ml-2 shrink-0 rounded px-1 py-0.5 text-[10px] ${
+                          job.status === "running"
+                            ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
+                            : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"
+                        }`}
+                      >
+                        {job.status}
+                      </span>
+                    </div>
+                    {selectedJob === job.id && job.status === "running" && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="mt-1 h-6 text-xs text-destructive"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          killJobMutation.mutate(job.id);
+                        }}
+                      >
+                        Kill
+                      </Button>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="flex-1 h-[400px] overflow-auto rounded-md border bg-neutral-950 p-4 font-mono text-sm text-neutral-200">
+              {!selectedJob ? (
+                <p className="text-neutral-500">
+                  Select a background job to view its output.
+                </p>
+              ) : jobLogs ? (
+                <pre className="whitespace-pre-wrap">
+                  {jobLogs.stdout || ""}
+                  {jobLogs.stderr && (
+                    <span className="text-red-400">{jobLogs.stderr}</span>
+                  )}
+                  {!jobLogs.stdout && !jobLogs.stderr && (
+                    <span className="text-neutral-500">No output yet.</span>
+                  )}
+                </pre>
+              ) : (
+                <p className="text-neutral-500">Loading...</p>
+              )}
+            </div>
           </div>
         </TabsContent>
       </Tabs>

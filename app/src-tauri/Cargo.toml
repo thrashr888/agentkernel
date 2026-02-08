@@ -23,7 +23,7 @@ tokio = { version = "1", features = ["rt", "macros"] }
 anyhow = "1"
 thiserror = "2"
 dirs = "6"
-tauri-plugin-debug-bridge = { path = "/Users/thrashr888/Workspace/tauri-browser/crates/tauri-plugin-debug-bridge", optional = true }
+tauri-plugin-debug-bridge = { version = "0.3", optional = true }
 
 [features]
 default = ["custom-protocol"]

@@ -78,6 +78,13 @@ export function Sandboxes() {
     },
   });
 
+  const stopMutation = useMutation({
+    mutationFn: (name: string) => api.stopSandbox(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+    },
+  });
+
   const snapshotMutation = useMutation({
     mutationFn: ({ sandboxName, snapshotName }: { sandboxName: string; snapshotName: string }) =>
       api.takeSnapshot(sandboxName, snapshotName),
@@ -101,6 +108,7 @@ export function Sandboxes() {
       image: formImage,
       vcpus: formVcpus,
       memory_mb: formMemory,
+      profile: formProfile,
     });
   }
 
@@ -239,6 +247,7 @@ export function Sandboxes() {
                 <TableHead>Name</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Image</TableHead>
+                <TableHead>IP</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead className="w-[70px]">Actions</TableHead>
               </TableRow>
@@ -259,6 +268,12 @@ export function Sandboxes() {
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {sandbox.image ?? sandbox.backend}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {sandbox.ip ?? "—"}
+                    {sandbox.ports && sandbox.ports.length > 0 && (
+                      <span className="ml-1 text-xs">({sandbox.ports.join(", ")})</span>
+                    )}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {formatRelativeDate(sandbox.created_at)}
@@ -286,7 +301,7 @@ export function Sandboxes() {
                         {sandbox.status.toLowerCase() === "running" && (
                           <>
                             <DropdownMenuItem
-                              onClick={() => removeMutation.mutate(sandbox.name)}
+                              onClick={() => stopMutation.mutate(sandbox.name)}
                             >
                               <Square className="mr-2 h-4 w-4" />
                               Stop

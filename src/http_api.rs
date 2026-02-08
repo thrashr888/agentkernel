@@ -519,6 +519,9 @@ async fn handle_request(
         // Start a stopped sandbox
         (Method::POST, ["sandboxes", name, "start"]) => handle_start_sandbox(name, state).await,
 
+        // Stop a running sandbox
+        (Method::POST, ["sandboxes", name, "stop"]) => handle_stop_sandbox(name, state).await,
+
         // Extend sandbox TTL
         (Method::POST, ["sandboxes", name, "extend"]) => handle_extend_ttl(req, name, state).await,
 
@@ -896,10 +899,10 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
                     .map(|b| format!("{}", b))
                     .unwrap_or_else(|| "unknown".to_string()),
                 ip,
-                image: None,
-                vcpus: None,
-                memory_mb: None,
-                created_at: None,
+                image: state_info.map(|s| s.image.clone()),
+                vcpus: state_info.map(|s| s.vcpus),
+                memory_mb: state_info.map(|s| s.memory_mb),
+                created_at: state_info.map(|s| s.created_at.clone()),
                 ports,
             }
         })
@@ -1444,6 +1447,43 @@ async fn handle_start_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxB
 
     match manager.start(name).await {
         Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox started")),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_stop_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = crate::identity::AgentIdentity::anonymous();
+        if let Err(resp) =
+            enforce_policy(&state, &identity, crate::policy::Action::Create, name).await
+        {
+            return resp;
+        }
+    }
+
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.stop(name).await {
+        Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox stopped")),
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),

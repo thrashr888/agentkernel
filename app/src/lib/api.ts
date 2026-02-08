@@ -22,6 +22,7 @@ export const api = {
     invoke<SandboxInfo>("create_sandbox", { req }),
   removeSandbox: (name: string) => invoke<void>("remove_sandbox", { name }),
   startSandbox: (name: string) => invoke<void>("start_sandbox", { name }),
+  stopSandbox: (name: string) => invoke<void>("stop_sandbox", { name }),
   extendTtl: (name: string, by: string) =>
     invoke<ExtendTtlResponse>("extend_ttl", { name, by }),
 

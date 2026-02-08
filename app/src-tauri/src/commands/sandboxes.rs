@@ -41,6 +41,13 @@ pub async fn start_sandbox(name: String, state: State<'_, AppState>) -> Result<(
     client.start_sandbox(&name).await.map_err(|e| e.to_string())
 }
 
+/// Stop a running sandbox.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn stop_sandbox(name: String, state: State<'_, AppState>) -> Result<(), String> {
+    let client = state.client.lock().map_err(|e| e.to_string())?.clone();
+    client.stop_sandbox(&name).await.map_err(|e| e.to_string())
+}
+
 /// Extend a sandbox's time-to-live.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn extend_ttl(
