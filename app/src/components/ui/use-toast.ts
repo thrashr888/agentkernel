@@ -24,9 +24,10 @@ function addToast(message: string, type: ToastType = "default") {
   toasts = [...toasts, toast];
   notifyListeners();
 
+  const duration = type === "error" ? 8000 : type === "success" ? 4000 : 5000;
   setTimeout(() => {
     dismissToast(id);
-  }, 3000);
+  }, duration);
 
   return id;
 }

@@ -14,11 +14,11 @@ function ToastItem({
       className={cn(
         "pointer-events-auto relative flex w-full items-center justify-between gap-2 overflow-hidden rounded-md border p-4 shadow-lg transition-all",
         "animate-in slide-in-from-bottom-5 fade-in-0",
-        toast.type === "default" && "bg-background text-foreground",
+        toast.type === "default" && "bg-background text-foreground border-border",
         toast.type === "success" &&
-          "border-green-500/50 bg-green-500/10 text-green-700 dark:text-green-400",
+          "border-green-600/30 bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-200 dark:border-green-800/50",
         toast.type === "error" &&
-          "border-destructive/50 bg-destructive/10 text-destructive"
+          "border-red-600/30 bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200 dark:border-red-800/50"
       )}
     >
       <p className="text-sm font-medium">{toast.message}</p>

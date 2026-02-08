@@ -237,6 +237,12 @@ impl Sandbox for AppleSandbox {
             container_name.clone(),
         ];
 
+        // For local/snapshot images, prevent the runtime from trying to pull
+        // from a remote registry (which would fail with 401 Unauthorized).
+        if is_local_image(&config.image) {
+            args.push("--pull=never".to_string());
+        }
+
         // Resource limits
         args.push("--cpus".to_string());
         args.push(config.vcpus.to_string());
