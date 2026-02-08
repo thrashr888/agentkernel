@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { RefreshCw, CheckCircle, AlertTriangle, XCircle, Info } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { RefreshCw, CheckCircle, AlertTriangle, XCircle, Info, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
@@ -40,6 +40,30 @@ function statusBadgeVariant(status: string) {
 }
 
 export function Diagnostics() {
+  const queryClient = useQueryClient();
+
+  const gcMutation = useMutation({
+    mutationFn: () => api.runGc(),
+    onMutate: () => {
+      const toastId = toast("Running garbage collection...");
+      return { toastId };
+    },
+    onSuccess: (data, _variables, context) => {
+      toast.update(
+        context.toastId,
+        `Removed ${data.count} sandbox${data.count === 1 ? "" : "es"}`,
+        "success",
+      );
+      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+    },
+    onError: (err, _variables, context) => {
+      if (context?.toastId) {
+        toast.update(context.toastId, "Garbage collection failed", "error");
+      }
+      toast.error(err instanceof Error ? err.message : String(err));
+    },
+  });
+
   const {
     data: status,
     isLoading: statusLoading,
@@ -199,6 +223,52 @@ export function Diagnostics() {
               ))}
             </div>
           ) : null}
+        </CardContent>
+      </Card>
+
+      {/* Maintenance */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Maintenance</CardTitle>
+          <CardDescription>
+            Manage sandbox lifecycle and cleanup
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Garbage Collection</p>
+              <p className="text-xs text-muted-foreground">
+                Remove expired sandboxes to free up resources
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => gcMutation.mutate()}
+              disabled={gcMutation.isPending}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              {gcMutation.isPending ? "Running..." : "Run Garbage Collection"}
+            </Button>
+          </div>
+          {gcMutation.isSuccess && gcMutation.data && (
+            <div className="rounded-md border p-3 space-y-2">
+              <p className="text-sm font-medium">
+                Removed {gcMutation.data.count} sandbox
+                {gcMutation.data.count === 1 ? "" : "es"}
+              </p>
+              {gcMutation.data.removed.length > 0 && (
+                <ul className="space-y-1">
+                  {gcMutation.data.removed.map((name) => (
+                    <li key={name} className="text-xs font-mono text-muted-foreground">
+                      {name}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

@@ -16,6 +16,7 @@ import {
   Terminal,
   Loader2,
   X,
+  Download,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSandbox } from "@/lib/hooks/use-sandbox";
@@ -130,6 +131,19 @@ export function SandboxDetail() {
     },
     onSuccess: (_data, _vars, context) => {
       if (context?.toastId) toast.update(context.toastId, "Terminal opened", "success");
+    },
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
+    },
+  });
+
+  const exportMutation = useMutation({
+    mutationFn: () => api.exportSandbox(name ?? ""),
+    onMutate: () => {
+      return { toastId: toast("Exporting sandbox...") };
+    },
+    onSuccess: (path, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, `Exported to ${path}`, "success");
     },
     onError: (err: unknown, _vars, context) => {
       if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
@@ -334,7 +348,7 @@ export function SandboxDetail() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {sandbox.ip && sandbox.status.toLowerCase() === "running" && (
+          {sandbox.status.toLowerCase() === "running" && (
             <Button
               variant="outline"
               onClick={() => openTerminalMutation.mutate()}
@@ -342,6 +356,16 @@ export function SandboxDetail() {
             >
               <Terminal className="mr-2 h-4 w-4" />
               {openTerminalMutation.isPending ? "Opening..." : "Open Terminal"}
+            </Button>
+          )}
+          {sandbox.status.toLowerCase() === "running" && (
+            <Button
+              variant="outline"
+              onClick={() => exportMutation.mutate()}
+              disabled={exportMutation.isPending}
+            >
+              <Download className="mr-2 h-4 w-4" />
+              {exportMutation.isPending ? "Exporting..." : "Export"}
             </Button>
           )}
           {sandbox.status.toLowerCase() === "running" ? (

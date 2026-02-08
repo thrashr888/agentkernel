@@ -61,19 +61,11 @@ pub async fn get_sandbox_logs(
         .map_err(|e| e.to_string())
 }
 
-/// Open an interactive terminal session to a running sandbox via SSH.
+/// Open an interactive terminal session to a running sandbox.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn open_terminal(name: String, state: State<'_, AppState>) -> Result<(), String> {
-    let client = state.client.lock().map_err(|e| e.to_string())?.clone();
-    let sandbox = client.get_sandbox(&name).await.map_err(|e| e.to_string())?;
-
-    let ip = sandbox.ip.ok_or("Sandbox has no IP address")?;
-
-    // Build the SSH command
-    let ssh_cmd = format!(
-        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.agentkernel/keys/id_ed25519 root@{}",
-        ip
-    );
+pub async fn open_terminal(name: String, _state: State<'_, AppState>) -> Result<(), String> {
+    // Use `container exec` for Apple Containers (interactive shell)
+    let exec_cmd = format!("container exec -it {} /bin/sh", name);
 
     // Open Terminal.app with the command on macOS
     std::process::Command::new("osascript")
@@ -81,13 +73,69 @@ pub async fn open_terminal(name: String, state: State<'_, AppState>) -> Result<(
             "-e",
             &format!(
                 "tell application \"Terminal\"\n    activate\n    do script \"{}\"\nend tell",
-                ssh_cmd
+                exec_cmd
             ),
         ])
         .spawn()
         .map_err(|e| format!("Failed to open terminal: {}", e))?;
 
     Ok(())
+}
+
+/// Export a sandbox filesystem as a tar.gz archive.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn export_sandbox(name: String, state: State<'_, AppState>) -> Result<String, String> {
+    let client = state.client.lock().map_err(|e| e.to_string())?.clone();
+
+    // Create tar.gz inside the container
+    let archive_path = "/tmp/sandbox-export.tar.gz";
+    let cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "tar czf {} --exclude=/proc --exclude=/sys --exclude=/dev --exclude={} -C / .",
+            archive_path, archive_path
+        ),
+    ];
+    client
+        .exec_in_sandbox(&name, cmd, vec![], None)
+        .await
+        .map_err(|e| format!("Failed to create archive: {}", e))?;
+
+    // Read the archive out via the files API
+    let data = client
+        .read_file(&name, archive_path)
+        .await
+        .map_err(|e| format!("Failed to read archive: {}", e))?;
+
+    // Save to Downloads directory
+    let downloads =
+        dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let dest = downloads.join(format!("{}.tar.gz", name));
+
+    // Decode base64 content if needed
+    if data.encoding == "base64" {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let bytes = STANDARD
+            .decode(&data.content)
+            .map_err(|e| format!("Failed to decode: {}", e))?;
+        std::fs::write(&dest, bytes).map_err(|e| format!("Failed to write: {}", e))?;
+    } else {
+        std::fs::write(&dest, data.content.as_bytes())
+            .map_err(|e| format!("Failed to write: {}", e))?;
+    }
+
+    // Clean up inside container
+    let _ = client
+        .exec_in_sandbox(
+            &name,
+            vec!["rm".to_string(), "-f".to_string(), archive_path.to_string()],
+            vec![],
+            None,
+        )
+        .await;
+
+    Ok(dest.to_string_lossy().to_string())
 }
 
 /// Extend a sandbox's time-to-live.

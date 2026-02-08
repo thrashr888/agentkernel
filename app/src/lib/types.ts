@@ -79,6 +79,11 @@ export interface DoctorResult {
   healthy: boolean;
 }
 
+export interface GcResult {
+  removed: string[];
+  count: number;
+}
+
 // Request types
 export interface CreateSandboxRequest {
   name: string;
@@ -111,6 +116,12 @@ export interface TemplateInfo {
   base_image: string;
   vcpus: number;
   memory_mb: number;
+}
+
+// Secrets
+export interface SecretEntry {
+  name: string;
+  created_at?: string;
 }
 
 // Settings

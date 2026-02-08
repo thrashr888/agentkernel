@@ -12,7 +12,9 @@ import type {
   AuditLogEntry,
   StatusInfo,
   DoctorResult,
+  GcResult,
   FileReadResponse,
+  SecretEntry,
 } from "./types";
 
 export const api = {
@@ -22,6 +24,7 @@ export const api = {
   // Diagnostics
   getStatus: () => invoke<StatusInfo>("get_status"),
   getDoctor: () => invoke<DoctorResult>("get_doctor"),
+  runGc: () => invoke<GcResult>("run_gc"),
 
   // Sandboxes
   listSandboxes: () => invoke<SandboxInfo[]>("list_sandboxes"),
@@ -36,6 +39,8 @@ export const api = {
   getSandboxLogs: (name: string) =>
     invoke<AuditLogEntry[]>("get_sandbox_logs", { name }),
   openTerminal: (name: string) => invoke<void>("open_terminal", { name }),
+  exportSandbox: (name: string) =>
+    invoke<string>("export_sandbox", { name }),
 
   // Files
   listFiles: (name: string, path: string) =>
@@ -64,14 +69,24 @@ export const api = {
   takeSnapshot: (sandbox: string, name?: string) =>
     invoke<SnapshotMeta>("take_snapshot", { sandbox, name }),
   deleteSnapshot: (name: string) => invoke<void>("delete_snapshot", { name }),
-  restoreSnapshot: (name: string) =>
-    invoke<SandboxInfo>("restore_snapshot", { name }),
+  restoreSnapshot: (name: string, asName?: string) =>
+    invoke<SandboxInfo>("restore_snapshot", { name, as_name: asName }),
 
   // Templates
   listTemplates: () => invoke<TemplateInfo[]>("list_templates"),
+
+  // Secrets
+  listSecrets: () => invoke<SecretEntry[]>("list_secrets"),
+  createSecret: (name: string, value: string) =>
+    invoke<void>("create_secret", { name, value }),
+  deleteSecret: (name: string) => invoke<void>("delete_secret", { name }),
 
   // Settings
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) =>
     invoke<void>("save_settings", { new_settings: settings }),
+
+  // Audit
+  getAuditLog: (last?: number) =>
+    invoke<AuditLogEntry[]>("get_audit_log", { last }),
 };

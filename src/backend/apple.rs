@@ -237,12 +237,6 @@ impl Sandbox for AppleSandbox {
             container_name.clone(),
         ];
 
-        // For local/snapshot images, prevent the runtime from trying to pull
-        // from a remote registry (which would fail with 401 Unauthorized).
-        if is_local_image(&config.image) {
-            args.push("--pull=never".to_string());
-        }
-
         // Resource limits
         args.push("--cpus".to_string());
         args.push(config.vcpus.to_string());
@@ -369,11 +363,6 @@ impl Sandbox for AppleSandbox {
     async fn write_file_unchecked(&mut self, path: &str, content: &[u8]) -> Result<()> {
         let container_name = self.container_name();
 
-        // Create a temporary file to copy
-        let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join(format!("agentkernel-upload-{}", uuid::Uuid::new_v4()));
-        std::fs::write(&temp_file, content).context("Failed to write temp file")?;
-
         // Ensure parent directory exists in container
         let parent = std::path::Path::new(path)
             .parent()
@@ -384,18 +373,18 @@ impl Sandbox for AppleSandbox {
             .args(["exec", &container_name, "mkdir", "-p", &parent])
             .output();
 
-        // Copy file into container
-        let dest = format!("{}:{}", container_name, path);
+        // Write file via exec: pipe base64-encoded content through sh -c
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let encoded = STANDARD.encode(content);
+        let decode_cmd = format!("echo '{}' | base64 -d > '{}'", encoded, path);
         let output = Command::new("container")
-            .args(["cp", temp_file.to_str().unwrap(), &dest])
+            .args(["exec", &container_name, "sh", "-c", &decode_cmd])
             .output()
-            .context("Failed to copy file to container")?;
-
-        let _ = std::fs::remove_file(&temp_file);
+            .context("Failed to write file in container")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("container cp failed: {}", stderr);
+            bail!("Failed to write file: {}", stderr);
         }
 
         Ok(())
@@ -404,24 +393,23 @@ impl Sandbox for AppleSandbox {
     async fn read_file_unchecked(&mut self, path: &str) -> Result<Vec<u8>> {
         let container_name = self.container_name();
 
-        let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join(format!("agentkernel-download-{}", uuid::Uuid::new_v4()));
-
-        let src = format!("{}:{}", container_name, path);
+        // Read file via exec: base64-encode the content and decode on host
         let output = Command::new("container")
-            .args(["cp", &src, temp_file.to_str().unwrap()])
+            .args(["exec", &container_name, "base64", path])
             .output()
-            .context("Failed to copy file from container")?;
+            .context("Failed to read file from container")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("container cp failed: {}", stderr);
+            bail!("Failed to read file: {}", stderr);
         }
 
-        let content = std::fs::read(&temp_file).context("Failed to read temp file")?;
-        let _ = std::fs::remove_file(&temp_file);
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let decoded = STANDARD
+            .decode(String::from_utf8_lossy(&output.stdout).trim())
+            .context("Failed to decode base64 file content")?;
 
-        Ok(content)
+        Ok(decoded)
     }
 
     async fn remove_file_unchecked(&mut self, path: &str) -> Result<()> {

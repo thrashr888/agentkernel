@@ -4,6 +4,7 @@ import {
   Box,
   FileCode,
   Camera,
+  ScrollText,
   Activity,
   Settings,
 } from "lucide-react";
@@ -32,6 +33,7 @@ const navItems = [
   { to: "/sandboxes", label: "Sandboxes", icon: Box },
   { to: "/templates", label: "Templates", icon: FileCode },
   { to: "/snapshots", label: "Snapshots", icon: Camera },
+  { to: "/audit", label: "Audit Log", icon: ScrollText },
   { to: "/diagnostics", label: "Diagnostics", icon: Activity },
   { to: "/settings", label: "Settings", icon: Settings },
 ];

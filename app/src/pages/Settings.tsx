@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Eye, EyeOff, CheckCircle, XCircle } from "lucide-react";
+import { Eye, EyeOff, CheckCircle, XCircle, Trash2 } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { api } from "@/lib/api";
+import { toast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -20,6 +22,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import type { Settings as SettingsType } from "@/lib/types";
 
 export function Settings() {
@@ -238,6 +248,8 @@ export function Settings() {
         </CardContent>
       </Card>
 
+      <ApiKeysCard />
+
       {showSaved && (
         <div className="flex items-center gap-1.5 text-sm text-green-600 dark:text-green-400 animate-in fade-in duration-300">
           <CheckCircle className="h-4 w-4" />
@@ -245,5 +257,146 @@ export function Settings() {
         </div>
       )}
     </div>
+  );
+}
+
+function ApiKeysCard() {
+  const queryClient = useQueryClient();
+  const [newName, setNewName] = useState("");
+  const [newValue, setNewValue] = useState("");
+
+  const {
+    data: secrets,
+    isLoading: secretsLoading,
+    error: secretsError,
+  } = useQuery({
+    queryKey: ["secrets"],
+    queryFn: () => api.listSecrets(),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: ({ name, value }: { name: string; value: string }) =>
+      api.createSecret(name, value),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["secrets"] });
+      setNewName("");
+      setNewValue("");
+      toast.success("Secret stored");
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : String(err));
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (name: string) => api.deleteSecret(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["secrets"] });
+      toast.success("Secret deleted");
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : String(err));
+    },
+  });
+
+  function handleAddSecret(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmedName = newName.trim();
+    if (!trimmedName || !newValue) return;
+    createMutation.mutate({ name: trimmedName, value: newValue });
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>API Keys</CardTitle>
+        <CardDescription>
+          Manage secrets passed to sandbox environments
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {secretsLoading && (
+          <div className="space-y-2">
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+          </div>
+        )}
+
+        {secretsError && (
+          <p className="text-sm text-destructive">
+            Failed to load secrets:{" "}
+            {secretsError instanceof Error
+              ? secretsError.message
+              : String(secretsError)}
+          </p>
+        )}
+
+        {secrets && secrets.length > 0 && (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead className="w-[100px] text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {secrets.map((secret) => (
+                <TableRow key={secret.name}>
+                  <TableCell className="font-mono text-sm">
+                    {secret.name}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => deleteMutation.mutate(secret.name)}
+                      disabled={deleteMutation.isPending}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+
+        {secrets && secrets.length === 0 && !secretsLoading && (
+          <p className="text-sm text-muted-foreground">
+            No secrets stored yet.
+          </p>
+        )}
+
+        <form onSubmit={handleAddSecret} className="space-y-3 pt-2">
+          <div className="grid gap-2">
+            <Label htmlFor="secret-name">Name</Label>
+            <Input
+              id="secret-name"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="ANTHROPIC_API_KEY"
+              className="font-mono"
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="secret-value">Value</Label>
+            <Input
+              id="secret-value"
+              type="password"
+              value={newValue}
+              onChange={(e) => setNewValue(e.target.value)}
+              placeholder="sk-..."
+            />
+          </div>
+          <Button
+            type="submit"
+            variant="outline"
+            disabled={!newName.trim() || !newValue || createMutation.isPending}
+          >
+            {createMutation.isPending ? "Adding..." : "Add Secret"}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
   );
 }

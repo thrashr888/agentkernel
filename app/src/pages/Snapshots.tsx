@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/use-toast";
 import { formatRelativeDate } from "@/lib/utils";
@@ -34,9 +35,11 @@ export function Snapshots() {
   const { data: snapshots, isLoading, error } = useSnapshots();
   const queryClient = useQueryClient();
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
+  const [restoreName, setRestoreName] = useState("");
 
   const restoreMutation = useMutation({
-    mutationFn: (name: string) => api.restoreSnapshot(name),
+    mutationFn: ({ name, asName }: { name: string; asName?: string }) =>
+      api.restoreSnapshot(name, asName || undefined),
     onMutate: () => {
       return { toastId: toast("Restoring snapshot...") };
     },
@@ -72,7 +75,7 @@ export function Snapshots() {
   function handleConfirm() {
     if (!confirmAction) return;
     if (confirmAction.type === "restore") {
-      restoreMutation.mutate(confirmAction.name);
+      restoreMutation.mutate({ name: confirmAction.name, asName: restoreName.trim() || undefined });
     } else {
       deleteMutation.mutate(confirmAction.name);
     }
@@ -144,10 +147,13 @@ export function Snapshots() {
                         size="icon"
                         title="Restore snapshot"
                         onClick={() =>
+                          {
+                          setRestoreName("");
                           setConfirmAction({
                             type: "restore",
                             name: snapshot.name,
-                          })
+                          });
+                        }
                         }
                       >
                         <RotateCcw className="h-4 w-4" />
@@ -193,6 +199,22 @@ export function Snapshots() {
                 : `This will permanently delete snapshot "${confirmAction?.name}". This action cannot be undone.`}
             </DialogDescription>
           </DialogHeader>
+          {confirmAction?.type === "restore" && (
+            <div className="space-y-2">
+              <label htmlFor="restore-name" className="text-sm font-medium">
+                Sandbox name
+              </label>
+              <Input
+                id="restore-name"
+                placeholder={`${confirmAction.name}-restored`}
+                value={restoreName}
+                onChange={(e) => setRestoreName(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Leave blank to use the default name.
+              </p>
+            </div>
+          )}
           {!!actionError && (
             <p className="text-sm text-destructive">{actionError instanceof Error ? actionError.message : String(actionError)}</p>
           )}

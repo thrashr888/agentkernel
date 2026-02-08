@@ -206,6 +206,25 @@ pub struct DoctorResult {
     pub healthy: bool,
 }
 
+/// Result of garbage collection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GcResult {
+    pub removed: Vec<String>,
+    pub count: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Secrets
+// ---------------------------------------------------------------------------
+
+/// A stored secret (name only, not the value).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretEntry {
+    pub name: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // API response wrapper (internal)
 // ---------------------------------------------------------------------------

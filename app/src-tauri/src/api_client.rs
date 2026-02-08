@@ -66,6 +66,12 @@ impl ApiClient {
             .await
     }
 
+    /// Run garbage collection to remove expired sandboxes.
+    pub async fn run_gc(&self) -> anyhow::Result<GcResult> {
+        self.request(reqwest::Method::POST, "/gc", None::<&()>)
+            .await
+    }
+
     // -----------------------------------------------------------------
     // Sandboxes
     // -----------------------------------------------------------------
@@ -298,11 +304,16 @@ impl ApiClient {
     }
 
     /// Restore a sandbox from a snapshot.
-    pub async fn restore_snapshot(&self, name: &str) -> anyhow::Result<SandboxInfo> {
+    pub async fn restore_snapshot(&self, name: &str, as_name: Option<&str>) -> anyhow::Result<SandboxInfo> {
+        #[derive(serde::Serialize)]
+        struct RestoreBody<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            as_name: Option<&'a str>,
+        }
         self.request(
             reqwest::Method::POST,
             &format!("/snapshots/{name}/restore"),
-            None::<&()>,
+            Some(&RestoreBody { as_name }),
         )
         .await
     }
@@ -335,6 +346,58 @@ impl ApiClient {
             None::<&()>,
         )
         .await
+    }
+
+    // -----------------------------------------------------------------
+    // Audit
+    // -----------------------------------------------------------------
+
+    /// Get the global audit log, optionally limited to the last N entries.
+    pub async fn get_audit_log(&self, last: Option<u32>) -> anyhow::Result<Vec<AuditLogEntry>> {
+        let path = match last {
+            Some(n) => format!("/audit?last={n}"),
+            None => "/audit".to_string(),
+        };
+        self.request(reqwest::Method::GET, &path, None::<&()>).await
+    }
+
+    // -----------------------------------------------------------------
+    // Secrets
+    // -----------------------------------------------------------------
+
+    /// List stored secret names (not values).
+    pub async fn list_secrets(&self) -> anyhow::Result<Vec<crate::types::SecretEntry>> {
+        self.request(reqwest::Method::GET, "/secrets", None::<&()>)
+            .await
+    }
+
+    /// Store a new secret.
+    pub async fn create_secret(&self, name: &str, value: &str) -> anyhow::Result<()> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            name: &'a str,
+            value: &'a str,
+        }
+        let _: String = self
+            .request(
+                reqwest::Method::POST,
+                "/secrets",
+                Some(&Body { name, value }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Delete a secret by name.
+    pub async fn delete_secret(&self, name: &str) -> anyhow::Result<()> {
+        let _: String = self
+            .request(
+                reqwest::Method::DELETE,
+                &format!("/secrets/{name}"),
+                None::<&()>,
+            )
+            .await?;
+        Ok(())
     }
 
     // -----------------------------------------------------------------

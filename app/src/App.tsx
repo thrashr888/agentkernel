@@ -6,6 +6,7 @@ import { SandboxDetail } from "@/pages/SandboxDetail";
 import { Templates } from "@/pages/Templates";
 import { Snapshots } from "@/pages/Snapshots";
 import { Settings } from "@/pages/Settings";
+import { AuditLog } from "@/pages/AuditLog";
 import { Diagnostics } from "@/pages/Diagnostics";
 
 function App() {
@@ -17,6 +18,7 @@ function App() {
         <Route path="/sandboxes/:name" element={<SandboxDetail />} />
         <Route path="/templates" element={<Templates />} />
         <Route path="/snapshots" element={<Snapshots />} />
+        <Route path="/audit" element={<AuditLog />} />
         <Route path="/diagnostics" element={<Diagnostics />} />
         <Route path="/settings" element={<Settings />} />
       </Routes>

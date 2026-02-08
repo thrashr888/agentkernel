@@ -22,9 +22,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // health
             commands::health::check_connection,
+            // audit
+            commands::audit::get_audit_log,
             // diagnostics
             commands::diagnostics::get_status,
             commands::diagnostics::get_doctor,
+            commands::diagnostics::run_gc,
             // sandboxes
             commands::sandboxes::list_sandboxes,
             commands::sandboxes::get_sandbox,
@@ -35,6 +38,7 @@ pub fn run() {
             commands::sandboxes::extend_ttl,
             commands::sandboxes::get_sandbox_logs,
             commands::sandboxes::open_terminal,
+            commands::sandboxes::export_sandbox,
             // files
             commands::files::list_files,
             commands::files::read_file,
@@ -52,6 +56,10 @@ pub fn run() {
             commands::snapshots::restore_snapshot,
             // templates
             commands::templates::list_templates,
+            // secrets
+            commands::secrets::list_secrets,
+            commands::secrets::create_secret,
+            commands::secrets::delete_secret,
             // settings
             commands::settings::get_settings,
             commands::settings::save_settings,

@@ -28,6 +28,7 @@ use tokio::net::TcpListener;
 use crate::languages;
 use crate::opencode::OpenCodeState;
 use crate::permissions::SecurityProfile;
+use crate::secrets::{SecretBackend, SecretVault};
 use crate::validation;
 use crate::vmm::VmManager;
 
@@ -534,11 +535,22 @@ async fn handle_request(
             handle_restore_snapshot(req, name, state).await
         }
 
+        // Audit log
+        (Method::GET, ["audit"]) => handle_audit_log(req).await,
+
         // Diagnostics: installation status
         (Method::GET, ["status"]) => handle_status(state).await,
 
         // Diagnostics: health checks
         (Method::GET, ["doctor"]) => handle_doctor(state).await,
+
+        // Secrets management
+        (Method::GET, ["secrets"]) => handle_list_secrets().await,
+        (Method::POST, ["secrets"]) => handle_create_secret(req).await,
+        (Method::DELETE, ["secrets", name]) => handle_delete_secret(name).await,
+
+        // Garbage collection
+        (Method::POST, ["gc"]) => handle_gc(state).await,
 
         // Enterprise policy endpoints
         #[cfg(feature = "enterprise")]
@@ -2533,6 +2545,138 @@ async fn handle_doctor(state: Arc<AppState>) -> Response<BoxBody> {
 
     let result = DoctorResult { checks, healthy };
     json_response(StatusCode::OK, &ApiResponse::success(result))
+}
+
+async fn handle_audit_log(req: Request<Incoming>) -> Response<BoxBody> {
+    // Parse ?last=N query param (default 100)
+    let last: usize = req
+        .uri()
+        .query()
+        .and_then(|q| {
+            q.split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .find(|(k, _)| *k == "last")
+                .and_then(|(_, v)| v.parse().ok())
+        })
+        .unwrap_or(100);
+
+    let audit = crate::audit::audit();
+    match audit.read_last(last) {
+        Ok(entries) => json_response(StatusCode::OK, &ApiResponse::success(entries)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_gc(state: Arc<AppState>) -> Response<BoxBody> {
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.gc().await {
+        Ok(removed) => {
+            #[derive(serde::Serialize)]
+            struct GcResult {
+                removed: Vec<String>,
+                count: usize,
+            }
+            let count = removed.len();
+            json_response(
+                StatusCode::OK,
+                &ApiResponse::success(GcResult { removed, count }),
+            )
+        }
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Secrets management
+// ---------------------------------------------------------------------------
+
+/// Entry returned by `GET /secrets` — name only, never the value.
+#[derive(Debug, Serialize)]
+struct SecretListEntry {
+    name: String,
+    created_at: Option<String>,
+}
+
+/// Request body for `POST /secrets`.
+#[derive(Debug, Deserialize)]
+struct CreateSecretRequest {
+    name: String,
+    value: String,
+}
+
+async fn handle_list_secrets() -> Response<BoxBody> {
+    let vault = SecretVault::new(SecretBackend::File);
+    match vault.list() {
+        Ok(entries) => {
+            let list: Vec<SecretListEntry> = entries
+                .into_iter()
+                .map(|(name, meta)| SecretListEntry {
+                    name,
+                    created_at: Some(meta.set_at),
+                })
+                .collect();
+            json_response(StatusCode::OK, &ApiResponse::success(list))
+        }
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to list secrets: {e}")),
+        ),
+    }
+}
+
+async fn handle_create_secret(req: Request<Incoming>) -> Response<BoxBody> {
+    let body: CreateSecretRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    if body.name.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("name is required"),
+        );
+    }
+
+    let vault = SecretVault::new(SecretBackend::File);
+    match vault.set(&body.name, &body.value) {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success("Secret stored".to_string()),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to store secret: {e}")),
+        ),
+    }
+}
+
+async fn handle_delete_secret(name: &str) -> Response<BoxBody> {
+    let vault = SecretVault::new(SecretBackend::File);
+    match vault.delete(name) {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success("Secret deleted".to_string()),
+        ),
+        Err(e) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("Failed to delete secret: {e}")),
+        ),
+    }
 }
 
 #[cfg(test)]

@@ -13,6 +13,7 @@ name = "agentkernel-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "dirs",
  "reqwest 0.12.28",
  "serde",

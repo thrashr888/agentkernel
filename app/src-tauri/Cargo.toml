@@ -23,6 +23,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 tokio = { version = "1", features = ["rt", "macros"] }
 anyhow = "1"
 thiserror = "2"
+base64 = "0.22"
 dirs = "6"
 tauri-plugin-debug-bridge = { version = "0.3", optional = true }
 

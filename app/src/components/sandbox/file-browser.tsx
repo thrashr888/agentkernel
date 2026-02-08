@@ -1,6 +1,15 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Folder, File, RefreshCw, ChevronRight, Loader2, X } from "lucide-react";
+import {
+  Folder,
+  File,
+  RefreshCw,
+  ChevronRight,
+  Loader2,
+  X,
+  MoreHorizontal,
+  Eye,
+} from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,6 +20,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/use-toast";
 
 interface FileEntry {
@@ -80,7 +95,8 @@ function formatFileSize(sizeStr: string): string {
   if (isNaN(size)) return sizeStr;
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  if (size < 1024 * 1024 * 1024)
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
@@ -115,7 +131,9 @@ export function FileBrowser({ sandboxName }: FileBrowserProps) {
 
   // Show file errors as toasts
   if (fileError) {
-    toast.error(fileError instanceof Error ? fileError.message : String(fileError));
+    toast.error(
+      fileError instanceof Error ? fileError.message : String(fileError),
+    );
   }
 
   const entries = useMemo(() => {
@@ -125,7 +143,9 @@ export function FileBrowser({ sandboxName }: FileBrowserProps) {
 
   const breadcrumbs = useMemo(() => {
     const parts = currentPath.split("/").filter(Boolean);
-    const crumbs: { label: string; path: string }[] = [{ label: "/", path: "/" }];
+    const crumbs: { label: string; path: string }[] = [
+      { label: "/", path: "/" },
+    ];
     let accumulated = "";
     for (const part of parts) {
       accumulated += `/${part}`;
@@ -146,20 +166,12 @@ export function FileBrowser({ sandboxName }: FileBrowserProps) {
     navigateTo(parts.length === 0 ? "/" : `/${parts.join("/")}`);
   }
 
-  function handleEntryClick(entry: FileEntry) {
-    if (entry.isDirectory) {
-      const newPath =
-        currentPath === "/"
-          ? `/${entry.name}`
-          : `${currentPath}/${entry.name}`;
-      navigateTo(newPath);
-    } else {
-      const fullPath =
-        currentPath === "/"
-          ? `/${entry.name}`
-          : `${currentPath}/${entry.name}`;
-      setSelectedFile(fullPath);
-    }
+  function viewFile(entry: FileEntry) {
+    const fullPath =
+      currentPath === "/"
+        ? `/${entry.name}`
+        : `${currentPath}/${entry.name}`;
+    setSelectedFile(fullPath);
   }
 
   return (
@@ -199,7 +211,9 @@ export function FileBrowser({ sandboxName }: FileBrowserProps) {
       {listError && (
         <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
           Failed to list files:{" "}
-          {listError instanceof Error ? listError.message : String(listError)}
+          {listError instanceof Error
+            ? listError.message
+            : String(listError)}
         </div>
       )}
 
@@ -219,9 +233,10 @@ export function FileBrowser({ sandboxName }: FileBrowserProps) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[50%]">Name</TableHead>
-                <TableHead className="w-[20%]">Size</TableHead>
-                <TableHead className="w-[30%]">Permissions</TableHead>
+                <TableHead className="w-[45%]">Name</TableHead>
+                <TableHead className="w-[15%]">Size</TableHead>
+                <TableHead className="w-[25%]">Permissions</TableHead>
+                <TableHead className="w-[15%] text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -241,12 +256,13 @@ export function FileBrowser({ sandboxName }: FileBrowserProps) {
                   <TableCell className="text-sm text-muted-foreground">
                     --
                   </TableCell>
+                  <TableCell />
                 </TableRow>
               )}
               {entries.length === 0 && currentPath === "/" && (
                 <TableRow>
                   <TableCell
-                    colSpan={3}
+                    colSpan={4}
                     className="text-center text-sm text-muted-foreground py-8"
                   >
                     No files found in this directory.
@@ -256,8 +272,17 @@ export function FileBrowser({ sandboxName }: FileBrowserProps) {
               {entries.map((entry) => (
                 <TableRow
                   key={entry.name}
-                  className="cursor-pointer"
-                  onClick={() => handleEntryClick(entry)}
+                  className={entry.isDirectory ? "cursor-pointer" : undefined}
+                  onClick={
+                    entry.isDirectory
+                      ? () =>
+                          navigateTo(
+                            currentPath === "/"
+                              ? `/${entry.name}`
+                              : `${currentPath}/${entry.name}`,
+                          )
+                      : undefined
+                  }
                 >
                   <TableCell className="flex items-center gap-2 font-mono text-sm">
                     {entry.isDirectory ? (
@@ -272,6 +297,28 @@ export function FileBrowser({ sandboxName }: FileBrowserProps) {
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground font-mono">
                     {entry.permissions}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {!entry.isDirectory && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => viewFile(entry)}>
+                            <Eye className="mr-2 h-4 w-4" />
+                            View
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}

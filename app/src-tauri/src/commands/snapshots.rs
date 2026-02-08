@@ -35,8 +35,9 @@ pub async fn delete_snapshot(name: String, state: State<'_, AppState>) -> Result
 #[tauri::command(rename_all = "snake_case")]
 pub async fn restore_snapshot(
     name: String,
+    as_name: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<SandboxInfo, String> {
     let client = state.client.lock().map_err(|e| e.to_string())?.clone();
-    client.restore_snapshot(&name).await.map_err(|e| e.to_string())
+    client.restore_snapshot(&name, as_name.as_deref()).await.map_err(|e| e.to_string())
 }
