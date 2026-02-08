@@ -61,6 +61,35 @@ pub async fn get_sandbox_logs(
         .map_err(|e| e.to_string())
 }
 
+/// Open an interactive terminal session to a running sandbox via SSH.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn open_terminal(name: String, state: State<'_, AppState>) -> Result<(), String> {
+    let client = state.client.lock().map_err(|e| e.to_string())?.clone();
+    let sandbox = client.get_sandbox(&name).await.map_err(|e| e.to_string())?;
+
+    let ip = sandbox.ip.ok_or("Sandbox has no IP address")?;
+
+    // Build the SSH command
+    let ssh_cmd = format!(
+        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.agentkernel/keys/id_ed25519 root@{}",
+        ip
+    );
+
+    // Open Terminal.app with the command on macOS
+    std::process::Command::new("osascript")
+        .args([
+            "-e",
+            &format!(
+                "tell application \"Terminal\"\n    activate\n    do script \"{}\"\nend tell",
+                ssh_cmd
+            ),
+        ])
+        .spawn()
+        .map_err(|e| format!("Failed to open terminal: {}", e))?;
+
+    Ok(())
+}
+
 /// Extend a sandbox's time-to-live.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn extend_ttl(

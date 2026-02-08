@@ -34,6 +34,10 @@ pub fn run() {
             commands::sandboxes::stop_sandbox,
             commands::sandboxes::extend_ttl,
             commands::sandboxes::get_sandbox_logs,
+            commands::sandboxes::open_terminal,
+            // files
+            commands::files::list_files,
+            commands::files::read_file,
             // exec
             commands::exec::exec_command,
             commands::exec::exec_detached,

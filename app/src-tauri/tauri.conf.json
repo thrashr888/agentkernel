@@ -9,6 +9,11 @@
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
+  "bundle": {
+    "icon": [
+      "icons/icon.png"
+    ]
+  },
   "app": {
     "windows": [
       {

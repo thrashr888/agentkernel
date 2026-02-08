@@ -48,6 +48,14 @@ pub struct RunOutput {
     pub output: String,
 }
 
+/// Response from reading a file in a sandbox.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileReadResponse {
+    pub content: String,
+    pub encoding: String,
+    pub size: usize,
+}
+
 /// Metadata for a sandbox snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotMeta {

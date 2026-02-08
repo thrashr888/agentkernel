@@ -12,6 +12,7 @@ import type {
   AuditLogEntry,
   StatusInfo,
   DoctorResult,
+  FileReadResponse,
 } from "./types";
 
 export const api = {
@@ -34,6 +35,13 @@ export const api = {
     invoke<ExtendTtlResponse>("extend_ttl", { name, by }),
   getSandboxLogs: (name: string) =>
     invoke<AuditLogEntry[]>("get_sandbox_logs", { name }),
+  openTerminal: (name: string) => invoke<void>("open_terminal", { name }),
+
+  // Files
+  listFiles: (name: string, path: string) =>
+    invoke<RunOutput>("list_files", { name, path }),
+  readFile: (name: string, path: string) =>
+    invoke<FileReadResponse>("read_file", { name, path }),
 
   // Quick Run — temporary sandbox, execute, clean up
   quickRun: (command: string[], image?: string, profile?: string) =>

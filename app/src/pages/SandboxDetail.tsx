@@ -22,6 +22,7 @@ import { useSandbox } from "@/lib/hooks/use-sandbox";
 import { useExec } from "@/lib/hooks/use-exec";
 import { api } from "@/lib/api";
 import { SandboxStatusBadge } from "@/components/sandbox/sandbox-status-badge";
+import { FileBrowser } from "@/components/sandbox/file-browser";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -116,6 +117,19 @@ export function SandboxDetail() {
       if (context?.toastId) toast.update(context.toastId, "Sandbox removed!", "success");
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
       navigate("/sandboxes");
+    },
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
+    },
+  });
+
+  const openTerminalMutation = useMutation({
+    mutationFn: () => api.openTerminal(name ?? ""),
+    onMutate: () => {
+      return { toastId: toast("Opening terminal...") };
+    },
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, "Terminal opened", "success");
     },
     onError: (err: unknown, _vars, context) => {
       if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
@@ -320,6 +334,16 @@ export function SandboxDetail() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {sandbox.ip && sandbox.status.toLowerCase() === "running" && (
+            <Button
+              variant="outline"
+              onClick={() => openTerminalMutation.mutate()}
+              disabled={openTerminalMutation.isPending}
+            >
+              <Terminal className="mr-2 h-4 w-4" />
+              {openTerminalMutation.isPending ? "Opening..." : "Open Terminal"}
+            </Button>
+          )}
           {sandbox.status.toLowerCase() === "running" ? (
             <Button
               variant="outline"
@@ -354,6 +378,7 @@ export function SandboxDetail() {
         <TabsList>
           <TabsTrigger value="info">Info</TabsTrigger>
           <TabsTrigger value="exec">Exec</TabsTrigger>
+          <TabsTrigger value="files">Files</TabsTrigger>
           <TabsTrigger value="logs">Logs</TabsTrigger>
         </TabsList>
 
@@ -769,6 +794,10 @@ export function SandboxDetail() {
               )}
             </div>
           </div>
+        </TabsContent>
+
+        <TabsContent value="files" className="space-y-4">
+          <FileBrowser sandboxName={name ?? ""} />
         </TabsContent>
       </Tabs>
     </div>

@@ -15,6 +15,12 @@ export interface RunOutput {
   output: string;
 }
 
+export interface FileReadResponse {
+  content: string;
+  encoding: string;
+  size: number;
+}
+
 export interface SnapshotMeta {
   name: string;
   sandbox: string;

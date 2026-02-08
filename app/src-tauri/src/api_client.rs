@@ -308,6 +308,36 @@ impl ApiClient {
     }
 
     // -----------------------------------------------------------------
+    // Files
+    // -----------------------------------------------------------------
+
+    /// List files in a directory (exec `ls -la` in the sandbox).
+    pub async fn list_files(&self, name: &str, path: &str) -> anyhow::Result<RunOutput> {
+        let body = ExecRequest {
+            command: vec!["ls".to_string(), "-la".to_string(), path.to_string()],
+            env: Vec::new(),
+            workdir: None,
+            sudo: None,
+        };
+        self.request(
+            reqwest::Method::POST,
+            &format!("/sandboxes/{name}/exec"),
+            Some(&body),
+        )
+        .await
+    }
+
+    /// Read a file from a sandbox.
+    pub async fn read_file(&self, name: &str, path: &str) -> anyhow::Result<FileReadResponse> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/sandboxes/{name}/files/{}", path.trim_start_matches('/')),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // -----------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------
 
