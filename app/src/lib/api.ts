@@ -9,6 +9,7 @@ import type {
   CreateSandboxRequest,
   TemplateInfo,
   Settings,
+  AuditLogEntry,
 } from "./types";
 
 export const api = {
@@ -25,6 +26,8 @@ export const api = {
   stopSandbox: (name: string) => invoke<void>("stop_sandbox", { name }),
   extendTtl: (name: string, by: string) =>
     invoke<ExtendTtlResponse>("extend_ttl", { name, by }),
+  getSandboxLogs: (name: string) =>
+    invoke<AuditLogEntry[]>("get_sandbox_logs", { name }),
 
   // Execution — params are flat, not a nested struct
   execCommand: (name: string, command: string[], env?: string[], workdir?: string) =>

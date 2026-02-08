@@ -3,7 +3,7 @@ import { api } from "@/lib/api";
 import { toast } from "@/components/ui/use-toast";
 import type { Settings } from "@/lib/types";
 
-export function useSettings() {
+export function useSettings(options?: { onSaved?: () => void }) {
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -15,7 +15,7 @@ export function useSettings() {
     mutationFn: (settings: Settings) => api.saveSettings(settings),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["settings"] });
-      toast.success("Settings saved");
+      options?.onSaved?.();
     },
     onError: (err: unknown) => {
       toast.error(err instanceof Error ? err.message : String(err));

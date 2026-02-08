@@ -23,7 +23,15 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "@/components/ui/use-toast";
 
 export function Templates() {
   const { data: templates, isLoading, error } = useTemplates();
@@ -32,6 +40,7 @@ export function Templates() {
     null
   );
   const [sandboxName, setSandboxName] = useState("");
+  const [profile, setProfile] = useState("moderate");
 
   const createMutation = useMutation({
     mutationFn: (req: CreateSandboxRequest) => api.createSandbox(req),
@@ -39,6 +48,11 @@ export function Templates() {
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
       setSelectedTemplate(null);
       setSandboxName("");
+      setProfile("moderate");
+      toast.success("Sandbox created from template");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -49,6 +63,7 @@ export function Templates() {
       image: selectedTemplate.base_image,
       vcpus: selectedTemplate.vcpus,
       memory_mb: selectedTemplate.memory_mb,
+      profile: profile,
     });
   }
 
@@ -133,6 +148,7 @@ export function Templates() {
           if (!open) {
             setSelectedTemplate(null);
             setSandboxName("");
+            setProfile("moderate");
           }
         }}
       >
@@ -171,10 +187,28 @@ export function Templates() {
                 {selectedTemplate?.memory_mb} MB
               </div>
             </div>
+            <div className="grid gap-2">
+              <Label>Security Profile</Label>
+              <Select value={profile} onValueChange={setProfile}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="permissive">Permissive</SelectItem>
+                  <SelectItem value="moderate">Moderate</SelectItem>
+                  <SelectItem value="restrictive">Restrictive</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {profile === "permissive" && "Network + mount cwd + mount home + pass env vars"}
+                {profile === "moderate" && "Network only — no mounts, no env pass-through"}
+                {profile === "restrictive" && "No network, no mounts, read-only filesystem"}
+              </p>
+            </div>
           </div>
-          {createMutation.error && (
+          {!!createMutation.error && (
             <p className="text-sm text-destructive">
-              {createMutation.error.message}
+              {createMutation.error instanceof Error ? createMutation.error.message : String(createMutation.error)}
             </p>
           )}
           <DialogFooter>

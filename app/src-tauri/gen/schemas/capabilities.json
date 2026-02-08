@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capabilities for AgentKernel Desktop","local":true,"windows":["main"],"permissions":["core:default","shell:allow-open","debug-bridge:default"]}}
+{"default":{"identifier":"default","description":"Default capabilities for AgentKernel Desktop","local":true,"windows":["main"],"permissions":["core:default","shell:allow-open"]}}

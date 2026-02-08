@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Eye, EyeOff, CheckCircle, XCircle } from "lucide-react";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { api } from "@/lib/api";
@@ -19,13 +19,26 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Settings as SettingsType } from "@/lib/types";
 
 export function Settings() {
-  const { settings, isLoading, error, saveSettings, isSaving, saveError } =
-    useSettings();
+  const [showSaved, setShowSaved] = useState(false);
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const onSaved = useCallback(() => {
+    setShowSaved(true);
+    clearTimeout(savedTimerRef.current);
+    savedTimerRef.current = setTimeout(() => setShowSaved(false), 2000);
+  }, []);
+
+  useEffect(() => {
+    return () => clearTimeout(savedTimerRef.current);
+  }, []);
+
+  const { settings, isLoading, error, saveSettings } = useSettings({
+    onSaved,
+  });
 
   const [formApiUrl, setFormApiUrl] = useState("http://localhost:18888");
   const [formApiKey, setFormApiKey] = useState("");
@@ -59,14 +72,14 @@ export function Settings() {
     }
   }
 
-  function handleSave() {
+  const saveCurrentSettings = useCallback(() => {
     saveSettings({
       api_url: formApiUrl,
       api_key: formApiKey,
       theme: formTheme,
       poll_interval_ms: formPollInterval * 1000,
     });
-  }
+  }, [saveSettings, formApiUrl, formApiKey, formTheme, formPollInterval]);
 
   if (isLoading) {
     return (
@@ -117,6 +130,7 @@ export function Settings() {
               id="api-url"
               value={formApiUrl}
               onChange={(e) => setFormApiUrl(e.target.value)}
+              onBlur={saveCurrentSettings}
               placeholder="http://localhost:18888"
             />
           </div>
@@ -129,6 +143,7 @@ export function Settings() {
                 type={showApiKey ? "text" : "password"}
                 value={formApiKey}
                 onChange={(e) => setFormApiKey(e.target.value)}
+                onBlur={saveCurrentSettings}
                 placeholder="Enter API key"
                 className="pr-10"
               />
@@ -182,9 +197,16 @@ export function Settings() {
             <Label>Theme</Label>
             <Select
               value={formTheme}
-              onValueChange={(v) =>
-                setFormTheme(v as SettingsType["theme"])
-              }
+              onValueChange={(v) => {
+                const newTheme = v as SettingsType["theme"];
+                setFormTheme(newTheme);
+                saveSettings({
+                  api_url: formApiUrl,
+                  api_key: formApiKey,
+                  theme: newTheme,
+                  poll_interval_ms: formPollInterval * 1000,
+                });
+              }}
             >
               <SelectTrigger className="w-[200px]">
                 <SelectValue />
@@ -206,6 +228,7 @@ export function Settings() {
               max={60}
               value={formPollInterval}
               onChange={(e) => setFormPollInterval(Number(e.target.value))}
+              onBlur={saveCurrentSettings}
               className="w-[200px]"
             />
             <p className="text-xs text-muted-foreground">
@@ -215,16 +238,12 @@ export function Settings() {
         </CardContent>
       </Card>
 
-      <Separator />
-
-      <div className="flex items-center gap-3">
-        <Button onClick={handleSave} disabled={isSaving}>
-          {isSaving ? "Saving..." : "Save Settings"}
-        </Button>
-        {!!saveError && (
-          <p className="text-sm text-destructive">{saveError instanceof Error ? saveError.message : String(saveError)}</p>
-        )}
-      </div>
+      {showSaved && (
+        <div className="flex items-center gap-1.5 text-sm text-green-600 dark:text-green-400 animate-in fade-in duration-300">
+          <CheckCircle className="h-4 w-4" />
+          Saved
+        </div>
+      )}
     </div>
   );
 }

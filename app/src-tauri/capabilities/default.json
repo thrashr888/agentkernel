@@ -1,12 +1,9 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capabilities for AgentKernel Desktop",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "shell:allow-open",
-    "debug-bridge:default",
-    "window-state:default"
+    "shell:allow-open"
   ]
 }

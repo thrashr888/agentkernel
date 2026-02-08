@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::state::AppState;
-use crate::types::{CreateSandboxRequest, ExtendTtlResponse, SandboxInfo};
+use crate::types::{AuditLogEntry, CreateSandboxRequest, ExtendTtlResponse, SandboxInfo};
 
 /// List all sandboxes.
 #[tauri::command(rename_all = "snake_case")]
@@ -46,6 +46,19 @@ pub async fn start_sandbox(name: String, state: State<'_, AppState>) -> Result<(
 pub async fn stop_sandbox(name: String, state: State<'_, AppState>) -> Result<(), String> {
     let client = state.client.lock().map_err(|e| e.to_string())?.clone();
     client.stop_sandbox(&name).await.map_err(|e| e.to_string())
+}
+
+/// Get audit logs for a sandbox.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_sandbox_logs(
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<AuditLogEntry>, String> {
+    let client = state.client.lock().map_err(|e| e.to_string())?.clone();
+    client
+        .get_sandbox_logs(&name)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Extend a sandbox's time-to-live.

@@ -46,6 +46,15 @@ export interface DetachedLogsResponse {
   stderr?: string;
 }
 
+// Audit log entry from GET /sandboxes/:name/logs
+export interface AuditLogEntry {
+  timestamp: string;
+  pid?: number;
+  user?: string;
+  type?: string;
+  [key: string]: unknown;
+}
+
 // Request types
 export interface CreateSandboxRequest {
   name: string;

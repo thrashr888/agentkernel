@@ -13,6 +13,7 @@ import {
   Calendar,
   Copy,
   Check,
+  Terminal,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSandbox } from "@/lib/hooks/use-sandbox";
@@ -42,7 +43,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/components/ui/use-toast";
 import { formatDate } from "@/lib/utils";
-import type { RunOutput, DetachedCommand } from "@/lib/types";
+import type { RunOutput, DetachedCommand, AuditLogEntry } from "@/lib/types";
 
 interface CommandEntry {
   command: string;
@@ -117,6 +118,13 @@ export function SandboxDetail() {
     onError: (err: unknown) => {
       toast.error(err instanceof Error ? err.message : String(err));
     },
+  });
+
+  const { data: sandboxLogs } = useQuery({
+    queryKey: ["sandbox-logs", name],
+    queryFn: () => api.getSandboxLogs(name ?? ""),
+    enabled: !!name,
+    refetchInterval: 5000,
   });
 
   const { data: detachedJobs } = useQuery({
@@ -367,6 +375,37 @@ export function SandboxDetail() {
               </Card>
             )}
 
+            {sandbox.ip && (
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">SSH</CardTitle>
+                  <Terminal className="h-4 w-4 text-muted-foreground" />
+                </CardHeader>
+                <CardContent>
+                  <button
+                    type="button"
+                    className="group flex items-center gap-1.5 text-sm font-mono hover:text-foreground"
+                    onClick={() =>
+                      copyToClipboard(
+                        `ssh -i ~/.agentkernel/keys/id_ed25519 root@${sandbox.ip}`,
+                        "ssh"
+                      )
+                    }
+                    title="Copy to clipboard"
+                  >
+                    <span className="truncate">
+                      ssh -i ~/.agentkernel/keys/id_ed25519 root@{sandbox.ip}
+                    </span>
+                    {copiedField === "ssh" ? (
+                      <Check className="h-3 w-3 shrink-0 text-green-500" />
+                    ) : (
+                      <Copy className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50" />
+                    )}
+                  </button>
+                </CardContent>
+              </Card>
+            )}
+
             {sandbox.ports && sandbox.ports.length > 0 && (
               <Card>
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -484,6 +523,45 @@ export function SandboxDetail() {
         </TabsContent>
 
         <TabsContent value="logs" className="space-y-4">
+          {/* Container Logs */}
+          <div>
+            <p className="text-sm font-medium mb-2">Container Logs</p>
+            <div className="h-[250px] overflow-auto rounded-md border bg-neutral-950 p-4 font-mono text-sm text-neutral-200">
+              {!sandboxLogs || sandboxLogs.length === 0 ? (
+                <p className="text-neutral-500">No container logs yet.</p>
+              ) : (
+                sandboxLogs.map((entry: AuditLogEntry, i: number) => {
+                  const ts = entry.timestamp
+                    ? new Date(entry.timestamp).toLocaleTimeString()
+                    : "";
+                  const eventType = entry.type ?? "unknown";
+                  // Build a short summary from the event details
+                  const detailParts: string[] = [];
+                  for (const [k, v] of Object.entries(entry)) {
+                    if (
+                      ["timestamp", "pid", "user", "type"].includes(k)
+                    )
+                      continue;
+                    if (Array.isArray(v)) {
+                      detailParts.push(`${k}=${(v as string[]).join(" ")}`);
+                    } else if (v !== null && v !== undefined) {
+                      detailParts.push(`${k}=${String(v)}`);
+                    }
+                  }
+                  const detail = detailParts.join("  ");
+                  return (
+                    <div key={i} className="leading-6">
+                      <span className="text-neutral-500">{ts}</span>{" "}
+                      <span className="text-blue-400">[{eventType}]</span>{" "}
+                      <span>{detail}</span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* Background Jobs */}
           <div className="flex gap-4">
             <div className="w-64 space-y-2">
               <p className="text-sm font-medium">Background Jobs</p>

@@ -112,6 +112,16 @@ impl ApiClient {
         Ok(())
     }
 
+    /// Get audit logs for a sandbox.
+    pub async fn get_sandbox_logs(&self, name: &str) -> anyhow::Result<Vec<AuditLogEntry>> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/sandboxes/{name}/logs"),
+            None::<&()>,
+        )
+        .await
+    }
+
     /// Extend a sandbox's time-to-live.
     pub async fn extend_ttl(
         &self,

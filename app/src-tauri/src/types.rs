@@ -137,6 +137,31 @@ pub struct ExtendTtlRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Audit / sandbox logs
+// ---------------------------------------------------------------------------
+
+/// A single audit log entry returned by `GET /sandboxes/:name/logs`.
+///
+/// The backend serializes `AuditEntry` with `#[serde(flatten)]` on its event
+/// enum, so every entry has top-level `timestamp`, `pid`, `user` plus the
+/// event-specific fields. We capture the known top-level keys and stash the
+/// rest in `details` so the frontend can display them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditLogEntry {
+    pub timestamp: String,
+    #[serde(default)]
+    pub pid: Option<u32>,
+    #[serde(default)]
+    pub user: Option<String>,
+    /// The audit event type, e.g. "sandbox_created", "command_executed".
+    #[serde(rename = "type", default)]
+    pub event_type: Option<String>,
+    /// All remaining fields from the flattened event (name, image, command, …).
+    #[serde(flatten)]
+    pub details: std::collections::HashMap<String, serde_json::Value>,
+}
+
+// ---------------------------------------------------------------------------
 // API response wrapper (internal)
 // ---------------------------------------------------------------------------
 
