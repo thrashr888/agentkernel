@@ -516,6 +516,9 @@ async fn handle_request(
         // Delete a sandbox
         (Method::DELETE, ["sandboxes", name]) => handle_delete_sandbox(name, state).await,
 
+        // Start a stopped sandbox
+        (Method::POST, ["sandboxes", name, "start"]) => handle_start_sandbox(name, state).await,
+
         // Extend sandbox TTL
         (Method::POST, ["sandboxes", name, "extend"]) => handle_extend_ttl(req, name, state).await,
 
@@ -1402,6 +1405,45 @@ async fn handle_delete_sandbox(name: &str, state: Arc<AppState>) -> Response<Box
 
     match manager.remove(name).await {
         Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox removed")),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_start_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    // Enterprise policy enforcement
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = crate::identity::AgentIdentity::anonymous();
+        if let Err(resp) =
+            enforce_policy(&state, &identity, crate::policy::Action::Create, name).await
+        {
+            return resp;
+        }
+    }
+
+    // Validate sandbox name (security: prevents command injection)
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.start(name).await {
+        Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox started")),
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
