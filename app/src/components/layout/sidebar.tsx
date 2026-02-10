@@ -6,6 +6,9 @@ import {
   Camera,
   ScrollText,
   Activity,
+  Shield,
+  Puzzle,
+  KeyRound,
   Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -33,8 +36,11 @@ const navItems = [
   { to: "/sandboxes", label: "Sandboxes", icon: Box },
   { to: "/templates", label: "Templates", icon: FileCode },
   { to: "/snapshots", label: "Snapshots", icon: Camera },
+  { to: "/plugins", label: "Plugins", icon: Puzzle },
   { to: "/audit", label: "Audit Log", icon: ScrollText },
   { to: "/diagnostics", label: "Diagnostics", icon: Activity },
+  { to: "/policy", label: "Policy", icon: Shield },
+  { to: "/secrets", label: "Secrets", icon: KeyRound },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

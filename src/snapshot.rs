@@ -58,7 +58,10 @@ pub fn list() -> Result<Vec<SnapshotMeta>> {
     Ok(snapshots)
 }
 
-/// Take a snapshot of a running or stopped Docker container.
+/// Take a snapshot of a running or stopped container.
+///
+/// For Docker backend: uses `docker commit`.
+/// For Apple backend: exports the container filesystem and builds a native image.
 pub fn take(
     sandbox_name: &str,
     snapshot_name: &str,
@@ -67,15 +70,9 @@ pub fn take(
     let image_tag = format!("agentkernel-snap:{}", snapshot_name);
     let container_name = format!("agentkernel-{}", sandbox_name);
 
-    // Docker commit the container
-    let output = std::process::Command::new("docker")
-        .args(["commit", &container_name, &image_tag])
-        .output()
-        .context("Failed to run docker commit")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("docker commit failed: {}", stderr.trim());
+    match state.backend.as_str() {
+        "apple" => take_apple(&container_name, &image_tag)?,
+        _ => take_docker(&container_name, &image_tag)?,
     }
 
     let meta = SnapshotMeta {
@@ -99,6 +96,119 @@ pub fn take(
     Ok(meta)
 }
 
+fn take_docker(container_name: &str, image_tag: &str) -> Result<()> {
+    let output = std::process::Command::new("docker")
+        .args(["commit", container_name, image_tag])
+        .output()
+        .context("Failed to run docker commit")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("docker commit failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
+fn take_apple(container_name: &str, image_tag: &str) -> Result<()> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let tmp = tempfile::tempdir().context("Failed to create temp dir")?;
+    let rootfs_path = tmp.path().join("rootfs.tar");
+
+    // Create tarball inside the container by archiving top-level directories
+    // individually (avoids BusyBox tar issues with --exclude on virtual filesystems).
+    let tar_inside = "/tmp/_ak_snapshot.tar";
+
+    // List top-level directories, skipping virtual filesystems
+    let ls_out = std::process::Command::new("container")
+        .args(["exec", container_name, "ls", "-1", "/"])
+        .output()
+        .context("Failed to list container root")?;
+    let ls_text = String::from_utf8_lossy(&ls_out.stdout);
+    let skip = ["proc", "sys", "dev", "tmp"];
+    let dirs: Vec<String> = ls_text
+        .lines()
+        .filter(|d| !d.is_empty() && !skip.contains(&d.trim()))
+        .map(|d| format!("/{}", d.trim()))
+        .collect();
+
+    if dirs.is_empty() {
+        bail!("No directories to snapshot in container");
+    }
+
+    let mut tar_args = vec![
+        "exec".to_string(),
+        container_name.to_string(),
+        "tar".to_string(),
+        "cf".to_string(),
+        tar_inside.to_string(),
+    ];
+    tar_args.extend(dirs);
+
+    let create = std::process::Command::new("container")
+        .args(&tar_args)
+        .stderr(Stdio::piped())
+        .output()
+        .context("Failed to create tarball inside container")?;
+
+    // tar exit code 1 = "some files changed" (acceptable); only fail on 2+
+    if !create.status.success() && create.status.code().unwrap_or(2) >= 2 {
+        let stderr = String::from_utf8_lossy(&create.stderr);
+        bail!("tar inside container failed: {}", stderr.trim());
+    }
+
+    // Read the tarball back out
+    let cat_proc = std::process::Command::new("container")
+        .args(["exec", container_name, "cat", tar_inside])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .context("Failed to read tarball from container")?;
+
+    if cat_proc.stdout.is_empty() {
+        let stderr = String::from_utf8_lossy(&cat_proc.stderr);
+        bail!(
+            "Failed to read tarball from container (empty): {}",
+            stderr.trim()
+        );
+    }
+
+    std::fs::write(&rootfs_path, &cat_proc.stdout)
+        .context("Failed to write rootfs tarball")?;
+
+    // Clean up tar inside container
+    let _ = std::process::Command::new("container")
+        .args(["exec", container_name, "rm", "-f", tar_inside])
+        .output();
+
+    // Write Dockerfile
+    let dockerfile_path = tmp.path().join("Dockerfile");
+    let mut f =
+        std::fs::File::create(&dockerfile_path).context("Failed to create Dockerfile")?;
+    writeln!(f, "FROM scratch")?;
+    writeln!(f, "ADD rootfs.tar /")?;
+    writeln!(f, "CMD [\"sleep\", \"infinity\"]")?;
+
+    // Build image
+    let build = std::process::Command::new("container")
+        .args([
+            "build",
+            "-t",
+            image_tag,
+            &tmp.path().to_string_lossy(),
+        ])
+        .output()
+        .context("Failed to build snapshot image")?;
+
+    if !build.status.success() {
+        let stderr = String::from_utf8_lossy(&build.stderr);
+        bail!("container build failed: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
 /// Input needed from the sandbox state to create a snapshot.
 pub struct SnapshotInput {
     pub image: String,
@@ -118,14 +228,23 @@ pub fn get(name: &str) -> Result<Option<SnapshotMeta>> {
     Ok(Some(meta))
 }
 
-/// Delete a snapshot (removes metadata and Docker image).
+/// Delete a snapshot (removes metadata and image from the appropriate store).
 pub fn delete(name: &str) -> Result<()> {
     let meta = get(name)?.ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", name))?;
 
-    // Remove Docker image
-    let _ = std::process::Command::new("docker")
-        .args(["rmi", &meta.image_tag])
-        .output();
+    // Remove image from the backend that created it
+    match meta.backend.as_str() {
+        "apple" => {
+            let _ = std::process::Command::new("container")
+                .args(["image", "rm", &meta.image_tag])
+                .output();
+        }
+        _ => {
+            let _ = std::process::Command::new("docker")
+                .args(["rmi", &meta.image_tag])
+                .output();
+        }
+    }
 
     // Remove metadata file
     let path = snapshots_dir().join(format!("{}.json", name));

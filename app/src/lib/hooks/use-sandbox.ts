@@ -7,5 +7,7 @@ export function useSandbox(name: string) {
     queryFn: () => api.getSandbox(name),
     enabled: !!name,
     refetchInterval: 3000,
+    retry: true,
+    retryDelay: 1000,
   });
 }

@@ -1,0 +1,27 @@
+# Copilot CLI Agent Configuration
+#
+# Use this config to create a sandbox with Copilot CLI pre-installed:
+#   agentkernel create my-project --config examples/agents/copilot/agentkernel.toml
+#
+# Or copy to your project directory and run:
+#   agentkernel create my-project --config agentkernel.toml
+
+[sandbox]
+name = "copilot-sandbox"
+
+[build]
+# Build from Dockerfile in this directory
+dockerfile = "Dockerfile"
+
+[agent]
+preferred = "copilot"
+compatibility_mode = "native"
+
+[resources]
+vcpus = 2
+memory_mb = 1024
+
+[security]
+profile = "moderate"
+network = true      # Copilot CLI needs network for GitHub API calls
+mount_cwd = true    # Mount project directory

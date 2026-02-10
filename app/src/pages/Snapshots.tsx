@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSnapshots } from "@/lib/hooks/use-snapshots";
 import { api } from "@/lib/api";
-import { Trash2, RotateCcw } from "lucide-react";
+import { Trash2, RotateCcw, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -36,6 +36,8 @@ export function Snapshots() {
   const queryClient = useQueryClient();
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [restoreName, setRestoreName] = useState("");
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 24;
 
   const restoreMutation = useMutation({
     mutationFn: ({ name, asName }: { name: string; asName?: string }) =>
@@ -114,6 +116,7 @@ export function Snapshots() {
           </CardContent>
         </Card>
       ) : (
+        <>
         <div className="rounded-md border">
           <Table>
             <TableHeader>
@@ -126,7 +129,7 @@ export function Snapshots() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {snapshots.map((snapshot) => (
+              {snapshots.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((snapshot) => (
                 <TableRow key={snapshot.name}>
                   <TableCell className="font-medium">
                     {snapshot.name}
@@ -148,7 +151,7 @@ export function Snapshots() {
                         title="Restore snapshot"
                         onClick={() =>
                           {
-                          setRestoreName("");
+                          setRestoreName(`${snapshot.name}-restored`);
                           setConfirmAction({
                             type: "restore",
                             name: snapshot.name,
@@ -178,6 +181,40 @@ export function Snapshots() {
             </TableBody>
           </Table>
         </div>
+        {snapshots.length > PAGE_SIZE && (() => {
+          const totalPages = Math.ceil(snapshots.length / PAGE_SIZE);
+          return (
+            <div className="flex items-center justify-between pt-2">
+              <span className="text-xs text-muted-foreground">
+                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, snapshots.length)} of {snapshots.length}
+              </span>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8"
+                  disabled={page === 0}
+                  onClick={() => setPage(page - 1)}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <span className="text-xs text-muted-foreground px-2">
+                  {page + 1} / {totalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8"
+                  disabled={page >= totalPages - 1}
+                  onClick={() => setPage(page + 1)}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          );
+        })()}
+        </>
       )}
 
       <Dialog
@@ -206,13 +243,9 @@ export function Snapshots() {
               </label>
               <Input
                 id="restore-name"
-                placeholder={`${confirmAction.name}-restored`}
                 value={restoreName}
                 onChange={(e) => setRestoreName(e.target.value)}
               />
-              <p className="text-xs text-muted-foreground">
-                Leave blank to use the default name.
-              </p>
             </div>
           )}
           {!!actionError && (

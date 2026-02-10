@@ -67,6 +67,9 @@ export function SandboxDetail() {
   const [history, setHistory] = useState<CommandEntry[]>([]);
   const [extendSeconds, setExtendSeconds] = useState(300);
   const [extendDialogOpen, setExtendDialogOpen] = useState(false);
+  const [resizeDialogOpen, setResizeDialogOpen] = useState(false);
+  const [resizeVcpus, setResizeVcpus] = useState(sandbox?.vcpus ?? 2);
+  const [resizeMemory, setResizeMemory] = useState(sandbox?.memory_mb ?? 512);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [runInBackground, setRunInBackground] = useState(false);
@@ -160,6 +163,36 @@ export function SandboxDetail() {
     },
     onError: (err: unknown) => {
       toast.error(err instanceof Error ? err.message : String(err));
+    },
+  });
+
+  const resizeMutation = useMutation({
+    mutationFn: ({
+      sandboxName,
+      vcpus,
+      memoryMb,
+    }: {
+      sandboxName: string;
+      vcpus: number;
+      memoryMb: number;
+    }) => api.resizeSandbox(sandboxName, vcpus, memoryMb),
+    onMutate: () => {
+      return { toastId: toast("Resizing sandbox...") };
+    },
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId)
+        toast.update(context.toastId, "Sandbox resized!", "success");
+      queryClient.invalidateQueries({ queryKey: ["sandbox", name] });
+      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+      setResizeDialogOpen(false);
+    },
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId)
+        toast.update(
+          context.toastId,
+          err instanceof Error ? err.message : String(err),
+          "error",
+        );
     },
   });
 
@@ -481,7 +514,9 @@ export function SandboxDetail() {
             {sandbox.created_at && (
               <Card>
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">Created At</CardTitle>
+                  <CardTitle className="text-sm font-medium">
+                    Created At
+                  </CardTitle>
                   <Calendar className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
@@ -493,7 +528,9 @@ export function SandboxDetail() {
             {sandbox.ip && (
               <Card>
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">IP Address</CardTitle>
+                  <CardTitle className="text-sm font-medium">
+                    IP Address
+                  </CardTitle>
                   <Server className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
@@ -514,36 +551,34 @@ export function SandboxDetail() {
               </Card>
             )}
 
-            {sandbox.ip && (
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">SSH</CardTitle>
-                  <Terminal className="h-4 w-4 text-muted-foreground" />
-                </CardHeader>
-                <CardContent>
-                  <button
-                    type="button"
-                    className="group flex items-center gap-1.5 text-sm font-mono hover:text-foreground"
-                    onClick={() =>
-                      copyToClipboard(
-                        `ssh -i ~/.agentkernel/keys/id_ed25519 root@${sandbox.ip}`,
-                        "ssh"
-                      )
-                    }
-                    title="Copy to clipboard"
-                  >
-                    <span className="truncate">
-                      ssh -i ~/.agentkernel/keys/id_ed25519 root@{sandbox.ip}
-                    </span>
-                    {copiedField === "ssh" ? (
-                      <Check className="h-3 w-3 shrink-0 text-green-500" />
-                    ) : (
-                      <Copy className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50" />
-                    )}
-                  </button>
-                </CardContent>
-              </Card>
-            )}
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Connect</CardTitle>
+                <Terminal className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <button
+                  type="button"
+                  className="group flex items-center gap-1.5 text-sm font-mono hover:text-foreground min-w-0"
+                  onClick={() =>
+                    copyToClipboard(
+                      `agentkernel attach ${sandbox.name}`,
+                      "connect",
+                    )
+                  }
+                  title="Copy to clipboard"
+                >
+                  <span className="break-all">
+                    agentkernel attach {sandbox.name}
+                  </span>
+                  {copiedField === "connect" ? (
+                    <Check className="h-3 w-3 shrink-0 text-green-500" />
+                  ) : (
+                    <Copy className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50" />
+                  )}
+                </button>
+              </CardContent>
+            </Card>
 
             {sandbox.ports && sandbox.ports.length > 0 && (
               <Card>
@@ -552,18 +587,29 @@ export function SandboxDetail() {
                   <Server className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm font-mono">{sandbox.ports.join(", ")}</p>
+                  <p className="text-sm font-mono">
+                    {sandbox.ports.join(", ")}
+                  </p>
                 </CardContent>
               </Card>
             )}
 
-            <Card className="flex items-center justify-center">
-              <CardContent className="pt-6">
-                <Dialog open={extendDialogOpen} onOpenChange={setExtendDialogOpen}>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">
+                  Extend TTL
+                </CardTitle>
+                <Clock className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <Dialog
+                  open={extendDialogOpen}
+                  onOpenChange={setExtendDialogOpen}
+                >
                   <DialogTrigger asChild>
                     <Button variant="outline" size="sm">
                       <Clock className="mr-2 h-4 w-4" />
-                      Extend TTL
+                      Extend
                     </Button>
                   </DialogTrigger>
                   <DialogContent>
@@ -578,15 +624,20 @@ export function SandboxDetail() {
                       <Input
                         id="extend-seconds"
                         type="number"
+                        inputMode="numeric"
                         min={60}
                         step={60}
                         value={extendSeconds}
-                        onChange={(e) => setExtendSeconds(Number(e.target.value))}
+                        onChange={(e) =>
+                          setExtendSeconds(Number(e.target.value))
+                        }
                       />
                     </div>
                     {!!extendMutation.error && (
                       <p className="text-sm text-destructive">
-                        {extendMutation.error instanceof Error ? extendMutation.error.message : String(extendMutation.error)}
+                        {extendMutation.error instanceof Error
+                          ? extendMutation.error.message
+                          : String(extendMutation.error)}
                       </p>
                     )}
                     <DialogFooter>
@@ -606,6 +657,106 @@ export function SandboxDetail() {
                         disabled={extendMutation.isPending}
                       >
                         {extendMutation.isPending ? "Extending..." : "Extend"}
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Resize</CardTitle>
+                <Cpu className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-3 mb-2">
+                  <span className="text-xs text-muted-foreground">
+                    {sandbox.vcpus ?? "?"} vCPU
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {sandbox.memory_mb ?? "?"} MB
+                  </span>
+                </div>
+                <Dialog
+                  open={resizeDialogOpen}
+                  onOpenChange={(open) => {
+                    setResizeDialogOpen(open);
+                    if (open) {
+                      setResizeVcpus(sandbox.vcpus ?? 2);
+                      setResizeMemory(sandbox.memory_mb ?? 512);
+                    }
+                  }}
+                >
+                  <DialogTrigger asChild>
+                    <Button variant="outline" size="sm">
+                      <Cpu className="mr-2 h-4 w-4" />
+                      Resize
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Resize Sandbox</DialogTitle>
+                      <DialogDescription>
+                        Change CPU and memory allocation. The sandbox will be
+                        stopped and recreated with the new resources.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-4 py-4">
+                      <div className="grid gap-2">
+                        <Label htmlFor="resize-vcpus">vCPUs</Label>
+                        <Input
+                          id="resize-vcpus"
+                          type="number"
+                          inputMode="numeric"
+                          min={1}
+                          max={16}
+                          value={resizeVcpus}
+                          onChange={(e) =>
+                            setResizeVcpus(Number(e.target.value))
+                          }
+                        />
+                      </div>
+                      <div className="grid gap-2">
+                        <Label htmlFor="resize-memory">Memory (MB)</Label>
+                        <Input
+                          id="resize-memory"
+                          type="number"
+                          inputMode="numeric"
+                          min={128}
+                          step={128}
+                          value={resizeMemory}
+                          onChange={(e) =>
+                            setResizeMemory(Number(e.target.value))
+                          }
+                        />
+                      </div>
+                    </div>
+                    {!!resizeMutation.error && (
+                      <p className="text-sm text-destructive">
+                        {resizeMutation.error instanceof Error
+                          ? resizeMutation.error.message
+                          : String(resizeMutation.error)}
+                      </p>
+                    )}
+                    <DialogFooter>
+                      <Button
+                        variant="outline"
+                        onClick={() => setResizeDialogOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        onClick={() =>
+                          resizeMutation.mutate({
+                            sandboxName: sandbox.name,
+                            vcpus: resizeVcpus,
+                            memoryMb: resizeMemory,
+                          })
+                        }
+                        disabled={resizeMutation.isPending}
+                      >
+                        {resizeMutation.isPending ? "Resizing..." : "Resize"}
                       </Button>
                     </DialogFooter>
                   </DialogContent>
@@ -712,37 +863,83 @@ export function SandboxDetail() {
         </TabsContent>
 
         <TabsContent value="logs" className="space-y-4">
-          {/* Container Logs */}
+          {/* Activity Log */}
           <div>
-            <p className="text-sm font-medium mb-2">Container Logs</p>
-            <div className="h-[250px] overflow-auto rounded-md border bg-neutral-950 p-4 font-mono text-sm text-neutral-200">
+            <p className="text-sm font-medium mb-2">Activity Log</p>
+            <div className="h-[300px] overflow-auto rounded-md border bg-neutral-950 p-4 font-mono text-xs text-neutral-200">
               {!sandboxLogs || sandboxLogs.length === 0 ? (
-                <p className="text-neutral-500">No container logs yet.</p>
+                <p className="text-neutral-500">No activity yet.</p>
               ) : (
                 sandboxLogs.map((entry: AuditLogEntry, i: number) => {
                   const ts = entry.timestamp
                     ? new Date(entry.timestamp).toLocaleTimeString()
                     : "";
                   const eventType = entry.type ?? "unknown";
-                  // Build a short summary from the event details
-                  const detailParts: string[] = [];
-                  for (const [k, v] of Object.entries(entry)) {
-                    if (
-                      ["timestamp", "pid", "user", "type"].includes(k)
-                    )
-                      continue;
-                    if (Array.isArray(v)) {
-                      detailParts.push(`${k}=${(v as string[]).join(" ")}`);
-                    } else if (v !== null && v !== undefined) {
-                      detailParts.push(`${k}=${String(v)}`);
+                  let detail = "";
+                  let color = "text-neutral-300";
+                  switch (eventType) {
+                    case "sandbox_created":
+                      detail = `Created (image: ${entry.image ?? "?"}, backend: ${entry.backend ?? "?"})`;
+                      color = "text-blue-400";
+                      break;
+                    case "sandbox_started":
+                      detail = "Started";
+                      color = "text-green-400";
+                      break;
+                    case "sandbox_stopped":
+                      detail = "Stopped";
+                      color = "text-yellow-400";
+                      break;
+                    case "sandbox_removed":
+                      detail = "Removed";
+                      color = "text-red-400";
+                      break;
+                    case "command_executed": {
+                      const cmd = Array.isArray(entry.command)
+                        ? (entry.command as string[]).join(" ")
+                        : String(entry.command ?? "");
+                      const code = entry.exit_code;
+                      detail = `$ ${cmd}`;
+                      if (code !== undefined && code !== null && code !== 0) {
+                        detail += ` (exit ${code})`;
+                        color = "text-red-400";
+                      } else {
+                        color = "text-green-300";
+                      }
+                      break;
+                    }
+                    case "file_written":
+                      detail = `Wrote ${entry.path ?? "?"}`;
+                      break;
+                    case "file_read":
+                      detail = `Read ${entry.path ?? "?"}`;
+                      break;
+                    case "ssh_connected":
+                      detail = `SSH connected (user: ${entry.ssh_user ?? "?"})`;
+                      color = "text-blue-300";
+                      break;
+                    case "ssh_disconnected":
+                      detail = "SSH disconnected";
+                      break;
+                    default: {
+                      const parts: string[] = [];
+                      for (const [k, v] of Object.entries(entry)) {
+                        if (["timestamp", "pid", "user", "type"].includes(k))
+                          continue;
+                        if (v !== null && v !== undefined) {
+                          parts.push(
+                            `${k}=${Array.isArray(v) ? (v as string[]).join(" ") : String(v)}`,
+                          );
+                        }
+                      }
+                      detail = parts.join("  ");
+                      break;
                     }
                   }
-                  const detail = detailParts.join("  ");
                   return (
-                    <div key={i} className="leading-6">
-                      <span className="text-neutral-500">{ts}</span>{" "}
-                      <span className="text-neutral-400">[{eventType}]</span>{" "}
-                      <span>{detail}</span>
+                    <div key={i} className="leading-5">
+                      <span className="text-neutral-600">{ts}</span>{" "}
+                      <span className={color}>{detail}</span>
                     </div>
                   );
                 })
@@ -756,7 +953,8 @@ export function SandboxDetail() {
               <p className="text-sm font-medium">Background Jobs</p>
               {!detachedJobs || detachedJobs.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  No background jobs. Use the Exec tab or CLI to run detached commands.
+                  No background jobs. Use the Exec tab or CLI to run detached
+                  commands.
                 </p>
               ) : (
                 detachedJobs.map((job: DetachedCommand) => (
@@ -770,7 +968,9 @@ export function SandboxDetail() {
                     onClick={() => setSelectedJob(job.id)}
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-mono truncate">{job.command.join(" ")}</span>
+                      <span className="font-mono truncate">
+                        {job.command.join(" ")}
+                      </span>
                       <span
                         className={`ml-2 shrink-0 rounded px-1 py-0.5 text-[10px] ${
                           job.status === "running"

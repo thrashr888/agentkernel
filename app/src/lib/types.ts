@@ -94,6 +94,7 @@ export interface CreateSandboxRequest {
   source_url?: string;
   source_ref?: string;
   volumes?: string[];
+  agent?: string;
 }
 
 export interface ExecRequest {
@@ -124,10 +125,34 @@ export interface SecretEntry {
   created_at?: string;
 }
 
+// Agents/Plugins
+export interface AgentInfo {
+  name: string;
+  display_name: string;
+  enabled: boolean;
+  description: string;
+}
+
 // Settings
 export interface Settings {
   api_url: string;
   api_key: string;
   theme: "light" | "dark" | "system";
   poll_interval_ms: number;
+}
+
+// Policy (enterprise)
+export interface PolicyStatus {
+  enabled: boolean;
+  version: number;
+  org_id?: string;
+  offline_mode?: string;
+  policy_server?: string;
+}
+
+export interface PolicyCheckResult {
+  decision: string;
+  reason: string;
+  matched_policies: string[];
+  evaluation_time_us: number;
 }

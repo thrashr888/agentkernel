@@ -11,7 +11,7 @@ fn main() {
     let permissions = if cfg!(feature = "debug-bridge") {
         r#"{
   "identifier": "default",
-  "description": "Default capabilities for AgentKernel Desktop",
+  "description": "Default capabilities for AgentKernel",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -22,7 +22,7 @@ fn main() {
     } else {
         r#"{
   "identifier": "default",
-  "description": "Default capabilities for AgentKernel Desktop",
+  "description": "Default capabilities for AgentKernel",
   "windows": ["main"],
   "permissions": [
     "core:default",

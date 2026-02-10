@@ -1,4 +1,4 @@
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use std::time::Duration;
 
 use crate::types::*;
@@ -18,10 +18,7 @@ impl ApiClient {
     /// If `api_key` is provided it is sent as a Bearer token on every request.
     pub fn new(base_url: &str, api_key: Option<&str>) -> Self {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            USER_AGENT,
-            HeaderValue::from_static("agentkernel-desktop/0.1.0"),
-        );
+        headers.insert(USER_AGENT, HeaderValue::from_static("agentkernel/0.1.0"));
         if let Some(key) = api_key {
             if let Ok(val) = HeaderValue::from_str(&format!("Bearer {key}")) {
                 headers.insert(AUTHORIZATION, val);
@@ -145,18 +142,33 @@ impl ApiClient {
     }
 
     /// Extend a sandbox's time-to-live.
-    pub async fn extend_ttl(
-        &self,
-        name: &str,
-        by: &str,
-    ) -> anyhow::Result<ExtendTtlResponse> {
-        let body = ExtendTtlRequest {
-            by: by.to_string(),
-        };
+    pub async fn extend_ttl(&self, name: &str, by: &str) -> anyhow::Result<ExtendTtlResponse> {
+        let body = ExtendTtlRequest { by: by.to_string() };
         self.request(
             reqwest::Method::POST,
             &format!("/sandboxes/{name}/extend"),
             Some(&body),
+        )
+        .await
+    }
+
+    pub async fn resize_sandbox(
+        &self,
+        name: &str,
+        vcpus: Option<u32>,
+        memory_mb: Option<u64>,
+    ) -> anyhow::Result<SandboxInfo> {
+        #[derive(serde::Serialize)]
+        struct Body {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            vcpus: Option<u32>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            memory_mb: Option<u64>,
+        }
+        self.request(
+            reqwest::Method::POST,
+            &format!("/sandboxes/{name}/resize"),
+            Some(&Body { vcpus, memory_mb }),
         )
         .await
     }
@@ -252,11 +264,7 @@ impl ApiClient {
     }
 
     /// Kill a detached command.
-    pub async fn kill_detached(
-        &self,
-        name: &str,
-        cmd_id: &str,
-    ) -> anyhow::Result<()> {
+    pub async fn kill_detached(&self, name: &str, cmd_id: &str) -> anyhow::Result<()> {
         let _: String = self
             .request(
                 reqwest::Method::DELETE,
@@ -304,7 +312,11 @@ impl ApiClient {
     }
 
     /// Restore a sandbox from a snapshot.
-    pub async fn restore_snapshot(&self, name: &str, as_name: Option<&str>) -> anyhow::Result<SandboxInfo> {
+    pub async fn restore_snapshot(
+        &self,
+        name: &str,
+        as_name: Option<&str>,
+    ) -> anyhow::Result<SandboxInfo> {
         #[derive(serde::Serialize)]
         struct RestoreBody<'a> {
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -398,6 +410,45 @@ impl ApiClient {
             )
             .await?;
         Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Agents/Plugins
+    // -----------------------------------------------------------------
+
+    /// List agent integrations.
+    pub async fn list_agents(&self) -> anyhow::Result<Vec<crate::types::AgentInfo>> {
+        self.request(reqwest::Method::GET, "/agents", None::<&()>)
+            .await
+    }
+
+    // -----------------------------------------------------------------
+    // Policy (Enterprise)
+    // -----------------------------------------------------------------
+
+    /// Get enterprise policy status.
+    pub async fn get_policy_status(&self) -> anyhow::Result<crate::types::PolicyStatus> {
+        self.request(reqwest::Method::GET, "/policy/status", None::<&()>)
+            .await
+    }
+
+    /// Run policy check.
+    pub async fn check_policy(
+        &self,
+        action: &str,
+        sandbox: &str,
+    ) -> anyhow::Result<crate::types::PolicyCheckResult> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            action: &'a str,
+            sandbox: &'a str,
+        }
+        self.request(
+            reqwest::Method::POST,
+            "/policy/check",
+            Some(&Body { action, sandbox }),
+        )
+        .await
     }
 
     // -----------------------------------------------------------------

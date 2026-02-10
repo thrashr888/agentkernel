@@ -51,7 +51,7 @@ agentkernel auto-detects the runtime from your command or project files. Run `py
 
 ## It works with every agent
 
-Claude Code, Codex, Gemini CLI, OpenCode -- agentkernel runs them all. Each agent gets its own isolated sandbox with configurable security profiles.
+Claude Code, Codex, Gemini CLI, GitHub Copilot, Amp, OpenCode, Pi -- agentkernel runs them all. Each agent gets its own isolated sandbox with configurable security profiles.
 
 ```bash
 # Check which agents are available

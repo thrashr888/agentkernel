@@ -14,7 +14,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-shell = "2"
 tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
@@ -25,7 +25,7 @@ anyhow = "1"
 thiserror = "2"
 base64 = "0.22"
 dirs = "6"
-tauri-plugin-debug-bridge = { version = "0.3", optional = true }
+tauri-plugin-debug-bridge = { version = "0.4", optional = true }
 
 [features]
 default = ["custom-protocol"]

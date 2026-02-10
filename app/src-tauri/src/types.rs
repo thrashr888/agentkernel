@@ -116,6 +116,9 @@ pub struct CreateSandboxRequest {
     pub source_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volumes: Option<Vec<String>>,
+    /// Agent CLI to auto-install on start (e.g., "claude", "gemini", "codex")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 /// Request body for executing a command in a sandbox.
@@ -223,6 +226,48 @@ pub struct SecretEntry {
     pub name: String,
     #[serde(default)]
     pub created_at: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Agents/Plugins
+// ---------------------------------------------------------------------------
+
+/// Agent/plugin integration info.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentInfo {
+    pub name: String,
+    pub display_name: String,
+    pub enabled: bool,
+    pub description: String,
+}
+
+// ---------------------------------------------------------------------------
+// Policy (Enterprise)
+// ---------------------------------------------------------------------------
+
+/// Enterprise policy status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyStatus {
+    pub enabled: bool,
+    #[serde(default)]
+    pub version: u64,
+    #[serde(default)]
+    pub org_id: Option<String>,
+    #[serde(default)]
+    pub offline_mode: Option<String>,
+    #[serde(default)]
+    pub policy_server: Option<String>,
+}
+
+/// Result of a policy check.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyCheckResult {
+    pub decision: String,
+    pub reason: String,
+    #[serde(default)]
+    pub matched_policies: Vec<String>,
+    #[serde(default)]
+    pub evaluation_time_us: u64,
 }
 
 // ---------------------------------------------------------------------------

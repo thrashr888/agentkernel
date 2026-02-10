@@ -72,6 +72,9 @@ struct CreateRequest {
     /// Git ref to checkout after cloning (branch, tag, or commit)
     #[serde(default)]
     source_ref: Option<String>,
+    /// Agent CLI to auto-install on start (e.g., "claude", "gemini", "codex")
+    #[serde(default)]
+    agent: Option<String>,
 }
 
 /// Request to write a file
@@ -526,6 +529,9 @@ async fn handle_request(
         // Extend sandbox TTL
         (Method::POST, ["sandboxes", name, "extend"]) => handle_extend_ttl(req, name, state).await,
 
+        // Resize sandbox (stop + recreate with new resources)
+        (Method::POST, ["sandboxes", name, "resize"]) => handle_resize_sandbox(req, name, state).await,
+
         // Snapshot endpoints
         (Method::GET, ["snapshots"]) => handle_list_snapshots(state).await,
         (Method::POST, ["snapshots"]) => handle_take_snapshot(req, state).await,
@@ -551,6 +557,9 @@ async fn handle_request(
 
         // Garbage collection
         (Method::POST, ["gc"]) => handle_gc(state).await,
+
+        // Agents/plugins
+        (Method::GET, ["agents"]) => handle_list_agents(state).await,
 
         // Enterprise policy endpoints
         #[cfg(feature = "enterprise")]
@@ -1011,7 +1020,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
     };
 
     if let Err(e) = manager
-        .create_with_options(&body.name, image, vcpus, memory_mb, None, ports.clone())
+        .create_with_agent(&body.name, image, vcpus, memory_mb, None, ports.clone(), body.agent.clone())
         .await
     {
         return json_response(
@@ -1592,6 +1601,127 @@ async fn handle_extend_ttl(
     }
 }
 
+// --- Resize handler ---
+
+#[derive(Debug, Deserialize)]
+struct ResizeSandboxRequest {
+    vcpus: Option<u32>,
+    memory_mb: Option<u64>,
+}
+
+async fn handle_resize_sandbox(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let body: ResizeSandboxRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    // Sandbox must exist
+    let sandbox_state = match manager.get_state(name) {
+        Some(s) => s.clone(),
+        None => {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error(format!("Sandbox '{}' not found", name)),
+            );
+        }
+    };
+
+    let new_vcpus = body.vcpus.unwrap_or(sandbox_state.vcpus);
+    let new_memory = body.memory_mb.unwrap_or(sandbox_state.memory_mb);
+
+    // Stop if running
+    let was_running = manager.is_running(name);
+    if was_running {
+        if let Err(e) = manager.stop(name).await {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!("Failed to stop sandbox: {}", e)),
+            );
+        }
+    }
+
+    // Remove and recreate with new resources
+    let image = sandbox_state.image.clone();
+    let ports = sandbox_state.ports.clone();
+    let agent = sandbox_state.agent.clone();
+    if let Err(e) = manager.remove(name).await {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to remove sandbox: {}", e)),
+        );
+    }
+
+    if let Err(e) = manager
+        .create_with_agent(name, &image, new_vcpus, new_memory, None, ports, agent)
+        .await
+    {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to recreate sandbox: {}", e)),
+        );
+    }
+
+    // Restart if it was running
+    if was_running {
+        if let Err(e) = manager.start(name).await {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!(
+                    "Resized but failed to restart: {}",
+                    e
+                )),
+            );
+        }
+    }
+
+    let running = manager.is_running(name);
+    let ip = if running {
+        manager.get_container_ip(name)
+    } else {
+        None
+    };
+    let state_info = manager.get_state(name);
+    let result_ports: Vec<String> = state_info
+        .map(|s| s.ports.iter().map(|p| p.to_string()).collect())
+        .unwrap_or_default();
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(SandboxInfo {
+            name: name.to_string(),
+            status: if running { "running" } else { "stopped" }.to_string(),
+            backend: format!("{}", manager.backend()),
+            ip,
+            image: Some(image),
+            vcpus: Some(new_vcpus),
+            memory_mb: Some(new_memory),
+            created_at: state_info.map(|s| s.created_at.clone()),
+            ports: result_ports,
+        }),
+    )
+}
+
 // --- Snapshot handlers ---
 
 async fn handle_list_snapshots(_state: Arc<AppState>) -> Response<BoxBody> {
@@ -1788,16 +1918,29 @@ async fn handle_restore_snapshot(
         .await
     {
         Ok(()) => {
-            #[derive(Serialize)]
-            struct RestoreResponse {
-                sandbox: String,
-                from_snapshot: String,
-            }
+            // Build SandboxInfo from manager state
+            let state_info = manager.get_state(&restore_name);
+            let running = manager.is_running(&restore_name);
+            let ip = if running {
+                manager.get_container_ip(&restore_name)
+            } else {
+                None
+            };
+            let ports = state_info
+                .map(|s| s.ports.iter().map(|p| p.to_string()).collect())
+                .unwrap_or_default();
             json_response(
                 StatusCode::OK,
-                &ApiResponse::success(RestoreResponse {
-                    sandbox: restore_name,
-                    from_snapshot: snapshot_name.to_string(),
+                &ApiResponse::success(SandboxInfo {
+                    name: restore_name,
+                    status: if running { "running" } else { "stopped" }.to_string(),
+                    backend: meta.backend.clone(),
+                    ip,
+                    image: Some(meta.image_tag.clone()),
+                    vcpus: Some(meta.vcpus),
+                    memory_mb: Some(meta.memory_mb),
+                    created_at: state_info.map(|s| s.created_at.clone()),
+                    ports,
                 }),
             )
         }
@@ -2677,6 +2820,45 @@ async fn handle_delete_secret(name: &str) -> Response<BoxBody> {
             &ApiResponse::<()>::error(format!("Failed to delete secret: {e}")),
         ),
     }
+}
+
+async fn handle_list_agents(_state: Arc<AppState>) -> Response<BoxBody> {
+    #[derive(Serialize)]
+    struct AgentInfo {
+        name: String,
+        display_name: String,
+        enabled: bool,
+        description: String,
+    }
+
+    let agent_defs: Vec<(&str, &str, &str, &str)> = vec![
+        ("claude", "Claude Code", "claude", "Anthropic's AI coding agent"),
+        ("copilot", "Copilot CLI", "copilot", "GitHub's AI coding agent"),
+        ("gemini", "Gemini CLI", "gemini", "Google's AI coding agent"),
+        ("codex", "Codex CLI", "codex", "OpenAI's AI coding agent"),
+        ("opencode", "OpenCode", "opencode", "Open-source AI coding agent"),
+        ("amp", "Amp", "amp", "Sourcegraph's AI coding agent"),
+        ("pi", "Pi", "pi", "Mario Zechner's coding agent"),
+    ];
+
+    let agents: Vec<AgentInfo> = agent_defs
+        .into_iter()
+        .map(|(name, display, bin, desc)| {
+            let enabled = std::process::Command::new("sh")
+                .args(["-c", &format!("command -v {} >/dev/null 2>&1", bin)])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            AgentInfo {
+                name: name.into(),
+                display_name: display.into(),
+                enabled,
+                description: desc.into(),
+            }
+        })
+        .collect();
+
+    json_response(StatusCode::OK, &ApiResponse::success(agents))
 }
 
 #[cfg(test)]

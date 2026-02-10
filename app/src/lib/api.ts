@@ -15,6 +15,9 @@ import type {
   GcResult,
   FileReadResponse,
   SecretEntry,
+  AgentInfo,
+  PolicyStatus,
+  PolicyCheckResult,
 } from "./types";
 
 export const api = {
@@ -39,8 +42,12 @@ export const api = {
   getSandboxLogs: (name: string) =>
     invoke<AuditLogEntry[]>("get_sandbox_logs", { name }),
   openTerminal: (name: string) => invoke<void>("open_terminal", { name }),
+  quickstartAgent: (agent: string, name: string) =>
+    invoke<string>("quickstart_agent", { agent, name }),
   exportSandbox: (name: string) =>
     invoke<string>("export_sandbox", { name }),
+  resizeSandbox: (name: string, vcpus?: number, memoryMb?: number) =>
+    invoke<SandboxInfo>("resize_sandbox", { name, vcpus, memory_mb: memoryMb }),
 
   // Files
   listFiles: (name: string, path: string) =>
@@ -81,6 +88,10 @@ export const api = {
     invoke<void>("create_secret", { name, value }),
   deleteSecret: (name: string) => invoke<void>("delete_secret", { name }),
 
+  // Agents/Plugins
+  listAgents: () => invoke<AgentInfo[]>("list_agents"),
+  installAgent: (name: string) => invoke<string>("install_agent", { name }),
+
   // Settings
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) =>
@@ -89,4 +100,9 @@ export const api = {
   // Audit
   getAuditLog: (last?: number) =>
     invoke<AuditLogEntry[]>("get_audit_log", { last }),
+
+  // Policy (enterprise)
+  getPolicyStatus: () => invoke<PolicyStatus>("get_policy_status"),
+  checkPolicy: (action: string, sandbox: string) =>
+    invoke<PolicyCheckResult>("check_policy", { action, sandbox }),
 };

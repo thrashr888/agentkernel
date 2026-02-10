@@ -1,0 +1,24 @@
+# Amp Agent Configuration
+#
+# Use this config to create a sandbox with Amp pre-installed:
+#   agentkernel create my-project --config examples/agents/amp/agentkernel.toml
+
+[sandbox]
+name = "amp-sandbox"
+
+[build]
+# Build from Dockerfile in this directory
+dockerfile = "Dockerfile"
+
+[agent]
+preferred = "amp"
+compatibility_mode = "native"
+
+[resources]
+vcpus = 2
+memory_mb = 1024
+
+[security]
+profile = "moderate"
+network = true      # Amp needs network for Anthropic API + Sourcegraph
+mount_cwd = true    # Mount project directory

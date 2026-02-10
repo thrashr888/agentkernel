@@ -28,7 +28,10 @@ pub async fn take_snapshot(
 #[tauri::command(rename_all = "snake_case")]
 pub async fn delete_snapshot(name: String, state: State<'_, AppState>) -> Result<(), String> {
     let client = state.client.lock().map_err(|e| e.to_string())?.clone();
-    client.delete_snapshot(&name).await.map_err(|e| e.to_string())
+    client
+        .delete_snapshot(&name)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Restore a sandbox from a snapshot.
@@ -39,5 +42,8 @@ pub async fn restore_snapshot(
     state: State<'_, AppState>,
 ) -> Result<SandboxInfo, String> {
     let client = state.client.lock().map_err(|e| e.to_string())?.clone();
-    client.restore_snapshot(&name, as_name.as_deref()).await.map_err(|e| e.to_string())
+    client
+        .restore_snapshot(&name, as_name.as_deref())
+        .await
+        .map_err(|e| e.to_string())
 }

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, MoreHorizontal, Trash2, Camera, Square, Play } from "lucide-react";
+import { Plus, MoreHorizontal, Trash2, Camera, Square, Play, ChevronLeft, ChevronRight, Terminal, Copy } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSandboxes } from "@/lib/hooks/use-sandboxes";
 import { api } from "@/lib/api";
@@ -55,6 +55,9 @@ export function Sandboxes() {
   const [formVcpus, setFormVcpus] = useState(1);
   const [formMemory, setFormMemory] = useState(512);
   const [formProfile, setFormProfile] = useState("restrictive");
+  const [formAgent, setFormAgent] = useState("");
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 24;
 
   const createMutation = useMutation({
     mutationFn: (req: CreateSandboxRequest) => api.createSandbox(req),
@@ -114,6 +117,19 @@ export function Sandboxes() {
     },
   });
 
+  const openTerminalMutation = useMutation({
+    mutationFn: (sandboxName: string) => api.openTerminal(sandboxName),
+    onMutate: () => {
+      return { toastId: toast("Opening terminal...") };
+    },
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, "Terminal opened", "success");
+    },
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
+    },
+  });
+
   const snapshotMutation = useMutation({
     mutationFn: ({ sandboxName, snapshotName }: { sandboxName: string; snapshotName: string }) =>
       api.takeSnapshot(sandboxName, snapshotName),
@@ -135,6 +151,7 @@ export function Sandboxes() {
     setFormVcpus(1);
     setFormMemory(512);
     setFormProfile("restrictive");
+    setFormAgent("");
   }
 
   function handleCreate() {
@@ -145,6 +162,7 @@ export function Sandboxes() {
       vcpus: formVcpus,
       memory_mb: formMemory,
       profile: formProfile,
+      ...(formAgent && formAgent !== "none" ? { agent: formAgent } : {}),
     });
   }
 
@@ -180,6 +198,37 @@ export function Sandboxes() {
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
                 />
+              </div>
+              <div className="grid gap-2">
+                <Label>Agent (optional)</Label>
+                <Select value={formAgent} onValueChange={(val) => {
+                  setFormAgent(val);
+                  if (val && val !== "none") {
+                    setFormImage("node:22-alpine");
+                    setFormVcpus(2);
+                    setFormMemory(1024);
+                    setFormProfile("moderate");
+                  }
+                }}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="None — plain sandbox" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">None</SelectItem>
+                    <SelectItem value="claude">Claude Code</SelectItem>
+                    <SelectItem value="gemini">Gemini CLI</SelectItem>
+                    <SelectItem value="codex">Codex</SelectItem>
+                    <SelectItem value="opencode">OpenCode</SelectItem>
+                    <SelectItem value="amp">Amp</SelectItem>
+                    <SelectItem value="pi">Pi</SelectItem>
+                    <SelectItem value="copilot">Copilot CLI</SelectItem>
+                  </SelectContent>
+                </Select>
+                {formAgent && formAgent !== "none" && (
+                  <p className="text-xs text-muted-foreground">
+                    The {formAgent} CLI will be installed automatically on start
+                  </p>
+                )}
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="image">Image</Label>
@@ -281,6 +330,7 @@ export function Sandboxes() {
           </CardContent>
         </Card>
       ) : (
+        <>
         <div className="rounded-md border">
           <Table>
             <TableHeader>
@@ -294,7 +344,12 @@ export function Sandboxes() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {[...sandboxes].sort((a, b) => a.name.localeCompare(b.name)).map((sandbox) => (
+              {(() => {
+                const sorted = [...sandboxes].sort((a, b) => a.name.localeCompare(b.name));
+                const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
+                const safePage = Math.min(page, totalPages - 1);
+                return sorted.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+              })().map((sandbox) => (
                 <TableRow key={sandbox.name}>
                   <TableCell>
                     <Link
@@ -351,6 +406,24 @@ export function Sandboxes() {
                           </>
                         )}
                         <DropdownMenuItem
+                          onClick={() => {
+                            navigator.clipboard.writeText(`agentkernel attach ${sandbox.name}`);
+                            toast.success("Connection string copied");
+                          }}
+                        >
+                          <Copy className="mr-2 h-4 w-4" />
+                          Copy Connection String
+                        </DropdownMenuItem>
+                        {sandbox.status.toLowerCase() === "running" && (
+                          <DropdownMenuItem
+                            onClick={() => openTerminalMutation.mutate(sandbox.name)}
+                          >
+                            <Terminal className="mr-2 h-4 w-4" />
+                            Open Terminal
+                          </DropdownMenuItem>
+                        )}
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
                           onClick={() =>
                             snapshotMutation.mutate({
                               sandboxName: sandbox.name,
@@ -377,6 +450,40 @@ export function Sandboxes() {
             </TableBody>
           </Table>
         </div>
+        {sandboxes.length > PAGE_SIZE && (() => {
+          const totalPages = Math.ceil(sandboxes.length / PAGE_SIZE);
+          return (
+            <div className="flex items-center justify-between pt-2">
+              <span className="text-xs text-muted-foreground">
+                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, sandboxes.length)} of {sandboxes.length}
+              </span>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8"
+                  disabled={page === 0}
+                  onClick={() => setPage(page - 1)}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <span className="text-xs text-muted-foreground px-2">
+                  {page + 1} / {totalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8"
+                  disabled={page >= totalPages - 1}
+                  onClick={() => setPage(page + 1)}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          );
+        })()}
+        </>
       )}
     </div>
   );
