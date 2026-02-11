@@ -18,6 +18,7 @@ tokio = { version = "1", features = ["rt", "macros"] }
 thiserror = "2"
 futures = "0.3"
 eventsource-stream = "0.2"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

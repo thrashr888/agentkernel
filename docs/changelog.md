@@ -6,6 +6,53 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## v0.10.0 (unreleased) — Browser Automation & Desktop App
+
+### Added
+
+- **Browser automation SDK** — `BrowserSession` abstraction across all 5 SDKs (Python, Node.js, Go, Rust, Swift); high-level `goto()`, `screenshot()`, `evaluate()` methods that orchestrate Playwright inside sandboxes
+- **MCP browser tools** — 5 new tools (`browser_create`, `browser_goto`, `browser_screenshot`, `browser_evaluate`, `browser_remove`) that collapse the 4-step manual orchestration into single tool calls
+- **MCP image content type** — `browser_screenshot` returns native MCP image content (`type: "image"`, PNG) instead of text; new `ToolOutput` enum separates text and image responses in the MCP dispatcher
+- **MCP output truncation** — tool responses capped at 16KB with head(8KB) + tail(8KB) preservation; images bypass truncation
+- **Tauri 2 desktop app** — full macOS desktop application with React/TypeScript frontend and Rust backend via Apple Containers
+- **Desktop sandbox management** — create, start, stop, remove sandboxes; streaming exec with real-time output; file browser with read/write support
+- **Desktop Quick Run** — one-click sandbox execution from the dashboard
+- **Desktop terminal button** — launch terminal sessions into running sandboxes
+- **Desktop snapshots** — take, list, restore, and delete snapshots from the UI
+- **Desktop diagnostics** — system health checks and backend status in Settings
+- **Desktop activity toasts** — real-time notifications for sandbox operations
+- **Desktop agent quickstart** — launch Claude Code, Gemini CLI, Codex, Copilot CLI, Amp, and Pi directly from the app
+- **Desktop audit log** — view sandbox operation history
+- **Desktop secrets** — manage secrets from the UI
+- **Desktop GC & export** — garbage collection and config export from Settings
+- **Desktop container logs** — view container stdout/stderr in sandbox detail
+- **Desktop template profiles** — pre-configured sandbox templates
+- **Desktop policy page** — Cedar policy engine status, interactive policy check tester, reload button
+- **Desktop policy log page** — dedicated page for policy decision audit trail with action and decision filter dropdowns, pagination
+- **Policy HTTP endpoints** — `POST /policy/reload` and `GET /policy/audit` for policy engine management
+- **Desktop sandbox table** — column sorting, status filter buttons with counts (running/stopped/total), search by name/image/IP
+- **Desktop sandbox detail** — copy-to-clipboard for sandbox name
+- **Browser automation templates** — `playwright` and `playwright-stealth` built-in templates (Python 3.12, 2GB RAM, Chromium/Firefox/WebKit)
+- **SSH policy action** — `ssh` now accepted in policy check endpoints and CLI
+- **Shared browser scripts** — `src/browser_scripts.rs` module with Playwright script constants shared between MCP tools and future HTTP API endpoints
+- **Amp agent support** — `AgentType::Amp` adapter for Sourcegraph's AmpCode CLI
+- **Pi agent support** — `AgentType::Pi` adapter for pi-coding-agent CLI
+- **POST /sandboxes/:name/start** — HTTP endpoint to start a stopped sandbox
+
+### Changed
+
+- **Desktop UI** — black & white Helvetica aesthetic with dark mode support
+- **Desktop app icon** — custom agentkernel icon
+- **Desktop templates page** — added "Browser Automation" category ordering
+
+### Fixed
+
+- **Apple Containers backend** — opaque toast backgrounds, snapshot `--pull=never`, Tauri IPC parameter alignment
+- **Clippy warnings** — resolved across `http_api.rs`, `vmm.rs`, `snapshot.rs`
+- **Policy check SSH action** — fixed HTTP 400 when checking `ssh` action (was missing from match statement)
+
+---
+
 ## [v0.9.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.9.0) — Sandbox DX
 
 _February 5, 2026_

@@ -270,6 +270,30 @@ pub struct PolicyCheckResult {
     pub evaluation_time_us: u64,
 }
 
+/// Result of a policy reload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyReloadResult {
+    pub reloaded: bool,
+    #[serde(default)]
+    pub version: u64,
+}
+
+/// A policy audit log entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyAuditEntry {
+    pub timestamp: String,
+    pub principal: String,
+    pub action: String,
+    pub resource: String,
+    pub decision: String,
+    #[serde(default)]
+    pub matched_policies: Vec<String>,
+    #[serde(default)]
+    pub evaluation_time_us: u64,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // API response wrapper (internal)
 // ---------------------------------------------------------------------------

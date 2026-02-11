@@ -513,6 +513,7 @@ impl VmManager {
     }
 
     /// Create a new sandbox with TTL, port mappings, and optional agent CLI
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_with_agent(
         &mut self,
         name: &str,
@@ -892,7 +893,9 @@ impl VmManager {
                     Ok(result) => {
                         eprintln!(
                             "Warning: {} agent install exited with code {}: {}",
-                            agent, result.exit_code, result.stderr.trim()
+                            agent,
+                            result.exit_code,
+                            result.stderr.trim()
                         );
                     }
                     Err(e) => {

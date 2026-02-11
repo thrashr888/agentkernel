@@ -141,6 +141,23 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 1,
             memory_mb: 512,
         },
+        // ----- Browser Automation -----
+        TemplateInfo {
+            name: "playwright".into(),
+            description: "Browser automation with Playwright (Python)".into(),
+            category: "Browser Automation".into(),
+            base_image: "python:3.12-slim".into(),
+            vcpus: 2,
+            memory_mb: 2048,
+        },
+        TemplateInfo {
+            name: "playwright-stealth".into(),
+            description: "Stealth browser automation that avoids bot detection".into(),
+            category: "Browser Automation".into(),
+            base_image: "python:3.12-slim".into(),
+            vcpus: 2,
+            memory_mb: 2048,
+        },
         // ----- Specialized -----
         TemplateInfo {
             name: "python-ml".into(),

@@ -156,3 +156,19 @@ export interface PolicyCheckResult {
   matched_policies: string[];
   evaluation_time_us: number;
 }
+
+export interface PolicyReloadResult {
+  reloaded: boolean;
+  version: number;
+}
+
+export interface PolicyAuditEntry {
+  timestamp: string;
+  principal: string;
+  action: string;
+  resource: string;
+  decision: string;
+  matched_policies: string[];
+  evaluation_time_us: number;
+  reason?: string;
+}

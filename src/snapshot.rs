@@ -174,8 +174,7 @@ fn take_apple(container_name: &str, image_tag: &str) -> Result<()> {
         );
     }
 
-    std::fs::write(&rootfs_path, &cat_proc.stdout)
-        .context("Failed to write rootfs tarball")?;
+    std::fs::write(&rootfs_path, &cat_proc.stdout).context("Failed to write rootfs tarball")?;
 
     // Clean up tar inside container
     let _ = std::process::Command::new("container")
@@ -184,20 +183,14 @@ fn take_apple(container_name: &str, image_tag: &str) -> Result<()> {
 
     // Write Dockerfile
     let dockerfile_path = tmp.path().join("Dockerfile");
-    let mut f =
-        std::fs::File::create(&dockerfile_path).context("Failed to create Dockerfile")?;
+    let mut f = std::fs::File::create(&dockerfile_path).context("Failed to create Dockerfile")?;
     writeln!(f, "FROM scratch")?;
     writeln!(f, "ADD rootfs.tar /")?;
     writeln!(f, "CMD [\"sleep\", \"infinity\"]")?;
 
     // Build image
     let build = std::process::Command::new("container")
-        .args([
-            "build",
-            "-t",
-            image_tag,
-            &tmp.path().to_string_lossy(),
-        ])
+        .args(["build", "-t", image_tag, &tmp.path().to_string_lossy()])
         .output()
         .context("Failed to build snapshot image")?;
 

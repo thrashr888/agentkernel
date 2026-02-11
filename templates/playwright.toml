@@ -1,0 +1,17 @@
+# Playwright sandbox template
+# Browser automation with Playwright (Python) in an isolated sandbox
+# Includes Chromium, Firefox, and WebKit browsers
+
+[sandbox]
+name = "playwright"
+base_image = "python:3.12-slim"
+
+[resources]
+vcpus = 2
+memory_mb = 2048
+
+[security]
+profile = "moderate"
+
+[security.domains]
+allow = ["pypi.org", "files.pythonhosted.org", "playwright.azureedge.net"]

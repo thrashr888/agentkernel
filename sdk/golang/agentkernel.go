@@ -236,6 +236,43 @@ func (c *Client) WithSandbox(ctx context.Context, name string, opts *CreateSandb
 	return fn(session)
 }
 
+// Browser creates a sandboxed headless browser session.
+//
+// It provisions a sandbox with Chromium (via Playwright) pre-installed and
+// returns a BrowserSession. Call Goto, Screenshot, and Evaluate to interact
+// with web pages. When done, call Remove (or Close) to tear down the sandbox.
+//
+//	browser, err := client.Browser(ctx, "my-browser")
+//	if err != nil { ... }
+//	defer browser.Close()
+//	page, _ := browser.Goto(ctx, "https://example.com")
+//	fmt.Println(page.Title, page.Links)
+func (c *Client) Browser(ctx context.Context, name string, opts ...BrowserOption) (*BrowserSession, error) {
+	cfg := browserConfig{memoryMB: 2048}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	_, err := c.CreateSandbox(ctx, name, &CreateSandboxOptions{
+		Image:    "python:3.12-slim",
+		MemoryMB: cfg.memoryMB,
+		Profile:  ProfileModerate,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("browser: create sandbox: %w", err)
+	}
+
+	// Install Playwright + Chromium (one-time setup).
+	setupCmd := []string{"sh", "-c", "pip install -q playwright && playwright install --with-deps chromium"}
+	if _, err := c.ExecInSandbox(ctx, name, setupCmd); err != nil {
+		// Best-effort cleanup on setup failure.
+		_ = c.RemoveSandbox(ctx, name)
+		return nil, fmt.Errorf("browser: install playwright: %w", err)
+	}
+
+	return &BrowserSession{name: name, client: c}, nil
+}
+
 // ReadFile reads a file from a sandbox.
 func (c *Client) ReadFile(ctx context.Context, name, path string) (*FileReadResponse, error) {
 	var result FileReadResponse

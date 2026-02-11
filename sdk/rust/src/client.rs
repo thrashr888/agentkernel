@@ -1,6 +1,7 @@
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use std::time::Duration;
 
+use crate::browser::{BROWSER_SETUP_CMD, BrowserSession};
 use crate::error::{Error, Result, error_from_status};
 use crate::types::*;
 
@@ -201,6 +202,38 @@ impl AgentKernel {
         // Always clean up
         let _ = self.remove_sandbox(name).await;
         result
+    }
+
+    /// Create a browser sandbox with Playwright/Chromium pre-installed.
+    ///
+    /// Returns a [`BrowserSession`] you can use to navigate pages, take
+    /// screenshots, and evaluate JavaScript expressions.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> agentkernel_sdk::Result<()> {
+    /// let client = agentkernel_sdk::AgentKernel::builder().build()?;
+    /// let mut browser = client.browser("my-browser", None).await?;
+    /// let page = browser.goto("https://example.com").await?;
+    /// println!("{}", page.title);
+    /// browser.remove().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn browser(&self, name: &str, memory_mb: Option<u64>) -> Result<BrowserSession> {
+        let opts = CreateSandboxOptions {
+            image: Some("python:3.12-slim".to_string()),
+            memory_mb: Some(memory_mb.unwrap_or(2048)),
+            profile: Some(SecurityProfile::Moderate),
+            ..Default::default()
+        };
+        self.create_sandbox(name, Some(opts)).await?;
+
+        // Install Playwright + Chromium inside the sandbox.
+        self.exec_in_sandbox(name, BROWSER_SETUP_CMD, None).await?;
+
+        Ok(BrowserSession::new(name.to_string(), self.clone()))
     }
 
     /// Write multiple files to a sandbox in one request.

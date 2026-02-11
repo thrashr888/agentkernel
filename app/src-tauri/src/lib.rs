@@ -214,6 +214,8 @@ pub fn run() {
             // policy
             commands::policy::get_policy_status,
             commands::policy::check_policy,
+            commands::policy::reload_policy,
+            commands::policy::get_policy_audit,
             // settings
             commands::settings::get_settings,
             commands::settings::save_settings,

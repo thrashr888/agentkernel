@@ -376,6 +376,17 @@ export function SandboxDetail() {
               <h1 className="text-3xl font-bold tracking-tight">
                 {sandbox.name}
               </h1>
+              <button
+                onClick={() => copyToClipboard(sandbox.name, "name")}
+                className="text-muted-foreground hover:text-foreground"
+                title="Copy sandbox name"
+              >
+                {copiedField === "name" ? (
+                  <Check className="h-4 w-4 text-green-500" />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
+              </button>
               <SandboxStatusBadge status={sandbox.status} />
             </div>
           </div>

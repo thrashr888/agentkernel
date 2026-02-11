@@ -361,6 +361,32 @@ class AsyncAgentKernel:
         await self.create_sandbox(name, image=image, vcpus=vcpus, memory_mb=memory_mb, profile=profile)
         return AsyncSandboxSession(name, self)
 
+    async def browser(
+        self,
+        name: str,
+        *,
+        memory_mb: int = 2048,
+    ) -> AsyncBrowserSession:
+        """Create a sandboxed browser session with automatic cleanup.
+
+        Creates a sandbox with Chromium pre-installed. Use ``goto()``,
+        ``screenshot()``, and ``evaluate()`` to interact with web pages.
+
+        Example::
+
+            async with await client.browser("my-browser") as browser:
+                page = await browser.goto("https://example.com")
+                print(page.title, page.links)
+            # sandbox auto-removed
+        """
+        from .browser import AsyncBrowserSession, _SETUP_CMD
+
+        await self.create_sandbox(
+            name, image="python:3.12-slim", memory_mb=memory_mb, profile="moderate",
+        )
+        await self.exec_in_sandbox(name, _SETUP_CMD)
+        return AsyncBrowserSession(name, self)
+
     # -- Internal --
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:

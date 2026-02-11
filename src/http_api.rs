@@ -530,7 +530,9 @@ async fn handle_request(
         (Method::POST, ["sandboxes", name, "extend"]) => handle_extend_ttl(req, name, state).await,
 
         // Resize sandbox (stop + recreate with new resources)
-        (Method::POST, ["sandboxes", name, "resize"]) => handle_resize_sandbox(req, name, state).await,
+        (Method::POST, ["sandboxes", name, "resize"]) => {
+            handle_resize_sandbox(req, name, state).await
+        }
 
         // Snapshot endpoints
         (Method::GET, ["snapshots"]) => handle_list_snapshots(state).await,
@@ -566,6 +568,10 @@ async fn handle_request(
         (Method::GET, ["policy", "status"]) => handle_policy_status(state).await,
         #[cfg(feature = "enterprise")]
         (Method::POST, ["policy", "check"]) => handle_policy_check(req, state).await,
+        #[cfg(feature = "enterprise")]
+        (Method::POST, ["policy", "reload"]) => handle_policy_reload(state).await,
+        #[cfg(feature = "enterprise")]
+        (Method::GET, ["policy", "audit"]) => handle_policy_audit(req, state).await,
 
         // 404 for everything else
         _ => json_response(
@@ -1020,7 +1026,15 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
     };
 
     if let Err(e) = manager
-        .create_with_agent(&body.name, image, vcpus, memory_mb, None, ports.clone(), body.agent.clone())
+        .create_with_agent(
+            &body.name,
+            image,
+            vcpus,
+            memory_mb,
+            None,
+            ports.clone(),
+            body.agent.clone(),
+        )
         .await
     {
         return json_response(
@@ -1652,13 +1666,11 @@ async fn handle_resize_sandbox(
 
     // Stop if running
     let was_running = manager.is_running(name);
-    if was_running {
-        if let Err(e) = manager.stop(name).await {
-            return json_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &ApiResponse::<()>::error(format!("Failed to stop sandbox: {}", e)),
-            );
-        }
+    if was_running && let Err(e) = manager.stop(name).await {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to stop sandbox: {}", e)),
+        );
     }
 
     // Remove and recreate with new resources
@@ -1683,16 +1695,11 @@ async fn handle_resize_sandbox(
     }
 
     // Restart if it was running
-    if was_running {
-        if let Err(e) = manager.start(name).await {
-            return json_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &ApiResponse::<()>::error(format!(
-                    "Resized but failed to restart: {}",
-                    e
-                )),
-            );
-        }
+    if was_running && let Err(e) = manager.start(name).await {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Resized but failed to restart: {}", e)),
+        );
     }
 
     let running = manager.is_running(name);
@@ -2417,11 +2424,12 @@ async fn handle_policy_check(req: Request<Incoming>, state: Arc<AppState>) -> Re
         "mount" => crate::policy::Action::Mount,
         "network" => crate::policy::Action::Network,
         "portmap" => crate::policy::Action::PortMap,
+        "ssh" => crate::policy::Action::SSH,
         other => {
             return json_response(
                 StatusCode::BAD_REQUEST,
                 &ApiResponse::<()>::error(format!(
-                    "Invalid action '{}'. Use: run, exec, create, attach, mount, network, portmap",
+                    "Invalid action '{}'. Use: run, exec, create, attach, mount, network, portmap, ssh",
                     other
                 )),
             );
@@ -2462,6 +2470,73 @@ async fn handle_policy_check(req: Request<Incoming>, state: Arc<AppState>) -> Re
             evaluation_time_us: decision.evaluation_time_us,
         }),
     )
+}
+
+#[cfg(feature = "enterprise")]
+#[derive(Debug, Serialize)]
+struct PolicyReloadResponse {
+    reloaded: bool,
+    version: u64,
+}
+
+#[cfg(feature = "enterprise")]
+async fn handle_policy_reload(state: Arc<AppState>) -> Response<BoxBody> {
+    let Some(ref engine_lock) = state.policy_engine else {
+        return json_response(
+            StatusCode::OK,
+            &ApiResponse::success(PolicyReloadResponse {
+                reloaded: false,
+                version: 0,
+            }),
+        );
+    };
+
+    let mut engine = engine_lock.write().await;
+    match engine.reload().await {
+        Ok(()) => {
+            let version = engine.version().await;
+            json_response(
+                StatusCode::OK,
+                &ApiResponse::success(PolicyReloadResponse {
+                    reloaded: true,
+                    version,
+                }),
+            )
+        }
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Policy reload failed: {e}")),
+        ),
+    }
+}
+
+#[cfg(feature = "enterprise")]
+async fn handle_policy_audit(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    // Parse ?last=N query param (default 50)
+    let last: usize = req
+        .uri()
+        .query()
+        .and_then(|q| {
+            q.split('&')
+                .find_map(|pair| pair.strip_prefix("last="))
+                .and_then(|v| v.parse().ok())
+        })
+        .unwrap_or(50);
+
+    let Some(ref engine_lock) = state.policy_engine else {
+        // No engine → return empty list
+        let empty: Vec<crate::policy::PolicyDecisionLog> = Vec::new();
+        return json_response(StatusCode::OK, &ApiResponse::success(empty));
+    };
+
+    let engine = engine_lock.read().await;
+    match engine.audit_logger().read_last(last) {
+        Ok(entries) => json_response(StatusCode::OK, &ApiResponse::success(entries)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to read policy audit log: {e}")),
+        ),
+    }
 }
 
 /// Run the HTTP API server (plain HTTP)
@@ -2832,11 +2907,26 @@ async fn handle_list_agents(_state: Arc<AppState>) -> Response<BoxBody> {
     }
 
     let agent_defs: Vec<(&str, &str, &str, &str)> = vec![
-        ("claude", "Claude Code", "claude", "Anthropic's AI coding agent"),
-        ("copilot", "Copilot CLI", "copilot", "GitHub's AI coding agent"),
+        (
+            "claude",
+            "Claude Code",
+            "claude",
+            "Anthropic's AI coding agent",
+        ),
+        (
+            "copilot",
+            "Copilot CLI",
+            "copilot",
+            "GitHub's AI coding agent",
+        ),
         ("gemini", "Gemini CLI", "gemini", "Google's AI coding agent"),
         ("codex", "Codex CLI", "codex", "OpenAI's AI coding agent"),
-        ("opencode", "OpenCode", "opencode", "Open-source AI coding agent"),
+        (
+            "opencode",
+            "OpenCode",
+            "opencode",
+            "Open-source AI coding agent",
+        ),
         ("amp", "Amp", "amp", "Sourcegraph's AI coding agent"),
         ("pi", "Pi", "pi", "Mario Zechner's coding agent"),
     ];

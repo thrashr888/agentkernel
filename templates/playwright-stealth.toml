@@ -1,0 +1,17 @@
+# Playwright-stealth sandbox template
+# Stealth browser automation that avoids bot detection
+# Wraps Playwright with anti-detection evasions
+
+[sandbox]
+name = "playwright-stealth"
+base_image = "python:3.12-slim"
+
+[resources]
+vcpus = 2
+memory_mb = 2048
+
+[security]
+profile = "moderate"
+
+[security.domains]
+allow = ["pypi.org", "files.pythonhosted.org", "playwright.azureedge.net"]

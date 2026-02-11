@@ -1,0 +1,14 @@
+# Playwright Example
+# Browser automation with Playwright in an isolated sandbox
+
+[sandbox]
+name = "playwright-example"
+base_image = "python:3.12-slim"
+
+[resources]
+vcpus = 2
+memory_mb = 2048
+
+[security]
+profile = "moderate"
+network = true      # Playwright needs network to fetch pages

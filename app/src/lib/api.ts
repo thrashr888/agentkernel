@@ -18,6 +18,8 @@ import type {
   AgentInfo,
   PolicyStatus,
   PolicyCheckResult,
+  PolicyReloadResult,
+  PolicyAuditEntry,
 } from "./types";
 
 export const api = {
@@ -105,4 +107,7 @@ export const api = {
   getPolicyStatus: () => invoke<PolicyStatus>("get_policy_status"),
   checkPolicy: (action: string, sandbox: string) =>
     invoke<PolicyCheckResult>("check_policy", { action, sandbox }),
+  reloadPolicy: () => invoke<PolicyReloadResult>("reload_policy"),
+  getPolicyAudit: (last?: number) =>
+    invoke<PolicyAuditEntry[]>("get_policy_audit", { last }),
 };

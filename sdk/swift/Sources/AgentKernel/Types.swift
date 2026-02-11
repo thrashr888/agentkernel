@@ -247,6 +247,24 @@ public struct TakeSnapshotOptions: Encodable, Sendable {
     }
 }
 
+// MARK: - Browser Types
+
+/// A link extracted from a web page.
+public struct PageLink: Codable, Sendable {
+    public let text: String
+    public let href: String
+}
+
+/// Result of navigating to a web page.
+public struct PageResult: Codable, Sendable {
+    public let title: String
+    public let url: String
+    /// Page body text (truncated to ~8KB).
+    public let text: String
+    /// First 50 links on the page.
+    public let links: [PageLink]
+}
+
 // MARK: - Type Erasure
 
 /// Type-erased `Encodable` wrapper for generic request bodies.

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, MoreHorizontal, Trash2, Camera, Square, Play, ChevronLeft, ChevronRight, Terminal, Copy } from "lucide-react";
+import { Plus, MoreHorizontal, Trash2, Camera, Square, Play, ChevronLeft, ChevronRight, Terminal, Copy, ArrowUpDown, ArrowUp, ArrowDown, Search, X } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSandboxes } from "@/lib/hooks/use-sandboxes";
 import { api } from "@/lib/api";
@@ -58,6 +58,13 @@ export function Sandboxes() {
   const [formAgent, setFormAgent] = useState("");
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 24;
+
+  // Sort, filter, search state
+  type SortColumn = "name" | "status" | "image" | "ip" | "created";
+  const [sortColumn, setSortColumn] = useState<SortColumn>("name");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [search, setSearch] = useState("");
 
   const createMutation = useMutation({
     mutationFn: (req: CreateSandboxRequest) => api.createSandbox(req),
@@ -165,6 +172,46 @@ export function Sandboxes() {
       ...(formAgent && formAgent !== "none" ? { agent: formAgent } : {}),
     });
   }
+
+  function toggleSort(col: SortColumn) {
+    if (sortColumn === col) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortColumn(col);
+      setSortDir("asc");
+    }
+    setPage(0);
+  }
+
+  function SortIcon({ col }: { col: SortColumn }) {
+    if (sortColumn !== col) return <ArrowUpDown className="ml-1 h-3 w-3 opacity-40" />;
+    return sortDir === "asc"
+      ? <ArrowUp className="ml-1 h-3 w-3" />
+      : <ArrowDown className="ml-1 h-3 w-3" />;
+  }
+
+  // Apply search + status filter + sort
+  const filtered = (sandboxes ?? []).filter((s) => {
+    if (statusFilter !== "all" && s.status.toLowerCase() !== statusFilter) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      const haystack = [s.name, s.image ?? "", s.ip ?? ""].join(" ").toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const sorted = [...filtered].sort((a, b) => {
+    const dir = sortDir === "asc" ? 1 : -1;
+    switch (sortColumn) {
+      case "name": return dir * a.name.localeCompare(b.name);
+      case "status": return dir * a.status.localeCompare(b.status);
+      case "image": return dir * (a.image ?? "").localeCompare(b.image ?? "");
+      case "ip": return dir * (a.ip ?? "").localeCompare(b.ip ?? "");
+      case "created": return dir * (a.created_at ?? "").localeCompare(b.created_at ?? "");
+      default: return 0;
+    }
+  });
 
   return (
     <div className="space-y-6">
@@ -331,23 +378,84 @@ export function Sandboxes() {
         </Card>
       ) : (
         <>
+        {/* Toolbar: count filter buttons + search */}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1 text-sm">
+            <button
+              onClick={() => { setStatusFilter("all"); setPage(0); }}
+              className={`rounded-md px-2.5 py-1 font-medium transition-colors ${statusFilter === "all" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground hover:bg-accent/50"}`}
+            >
+              {sandboxes.length} total
+            </button>
+            <button
+              onClick={() => { setStatusFilter(statusFilter === "running" ? "all" : "running"); setPage(0); }}
+              className={`rounded-md px-2.5 py-1 font-medium transition-colors ${statusFilter === "running" ? "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-400" : "text-muted-foreground hover:text-foreground hover:bg-accent/50"}`}
+            >
+              {sandboxes.filter((s) => s.status.toLowerCase() === "running").length} running
+            </button>
+            <button
+              onClick={() => { setStatusFilter(statusFilter === "stopped" ? "all" : "stopped"); setPage(0); }}
+              className={`rounded-md px-2.5 py-1 font-medium transition-colors ${statusFilter === "stopped" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground hover:bg-accent/50"}`}
+            >
+              {sandboxes.filter((s) => s.status.toLowerCase() === "stopped").length} stopped
+            </button>
+          </div>
+          <div className="h-4 w-px bg-border" />
+          <div className="relative flex-1 max-w-sm">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search by name, image, or IP..."
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+              className="pl-9 pr-8"
+            />
+            {search && (
+              <button
+                onClick={() => { setSearch(""); setPage(0); }}
+                className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </div>
+
         <div className="rounded-md border">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Image</TableHead>
-                <TableHead>IP</TableHead>
-                <TableHead>Created</TableHead>
+                <TableHead>
+                  <button className="inline-flex items-center hover:text-foreground" onClick={() => toggleSort("name")}>
+                    Name <SortIcon col="name" />
+                  </button>
+                </TableHead>
+                <TableHead>
+                  <button className="inline-flex items-center hover:text-foreground" onClick={() => toggleSort("status")}>
+                    Status <SortIcon col="status" />
+                  </button>
+                </TableHead>
+                <TableHead>
+                  <button className="inline-flex items-center hover:text-foreground" onClick={() => toggleSort("image")}>
+                    Image <SortIcon col="image" />
+                  </button>
+                </TableHead>
+                <TableHead>
+                  <button className="inline-flex items-center hover:text-foreground" onClick={() => toggleSort("ip")}>
+                    IP <SortIcon col="ip" />
+                  </button>
+                </TableHead>
+                <TableHead>
+                  <button className="inline-flex items-center hover:text-foreground" onClick={() => toggleSort("created")}>
+                    Created <SortIcon col="created" />
+                  </button>
+                </TableHead>
                 <TableHead className="w-[70px]">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {(() => {
-                const sorted = [...sandboxes].sort((a, b) => a.name.localeCompare(b.name));
                 const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
-                const safePage = Math.min(page, totalPages - 1);
+                const safePage = Math.min(page, Math.max(totalPages - 1, 0));
                 return sorted.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
               })().map((sandbox) => (
                 <TableRow key={sandbox.name}>
@@ -450,12 +558,27 @@ export function Sandboxes() {
             </TableBody>
           </Table>
         </div>
-        {sandboxes.length > PAGE_SIZE && (() => {
-          const totalPages = Math.ceil(sandboxes.length / PAGE_SIZE);
+        {sorted.length === 0 && (search || statusFilter !== "all") && (
+          <div className="flex flex-col items-center justify-center py-8 text-center">
+            <Search className="mb-3 h-8 w-8 text-muted-foreground/50" />
+            <p className="text-sm text-muted-foreground">
+              No sandboxes match your filters.
+            </p>
+            <Button
+              variant="link"
+              size="sm"
+              onClick={() => { setSearch(""); setStatusFilter("all"); setPage(0); }}
+            >
+              Clear filters
+            </Button>
+          </div>
+        )}
+        {sorted.length > PAGE_SIZE && (() => {
+          const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
           return (
             <div className="flex items-center justify-between pt-2">
               <span className="text-xs text-muted-foreground">
-                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, sandboxes.length)} of {sandboxes.length}
+                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, sorted.length)} of {sorted.length}
               </span>
               <div className="flex items-center gap-1">
                 <Button

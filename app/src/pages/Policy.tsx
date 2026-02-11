@@ -1,6 +1,14 @@
-import { useQuery } from "@tanstack/react-query";
-import { Shield, RefreshCw } from "lucide-react";
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  Shield,
+  RefreshCw,
+  Play,
+  CheckCircle2,
+  XCircle,
+} from "lucide-react";
 import { api } from "@/lib/api";
+import { toast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -10,30 +18,106 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import type { PolicyCheckResult } from "@/lib/types";
+
+const ACTIONS = [
+  "Run",
+  "Exec",
+  "Create",
+  "Attach",
+  "Mount",
+  "Network",
+  "PortMap",
+  "SSH",
+];
 
 export function Policy() {
+  const queryClient = useQueryClient();
+  const [checkAction, setCheckAction] = useState("Run");
+  const [checkSandbox, setCheckSandbox] = useState("");
+  const [checkResult, setCheckResult] = useState<PolicyCheckResult | null>(
+    null
+  );
+
+  // --- Queries ---
+
   const {
     data: policyStatus,
     isLoading,
     error,
-    refetch,
+    refetch: refetchStatus,
   } = useQuery({
     queryKey: ["policy-status"],
     queryFn: () => api.getPolicyStatus(),
     retry: false,
   });
 
+  // --- Mutations ---
+
+  const reloadMutation = useMutation({
+    mutationFn: () => api.reloadPolicy(),
+    onMutate: () => ({ toastId: toast("Reloading policies...") }),
+    onSuccess: (data, _vars, context) => {
+      if (context?.toastId)
+        toast.update(
+          context.toastId,
+          data.reloaded
+            ? `Policies reloaded (v${data.version})`
+            : "No policy server configured",
+          data.reloaded ? "success" : "error"
+        );
+      queryClient.invalidateQueries({ queryKey: ["policy-status"] });
+    },
+    onError: (err, _vars, context) => {
+      if (context?.toastId)
+        toast.update(
+          context.toastId,
+          err instanceof Error ? err.message : String(err),
+          "error"
+        );
+    },
+  });
+
+  const checkMutation = useMutation({
+    mutationFn: ({
+      action,
+      sandbox,
+    }: {
+      action: string;
+      sandbox: string;
+    }) => api.checkPolicy(action, sandbox),
+    onSuccess: (data) => {
+      setCheckResult(data);
+    },
+    onError: (err) => {
+      toast(err instanceof Error ? err.message : String(err));
+    },
+  });
+
+  // --- Loading state ---
+
   if (isLoading) {
     return (
       <div className="space-y-6">
         <Skeleton className="h-10 w-48" />
         <Skeleton className="h-[200px] rounded-lg" />
+        <Skeleton className="h-[200px] rounded-lg" />
       </div>
     );
   }
 
-  // If the query errored (e.g. 404 because enterprise is not enabled)
+  // --- Error state (enterprise feature not compiled) ---
+
   if (error) {
     return (
       <div className="space-y-6">
@@ -65,32 +149,56 @@ export function Policy() {
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Policy</h1>
           <p className="text-muted-foreground">
-            Enterprise policy management
+            Cedar policy engine &mdash; authorization for sandbox operations
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => refetch()}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => refetchStatus()}
+        >
           <RefreshCw className="mr-2 h-4 w-4" />
           Refresh
         </Button>
       </div>
 
+      {/* Section 1: Policy Engine Status */}
       {policyStatus && (
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle>Policy Engine</CardTitle>
+                <CardTitle className="flex items-center gap-2">
+                  <Shield className="h-5 w-5" />
+                  Policy Engine
+                </CardTitle>
                 <CardDescription>
                   Current policy engine configuration
                 </CardDescription>
               </div>
-              <Badge variant={policyStatus.enabled ? "success" : "secondary"}>
-                {policyStatus.enabled ? "Enabled" : "Disabled"}
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Badge
+                  variant={policyStatus.enabled ? "success" : "secondary"}
+                >
+                  {policyStatus.enabled ? "Enabled" : "Disabled"}
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => reloadMutation.mutate()}
+                  disabled={reloadMutation.isPending}
+                >
+                  <RefreshCw
+                    className={`mr-2 h-4 w-4 ${reloadMutation.isPending ? "animate-spin" : ""}`}
+                  />
+                  Reload
+                </Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
@@ -123,6 +231,108 @@ export function Policy() {
           </CardContent>
         </Card>
       )}
+
+      {/* Section 2: Policy Check Tester */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Play className="h-5 w-5" />
+            Policy Check
+          </CardTitle>
+          <CardDescription>
+            Test whether an action would be permitted by the policy engine
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-end gap-4">
+            <div className="w-48 space-y-2">
+              <Label>Action</Label>
+              <Select value={checkAction} onValueChange={setCheckAction}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ACTIONS.map((a) => (
+                    <SelectItem key={a} value={a}>
+                      {a}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex-1 space-y-2">
+              <Label>Sandbox Name</Label>
+              <Input
+                placeholder="my-sandbox"
+                value={checkSandbox}
+                onChange={(e) => setCheckSandbox(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && checkSandbox.trim()) {
+                    checkMutation.mutate({
+                      action: checkAction.toLowerCase(),
+                      sandbox: checkSandbox.trim(),
+                    });
+                  }
+                }}
+              />
+            </div>
+            <Button
+              onClick={() =>
+                checkMutation.mutate({
+                  action: checkAction.toLowerCase(),
+                  sandbox: checkSandbox.trim() || "test",
+                })
+              }
+              disabled={checkMutation.isPending}
+            >
+              {checkMutation.isPending ? "Checking..." : "Check"}
+            </Button>
+          </div>
+
+          {/* Result display */}
+          {checkResult && (
+            <div className="rounded-lg border p-4 space-y-3">
+              <div className="flex items-center gap-3">
+                {checkResult.decision === "permit" ? (
+                  <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />
+                ) : (
+                  <XCircle className="h-5 w-5 text-red-600 dark:text-red-400" />
+                )}
+                <Badge
+                  variant={
+                    checkResult.decision === "permit"
+                      ? "success"
+                      : "destructive"
+                  }
+                >
+                  {checkResult.decision.toUpperCase()}
+                </Badge>
+                <span className="text-sm text-muted-foreground">
+                  {checkResult.evaluation_time_us}&#181;s
+                </span>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {checkResult.reason}
+              </p>
+              {checkResult.matched_policies.length > 0 && (
+                <div className="space-y-1">
+                  <span className="text-xs font-medium uppercase text-muted-foreground">
+                    Matched Policies
+                  </span>
+                  <div className="flex flex-wrap gap-1">
+                    {checkResult.matched_policies.map((p) => (
+                      <Badge key={p} variant="outline" className="font-mono text-xs">
+                        {p}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
     </div>
   );
 }

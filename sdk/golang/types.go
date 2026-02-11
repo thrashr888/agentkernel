@@ -139,3 +139,31 @@ type TakeSnapshotOptions struct {
 	Sandbox string `json:"sandbox"`
 	Name    string `json:"name,omitempty"`
 }
+
+// PageLink is a hyperlink extracted from a web page.
+type PageLink struct {
+	Text string `json:"text"`
+	Href string `json:"href"`
+}
+
+// PageResult contains the data returned by BrowserSession.Goto.
+type PageResult struct {
+	Title string     `json:"title"`
+	URL   string     `json:"url"`
+	Text  string     `json:"text"`
+	Links []PageLink `json:"links"`
+}
+
+// BrowserOption configures a browser session.
+type BrowserOption func(*browserConfig)
+
+type browserConfig struct {
+	memoryMB int
+}
+
+// WithMemoryMB sets the sandbox memory in megabytes (default 2048).
+func WithMemoryMB(mb int) BrowserOption {
+	return func(cfg *browserConfig) {
+		cfg.memoryMB = mb
+	}
+}

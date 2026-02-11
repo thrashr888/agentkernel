@@ -451,6 +451,24 @@ impl ApiClient {
         .await
     }
 
+    /// Force policy reload from server.
+    pub async fn reload_policy(&self) -> anyhow::Result<crate::types::PolicyReloadResult> {
+        self.request(reqwest::Method::POST, "/policy/reload", None::<&()>)
+            .await
+    }
+
+    /// Get recent policy audit log entries.
+    pub async fn get_policy_audit(
+        &self,
+        last: Option<u32>,
+    ) -> anyhow::Result<Vec<crate::types::PolicyAuditEntry>> {
+        let path = match last {
+            Some(n) => format!("/policy/audit?last={n}"),
+            None => "/policy/audit".to_string(),
+        };
+        self.request(reqwest::Method::GET, &path, None::<&()>).await
+    }
+
     // -----------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------

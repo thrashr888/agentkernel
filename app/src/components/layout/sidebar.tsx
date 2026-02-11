@@ -7,6 +7,7 @@ import {
   ScrollText,
   Activity,
   Shield,
+  ClipboardList,
   Puzzle,
   KeyRound,
   Settings,
@@ -40,6 +41,7 @@ const navItems = [
   { to: "/audit", label: "Audit Log", icon: ScrollText },
   { to: "/diagnostics", label: "Diagnostics", icon: Activity },
   { to: "/policy", label: "Policy", icon: Shield },
+  { to: "/policy/log", label: "Policy Log", icon: ClipboardList },
   { to: "/secrets", label: "Secrets", icon: KeyRound },
   { to: "/settings", label: "Settings", icon: Settings },
 ];

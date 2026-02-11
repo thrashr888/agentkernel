@@ -9,6 +9,7 @@ import { Settings } from "@/pages/Settings";
 import { AuditLog } from "@/pages/AuditLog";
 import { Diagnostics } from "@/pages/Diagnostics";
 import { Policy } from "@/pages/Policy";
+import { PolicyLog } from "@/pages/PolicyLog";
 import { Plugins } from "@/pages/Plugins";
 import { Secrets } from "@/pages/Secrets";
 
@@ -25,6 +26,7 @@ function App() {
         <Route path="/plugins" element={<Plugins />} />
         <Route path="/diagnostics" element={<Diagnostics />} />
         <Route path="/policy" element={<Policy />} />
+        <Route path="/policy/log" element={<PolicyLog />} />
         <Route path="/secrets" element={<Secrets />} />
         <Route path="/settings" element={<Settings />} />
       </Routes>

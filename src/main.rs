@@ -4,6 +4,7 @@ mod asciicast;
 mod audit;
 mod backend;
 mod benchmark;
+mod browser_scripts;
 mod build;
 mod config;
 mod daemon;
@@ -3444,8 +3445,9 @@ async fn handle_policy_command(action: PolicyAction) -> Result<()> {
                 "mount" => policy::Action::Mount,
                 "network" => policy::Action::Network,
                 "portmap" => policy::Action::PortMap,
+                "ssh" => policy::Action::SSH,
                 other => bail!(
-                    "Invalid action '{}'. Use: run, exec, create, attach, mount, network, portmap",
+                    "Invalid action '{}'. Use: run, exec, create, attach, mount, network, portmap, ssh",
                     other
                 ),
             };
