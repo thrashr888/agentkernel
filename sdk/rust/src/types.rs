@@ -266,3 +266,31 @@ pub struct PageResult {
     pub text: String,
     pub links: Vec<PageLink>,
 }
+
+/// ARIA accessibility tree snapshot of a web page (v2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AriaSnapshot {
+    /// ARIA tree as YAML.
+    pub snapshot: String,
+    /// Current page URL.
+    pub url: String,
+    /// Page title.
+    pub title: String,
+    /// Available ref IDs (e.g. `["e1", "e2"]`).
+    #[serde(default)]
+    pub refs: Vec<String>,
+}
+
+/// A browser interaction event for debugging and context recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserEvent {
+    /// Monotonic sequence number.
+    pub seq: u64,
+    /// Event type (e.g. "page.navigated", "page.clicked").
+    #[serde(rename = "type")]
+    pub event_type: String,
+    /// Page name.
+    pub page: String,
+    /// ISO 8601 timestamp.
+    pub ts: String,
+}

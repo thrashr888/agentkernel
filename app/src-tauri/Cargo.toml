@@ -25,6 +25,7 @@ anyhow = "1"
 thiserror = "2"
 base64 = "0.22"
 dirs = "6"
+tauri-plugin-updater = "2"
 tauri-plugin-debug-bridge = { version = "0.4", optional = true }
 
 [features]

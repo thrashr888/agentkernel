@@ -154,6 +154,30 @@ type PageResult struct {
 	Links []PageLink `json:"links"`
 }
 
+// AriaSnapshot is an ARIA accessibility tree snapshot of a web page (v2).
+type AriaSnapshot struct {
+	// ARIA tree as YAML.
+	Snapshot string `json:"snapshot"`
+	// Current page URL.
+	URL string `json:"url"`
+	// Page title.
+	Title string `json:"title"`
+	// Available ref IDs (e.g. ["e1", "e2"]).
+	Refs []string `json:"refs"`
+}
+
+// BrowserEvent is a browser interaction event for debugging and context recovery.
+type BrowserEvent struct {
+	// Monotonic sequence number.
+	Seq int `json:"seq"`
+	// Event type (e.g. "page.navigated", "page.clicked").
+	Type string `json:"type"`
+	// Page name.
+	Page string `json:"page"`
+	// ISO 8601 timestamp.
+	Ts string `json:"ts"`
+}
+
 // BrowserOption configures a browser session.
 type BrowserOption func(*browserConfig)
 

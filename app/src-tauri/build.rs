@@ -16,6 +16,7 @@ fn main() {
   "permissions": [
     "core:default",
     "shell:allow-open",
+    "updater:default",
     "debug-bridge:default"
   ]
 }"#
@@ -26,7 +27,8 @@ fn main() {
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "shell:allow-open"
+    "shell:allow-open",
+    "updater:default"
   ]
 }"#
     };

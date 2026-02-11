@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 mod agents;
 mod apple_backend;
 mod asciicast;

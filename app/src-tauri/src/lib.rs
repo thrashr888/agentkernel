@@ -32,7 +32,8 @@ fn navigate_to(app: &tauri::AppHandle, path: &str) {
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_window_state::Builder::new().build());
+        .plugin(tauri_plugin_window_state::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build());
 
     #[cfg(feature = "debug-bridge")]
     let builder = builder.plugin(tauri_plugin_debug_bridge::init());

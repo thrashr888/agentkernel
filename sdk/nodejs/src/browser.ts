@@ -5,7 +5,7 @@
  * runs it inside the sandbox, and parses the JSON result.
  */
 
-import type { PageResult, RunOutput } from "./types.js";
+import type { AriaSnapshot, PageResult, RunOutput } from "./types.js";
 
 type RunInSandboxFn = (
   name: string,
@@ -73,6 +73,41 @@ export const BROWSER_SETUP_CMD = [
   "-c",
   "pip install -q playwright && playwright install --with-deps chromium",
 ];
+
+// --- v2 scripts ---
+
+const BROWSER_HEALTH_SCRIPT = `
+import json, urllib.request, sys
+port = sys.argv[1] if len(sys.argv) > 1 else "9222"
+try:
+    req = urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5)
+    print(req.read().decode())
+except Exception as e:
+    print(json.dumps({"status": "down", "error": str(e)}))
+    sys.exit(1)
+`;
+
+const BROWSER_REQUEST_SCRIPT = `
+import json, urllib.request, sys
+port = sys.argv[1] if len(sys.argv) > 1 else "9222"
+method = sys.argv[2] if len(sys.argv) > 2 else "GET"
+path = sys.argv[3] if len(sys.argv) > 3 else "/health"
+body_str = sys.argv[4] if len(sys.argv) > 4 else None
+url = f"http://127.0.0.1:{port}{path}"
+data = body_str.encode() if body_str else None
+req = urllib.request.Request(url, data=data, method=method)
+if data:
+    req.add_header("Content-Type", "application/json")
+try:
+    resp = urllib.request.urlopen(req, timeout=60)
+    print(resp.read().decode())
+except urllib.error.HTTPError as e:
+    print(e.read().decode())
+    sys.exit(1)
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+    sys.exit(1)
+`;
 
 /**
  * A sandboxed headless browser controlled from outside.
@@ -143,6 +178,116 @@ export class BrowserSession implements AsyncDisposable {
     ]);
     return JSON.parse(result.output);
   }
+
+  // --- v2 methods (ARIA snapshots, persistent pages, ref-based interaction) ---
+
+  /** Navigate to a URL and return an ARIA snapshot. */
+  async open(url: string, page = "default"): Promise<AriaSnapshot> {
+    await this._ensureServer();
+    const result = await this._browserRequest(
+      "POST",
+      `/pages/${page}/goto`,
+      JSON.stringify({ url }),
+    );
+    return JSON.parse(result.output) as AriaSnapshot;
+  }
+
+  /** Get the current ARIA snapshot without navigating. */
+  async snapshot(page = "default"): Promise<AriaSnapshot> {
+    await this._ensureServer();
+    const result = await this._browserRequest(
+      "GET",
+      `/pages/${page}/snapshot`,
+    );
+    return JSON.parse(result.output) as AriaSnapshot;
+  }
+
+  /** Click an element by ref ID or CSS selector. Returns new snapshot. */
+  async click(opts: { ref?: string; selector?: string; page?: string }): Promise<AriaSnapshot> {
+    const page = opts.page ?? "default";
+    await this._ensureServer();
+    const body: Record<string, string> = {};
+    if (opts.ref) body.ref = opts.ref;
+    if (opts.selector) body.selector = opts.selector;
+    const result = await this._browserRequest(
+      "POST",
+      `/pages/${page}/click`,
+      JSON.stringify(body),
+    );
+    const data = JSON.parse(result.output);
+    if (data.error) throw new Error(data.error);
+    return data as AriaSnapshot;
+  }
+
+  /** Fill an input by ref ID or CSS selector. Returns new snapshot. */
+  async fill(
+    value: string,
+    opts: { ref?: string; selector?: string; page?: string },
+  ): Promise<AriaSnapshot> {
+    const page = opts.page ?? "default";
+    await this._ensureServer();
+    const body: Record<string, string> = { value };
+    if (opts.ref) body.ref = opts.ref;
+    if (opts.selector) body.selector = opts.selector;
+    const result = await this._browserRequest(
+      "POST",
+      `/pages/${page}/fill`,
+      JSON.stringify(body),
+    );
+    const data = JSON.parse(result.output);
+    if (data.error) throw new Error(data.error);
+    return data as AriaSnapshot;
+  }
+
+  /** Close a named page. */
+  async closePage(page = "default"): Promise<void> {
+    await this._ensureServer();
+    await this._browserRequest("DELETE", `/pages/${page}`);
+  }
+
+  /** List active page names. */
+  async listPages(): Promise<string[]> {
+    await this._ensureServer();
+    const result = await this._browserRequest("GET", "/pages");
+    const data = JSON.parse(result.output);
+    return data.pages ?? [];
+  }
+
+  private _serverStarted = false;
+
+  private async _ensureServer(): Promise<void> {
+    if (this._serverStarted) return;
+    // Health check
+    try {
+      const result = await this._run(this.name, [
+        "python3", "-c", BROWSER_HEALTH_SCRIPT, "9222",
+      ]);
+      if (result.output.includes('"status":"ok"') || result.output.includes('"status": "ok"')) {
+        this._serverStarted = true;
+        return;
+      }
+    } catch {
+      // Server not running, start it
+    }
+    // Start would require the full server script + ARIA JS — for SDK use,
+    // the server is expected to already be running (started via browser_create or MCP)
+    throw new Error(
+      "Browser server not running. Use browser_create to set up the sandbox, " +
+      "or use the MCP browser_open tool which auto-starts the server.",
+    );
+  }
+
+  private async _browserRequest(
+    method: string,
+    path: string,
+    body?: string,
+  ): Promise<RunOutput> {
+    const cmd = ["python3", "-c", BROWSER_REQUEST_SCRIPT, "9222", method, path];
+    if (body) cmd.push(body);
+    return this._run(this.name, cmd);
+  }
+
+  // --- v1 methods (backward compatible) ---
 
   /** Remove the sandbox. Idempotent. */
   async remove(): Promise<void> {

@@ -12,7 +12,9 @@ export {
 } from "./errors.js";
 export type {
   AgentKernelOptions,
+  AriaSnapshot,
   BatchFileWriteResponse,
+  BrowserEvent,
   CreateSandboxOptions,
   DetachedCommand,
   DetachedLogsResponse,

@@ -10,9 +10,18 @@
     "frontendDist": "../dist"
   },
   "bundle": {
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/icon.png"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhDMEQzRjFEMDRBQUVBOEUKUldTTzZxb0VIVDhOaktTNVpMRGFmdVpKaWxEblk0Z0ZkczV2NmlvK24zZkV0MEwwdGxTR2lyZWEK",
+      "endpoints": [
+        "https://github.com/thrashr888/agentkernel/releases/latest/download/latest.json"
+      ]
+    }
   },
   "app": {
     "windows": [

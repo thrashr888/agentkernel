@@ -62,6 +62,41 @@ asyncio.run(main())
 /// The shell command used to install Playwright and Chromium inside the sandbox.
 private let setupCommand = ["sh", "-c", "pip install -q playwright && playwright install --with-deps chromium"]
 
+// -- v2 scripts: proxy through in-sandbox browser server on port 9222 --
+
+private let browserHealthScript = """
+import json, urllib.request, sys
+port = sys.argv[1] if len(sys.argv) > 1 else "9222"
+try:
+    req = urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5)
+    print(req.read().decode())
+except Exception as e:
+    print(json.dumps({"status": "down", "error": str(e)}))
+    sys.exit(1)
+"""
+
+private let browserRequestScript = """
+import json, urllib.request, sys
+port = sys.argv[1] if len(sys.argv) > 1 else "9222"
+method = sys.argv[2] if len(sys.argv) > 2 else "GET"
+path = sys.argv[3] if len(sys.argv) > 3 else "/health"
+body_str = sys.argv[4] if len(sys.argv) > 4 else None
+url = f"http://127.0.0.1:{port}{path}"
+data = body_str.encode() if body_str else None
+req = urllib.request.Request(url, data=data, method=method)
+if data:
+    req.add_header("Content-Type", "application/json")
+try:
+    resp = urllib.request.urlopen(req, timeout=60)
+    print(resp.read().decode())
+except urllib.error.HTTPError as e:
+    print(e.read().decode())
+    sys.exit(1)
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+    sys.exit(1)
+"""
+
 // MARK: - BrowserSession
 
 /// A sandboxed headless browser controlled from outside.
@@ -83,6 +118,7 @@ public final class BrowserSession: @unchecked Sendable {
     private let client: AgentKernel
     private var removed = false
     private var lastUrl: String?
+    private var serverStarted = false
 
     init(name: String, client: AgentKernel) {
         self.name = name
@@ -144,11 +180,118 @@ public final class BrowserSession: @unchecked Sendable {
         try await client.removeSandbox(name)
     }
 
+    // MARK: - v2 Methods (ARIA snapshots, persistent pages, ref-based interaction)
+
+    /// Navigate to a URL and return an ARIA snapshot.
+    ///
+    /// - Parameters:
+    ///   - url: The URL to navigate to.
+    ///   - page: The page name (default: "default").
+    /// - Returns: An ``AriaSnapshot`` with the ARIA tree, URL, title, and ref IDs.
+    public func open(_ url: String, page: String = "default") async throws -> AriaSnapshot {
+        try await ensureServer()
+        let body = try JSONSerialization.data(withJSONObject: ["url": url])
+        let bodyStr = String(data: body, encoding: .utf8) ?? "{}"
+        let output = try await browserRequest("POST", path: "/pages/\(page)/goto", body: bodyStr)
+        let data = output.data(using: .utf8) ?? Data()
+        return try JSONDecoder().decode(AriaSnapshot.self, from: data)
+    }
+
+    /// Get the current ARIA snapshot without navigating.
+    ///
+    /// - Parameter page: The page name (default: "default").
+    /// - Returns: An ``AriaSnapshot``.
+    public func snapshot(page: String = "default") async throws -> AriaSnapshot {
+        try await ensureServer()
+        let output = try await browserRequest("GET", path: "/pages/\(page)/snapshot")
+        let data = output.data(using: .utf8) ?? Data()
+        return try JSONDecoder().decode(AriaSnapshot.self, from: data)
+    }
+
+    /// Click an element by ref ID or CSS selector.
+    ///
+    /// - Parameters:
+    ///   - ref: The ref ID to click (e.g. "e1").
+    ///   - selector: A CSS selector to click.
+    ///   - page: The page name (default: "default").
+    /// - Returns: A new ``AriaSnapshot`` after clicking.
+    public func click(ref: String? = nil, selector: String? = nil, page: String = "default") async throws -> AriaSnapshot {
+        try await ensureServer()
+        var bodyDict: [String: String] = [:]
+        if let ref { bodyDict["ref"] = ref }
+        if let selector { bodyDict["selector"] = selector }
+        let body = try JSONSerialization.data(withJSONObject: bodyDict)
+        let bodyStr = String(data: body, encoding: .utf8) ?? "{}"
+        let output = try await browserRequest("POST", path: "/pages/\(page)/click", body: bodyStr)
+        let data = output.data(using: .utf8) ?? Data()
+        return try JSONDecoder().decode(AriaSnapshot.self, from: data)
+    }
+
+    /// Fill an input by ref ID or CSS selector.
+    ///
+    /// - Parameters:
+    ///   - value: The value to type into the input.
+    ///   - ref: The ref ID of the input.
+    ///   - selector: A CSS selector for the input.
+    ///   - page: The page name (default: "default").
+    /// - Returns: A new ``AriaSnapshot`` after filling.
+    public func fill(_ value: String, ref: String? = nil, selector: String? = nil, page: String = "default") async throws -> AriaSnapshot {
+        try await ensureServer()
+        var bodyDict: [String: String] = ["value": value]
+        if let ref { bodyDict["ref"] = ref }
+        if let selector { bodyDict["selector"] = selector }
+        let body = try JSONSerialization.data(withJSONObject: bodyDict)
+        let bodyStr = String(data: body, encoding: .utf8) ?? "{}"
+        let output = try await browserRequest("POST", path: "/pages/\(page)/fill", body: bodyStr)
+        let data = output.data(using: .utf8) ?? Data()
+        return try JSONDecoder().decode(AriaSnapshot.self, from: data)
+    }
+
+    /// Close a named page.
+    ///
+    /// - Parameter page: The page name to close (default: "default").
+    public func closePage(_ page: String = "default") async throws {
+        try await ensureServer()
+        _ = try await browserRequest("DELETE", path: "/pages/\(page)")
+    }
+
+    /// List active page names.
+    ///
+    /// - Returns: An array of page name strings.
+    public func listPages() async throws -> [String] {
+        try await ensureServer()
+        let output = try await browserRequest("GET", path: "/pages")
+        let data = output.data(using: .utf8) ?? Data()
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return json?["pages"] as? [String] ?? []
+    }
+
     // MARK: - Internal
 
     private func runScript(_ script: String, _ args: String...) async throws -> RunOutput {
         var command = ["python3", "-c", script]
         command.append(contentsOf: args)
         return try await client.execInSandbox(name, command: command)
+    }
+
+    private func ensureServer() async throws {
+        guard !serverStarted else { return }
+        do {
+            let result = try await client.execInSandbox(name, command: ["python3", "-c", browserHealthScript, "9222"])
+            if result.output.contains("\"status\":\"ok\"") || result.output.contains("\"status\": \"ok\"") {
+                serverStarted = true
+                return
+            }
+        } catch {
+            // Server not running
+        }
+        throw AgentKernelError.server("Browser server not running — use browser_create or MCP browser_open to start it")
+    }
+
+    private func browserRequest(_ method: String, path: String, body: String? = nil) async throws -> String {
+        var command = ["python3", "-c", browserRequestScript, "9222", method, path]
+        if let body { command.append(body) }
+        let result = try await client.execInSandbox(name, command: command)
+        return result.output
     }
 }

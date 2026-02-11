@@ -234,6 +234,136 @@ Restore a sandbox from a snapshot.
 | `name` | string | Yes | Snapshot to restore |
 | `as_name` | string | No | Name for restored sandbox (default: "{original}-restored") |
 
+### Browser Tools
+
+These tools provide ARIA-based browser automation with persistent pages. The browser server is auto-started on first use.
+
+#### browser_open
+
+Navigate to a URL and return an ARIA accessibility tree snapshot.
+
+```json
+{
+  "name": "browser_open",
+  "arguments": {
+    "name": "my-browser",
+    "url": "https://example.com",
+    "page": "default"
+  }
+}
+```
+
+Returns an ARIA snapshot with `snapshot` (YAML tree), `url`, `title`, and `refs` (interactive element IDs).
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Sandbox name |
+| `url` | string | Yes | URL to navigate to |
+| `page` | string | No | Page name (default: "default") |
+
+#### browser_snapshot
+
+Get the current ARIA snapshot without navigating.
+
+```json
+{
+  "name": "browser_snapshot",
+  "arguments": {
+    "name": "my-browser",
+    "page": "default"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Sandbox name |
+| `page` | string | No | Page name (default: "default") |
+
+#### browser_click
+
+Click an element by ref ID or CSS selector. Returns a new ARIA snapshot.
+
+```json
+{
+  "name": "browser_click",
+  "arguments": {
+    "name": "my-browser",
+    "ref": "e2"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Sandbox name |
+| `ref` | string | No | Ref ID from ARIA snapshot (e.g. "e2") |
+| `selector` | string | No | CSS selector (fallback if no ref) |
+| `page` | string | No | Page name (default: "default") |
+
+#### browser_fill
+
+Fill an input field by ref ID or CSS selector. Returns a new ARIA snapshot.
+
+```json
+{
+  "name": "browser_fill",
+  "arguments": {
+    "name": "my-browser",
+    "ref": "e3",
+    "value": "search query"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Sandbox name |
+| `value` | string | Yes | Text to type |
+| `ref` | string | No | Ref ID from ARIA snapshot |
+| `selector` | string | No | CSS selector (fallback if no ref) |
+| `page` | string | No | Page name (default: "default") |
+
+#### browser_close
+
+Close a named browser page.
+
+```json
+{
+  "name": "browser_close",
+  "arguments": {
+    "name": "my-browser",
+    "page": "default"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Sandbox name |
+| `page` | string | No | Page name to close (default: "default") |
+
+#### browser_events
+
+Retrieve sequenced browser interaction events. Useful for debugging and context recovery.
+
+```json
+{
+  "name": "browser_events",
+  "arguments": {
+    "name": "my-browser",
+    "offset": 0,
+    "limit": 50
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Sandbox name |
+| `offset` | integer | No | Start from this sequence number (default: 0) |
+| `limit` | integer | No | Max events to return (default: 100) |
+
 ## Example Conversation
 
 With MCP configured, you can have conversations like:

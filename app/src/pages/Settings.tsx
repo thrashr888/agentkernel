@@ -1,5 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Eye, EyeOff, CheckCircle, XCircle } from "lucide-react";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import {
+  Eye,
+  EyeOff,
+  CheckCircle,
+  XCircle,
+  Download,
+  RefreshCw,
+  Loader2,
+} from "lucide-react";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -50,6 +60,13 @@ export function Settings() {
   >(null);
   const [testingConnection, setTestingConnection] = useState(false);
 
+  const [updateStatus, setUpdateStatus] = useState<
+    "idle" | "checking" | "available" | "downloading" | "ready" | "up-to-date" | "error"
+  >("idle");
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
+
   useEffect(() => {
     if (settings) {
       setFormApiUrl(settings.api_url);
@@ -70,6 +87,63 @@ export function Settings() {
     } finally {
       setTestingConnection(false);
     }
+  }
+
+  async function handleCheckForUpdates() {
+    setUpdateStatus("checking");
+    setUpdateError(null);
+    setUpdateVersion(null);
+    setDownloadProgress(null);
+    try {
+      const update = await check();
+      if (update) {
+        setUpdateVersion(update.version);
+        setUpdateStatus("available");
+      } else {
+        setUpdateStatus("up-to-date");
+      }
+    } catch (e) {
+      setUpdateError(e instanceof Error ? e.message : String(e));
+      setUpdateStatus("error");
+    }
+  }
+
+  async function handleDownloadAndInstall() {
+    setUpdateStatus("downloading");
+    setDownloadProgress(0);
+    try {
+      const update = await check();
+      if (!update) return;
+
+      let totalBytes = 0;
+      let downloadedBytes = 0;
+
+      await update.downloadAndInstall((event) => {
+        switch (event.event) {
+          case "Started":
+            totalBytes = event.data.contentLength ?? 0;
+            break;
+          case "Progress":
+            downloadedBytes += event.data.chunkLength;
+            if (totalBytes > 0) {
+              setDownloadProgress(Math.round((downloadedBytes / totalBytes) * 100));
+            }
+            break;
+          case "Finished":
+            setDownloadProgress(100);
+            break;
+        }
+      });
+
+      setUpdateStatus("ready");
+    } catch (e) {
+      setUpdateError(e instanceof Error ? e.message : String(e));
+      setUpdateStatus("error");
+    }
+  }
+
+  async function handleRelaunch() {
+    await relaunch();
   }
 
   const saveCurrentSettings = useCallback(() => {
@@ -234,6 +308,85 @@ export function Settings() {
             <p className="text-xs text-muted-foreground">
               How often to refresh sandbox status data
             </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Updates</CardTitle>
+          <CardDescription>
+            Check for and install application updates
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-3">
+            {updateStatus === "idle" && (
+              <Button variant="outline" onClick={handleCheckForUpdates}>
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Check for Updates
+              </Button>
+            )}
+            {updateStatus === "checking" && (
+              <Button variant="outline" disabled>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Checking...
+              </Button>
+            )}
+            {updateStatus === "up-to-date" && (
+              <>
+                <Button variant="outline" onClick={handleCheckForUpdates}>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Check Again
+                </Button>
+                <span className="flex items-center gap-1 text-sm text-green-600 dark:text-green-400">
+                  <CheckCircle className="h-4 w-4" />
+                  Up to date
+                </span>
+              </>
+            )}
+            {updateStatus === "available" && (
+              <>
+                <Button onClick={handleDownloadAndInstall}>
+                  <Download className="mr-2 h-4 w-4" />
+                  Install v{updateVersion}
+                </Button>
+                <span className="text-sm text-muted-foreground">
+                  New version available
+                </span>
+              </>
+            )}
+            {updateStatus === "downloading" && (
+              <>
+                <Button disabled>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Downloading...
+                </Button>
+                {downloadProgress !== null && (
+                  <span className="text-sm text-muted-foreground">
+                    {downloadProgress}%
+                  </span>
+                )}
+              </>
+            )}
+            {updateStatus === "ready" && (
+              <Button onClick={handleRelaunch}>
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Restart to Apply
+              </Button>
+            )}
+            {updateStatus === "error" && (
+              <>
+                <Button variant="outline" onClick={handleCheckForUpdates}>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Retry
+                </Button>
+                <span className="flex items-center gap-1 text-sm text-destructive">
+                  <XCircle className="h-4 w-4" />
+                  {updateError ?? "Update check failed"}
+                </span>
+              </>
+            )}
           </div>
         </CardContent>
       </Card>

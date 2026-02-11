@@ -265,6 +265,37 @@ public struct PageResult: Codable, Sendable {
     public let links: [PageLink]
 }
 
+/// ARIA accessibility tree snapshot of a web page (v2).
+public struct AriaSnapshot: Codable, Sendable {
+    /// ARIA tree as YAML.
+    public let snapshot: String
+    /// Current page URL.
+    public let url: String
+    /// Page title.
+    public let title: String
+    /// Available ref IDs (e.g. ["e1", "e2"]).
+    public let refs: [String]
+}
+
+/// A browser interaction event for debugging and context recovery.
+public struct BrowserEvent: Codable, Sendable {
+    /// Monotonic sequence number.
+    public let seq: Int
+    /// Event type (e.g. "page.navigated", "page.clicked").
+    public let eventType: String
+    /// Page name.
+    public let page: String
+    /// ISO 8601 timestamp.
+    public let ts: String
+
+    enum CodingKeys: String, CodingKey {
+        case seq
+        case eventType = "type"
+        case page
+        case ts
+    }
+}
+
 // MARK: - Type Erasure
 
 /// Type-erased `Encodable` wrapper for generic request bodies.

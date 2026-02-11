@@ -183,3 +183,27 @@ export interface PageResult {
   /** First 50 links on the page. */
   links: PageLink[];
 }
+
+/** ARIA accessibility tree snapshot of a web page (v2). */
+export interface AriaSnapshot {
+  /** ARIA tree as YAML. */
+  snapshot: string;
+  /** Current page URL. */
+  url: string;
+  /** Page title. */
+  title: string;
+  /** Available ref IDs (e.g. ["e1", "e2", ...]). */
+  refs: string[];
+}
+
+/** A browser interaction event for debugging and context recovery. */
+export interface BrowserEvent {
+  /** Monotonic sequence number. */
+  seq: number;
+  /** Event type (e.g. "page.navigated", "page.clicked"). */
+  type: string;
+  /** Page name. */
+  page: string;
+  /** ISO 8601 timestamp. */
+  ts: string;
+}

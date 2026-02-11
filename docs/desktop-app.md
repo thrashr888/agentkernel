@@ -12,7 +12,12 @@ AgentKernel includes a native macOS desktop app built with [Tauri 2](https://tau
 
 ## Install
 
-Download the latest `.app` bundle from [GitHub Releases](https://github.com/thrashr888/agentkernel/releases), or build from source.
+Download the latest `.dmg` installer from [GitHub Releases](https://github.com/thrashr888/agentkernel/releases):
+
+- **Apple Silicon (M1+):** `AgentKernel_<version>_aarch64.dmg`
+- **Intel:** `AgentKernel_<version>_x64.dmg`
+
+Open the DMG and drag AgentKernel to your Applications folder. Alternatively, build from source.
 
 ## Build from Source
 

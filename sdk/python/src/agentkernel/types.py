@@ -156,3 +156,33 @@ class PageResult(BaseModel):
     """Page body text (truncated to ~8KB)."""
     links: list[PageLink] = []
     """First 50 links on the page."""
+
+
+class AriaSnapshot(BaseModel):
+    """ARIA accessibility tree snapshot of a web page (v2).
+
+    Contains a structured YAML representation of the page with semantic roles,
+    names, states, and [ref=eN] identifiers on interactive elements.
+    """
+
+    snapshot: str
+    """ARIA tree as YAML."""
+    url: str
+    """Current page URL."""
+    title: str
+    """Page title."""
+    refs: list[str] = []
+    """Available ref IDs (e.g. ['e1', 'e2', ...])."""
+
+
+class BrowserEvent(BaseModel):
+    """A browser interaction event for debugging and context recovery."""
+
+    seq: int
+    """Monotonic sequence number."""
+    type: str
+    """Event type (e.g. 'page.navigated', 'page.clicked')."""
+    page: str
+    """Page name."""
+    ts: str
+    """ISO 8601 timestamp."""

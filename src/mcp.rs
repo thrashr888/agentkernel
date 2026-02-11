@@ -695,6 +695,143 @@ impl McpServer {
                         },
                         "required": ["name"]
                     }
+                },
+                // -- Browser v2 tools (ARIA snapshots, persistent pages, ref-based interaction) --
+                {
+                    "name": "browser_open",
+                    "description": "Navigate to a URL and get an ARIA snapshot of the page. Returns a structured YAML accessibility tree with [ref=eN] identifiers on interactive elements. Use refs with browser_click/browser_fill. The browser server is auto-started on first call. Pages persist across calls — no cold start per action.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the browser sandbox"
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "URL to navigate to"
+                            },
+                            "page": {
+                                "type": "string",
+                                "description": "Page name (default: 'default'). Use different names for multiple tabs."
+                            }
+                        },
+                        "required": ["name", "url"]
+                    }
+                },
+                {
+                    "name": "browser_snapshot",
+                    "description": "Get the current ARIA snapshot of a page without navigating. Returns the accessibility tree as structured YAML with [ref=eN] identifiers. Use this to see the current state after interactions.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the browser sandbox"
+                            },
+                            "page": {
+                                "type": "string",
+                                "description": "Page name (default: 'default')"
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "browser_click",
+                    "description": "Click an element by ref ID (from ARIA snapshot) or CSS selector. Returns the new ARIA snapshot after the click. Prefer ref= over selector for reliability.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the browser sandbox"
+                            },
+                            "ref": {
+                                "type": "string",
+                                "description": "Element ref from ARIA snapshot (e.g. 'e5')"
+                            },
+                            "selector": {
+                                "type": "string",
+                                "description": "CSS selector (fallback if ref not available)"
+                            },
+                            "page": {
+                                "type": "string",
+                                "description": "Page name (default: 'default')"
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "browser_fill",
+                    "description": "Fill an input field by ref ID (from ARIA snapshot) or CSS selector with a value. Returns the new ARIA snapshot after filling.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the browser sandbox"
+                            },
+                            "ref": {
+                                "type": "string",
+                                "description": "Element ref from ARIA snapshot (e.g. 'e3')"
+                            },
+                            "selector": {
+                                "type": "string",
+                                "description": "CSS selector (fallback if ref not available)"
+                            },
+                            "value": {
+                                "type": "string",
+                                "description": "Value to fill into the input"
+                            },
+                            "page": {
+                                "type": "string",
+                                "description": "Page name (default: 'default')"
+                            }
+                        },
+                        "required": ["name", "value"]
+                    }
+                },
+                {
+                    "name": "browser_close",
+                    "description": "Close a named browser page. Use browser_remove to remove the entire sandbox.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the browser sandbox"
+                            },
+                            "page": {
+                                "type": "string",
+                                "description": "Page name to close (default: 'default')"
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "browser_events",
+                    "description": "Get browser event history for debugging and context recovery. Events include navigation, clicks, fills, and screenshots with sequence numbers.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the browser sandbox"
+                            },
+                            "offset": {
+                                "type": "integer",
+                                "description": "Return events after this sequence number (default: 0)"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum events to return (default: 100)"
+                            }
+                        },
+                        "required": ["name"]
+                    }
                 }
             ]
         });
@@ -751,12 +888,21 @@ impl McpServer {
             "snapshot_get" => self.tool_snapshot_get(&arguments).map(ToolOutput::Text),
             "snapshot_delete" => self.tool_snapshot_delete(&arguments).map(ToolOutput::Text),
             "snapshot_restore" => self.tool_snapshot_restore(&arguments).map(ToolOutput::Text),
-            // Browser tools
+            // Browser tools (v1)
             "browser_create" => self.tool_browser_create(&arguments).map(ToolOutput::Text),
             "browser_goto" => self.tool_browser_goto(&arguments).map(ToolOutput::Text),
             "browser_screenshot" => self.tool_browser_screenshot(&arguments),
             "browser_evaluate" => self.tool_browser_evaluate(&arguments).map(ToolOutput::Text),
             "browser_remove" => self.tool_browser_remove(&arguments).map(ToolOutput::Text),
+            // Browser tools (v2 — ARIA snapshots, persistent pages, ref-based)
+            "browser_open" => self.tool_browser_open(&arguments).map(ToolOutput::Text),
+            "browser_snapshot" => self
+                .tool_browser_snapshot_v2(&arguments)
+                .map(ToolOutput::Text),
+            "browser_click" => self.tool_browser_click(&arguments).map(ToolOutput::Text),
+            "browser_fill" => self.tool_browser_fill(&arguments).map(ToolOutput::Text),
+            "browser_close" => self.tool_browser_close(&arguments).map(ToolOutput::Text),
+            "browser_events" => self.tool_browser_events(&arguments).map(ToolOutput::Text),
             _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
         };
 
@@ -1607,6 +1753,201 @@ impl McpServer {
 
     fn tool_browser_remove(&self, args: &Value) -> Result<String> {
         self.tool_sandbox_remove(args)
+    }
+
+    // ---------- Browser v2 tools (ARIA snapshots, persistent pages) ----------
+
+    /// Ensure browser server is running in the sandbox.
+    /// Returns Ok(()) if server is healthy, starts it if needed.
+    fn ensure_browser_server(&self, name: &str) -> Result<()> {
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+
+                // Check if server is already running
+                let health_cmd = vec![
+                    "python3".to_string(),
+                    "-c".to_string(),
+                    browser_scripts::BROWSER_SERVER_HEALTH_CMD.to_string(),
+                    browser_scripts::BROWSER_SERVER_PORT.to_string(),
+                ];
+                if let Ok(output) = manager.exec_cmd(name, &health_cmd).await
+                    && (output.contains("\"status\": \"ok\"")
+                        || output.contains("\"status\":\"ok\""))
+                {
+                    return Ok(());
+                }
+
+                // Start the server
+                let start_cmd = vec![
+                    "python3".to_string(),
+                    "-c".to_string(),
+                    browser_scripts::BROWSER_SERVER_START_CMD.to_string(),
+                    browser_scripts::ARIA_SNAPSHOT_JS.to_string(),
+                    browser_scripts::BROWSER_SERVER_PORT.to_string(),
+                    browser_scripts::BROWSER_SERVER_SCRIPT.to_string(),
+                ];
+                let output = manager.exec_cmd(name, &start_cmd).await?;
+
+                // Parse output for errors
+                if let Ok(data) = serde_json::from_str::<Value>(&output)
+                    && let Some(err) = data.get("error").and_then(|v| v.as_str())
+                {
+                    anyhow::bail!("Browser server failed to start: {}", err);
+                }
+
+                Ok(())
+            })
+        })
+    }
+
+    /// Send a request to the in-sandbox browser server.
+    fn browser_request(
+        &self,
+        name: &str,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<String> {
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                let mut cmd = vec![
+                    "python3".to_string(),
+                    "-c".to_string(),
+                    browser_scripts::BROWSER_SERVER_REQUEST_CMD.to_string(),
+                    browser_scripts::BROWSER_SERVER_PORT.to_string(),
+                    method.to_string(),
+                    path.to_string(),
+                ];
+                if let Some(b) = body {
+                    cmd.push(serde_json::to_string(b)?);
+                }
+                manager.exec_cmd(name, &cmd).await
+            })
+        })
+    }
+
+    fn tool_browser_open(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("url is required"))?;
+        let page = args
+            .get("page")
+            .and_then(|v| v.as_str())
+            .unwrap_or("default");
+
+        self.ensure_browser_server(name)?;
+        let body = json!({"url": url});
+        self.browser_request(name, "POST", &format!("/pages/{}/goto", page), Some(&body))
+    }
+
+    fn tool_browser_snapshot_v2(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+        let page = args
+            .get("page")
+            .and_then(|v| v.as_str())
+            .unwrap_or("default");
+
+        self.ensure_browser_server(name)?;
+        self.browser_request(name, "GET", &format!("/pages/{}/snapshot", page), None)
+    }
+
+    fn tool_browser_click(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+        let page = args
+            .get("page")
+            .and_then(|v| v.as_str())
+            .unwrap_or("default");
+        let ref_id = args.get("ref").and_then(|v| v.as_str());
+        let selector = args.get("selector").and_then(|v| v.as_str());
+
+        if ref_id.is_none() && selector.is_none() {
+            anyhow::bail!("ref or selector is required");
+        }
+
+        self.ensure_browser_server(name)?;
+        let mut body = json!({});
+        if let Some(r) = ref_id {
+            body["ref"] = json!(r);
+        }
+        if let Some(s) = selector {
+            body["selector"] = json!(s);
+        }
+        self.browser_request(name, "POST", &format!("/pages/{}/click", page), Some(&body))
+    }
+
+    fn tool_browser_fill(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+        let value = args
+            .get("value")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("value is required"))?;
+        let page = args
+            .get("page")
+            .and_then(|v| v.as_str())
+            .unwrap_or("default");
+        let ref_id = args.get("ref").and_then(|v| v.as_str());
+        let selector = args.get("selector").and_then(|v| v.as_str());
+
+        if ref_id.is_none() && selector.is_none() {
+            anyhow::bail!("ref or selector is required");
+        }
+
+        self.ensure_browser_server(name)?;
+        let mut body = json!({"value": value});
+        if let Some(r) = ref_id {
+            body["ref"] = json!(r);
+        }
+        if let Some(s) = selector {
+            body["selector"] = json!(s);
+        }
+        self.browser_request(name, "POST", &format!("/pages/{}/fill", page), Some(&body))
+    }
+
+    fn tool_browser_close(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+        let page = args
+            .get("page")
+            .and_then(|v| v.as_str())
+            .unwrap_or("default");
+
+        self.ensure_browser_server(name)?;
+        self.browser_request(name, "DELETE", &format!("/pages/{}", page), None)
+    }
+
+    fn tool_browser_events(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+        let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100);
+
+        self.ensure_browser_server(name)?;
+        self.browser_request(
+            name,
+            "GET",
+            &format!("/events?offset={}&limit={}", offset, limit),
+            None,
+        )
     }
 }
 

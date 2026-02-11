@@ -549,6 +549,182 @@ curl -X POST http://localhost:18888/snapshots/checkpoint-1/restore \
 |-------|------|----------|-------------|
 | `as_name` | string | No | Name for the restored sandbox (defaults to `{original}-restored`) |
 
+### Browser Automation
+
+Control a persistent headless browser inside a sandbox via ARIA snapshots.
+
+The browser server starts automatically on first use. It runs Chromium via Playwright inside the sandbox and exposes an internal HTTP API on port 9222.
+
+#### Start Browser Server
+
+```
+POST /sandboxes/{name}/browser/start
+```
+
+```bash
+curl -X POST http://localhost:18888/sandboxes/my-browser/browser/start
+```
+
+Starts the in-sandbox browser server. Called automatically by other browser endpoints if needed.
+
+#### List Pages
+
+```
+GET /sandboxes/{name}/browser/pages
+```
+
+```bash
+curl http://localhost:18888/sandboxes/my-browser/browser/pages
+```
+
+```json
+{"pages": ["default", "docs"]}
+```
+
+#### Navigate (Goto)
+
+```
+POST /sandboxes/{name}/browser/pages/{page}/goto
+```
+
+```bash
+curl -X POST http://localhost:18888/sandboxes/my-browser/browser/pages/default/goto \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com"}'
+```
+
+```json
+{
+  "snapshot": "- document \"Example Domain\":\n  - heading \"Example Domain\" [level=1] [ref=e1]\n  ...",
+  "url": "https://example.com/",
+  "title": "Example Domain",
+  "refs": ["e1", "e2"]
+}
+```
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `url` | string | Yes | URL to navigate to |
+
+#### Get ARIA Snapshot
+
+```
+GET /sandboxes/{name}/browser/pages/{page}/snapshot
+```
+
+```bash
+curl http://localhost:18888/sandboxes/my-browser/browser/pages/default/snapshot
+```
+
+Returns the current ARIA snapshot without navigating. Same response format as goto.
+
+#### Click Element
+
+```
+POST /sandboxes/{name}/browser/pages/{page}/click
+```
+
+```bash
+curl -X POST http://localhost:18888/sandboxes/my-browser/browser/pages/default/click \
+  -H "Content-Type: application/json" \
+  -d '{"ref": "e2"}'
+```
+
+Returns a new ARIA snapshot after clicking.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ref` | string | No | Ref ID from ARIA snapshot |
+| `selector` | string | No | CSS selector (fallback) |
+
+#### Fill Input
+
+```
+POST /sandboxes/{name}/browser/pages/{page}/fill
+```
+
+```bash
+curl -X POST http://localhost:18888/sandboxes/my-browser/browser/pages/default/fill \
+  -H "Content-Type: application/json" \
+  -d '{"ref": "e3", "value": "search query"}'
+```
+
+Returns a new ARIA snapshot after filling.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `value` | string | Yes | Text to type |
+| `ref` | string | No | Ref ID from ARIA snapshot |
+| `selector` | string | No | CSS selector (fallback) |
+
+#### Screenshot
+
+```
+POST /sandboxes/{name}/browser/pages/{page}/screenshot
+```
+
+Returns a PNG screenshot as base64.
+
+#### Evaluate JavaScript
+
+```
+POST /sandboxes/{name}/browser/pages/{page}/evaluate
+```
+
+```bash
+curl -X POST http://localhost:18888/sandboxes/my-browser/browser/pages/default/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{"expression": "document.title"}'
+```
+
+#### Get Page Content
+
+```
+GET /sandboxes/{name}/browser/pages/{page}/content
+```
+
+Returns raw page content (title, text, links) — similar to v1 goto format.
+
+#### Close Page
+
+```
+DELETE /sandboxes/{name}/browser/pages/{page}
+```
+
+```bash
+curl -X DELETE http://localhost:18888/sandboxes/my-browser/browser/pages/default
+```
+
+#### Browser Events
+
+```
+GET /sandboxes/{name}/browser/events
+```
+
+```bash
+curl "http://localhost:18888/sandboxes/my-browser/browser/events?offset=0&limit=50"
+```
+
+```json
+[
+  {"seq": 1, "type": "page.navigated", "page": "default", "ts": "2026-02-10T12:00:00Z"},
+  {"seq": 2, "type": "page.clicked", "page": "default", "ts": "2026-02-10T12:00:01Z"}
+]
+```
+
+**Query parameters:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `offset` | integer | No | Start from this sequence number (default: 0) |
+| `limit` | integer | No | Max events to return (default: 100) |
+
 ## Error Responses
 
 ```json

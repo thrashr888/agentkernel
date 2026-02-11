@@ -6,6 +6,22 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## Unreleased
+
+### Added
+
+- **ARIA snapshot engine** — JavaScript module that walks the DOM accessibility tree, maps HTML5 implicit roles, extracts accessible names, assigns ref IDs (`e1`, `e2`, ...) to interactive elements, and outputs compact YAML
+- **Persistent browser server** — Python HTTP server running inside the sandbox on port 9222, keeping Chromium alive across calls; named page registry supports multiple concurrent pages
+- **Ref-based element targeting** — `click(ref="e5")` and `fill(ref="e3", value="query")` target elements by ARIA ref ID instead of brittle CSS selectors; all SDKs support both ref and CSS selector targeting
+- **Browser event stream** — sequenced interaction events (`page.navigated`, `page.clicked`, etc.) with monotonic `seq` numbers for debugging and context recovery after compaction
+- **MCP browser tools** — 6 new tools: `browser_open`, `browser_snapshot`, `browser_click`, `browser_fill`, `browser_close`, `browser_events`; auto-starts the browser server on first use
+- **Browser HTTP API** — 12 REST endpoints under `/sandboxes/{name}/browser/` for start, pages CRUD, goto, snapshot, click, fill, screenshot, evaluate, content, and events
+- **SDK browser methods** — `open()`, `snapshot()`, `click()`, `fill()`, `close_page()`, `list_pages()` across all 5 SDKs (Python, Node.js, Go, Rust, Swift); new `AriaSnapshot` and `BrowserEvent` types
+- **Desktop auto-updater** — `tauri-plugin-updater` with signed releases; "Check for Updates" UI in Settings with download progress and one-click restart
+- **DMG in GitHub Releases** — release workflow now builds and attaches macOS `.dmg` installers (ARM64 + Intel) with signed update artifacts and `latest.json` manifest
+
+---
+
 ## [v0.10.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.10.0) — Browser Automation & Desktop App
 
 _February 10, 2026_

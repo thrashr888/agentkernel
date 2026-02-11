@@ -563,6 +563,44 @@ async fn handle_request(
         // Agents/plugins
         (Method::GET, ["agents"]) => handle_list_agents(state).await,
 
+        // Browser v2: persistent pages with ARIA snapshots
+        (Method::POST, ["sandboxes", name, "browser", "start"]) => {
+            handle_browser_start(name, state).await
+        }
+        (Method::GET, ["sandboxes", name, "browser", "pages"]) => {
+            handle_browser_list_pages(name, state).await
+        }
+        (Method::POST, ["sandboxes", name, "browser", "pages"]) => {
+            handle_browser_create_page(req, name, state).await
+        }
+        (Method::DELETE, ["sandboxes", name, "browser", "pages", page]) => {
+            handle_browser_close_page(name, page, state).await
+        }
+        (Method::POST, ["sandboxes", name, "browser", "pages", page, "goto"]) => {
+            handle_browser_goto(req, name, page, state).await
+        }
+        (Method::GET, ["sandboxes", name, "browser", "pages", page, "snapshot"]) => {
+            handle_browser_snapshot(name, page, state).await
+        }
+        (Method::GET, ["sandboxes", name, "browser", "pages", page, "content"]) => {
+            handle_browser_content(name, page, state).await
+        }
+        (Method::POST, ["sandboxes", name, "browser", "pages", page, "click"]) => {
+            handle_browser_click(req, name, page, state).await
+        }
+        (Method::POST, ["sandboxes", name, "browser", "pages", page, "fill"]) => {
+            handle_browser_fill(req, name, page, state).await
+        }
+        (Method::POST, ["sandboxes", name, "browser", "pages", page, "screenshot"]) => {
+            handle_browser_screenshot(name, page, state).await
+        }
+        (Method::POST, ["sandboxes", name, "browser", "pages", page, "evaluate"]) => {
+            handle_browser_evaluate(req, name, page, state).await
+        }
+        (Method::GET, ["sandboxes", name, "browser", "events"]) => {
+            handle_browser_events(req, name, state).await
+        }
+
         // Enterprise policy endpoints
         #[cfg(feature = "enterprise")]
         (Method::GET, ["policy", "status"]) => handle_policy_status(state).await,
@@ -2949,6 +2987,305 @@ async fn handle_list_agents(_state: Arc<AppState>) -> Response<BoxBody> {
         .collect();
 
     json_response(StatusCode::OK, &ApiResponse::success(agents))
+}
+
+// ---------------------------------------------------------------------------
+// Browser v2 handlers: persistent pages with ARIA snapshots
+// ---------------------------------------------------------------------------
+
+use crate::browser_scripts;
+
+/// Helper: ensure the browser server is running in the sandbox, start if needed.
+async fn ensure_browser_server(name: &str, state: &Arc<AppState>) -> Result<(), Response<BoxBody>> {
+    let mut manager = state.get_manager().await.map_err(|e| {
+        json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to create manager: {}", e)),
+        )
+    })?;
+
+    // Health check
+    let health_cmd = vec![
+        "python3".to_string(),
+        "-c".to_string(),
+        browser_scripts::BROWSER_SERVER_HEALTH_CMD.to_string(),
+        browser_scripts::BROWSER_SERVER_PORT.to_string(),
+    ];
+    if let Ok(output) = manager.exec_cmd(name, &health_cmd).await
+        && (output.contains("\"status\":\"ok\"") || output.contains("\"status\": \"ok\""))
+    {
+        return Ok(());
+    }
+
+    // Start the server
+    let start_cmd = vec![
+        "python3".to_string(),
+        "-c".to_string(),
+        browser_scripts::BROWSER_SERVER_START_CMD.to_string(),
+        browser_scripts::ARIA_SNAPSHOT_JS.to_string(),
+        browser_scripts::BROWSER_SERVER_PORT.to_string(),
+        browser_scripts::BROWSER_SERVER_SCRIPT.to_string(),
+    ];
+    match manager.exec_cmd(name, &start_cmd).await {
+        Ok(output) => {
+            if let Ok(data) = serde_json::from_str::<serde_json::Value>(&output)
+                && let Some(err) = data.get("error").and_then(|v| v.as_str())
+            {
+                return Err(json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(format!("Browser server failed to start: {}", err)),
+                ));
+            }
+            Ok(())
+        }
+        Err(e) => Err(json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to start browser server: {}", e)),
+        )),
+    }
+}
+
+/// Helper: send a request to the in-sandbox browser server.
+async fn browser_request(
+    name: &str,
+    method: &str,
+    path: &str,
+    body: Option<&serde_json::Value>,
+    state: &Arc<AppState>,
+) -> Response<BoxBody> {
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!("Failed to create manager: {}", e)),
+            );
+        }
+    };
+    let mut cmd = vec![
+        "python3".to_string(),
+        "-c".to_string(),
+        browser_scripts::BROWSER_SERVER_REQUEST_CMD.to_string(),
+        browser_scripts::BROWSER_SERVER_PORT.to_string(),
+        method.to_string(),
+        path.to_string(),
+    ];
+    if let Some(b) = body {
+        cmd.push(serde_json::to_string(b).unwrap_or_default());
+    }
+    match manager.exec_cmd(name, &cmd).await {
+        Ok(output) => {
+            // Return raw JSON from the browser server
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/json")
+                .body(full(output))
+                .unwrap()
+        }
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Browser request failed: {}", e)),
+        ),
+    }
+}
+
+async fn handle_browser_start(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    match ensure_browser_server(name, &state).await {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success("Browser server started"),
+        ),
+        Err(resp) => resp,
+    }
+}
+
+async fn handle_browser_list_pages(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    if let Err(resp) = ensure_browser_server(name, &state).await {
+        return resp;
+    }
+    browser_request(name, "GET", "/pages", None, &state).await
+}
+
+async fn handle_browser_create_page(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(resp) = ensure_browser_server(name, &state).await {
+        return resp;
+    }
+    let body: serde_json::Value = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    browser_request(name, "POST", "/pages", Some(&body), &state).await
+}
+
+async fn handle_browser_close_page(
+    name: &str,
+    page: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(resp) = ensure_browser_server(name, &state).await {
+        return resp;
+    }
+    browser_request(name, "DELETE", &format!("/pages/{}", page), None, &state).await
+}
+
+async fn handle_browser_goto(
+    req: Request<Incoming>,
+    name: &str,
+    page: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(resp) = ensure_browser_server(name, &state).await {
+        return resp;
+    }
+    let body: serde_json::Value = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    browser_request(
+        name,
+        "POST",
+        &format!("/pages/{}/goto", page),
+        Some(&body),
+        &state,
+    )
+    .await
+}
+
+async fn handle_browser_snapshot(
+    name: &str,
+    page: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(resp) = ensure_browser_server(name, &state).await {
+        return resp;
+    }
+    browser_request(
+        name,
+        "GET",
+        &format!("/pages/{}/snapshot", page),
+        None,
+        &state,
+    )
+    .await
+}
+
+async fn handle_browser_content(name: &str, page: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    if let Err(resp) = ensure_browser_server(name, &state).await {
+        return resp;
+    }
+    browser_request(
+        name,
+        "GET",
+        &format!("/pages/{}/content", page),
+        None,
+        &state,
+    )
+    .await
+}
+
+async fn handle_browser_click(
+    req: Request<Incoming>,
+    name: &str,
+    page: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(resp) = ensure_browser_server(name, &state).await {
+        return resp;
+    }
+    let body: serde_json::Value = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    browser_request(
+        name,
+        "POST",
+        &format!("/pages/{}/click", page),
+        Some(&body),
+        &state,
+    )
+    .await
+}
+
+async fn handle_browser_fill(
+    req: Request<Incoming>,
+    name: &str,
+    page: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(resp) = ensure_browser_server(name, &state).await {
+        return resp;
+    }
+    let body: serde_json::Value = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    browser_request(
+        name,
+        "POST",
+        &format!("/pages/{}/fill", page),
+        Some(&body),
+        &state,
+    )
+    .await
+}
+
+async fn handle_browser_screenshot(
+    name: &str,
+    page: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(resp) = ensure_browser_server(name, &state).await {
+        return resp;
+    }
+    browser_request(
+        name,
+        "POST",
+        &format!("/pages/{}/screenshot", page),
+        None,
+        &state,
+    )
+    .await
+}
+
+async fn handle_browser_evaluate(
+    req: Request<Incoming>,
+    name: &str,
+    page: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(resp) = ensure_browser_server(name, &state).await {
+        return resp;
+    }
+    let body: serde_json::Value = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    browser_request(
+        name,
+        "POST",
+        &format!("/pages/{}/evaluate", page),
+        Some(&body),
+        &state,
+    )
+    .await
+}
+
+async fn handle_browser_events(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(resp) = ensure_browser_server(name, &state).await {
+        return resp;
+    }
+    // Parse query params from URI
+    let query = req.uri().query().unwrap_or("");
+    let path = format!("/events?{}", query);
+    browser_request(name, "GET", &path, None, &state).await
 }
 
 #[cfg(test)]
