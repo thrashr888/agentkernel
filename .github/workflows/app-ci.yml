@@ -1,0 +1,114 @@
+name: Desktop App CI
+
+on:
+  push:
+    branches: [main]
+    paths: ["app/**"]
+  pull_request:
+    branches: [main]
+    paths: ["app/**"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.89"
+  NODE_VERSION: "22"
+
+jobs:
+  # ─── Job 1: Frontend typecheck + build (fast, no Rust) ───
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+        working-directory: app
+      - name: Typecheck
+        run: npx tsc --noEmit
+        working-directory: app
+      - name: Build frontend
+        run: npx vite build
+        working-directory: app
+
+  # ─── Job 2: Tauri Rust backend lint + test (no native build) ───
+  tauri-check:
+    name: Tauri Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri -> target
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Build frontend
+        run: npm ci && npx vite build
+        working-directory: app
+      - name: Format check
+        run: cargo fmt --check
+        working-directory: app/src-tauri
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+        working-directory: app/src-tauri
+      - name: Test
+        run: cargo test
+        working-directory: app/src-tauri
+
+  # ─── Job 3: Full macOS build (produces .app bundles) ───
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: [frontend, tauri-check]
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: arm64
+            artifact: agentkernel-desktop-darwin-arm64
+          - target: x86_64-apple-darwin
+            arch: x64
+            artifact: agentkernel-desktop-darwin-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri -> target
+      - run: npm ci
+        working-directory: app
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app
+          args: --target ${{ matrix.target }}
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: app/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app

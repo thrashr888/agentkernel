@@ -7,10 +7,13 @@ agentkernel provides pre-configured Docker images for popular AI coding agents. 
 
 | Agent | CLI Command | API Key Variable |
 |-------|-------------|------------------|
-| [Claude Code](../agent-claude) | `claude` | `ANTHROPIC_API_KEY` |
-| [OpenAI Codex](../agent-codex) | `codex` | `OPENAI_API_KEY` |
-| [Google Gemini](../agent-gemini) | `gemini` | `GEMINI_API_KEY` |
-| [OpenCode](../agent-opencode) | `opencode` | Provider-specific |
+| [Claude Code](agent-claude.md) | `claude` | `ANTHROPIC_API_KEY` |
+| [OpenAI Codex](agent-codex.md) | `codex` | `OPENAI_API_KEY` |
+| [Google Gemini](agent-gemini.md) | `gemini` | `GEMINI_API_KEY` |
+| [GitHub Copilot](agent-copilot.md) | `github-copilot` | `GITHUB_TOKEN` |
+| [Amp](agent-amp.md) | `amp` | `ANTHROPIC_API_KEY` |
+| [Pi](agent-pi.md) | `pi` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
+| [OpenCode](agent-opencode.md) | `opencode` | Provider-specific |
 
 ## Quick Start
 
@@ -18,7 +21,7 @@ agentkernel provides pre-configured Docker images for popular AI coding agents. 
 
 ```bash
 # Install the plugin for your agent
-agentkernel plugin install claude     # or: codex, gemini, opencode, mcp
+agentkernel plugin install claude     # or: codex, gemini, copilot, amp, pi, opencode, mcp
 ```
 
 ### Sandbox Mode (agent runs inside the sandbox)

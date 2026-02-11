@@ -16,15 +16,17 @@
 //! # }
 //! ```
 
+pub mod browser;
 mod client;
 mod error;
 mod types;
 
+pub use browser::BrowserSession;
 pub use client::{AgentKernel, AgentKernelBuilder, SandboxHandle};
 pub use error::{Error, Result};
 pub use types::{
     BatchCommand, BatchFileWriteResponse, BatchResult, BatchRunResponse, CreateSandboxOptions,
     DetachedCommand, DetachedLogsResponse, DetachedStatus, ExecOptions, ExtendTtlResponse,
-    FileReadResponse, RunOptions, RunOutput, SandboxInfo, SecurityProfile, SnapshotMeta,
-    StreamEvent, TakeSnapshotOptions,
+    FileReadResponse, PageLink, PageResult, RunOptions, RunOutput, SandboxInfo, SecurityProfile,
+    SnapshotMeta, StreamEvent, TakeSnapshotOptions,
 };

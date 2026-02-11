@@ -4,6 +4,7 @@ import {
   NetworkError,
   errorFromStatus,
 } from "./errors.js";
+import { BrowserSession, BROWSER_SETUP_CMD } from "./browser.js";
 import { SandboxSession } from "./sandbox.js";
 import { parseSSE } from "./sse.js";
 import type {
@@ -296,6 +297,37 @@ export class AgentKernel {
       (n) => this.removeSandbox(n),
       (n) => this.getSandbox(n),
       (n, f) => this.writeFiles(n, f),
+    );
+  }
+
+  /**
+   * Create a sandboxed browser session with automatic cleanup.
+   *
+   * Creates a sandbox with Chromium pre-installed via Playwright.
+   * Use `goto()`, `screenshot()`, and `evaluate()` to interact with web pages.
+   *
+   * @example
+   * ```ts
+   * await using browser = await client.browser("my-browser");
+   * const page = await browser.goto("https://example.com");
+   * console.log(page.title, page.links);
+   * // sandbox auto-removed when scope exits
+   * ```
+   */
+  async browser(
+    name: string,
+    opts?: { memory_mb?: number },
+  ): Promise<BrowserSession> {
+    await this.createSandbox(name, {
+      image: "python:3.12-slim",
+      memory_mb: opts?.memory_mb ?? 2048,
+      profile: "moderate",
+    });
+    await this.execInSandbox(name, BROWSER_SETUP_CMD);
+    return new BrowserSession(
+      name,
+      (n, cmd) => this.execInSandbox(n, cmd),
+      (n) => this.removeSandbox(n),
     );
   }
 

@@ -9,6 +9,7 @@ RELEASE_DIR := dist
 .PHONY: all build build-release clean install test lint check help
 .PHONY: build-macos build-linux build-all release
 .PHONY: stress-test benchmark-test pool-benchmark
+.PHONY: app app-build serve
 
 # Default target
 all: build
@@ -120,6 +121,20 @@ release: package-macos-arm64 package-macos-x64 package-linux-x64 package-linux-a
 	@echo "Release packages created in $(RELEASE_DIR)/"
 	@ls -la $(RELEASE_DIR)/
 
+# === Desktop App ===
+
+# Run the HTTP API server (backend for desktop app)
+serve: build
+	cargo run -- serve
+
+# Run desktop app in dev mode
+app:
+	cd app && npm exec tauri dev -- --features debug-bridge
+
+# Build desktop app for release
+app-build:
+	cd app && npm exec tauri build
+
 # === Development ===
 
 # Run the CLI
@@ -164,5 +179,10 @@ help:
 	@echo ""
 	@echo "Release:"
 	@echo "  make release       - Package all platforms"
+	@echo ""
+	@echo "Desktop App:"
+	@echo "  make serve         - Run HTTP API server (backend)"
+	@echo "  make app           - Run desktop app (dev mode)"
+	@echo "  make app-build     - Build desktop app for release"
 	@echo ""
 	@echo "Usage: make run ARGS='status'"

@@ -1,0 +1,10 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for AgentKernel",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "debug-bridge:default"
+  ]
+}

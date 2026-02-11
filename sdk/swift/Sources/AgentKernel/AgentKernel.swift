@@ -288,6 +288,38 @@ public actor AgentKernel {
         try await request(method: "POST", path: "/snapshots/\(name)/restore")
     }
 
+    // MARK: - Browser
+
+    /// Create a sandboxed headless browser session.
+    ///
+    /// Provisions a sandbox with Chromium (via Playwright) installed and returns
+    /// a ``BrowserSession`` for navigating pages, taking screenshots, and evaluating JS.
+    ///
+    /// ```swift
+    /// let browser = try await client.browser("my-browser")
+    /// let page = try await browser.goto("https://example.com")
+    /// print(page.title)
+    /// try await browser.remove()
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - name: The sandbox name.
+    ///   - memoryMB: Memory allocation in MB (default 2048).
+    /// - Returns: A ``BrowserSession`` ready for use.
+    public func browser(_ name: String, memoryMB: Int = 2048) async throws -> BrowserSession {
+        let options = CreateSandboxOptions(
+            image: "python:3.12-slim",
+            memoryMB: memoryMB,
+            profile: .moderate
+        )
+        _ = try await createSandbox(name, options: options)
+        _ = try await execInSandbox(
+            name,
+            command: ["sh", "-c", "pip install -q playwright && playwright install --with-deps chromium"]
+        )
+        return BrowserSession(name: name, client: self)
+    }
+
     // MARK: - Internal
 
     private func request<T: Decodable>(

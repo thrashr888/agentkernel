@@ -345,6 +345,33 @@ class AgentKernel:
         self.create_sandbox(name, image=image, vcpus=vcpus, memory_mb=memory_mb, profile=profile)
         return SandboxSession(name, self)
 
+    def browser(
+        self,
+        name: str,
+        *,
+        memory_mb: int = 2048,
+    ) -> BrowserSession:
+        """Create a sandboxed browser session with automatic cleanup.
+
+        Creates a sandbox with Chromium pre-installed. Use ``goto()``,
+        ``screenshot()``, and ``evaluate()`` to interact with web pages.
+
+        Example::
+
+            with client.browser("my-browser") as browser:
+                page = browser.goto("https://example.com")
+                print(page.title, page.links)
+            # sandbox auto-removed
+        """
+        from .browser import BrowserSession, _SETUP_CMD
+
+        self.create_sandbox(
+            name, image="python:3.12-slim", memory_mb=memory_mb, profile="moderate",
+        )
+        # Install Playwright + Chromium (one-time setup)
+        self.exec_in_sandbox(name, _SETUP_CMD)
+        return BrowserSession(name, self)
+
     # -- Internal --
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:

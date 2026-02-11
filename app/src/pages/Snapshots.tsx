@@ -1,0 +1,282 @@
+import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSnapshots } from "@/lib/hooks/use-snapshots";
+import { api } from "@/lib/api";
+import { Trash2, RotateCcw, ChevronLeft, ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "@/components/ui/use-toast";
+import { formatRelativeDate } from "@/lib/utils";
+
+type ConfirmAction =
+  | { type: "restore"; name: string }
+  | { type: "delete"; name: string }
+  | null;
+
+export function Snapshots() {
+  const { data: snapshots, isLoading, error } = useSnapshots();
+  const queryClient = useQueryClient();
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
+  const [restoreName, setRestoreName] = useState("");
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 24;
+
+  const restoreMutation = useMutation({
+    mutationFn: ({ name, asName }: { name: string; asName?: string }) =>
+      api.restoreSnapshot(name, asName || undefined),
+    onMutate: () => {
+      return { toastId: toast("Restoring snapshot...") };
+    },
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, "Snapshot restored!", "success");
+      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+      queryClient.invalidateQueries({ queryKey: ["snapshots"] });
+      setConfirmAction(null);
+    },
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (name: string) => api.deleteSnapshot(name),
+    onMutate: () => {
+      return { toastId: toast("Deleting snapshot...") };
+    },
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, "Snapshot deleted!", "success");
+      queryClient.invalidateQueries({ queryKey: ["snapshots"] });
+      setConfirmAction(null);
+    },
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
+    },
+  });
+
+  const isPending = restoreMutation.isPending || deleteMutation.isPending;
+  const actionError = restoreMutation.error || deleteMutation.error;
+
+  function handleConfirm() {
+    if (!confirmAction) return;
+    if (confirmAction.type === "restore") {
+      restoreMutation.mutate({ name: confirmAction.name, asName: restoreName.trim() || undefined });
+    } else {
+      deleteMutation.mutate(confirmAction.name);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">Snapshots</h1>
+        <p className="text-muted-foreground">
+          Saved sandbox states that can be restored
+        </p>
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-2">
+          {[1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-16 rounded-lg" />
+          ))}
+        </div>
+      ) : error ? (
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-sm text-destructive">
+              Failed to load snapshots: {error.message}
+            </p>
+          </CardContent>
+        </Card>
+      ) : !snapshots || snapshots.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <p className="text-muted-foreground">
+              No snapshots found. Take a snapshot from a sandbox to save its
+              state.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+        <div className="rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Source Sandbox</TableHead>
+                <TableHead>Backend</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead className="w-[120px]">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {snapshots.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((snapshot) => (
+                <TableRow key={snapshot.name}>
+                  <TableCell className="font-medium">
+                    {snapshot.name}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {snapshot.sandbox}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {snapshot.backend}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {formatRelativeDate(snapshot.created_at)}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="Restore snapshot"
+                        onClick={() =>
+                          {
+                          setRestoreName(`${snapshot.name}-restored`);
+                          setConfirmAction({
+                            type: "restore",
+                            name: snapshot.name,
+                          });
+                        }
+                        }
+                      >
+                        <RotateCcw className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="Delete snapshot"
+                        onClick={() =>
+                          setConfirmAction({
+                            type: "delete",
+                            name: snapshot.name,
+                          })
+                        }
+                      >
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+        {snapshots.length > PAGE_SIZE && (() => {
+          const totalPages = Math.ceil(snapshots.length / PAGE_SIZE);
+          return (
+            <div className="flex items-center justify-between pt-2">
+              <span className="text-xs text-muted-foreground">
+                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, snapshots.length)} of {snapshots.length}
+              </span>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8"
+                  disabled={page === 0}
+                  onClick={() => setPage(page - 1)}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <span className="text-xs text-muted-foreground px-2">
+                  {page + 1} / {totalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8"
+                  disabled={page >= totalPages - 1}
+                  onClick={() => setPage(page + 1)}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          );
+        })()}
+        </>
+      )}
+
+      <Dialog
+        open={!!confirmAction}
+        onOpenChange={(open) => {
+          if (!open) setConfirmAction(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {confirmAction?.type === "restore"
+                ? "Restore Snapshot"
+                : "Delete Snapshot"}
+            </DialogTitle>
+            <DialogDescription>
+              {confirmAction?.type === "restore"
+                ? `This will create a new sandbox from snapshot "${confirmAction.name}". Continue?`
+                : `This will permanently delete snapshot "${confirmAction?.name}". This action cannot be undone.`}
+            </DialogDescription>
+          </DialogHeader>
+          {confirmAction?.type === "restore" && (
+            <div className="space-y-2">
+              <label htmlFor="restore-name" className="text-sm font-medium">
+                Sandbox name
+              </label>
+              <Input
+                id="restore-name"
+                value={restoreName}
+                onChange={(e) => setRestoreName(e.target.value)}
+              />
+            </div>
+          )}
+          {!!actionError && (
+            <p className="text-sm text-destructive">{actionError instanceof Error ? actionError.message : String(actionError)}</p>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmAction(null)}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant={
+                confirmAction?.type === "delete" ? "destructive" : "default"
+              }
+              onClick={handleConfirm}
+              disabled={isPending}
+            >
+              {isPending
+                ? confirmAction?.type === "restore"
+                  ? "Restoring..."
+                  : "Deleting..."
+                : confirmAction?.type === "restore"
+                  ? "Restore"
+                  : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

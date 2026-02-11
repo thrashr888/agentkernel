@@ -165,3 +165,21 @@ export interface TakeSnapshotOptions {
   /** Optional snapshot name (auto-generated if not provided). */
   name?: string;
 }
+
+/** A link extracted from a web page. */
+export interface PageLink {
+  text: string;
+  href: string;
+}
+
+/** Result of navigating to a web page. */
+export interface PageResult {
+  /** Page title. */
+  title: string;
+  /** Final URL after redirects. */
+  url: string;
+  /** Page body text (truncated to ~8KB). */
+  text: string;
+  /** First 50 links on the page. */
+  links: PageLink[];
+}

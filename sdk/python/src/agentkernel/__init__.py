@@ -1,6 +1,7 @@
 """agentkernel SDK — run AI coding agents in secure, isolated microVMs."""
 
 from .async_client import AsyncAgentKernel, AsyncSandboxSession
+from .browser import AsyncBrowserSession, BrowserSession
 from .client import AgentKernel, SandboxSession
 from .errors import (
     AgentKernelError,
@@ -23,6 +24,8 @@ from .types import (
     ExecOptions,
     ExtendTtlResponse,
     FileReadResponse,
+    PageLink,
+    PageResult,
     RunOptions,
     RunOutput,
     SandboxInfo,
@@ -37,6 +40,8 @@ __all__ = [
     "AsyncAgentKernel",
     "SandboxSession",
     "AsyncSandboxSession",
+    "BrowserSession",
+    "AsyncBrowserSession",
     "AgentKernelError",
     "AuthError",
     "NotFoundError",
@@ -55,6 +60,8 @@ __all__ = [
     "ExecOptions",
     "ExtendTtlResponse",
     "FileReadResponse",
+    "PageLink",
+    "PageResult",
     "RunOptions",
     "RunOutput",
     "SandboxInfo",

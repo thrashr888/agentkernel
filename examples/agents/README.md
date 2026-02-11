@@ -10,6 +10,10 @@ Images are built automatically from Dockerfiles when you create a sandbox.
 | Claude Code | `claude-code/` | `ANTHROPIC_API_KEY` |
 | OpenAI Codex | `codex/` | `OPENAI_API_KEY` |
 | Google Gemini | `gemini/` | `GEMINI_API_KEY` |
+| GitHub Copilot | `copilot/` | `GITHUB_TOKEN` |
+| Amp | `amp/` | `ANTHROPIC_API_KEY` |
+| Pi | `pi/` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
+| OpenCode | `opencode/` | Provider-specific |
 
 ## Quick Start
 
@@ -22,7 +26,7 @@ agentkernel start my-project --backend docker
 agentkernel attach my-project
 
 # 3. Run the agent inside the sandbox
-claude  # or codex, gemini
+claude  # or codex, gemini, amp, pi, copilot, opencode
 ```
 
 No separate `docker build` step needed - agentkernel automatically builds from the Dockerfile specified in `agentkernel.toml`. Images are cached based on content hash, so subsequent creates reuse the cached image.

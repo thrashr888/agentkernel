@@ -1,0 +1,14 @@
+# Playwright-Stealth Example
+# Stealth browser automation that avoids bot detection
+
+[sandbox]
+name = "playwright-stealth-example"
+base_image = "python:3.12-slim"
+
+[resources]
+vcpus = 2
+memory_mb = 2048
+
+[security]
+profile = "moderate"
+network = true      # Needs network to fetch pages

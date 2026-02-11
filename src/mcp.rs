@@ -8,9 +8,41 @@ use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use tokio::runtime::Handle;
 
+use crate::browser_scripts;
 use crate::languages;
 use crate::permissions::{CompatibilityMode, SecurityProfile};
 use crate::vmm::VmManager;
+
+/// Maximum output size in bytes before truncation.
+/// Keeps head + tail and inserts a marker so agents see the start (install progress)
+/// and end (actual results) without blowing up context windows.
+const MAX_OUTPUT_BYTES: usize = 16_000;
+
+/// Truncate output to keep head and tail, inserting a marker in the middle.
+fn truncate_output(output: &str) -> String {
+    if output.len() <= MAX_OUTPUT_BYTES {
+        return output.to_string();
+    }
+    let keep = MAX_OUTPUT_BYTES / 2;
+    let head = &output[..keep];
+    let tail = &output[output.len() - keep..];
+    let omitted = output.len() - MAX_OUTPUT_BYTES;
+    format!(
+        "{}\n\n... [{} bytes truncated] ...\n\n{}",
+        head, omitted, tail
+    )
+}
+
+/// Tool handlers return this to support both text and image responses.
+#[derive(Debug)]
+enum ToolOutput {
+    Text(String),
+    /// Base64-encoded image data with MIME type.
+    Image {
+        data: String,
+        mime_type: &'static str,
+    },
+}
 
 /// MCP server for agentkernel
 pub struct McpServer {
@@ -571,6 +603,98 @@ impl McpServer {
                         },
                         "required": ["name"]
                     }
+                },
+                // -- Browser tools --
+                {
+                    "name": "browser_create",
+                    "description": "Create a browser sandbox with Playwright and Chromium pre-installed. One call replaces sandbox_create + installing Playwright. Uses python:3.12-slim with 2048MB RAM by default.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name for the browser sandbox"
+                            },
+                            "memory_mb": {
+                                "type": "integer",
+                                "description": "Memory in MB (default: 2048). Chromium needs ~1.5GB minimum.",
+                                "default": 2048
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "browser_goto",
+                    "description": "Navigate to a URL in a browser sandbox and get page content. Returns JSON with title, final URL, body text (first 8KB), and links (up to 50). The sandbox must have been created with browser_create first.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the browser sandbox"
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "URL to navigate to"
+                            }
+                        },
+                        "required": ["name", "url"]
+                    }
+                },
+                {
+                    "name": "browser_screenshot",
+                    "description": "Take a screenshot of a web page in a browser sandbox. Returns the image as PNG. The sandbox must have been created with browser_create first.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the browser sandbox"
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "URL to screenshot"
+                            }
+                        },
+                        "required": ["name", "url"]
+                    }
+                },
+                {
+                    "name": "browser_evaluate",
+                    "description": "Run a JavaScript expression on a web page in a browser sandbox. Returns the result as JSON. The sandbox must have been created with browser_create first.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the browser sandbox"
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "URL to navigate to before evaluating"
+                            },
+                            "expression": {
+                                "type": "string",
+                                "description": "JavaScript expression to evaluate (e.g. \"document.title\" or \"document.querySelectorAll('h1').length\")"
+                            }
+                        },
+                        "required": ["name", "url", "expression"]
+                    }
+                },
+                {
+                    "name": "browser_remove",
+                    "description": "Remove a browser sandbox created with browser_create.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the browser sandbox to remove"
+                            }
+                        },
+                        "required": ["name"]
+                    }
                 }
             ]
         });
@@ -587,39 +711,75 @@ impl McpServer {
         let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
-        let result = match tool_name {
-            "sandbox_run" => self.tool_sandbox_run(&arguments),
-            "sandbox_create" => self.tool_sandbox_create(&arguments),
-            "sandbox_exec" => self.tool_sandbox_exec(&arguments),
-            "sandbox_list" => self.tool_sandbox_list(),
-            "sandbox_remove" => self.tool_sandbox_remove(&arguments),
-            "sandbox_file_write" => self.tool_sandbox_file_write(&arguments),
-            "sandbox_file_read" => self.tool_sandbox_file_read(&arguments),
-            "sandbox_write_files" => self.tool_sandbox_write_files(&arguments),
-            "sandbox_start" => self.tool_sandbox_start(&arguments),
-            "sandbox_stop" => self.tool_sandbox_stop(&arguments),
-            "sandbox_exec_detach" => self.tool_sandbox_exec_detach(&arguments),
-            "sandbox_exec_status" => self.tool_sandbox_exec_status(&arguments),
-            "sandbox_exec_logs" => self.tool_sandbox_exec_logs(&arguments),
-            "sandbox_exec_kill" => self.tool_sandbox_exec_kill(&arguments),
-            "sandbox_exec_list" => self.tool_sandbox_exec_list(&arguments),
-            "sandbox_extend_ttl" => self.tool_sandbox_extend_ttl(&arguments),
-            "snapshot_list" => self.tool_snapshot_list(),
-            "snapshot_take" => self.tool_snapshot_take(&arguments),
-            "snapshot_get" => self.tool_snapshot_get(&arguments),
-            "snapshot_delete" => self.tool_snapshot_delete(&arguments),
-            "snapshot_restore" => self.tool_snapshot_restore(&arguments),
+        let result: Result<ToolOutput> = match tool_name {
+            "sandbox_run" => self.tool_sandbox_run(&arguments).map(ToolOutput::Text),
+            "sandbox_create" => self.tool_sandbox_create(&arguments).map(ToolOutput::Text),
+            "sandbox_exec" => self.tool_sandbox_exec(&arguments).map(ToolOutput::Text),
+            "sandbox_list" => self.tool_sandbox_list().map(ToolOutput::Text),
+            "sandbox_remove" => self.tool_sandbox_remove(&arguments).map(ToolOutput::Text),
+            "sandbox_file_write" => self
+                .tool_sandbox_file_write(&arguments)
+                .map(ToolOutput::Text),
+            "sandbox_file_read" => self
+                .tool_sandbox_file_read(&arguments)
+                .map(ToolOutput::Text),
+            "sandbox_write_files" => self
+                .tool_sandbox_write_files(&arguments)
+                .map(ToolOutput::Text),
+            "sandbox_start" => self.tool_sandbox_start(&arguments).map(ToolOutput::Text),
+            "sandbox_stop" => self.tool_sandbox_stop(&arguments).map(ToolOutput::Text),
+            "sandbox_exec_detach" => self
+                .tool_sandbox_exec_detach(&arguments)
+                .map(ToolOutput::Text),
+            "sandbox_exec_status" => self
+                .tool_sandbox_exec_status(&arguments)
+                .map(ToolOutput::Text),
+            "sandbox_exec_logs" => self
+                .tool_sandbox_exec_logs(&arguments)
+                .map(ToolOutput::Text),
+            "sandbox_exec_kill" => self
+                .tool_sandbox_exec_kill(&arguments)
+                .map(ToolOutput::Text),
+            "sandbox_exec_list" => self
+                .tool_sandbox_exec_list(&arguments)
+                .map(ToolOutput::Text),
+            "sandbox_extend_ttl" => self
+                .tool_sandbox_extend_ttl(&arguments)
+                .map(ToolOutput::Text),
+            "snapshot_list" => self.tool_snapshot_list().map(ToolOutput::Text),
+            "snapshot_take" => self.tool_snapshot_take(&arguments).map(ToolOutput::Text),
+            "snapshot_get" => self.tool_snapshot_get(&arguments).map(ToolOutput::Text),
+            "snapshot_delete" => self.tool_snapshot_delete(&arguments).map(ToolOutput::Text),
+            "snapshot_restore" => self.tool_snapshot_restore(&arguments).map(ToolOutput::Text),
+            // Browser tools
+            "browser_create" => self.tool_browser_create(&arguments).map(ToolOutput::Text),
+            "browser_goto" => self.tool_browser_goto(&arguments).map(ToolOutput::Text),
+            "browser_screenshot" => self.tool_browser_screenshot(&arguments),
+            "browser_evaluate" => self.tool_browser_evaluate(&arguments).map(ToolOutput::Text),
+            "browser_remove" => self.tool_browser_remove(&arguments).map(ToolOutput::Text),
             _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
         };
 
         match result {
-            Ok(content) => JsonRpcResponse {
+            Ok(ToolOutput::Text(content)) => JsonRpcResponse {
                 jsonrpc: "2.0",
                 id,
                 result: Some(json!({
                     "content": [{
                         "type": "text",
-                        "text": content
+                        "text": truncate_output(&content)
+                    }]
+                })),
+                error: None,
+            },
+            Ok(ToolOutput::Image { data, mime_type }) => JsonRpcResponse {
+                jsonrpc: "2.0",
+                id,
+                result: Some(json!({
+                    "content": [{
+                        "type": "image",
+                        "data": data,
+                        "mimeType": mime_type
                     }]
                 })),
                 error: None,
@@ -1316,6 +1476,138 @@ impl McpServer {
             })
         })
     }
+
+    // ---------- Browser tools ----------
+
+    fn tool_browser_create(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        let memory_mb = args
+            .get("memory_mb")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(browser_scripts::BROWSER_MEMORY_MB);
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                manager
+                    .create_with_options(
+                        name,
+                        browser_scripts::BROWSER_IMAGE,
+                        1,
+                        memory_mb,
+                        None,
+                        Vec::new(),
+                    )
+                    .await?;
+                manager.start(name).await?;
+
+                // Install Playwright + Chromium
+                let setup_cmd: Vec<String> = browser_scripts::BROWSER_SETUP_CMD
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                manager.exec_cmd(name, &setup_cmd).await?;
+
+                Ok(format!(
+                    "Browser sandbox '{}' ready (Playwright + Chromium installed, {}MB RAM).",
+                    name, memory_mb
+                ))
+            })
+        })
+    }
+
+    fn tool_browser_goto(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("url is required"))?;
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                let cmd = vec![
+                    "python3".to_string(),
+                    "-c".to_string(),
+                    browser_scripts::GOTO_SCRIPT.to_string(),
+                    url.to_string(),
+                ];
+                manager.exec_cmd(name, &cmd).await
+            })
+        })
+    }
+
+    fn tool_browser_screenshot(&self, args: &Value) -> Result<ToolOutput> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("url is required"))?;
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                let cmd = vec![
+                    "python3".to_string(),
+                    "-c".to_string(),
+                    browser_scripts::SCREENSHOT_SCRIPT.to_string(),
+                    url.to_string(),
+                ];
+                let output = manager.exec_cmd(name, &cmd).await?;
+                Ok(ToolOutput::Image {
+                    data: output.trim().to_string(),
+                    mime_type: "image/png",
+                })
+            })
+        })
+    }
+
+    fn tool_browser_evaluate(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("url is required"))?;
+
+        let expression = args
+            .get("expression")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("expression is required"))?;
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                let cmd = vec![
+                    "python3".to_string(),
+                    "-c".to_string(),
+                    browser_scripts::EVALUATE_SCRIPT.to_string(),
+                    url.to_string(),
+                    expression.to_string(),
+                ];
+                manager.exec_cmd(name, &cmd).await
+            })
+        })
+    }
+
+    fn tool_browser_remove(&self, args: &Value) -> Result<String> {
+        self.tool_sandbox_remove(args)
+    }
 }
 
 impl Default for McpServer {
@@ -1664,5 +1956,127 @@ mod tests {
         let result = server.tool_sandbox_stop(&json!({}));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    // === Browser tool tests ===
+
+    #[test]
+    fn test_handle_tools_list_includes_browser_tools() {
+        let server = McpServer::new();
+        let response = server.handle_tools_list(Value::Number(1.into()));
+        let result = response.result.unwrap();
+        let tools = result.get("tools").and_then(|t| t.as_array()).unwrap();
+        let tool_names: Vec<&str> = tools
+            .iter()
+            .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
+            .collect();
+
+        assert!(tool_names.contains(&"browser_create"));
+        assert!(tool_names.contains(&"browser_goto"));
+        assert!(tool_names.contains(&"browser_screenshot"));
+        assert!(tool_names.contains(&"browser_evaluate"));
+        assert!(tool_names.contains(&"browser_remove"));
+    }
+
+    #[test]
+    fn test_tool_browser_create_missing_name() {
+        let server = McpServer::new();
+        let result = server.tool_browser_create(&json!({}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[test]
+    fn test_tool_browser_goto_missing_name() {
+        let server = McpServer::new();
+        let result = server.tool_browser_goto(&json!({"url": "https://example.com"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[test]
+    fn test_tool_browser_goto_missing_url() {
+        let server = McpServer::new();
+        let result = server.tool_browser_goto(&json!({"name": "test"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("url is required"));
+    }
+
+    #[test]
+    fn test_tool_browser_screenshot_missing_name() {
+        let server = McpServer::new();
+        let result = server.tool_browser_screenshot(&json!({"url": "https://example.com"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[test]
+    fn test_tool_browser_screenshot_missing_url() {
+        let server = McpServer::new();
+        let result = server.tool_browser_screenshot(&json!({"name": "test"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("url is required"));
+    }
+
+    #[test]
+    fn test_tool_browser_evaluate_missing_name() {
+        let server = McpServer::new();
+        let result = server
+            .tool_browser_evaluate(&json!({"url": "https://example.com", "expression": "1+1"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[test]
+    fn test_tool_browser_evaluate_missing_url() {
+        let server = McpServer::new();
+        let result = server.tool_browser_evaluate(&json!({"name": "test", "expression": "1+1"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("url is required"));
+    }
+
+    #[test]
+    fn test_tool_browser_evaluate_missing_expression() {
+        let server = McpServer::new();
+        let result =
+            server.tool_browser_evaluate(&json!({"name": "test", "url": "https://example.com"}));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("expression is required")
+        );
+    }
+
+    #[test]
+    fn test_tool_browser_remove_missing_name() {
+        let server = McpServer::new();
+        let result = server.tool_browser_remove(&json!({}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    // === Output truncation tests ===
+
+    #[test]
+    fn test_truncate_output_short() {
+        let short = "hello world";
+        assert_eq!(truncate_output(short), short);
+    }
+
+    #[test]
+    fn test_truncate_output_at_limit() {
+        let exact = "x".repeat(MAX_OUTPUT_BYTES);
+        assert_eq!(truncate_output(&exact), exact);
+    }
+
+    #[test]
+    fn test_truncate_output_long() {
+        let long = "x".repeat(MAX_OUTPUT_BYTES + 10_000);
+        let result = truncate_output(&long);
+        assert!(result.len() < long.len());
+        assert!(result.contains("bytes truncated"));
+        assert!(result.contains("10000 bytes truncated"));
     }
 }

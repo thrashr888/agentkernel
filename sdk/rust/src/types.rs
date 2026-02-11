@@ -248,3 +248,21 @@ pub struct DetachedLogsResponse {
     pub stdout: Option<String>,
     pub stderr: Option<String>,
 }
+
+// -- Browser types --
+
+/// A link extracted from a page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageLink {
+    pub text: String,
+    pub href: String,
+}
+
+/// Result of navigating to a page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageResult {
+    pub title: String,
+    pub url: String,
+    pub text: String,
+    pub links: Vec<PageLink>,
+}

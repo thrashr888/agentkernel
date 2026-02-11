@@ -86,6 +86,94 @@ pub fn macos_version_supported() -> bool {
     false
 }
 
+/// Check whether an image tag refers to a local-only image that should never be
+/// pulled from a remote registry (e.g. snapshot images created via `docker commit`).
+fn is_local_image(image: &str) -> bool {
+    image.starts_with("agentkernel-snap:")
+        || (image.starts_with("agentkernel-")
+            && !image.contains('/')
+            && !image.contains(".io")
+            && !image.contains(".com"))
+}
+
+/// Check if an image exists in the Apple container image store.
+fn apple_image_exists(image: &str) -> bool {
+    Command::new("container")
+        .args(["image", "inspect", image])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Import a Docker-local image into the Apple container image store.
+///
+/// Uses `docker save <tag> | container image load` to transfer images that
+/// exist in Docker (e.g. from `docker commit`) but not in the Apple store.
+fn import_image_from_docker(image: &str) -> Result<()> {
+    use std::process::Stdio;
+
+    // Verify the image exists in Docker first
+    let docker_check = Command::new("docker")
+        .args(["image", "inspect", image])
+        .output()
+        .context("Failed to check Docker for image")?;
+
+    if !docker_check.status.success() {
+        bail!(
+            "Image '{}' not found in Docker or Apple container stores. \
+             Was the snapshot created on this machine?",
+            image
+        );
+    }
+
+    eprintln!(
+        "Importing image '{}' from Docker into Apple containers...",
+        image
+    );
+
+    // Pipe: docker save <image> | container image load
+    let docker_save = Command::new("docker")
+        .args(["save", image])
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("Failed to run docker save")?;
+
+    let load_output = Command::new("container")
+        .args(["image", "load"])
+        .stdin(docker_save.stdout.unwrap())
+        .output()
+        .context("Failed to run container image load")?;
+
+    if !load_output.status.success() {
+        let stderr = String::from_utf8_lossy(&load_output.stderr);
+        bail!("Failed to import image into Apple containers: {}", stderr);
+    }
+
+    Ok(())
+}
+
+/// Get the IP address of an Apple container by parsing `container inspect` JSON.
+pub fn get_container_ip(container_name: &str) -> Option<String> {
+    let output = Command::new("container")
+        .args(["inspect", container_name])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // Parse the JSON array; extract .networks[0].address and strip the CIDR suffix.
+    let text = String::from_utf8_lossy(&output.stdout);
+    let arr: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    let addr = arr
+        .get(0)?
+        .get("networks")?
+        .get(0)?
+        .get("address")?
+        .as_str()?;
+    // Strip "/24" CIDR suffix if present
+    Some(addr.split('/').next().unwrap_or(addr).to_string())
+}
+
 /// Apple Containers sandbox
 pub struct AppleSandbox {
     name: String,
@@ -127,6 +215,14 @@ impl Sandbox for AppleSandbox {
         start_apple_system()?;
 
         let container_name = self.container_name();
+
+        // For local/snapshot images (e.g. "agentkernel-snap:my-snap"), ensure the
+        // image is available in the Apple container store. These images are created
+        // via `docker commit` and live only in Docker's image store, so Apple's
+        // `container run` would try (and fail) to pull them from a registry.
+        if is_local_image(&config.image) && !apple_image_exists(&config.image) {
+            import_image_from_docker(&config.image)?;
+        }
 
         // Remove any existing container
         let _ = Command::new("container")
@@ -267,11 +363,6 @@ impl Sandbox for AppleSandbox {
     async fn write_file_unchecked(&mut self, path: &str, content: &[u8]) -> Result<()> {
         let container_name = self.container_name();
 
-        // Create a temporary file to copy
-        let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join(format!("agentkernel-upload-{}", uuid::Uuid::new_v4()));
-        std::fs::write(&temp_file, content).context("Failed to write temp file")?;
-
         // Ensure parent directory exists in container
         let parent = std::path::Path::new(path)
             .parent()
@@ -282,18 +373,18 @@ impl Sandbox for AppleSandbox {
             .args(["exec", &container_name, "mkdir", "-p", &parent])
             .output();
 
-        // Copy file into container
-        let dest = format!("{}:{}", container_name, path);
+        // Write file via exec: pipe base64-encoded content through sh -c
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let encoded = STANDARD.encode(content);
+        let decode_cmd = format!("echo '{}' | base64 -d > '{}'", encoded, path);
         let output = Command::new("container")
-            .args(["cp", temp_file.to_str().unwrap(), &dest])
+            .args(["exec", &container_name, "sh", "-c", &decode_cmd])
             .output()
-            .context("Failed to copy file to container")?;
-
-        let _ = std::fs::remove_file(&temp_file);
+            .context("Failed to write file in container")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("container cp failed: {}", stderr);
+            bail!("Failed to write file: {}", stderr);
         }
 
         Ok(())
@@ -302,24 +393,23 @@ impl Sandbox for AppleSandbox {
     async fn read_file_unchecked(&mut self, path: &str) -> Result<Vec<u8>> {
         let container_name = self.container_name();
 
-        let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join(format!("agentkernel-download-{}", uuid::Uuid::new_v4()));
-
-        let src = format!("{}:{}", container_name, path);
+        // Read file via exec: base64-encode the content and decode on host
         let output = Command::new("container")
-            .args(["cp", &src, temp_file.to_str().unwrap()])
+            .args(["exec", &container_name, "base64", path])
             .output()
-            .context("Failed to copy file from container")?;
+            .context("Failed to read file from container")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("container cp failed: {}", stderr);
+            bail!("Failed to read file: {}", stderr);
         }
 
-        let content = std::fs::read(&temp_file).context("Failed to read temp file")?;
-        let _ = std::fs::remove_file(&temp_file);
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let decoded = STANDARD
+            .decode(String::from_utf8_lossy(&output.stdout).trim())
+            .context("Failed to decode base64 file content")?;
 
-        Ok(content)
+        Ok(decoded)
     }
 
     async fn remove_file_unchecked(&mut self, path: &str) -> Result<()> {
@@ -370,5 +460,32 @@ impl Drop for AppleSandbox {
                 .args(["delete", "-f", &container_name])
                 .output();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_local_image_snapshot_tags() {
+        assert!(is_local_image("agentkernel-snap:test-snap"));
+        assert!(is_local_image("agentkernel-snap:my-snapshot"));
+        assert!(is_local_image("agentkernel-snap:v1"));
+    }
+
+    #[test]
+    fn test_is_local_image_other_agentkernel_tags() {
+        assert!(is_local_image("agentkernel-my-tools"));
+        assert!(is_local_image("agentkernel-custom:latest"));
+    }
+
+    #[test]
+    fn test_is_local_image_rejects_registry_images() {
+        assert!(!is_local_image("alpine:3.20"));
+        assert!(!is_local_image("python:3.12-alpine"));
+        assert!(!is_local_image("docker.io/library/alpine"));
+        assert!(!is_local_image("ghcr.io/user/image:latest"));
+        assert!(!is_local_image("registry.example.com/foo"));
     }
 }

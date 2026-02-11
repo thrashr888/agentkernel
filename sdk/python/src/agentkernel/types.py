@@ -138,3 +138,21 @@ class SnapshotMeta(BaseModel):
     vcpus: int | None = None
     memory_mb: int | None = None
     created_at: str
+
+
+class PageLink(BaseModel):
+    """A link extracted from a web page."""
+
+    text: str
+    href: str
+
+
+class PageResult(BaseModel):
+    """Result of navigating to a web page."""
+
+    title: str
+    url: str
+    text: str
+    """Page body text (truncated to ~8KB)."""
+    links: list[PageLink] = []
+    """First 50 links on the page."""

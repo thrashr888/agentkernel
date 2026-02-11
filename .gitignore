@@ -21,5 +21,10 @@ benchmark-results/*.txt
 /.mcp.json
 /.opencode/
 
+# Tauri desktop app build artifacts
+app/src-tauri/target/
+app/node_modules/
+app/dist/
+
 # Local Homebrew formula repo (separate repo: thrashr888/homebrew-agentkernel)
 /homebrew-agentkernel/

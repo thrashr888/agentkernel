@@ -28,6 +28,7 @@ use tokio::net::TcpListener;
 use crate::languages;
 use crate::opencode::OpenCodeState;
 use crate::permissions::SecurityProfile;
+use crate::secrets::{SecretBackend, SecretVault};
 use crate::validation;
 use crate::vmm::VmManager;
 
@@ -71,6 +72,9 @@ struct CreateRequest {
     /// Git ref to checkout after cloning (branch, tag, or commit)
     #[serde(default)]
     source_ref: Option<String>,
+    /// Agent CLI to auto-install on start (e.g., "claude", "gemini", "codex")
+    #[serde(default)]
+    agent: Option<String>,
 }
 
 /// Request to write a file
@@ -516,8 +520,19 @@ async fn handle_request(
         // Delete a sandbox
         (Method::DELETE, ["sandboxes", name]) => handle_delete_sandbox(name, state).await,
 
+        // Start a stopped sandbox
+        (Method::POST, ["sandboxes", name, "start"]) => handle_start_sandbox(name, state).await,
+
+        // Stop a running sandbox
+        (Method::POST, ["sandboxes", name, "stop"]) => handle_stop_sandbox(name, state).await,
+
         // Extend sandbox TTL
         (Method::POST, ["sandboxes", name, "extend"]) => handle_extend_ttl(req, name, state).await,
+
+        // Resize sandbox (stop + recreate with new resources)
+        (Method::POST, ["sandboxes", name, "resize"]) => {
+            handle_resize_sandbox(req, name, state).await
+        }
 
         // Snapshot endpoints
         (Method::GET, ["snapshots"]) => handle_list_snapshots(state).await,
@@ -528,11 +543,35 @@ async fn handle_request(
             handle_restore_snapshot(req, name, state).await
         }
 
+        // Audit log
+        (Method::GET, ["audit"]) => handle_audit_log(req).await,
+
+        // Diagnostics: installation status
+        (Method::GET, ["status"]) => handle_status(state).await,
+
+        // Diagnostics: health checks
+        (Method::GET, ["doctor"]) => handle_doctor(state).await,
+
+        // Secrets management
+        (Method::GET, ["secrets"]) => handle_list_secrets().await,
+        (Method::POST, ["secrets"]) => handle_create_secret(req).await,
+        (Method::DELETE, ["secrets", name]) => handle_delete_secret(name).await,
+
+        // Garbage collection
+        (Method::POST, ["gc"]) => handle_gc(state).await,
+
+        // Agents/plugins
+        (Method::GET, ["agents"]) => handle_list_agents(state).await,
+
         // Enterprise policy endpoints
         #[cfg(feature = "enterprise")]
         (Method::GET, ["policy", "status"]) => handle_policy_status(state).await,
         #[cfg(feature = "enterprise")]
         (Method::POST, ["policy", "check"]) => handle_policy_check(req, state).await,
+        #[cfg(feature = "enterprise")]
+        (Method::POST, ["policy", "reload"]) => handle_policy_reload(state).await,
+        #[cfg(feature = "enterprise")]
+        (Method::GET, ["policy", "audit"]) => handle_policy_audit(req, state).await,
 
         // 404 for everything else
         _ => json_response(
@@ -893,10 +932,10 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
                     .map(|b| format!("{}", b))
                     .unwrap_or_else(|| "unknown".to_string()),
                 ip,
-                image: None,
-                vcpus: None,
-                memory_mb: None,
-                created_at: None,
+                image: state_info.map(|s| s.image.clone()),
+                vcpus: state_info.map(|s| s.vcpus),
+                memory_mb: state_info.map(|s| s.memory_mb),
+                created_at: state_info.map(|s| s.created_at.clone()),
                 ports,
             }
         })
@@ -987,7 +1026,15 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
     };
 
     if let Err(e) = manager
-        .create_with_options(&body.name, image, vcpus, memory_mb, None, ports.clone())
+        .create_with_agent(
+            &body.name,
+            image,
+            vcpus,
+            memory_mb,
+            None,
+            ports.clone(),
+            body.agent.clone(),
+        )
         .await
     {
         return json_response(
@@ -1409,6 +1456,82 @@ async fn handle_delete_sandbox(name: &str, state: Arc<AppState>) -> Response<Box
     }
 }
 
+async fn handle_start_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    // Enterprise policy enforcement
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = crate::identity::AgentIdentity::anonymous();
+        if let Err(resp) =
+            enforce_policy(&state, &identity, crate::policy::Action::Create, name).await
+        {
+            return resp;
+        }
+    }
+
+    // Validate sandbox name (security: prevents command injection)
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.start(name).await {
+        Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox started")),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_stop_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = crate::identity::AgentIdentity::anonymous();
+        if let Err(resp) =
+            enforce_policy(&state, &identity, crate::policy::Action::Create, name).await
+        {
+            return resp;
+        }
+    }
+
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.stop(name).await {
+        Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox stopped")),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
 /// Request body for extending TTL
 #[derive(Debug, Deserialize)]
 struct ExtendTtlRequest {
@@ -1490,6 +1613,120 @@ async fn handle_extend_ttl(
             &ApiResponse::<()>::error(e.to_string()),
         ),
     }
+}
+
+// --- Resize handler ---
+
+#[derive(Debug, Deserialize)]
+struct ResizeSandboxRequest {
+    vcpus: Option<u32>,
+    memory_mb: Option<u64>,
+}
+
+async fn handle_resize_sandbox(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let body: ResizeSandboxRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    // Sandbox must exist
+    let sandbox_state = match manager.get_state(name) {
+        Some(s) => s.clone(),
+        None => {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error(format!("Sandbox '{}' not found", name)),
+            );
+        }
+    };
+
+    let new_vcpus = body.vcpus.unwrap_or(sandbox_state.vcpus);
+    let new_memory = body.memory_mb.unwrap_or(sandbox_state.memory_mb);
+
+    // Stop if running
+    let was_running = manager.is_running(name);
+    if was_running && let Err(e) = manager.stop(name).await {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to stop sandbox: {}", e)),
+        );
+    }
+
+    // Remove and recreate with new resources
+    let image = sandbox_state.image.clone();
+    let ports = sandbox_state.ports.clone();
+    let agent = sandbox_state.agent.clone();
+    if let Err(e) = manager.remove(name).await {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to remove sandbox: {}", e)),
+        );
+    }
+
+    if let Err(e) = manager
+        .create_with_agent(name, &image, new_vcpus, new_memory, None, ports, agent)
+        .await
+    {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to recreate sandbox: {}", e)),
+        );
+    }
+
+    // Restart if it was running
+    if was_running && let Err(e) = manager.start(name).await {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Resized but failed to restart: {}", e)),
+        );
+    }
+
+    let running = manager.is_running(name);
+    let ip = if running {
+        manager.get_container_ip(name)
+    } else {
+        None
+    };
+    let state_info = manager.get_state(name);
+    let result_ports: Vec<String> = state_info
+        .map(|s| s.ports.iter().map(|p| p.to_string()).collect())
+        .unwrap_or_default();
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(SandboxInfo {
+            name: name.to_string(),
+            status: if running { "running" } else { "stopped" }.to_string(),
+            backend: format!("{}", manager.backend()),
+            ip,
+            image: Some(image),
+            vcpus: Some(new_vcpus),
+            memory_mb: Some(new_memory),
+            created_at: state_info.map(|s| s.created_at.clone()),
+            ports: result_ports,
+        }),
+    )
 }
 
 // --- Snapshot handlers ---
@@ -1688,16 +1925,29 @@ async fn handle_restore_snapshot(
         .await
     {
         Ok(()) => {
-            #[derive(Serialize)]
-            struct RestoreResponse {
-                sandbox: String,
-                from_snapshot: String,
-            }
+            // Build SandboxInfo from manager state
+            let state_info = manager.get_state(&restore_name);
+            let running = manager.is_running(&restore_name);
+            let ip = if running {
+                manager.get_container_ip(&restore_name)
+            } else {
+                None
+            };
+            let ports = state_info
+                .map(|s| s.ports.iter().map(|p| p.to_string()).collect())
+                .unwrap_or_default();
             json_response(
                 StatusCode::OK,
-                &ApiResponse::success(RestoreResponse {
-                    sandbox: restore_name,
-                    from_snapshot: snapshot_name.to_string(),
+                &ApiResponse::success(SandboxInfo {
+                    name: restore_name,
+                    status: if running { "running" } else { "stopped" }.to_string(),
+                    backend: meta.backend.clone(),
+                    ip,
+                    image: Some(meta.image_tag.clone()),
+                    vcpus: Some(meta.vcpus),
+                    memory_mb: Some(meta.memory_mb),
+                    created_at: state_info.map(|s| s.created_at.clone()),
+                    ports,
                 }),
             )
         }
@@ -2174,11 +2424,12 @@ async fn handle_policy_check(req: Request<Incoming>, state: Arc<AppState>) -> Re
         "mount" => crate::policy::Action::Mount,
         "network" => crate::policy::Action::Network,
         "portmap" => crate::policy::Action::PortMap,
+        "ssh" => crate::policy::Action::SSH,
         other => {
             return json_response(
                 StatusCode::BAD_REQUEST,
                 &ApiResponse::<()>::error(format!(
-                    "Invalid action '{}'. Use: run, exec, create, attach, mount, network, portmap",
+                    "Invalid action '{}'. Use: run, exec, create, attach, mount, network, portmap, ssh",
                     other
                 )),
             );
@@ -2221,11 +2472,88 @@ async fn handle_policy_check(req: Request<Incoming>, state: Arc<AppState>) -> Re
     )
 }
 
+#[cfg(feature = "enterprise")]
+#[derive(Debug, Serialize)]
+struct PolicyReloadResponse {
+    reloaded: bool,
+    version: u64,
+}
+
+#[cfg(feature = "enterprise")]
+async fn handle_policy_reload(state: Arc<AppState>) -> Response<BoxBody> {
+    let Some(ref engine_lock) = state.policy_engine else {
+        return json_response(
+            StatusCode::OK,
+            &ApiResponse::success(PolicyReloadResponse {
+                reloaded: false,
+                version: 0,
+            }),
+        );
+    };
+
+    let mut engine = engine_lock.write().await;
+    match engine.reload().await {
+        Ok(()) => {
+            let version = engine.version().await;
+            json_response(
+                StatusCode::OK,
+                &ApiResponse::success(PolicyReloadResponse {
+                    reloaded: true,
+                    version,
+                }),
+            )
+        }
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Policy reload failed: {e}")),
+        ),
+    }
+}
+
+#[cfg(feature = "enterprise")]
+async fn handle_policy_audit(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    // Parse ?last=N query param (default 50)
+    let last: usize = req
+        .uri()
+        .query()
+        .and_then(|q| {
+            q.split('&')
+                .find_map(|pair| pair.strip_prefix("last="))
+                .and_then(|v| v.parse().ok())
+        })
+        .unwrap_or(50);
+
+    let Some(ref engine_lock) = state.policy_engine else {
+        // No engine → return empty list
+        let empty: Vec<crate::policy::PolicyDecisionLog> = Vec::new();
+        return json_response(StatusCode::OK, &ApiResponse::success(empty));
+    };
+
+    let engine = engine_lock.read().await;
+    match engine.audit_logger().read_last(last) {
+        Ok(entries) => json_response(StatusCode::OK, &ApiResponse::success(entries)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to read policy audit log: {e}")),
+        ),
+    }
+}
+
 /// Run the HTTP API server (plain HTTP)
 #[allow(dead_code)]
 pub async fn run_server(addr: SocketAddr) -> Result<()> {
     let state = Arc::new(AppState::new());
-    let listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind(addr).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AddrInUse {
+            anyhow::anyhow!(
+                "Port {} is already in use. Is another agentkernel server running?\n\
+                 Try: kill the existing process or use --port to pick a different port.",
+                addr.port()
+            )
+        } else {
+            anyhow::anyhow!("Failed to bind to {}: {}", addr, e)
+        }
+    })?;
 
     eprintln!("agentkernel HTTP API server listening on http://{}", addr);
 
@@ -2267,7 +2595,17 @@ pub async fn run_server_with_tls(
     };
 
     let state = Arc::new(AppState::new());
-    let listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind(addr).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AddrInUse {
+            anyhow::anyhow!(
+                "Port {} is already in use. Is another agentkernel server running?\n\
+                 Try: kill the existing process or use --port to pick a different port.",
+                addr.port()
+            )
+        } else {
+            anyhow::anyhow!("Failed to bind to {}: {}", addr, e)
+        }
+    })?;
 
     if acceptor.is_some() {
         eprintln!("agentkernel HTTP API server listening on https://{}", addr);
@@ -2309,6 +2647,308 @@ pub async fn run_server_with_tls(
             }
         });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics handlers
+// ---------------------------------------------------------------------------
+
+async fn handle_status(state: Arc<AppState>) -> Response<BoxBody> {
+    let manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let backend = manager.backend().to_string();
+    let version = env!("CARGO_PKG_VERSION").to_string();
+
+    #[derive(serde::Serialize)]
+    struct StatusInfo {
+        version: String,
+        backend: String,
+        api_key_configured: bool,
+    }
+
+    let info = StatusInfo {
+        version,
+        backend,
+        api_key_configured: state.api_key.is_some(),
+    };
+
+    json_response(StatusCode::OK, &ApiResponse::success(info))
+}
+
+async fn handle_doctor(state: Arc<AppState>) -> Response<BoxBody> {
+    #[derive(serde::Serialize)]
+    struct HealthCheck {
+        name: String,
+        status: String,
+        message: String,
+    }
+
+    #[derive(serde::Serialize)]
+    struct DoctorResult {
+        checks: Vec<HealthCheck>,
+        healthy: bool,
+    }
+
+    let mut checks = Vec::new();
+
+    // Check backend availability
+    let manager = state.get_manager().await;
+    let (backend_status, backend_message) = match &manager {
+        Ok(m) => (
+            "ok".to_string(),
+            format!("Backend {} is available", m.backend()),
+        ),
+        Err(e) => ("error".to_string(), format!("Backend error: {e}")),
+    };
+    checks.push(HealthCheck {
+        name: "backend".to_string(),
+        status: backend_status,
+        message: backend_message,
+    });
+
+    // Check Docker/container CLI availability
+    let docker_available = std::process::Command::new("docker")
+        .arg("version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    checks.push(HealthCheck {
+        name: "docker".to_string(),
+        status: if docker_available {
+            "ok".to_string()
+        } else {
+            "warning".to_string()
+        },
+        message: if docker_available {
+            "Docker is available".to_string()
+        } else {
+            "Docker not found".to_string()
+        },
+    });
+
+    // Check if Apple containers available (macOS)
+    #[cfg(target_os = "macos")]
+    {
+        let apple_available = std::process::Command::new("container")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        checks.push(HealthCheck {
+            name: "apple_containers".to_string(),
+            status: if apple_available {
+                "ok".to_string()
+            } else {
+                "info".to_string()
+            },
+            message: if apple_available {
+                "Apple Containers available".to_string()
+            } else {
+                "Apple Containers not available".to_string()
+            },
+        });
+    }
+
+    let healthy = checks
+        .iter()
+        .all(|c| c.status == "ok" || c.status == "info" || c.status == "warning");
+
+    let result = DoctorResult { checks, healthy };
+    json_response(StatusCode::OK, &ApiResponse::success(result))
+}
+
+async fn handle_audit_log(req: Request<Incoming>) -> Response<BoxBody> {
+    // Parse ?last=N query param (default 100)
+    let last: usize = req
+        .uri()
+        .query()
+        .and_then(|q| {
+            q.split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .find(|(k, _)| *k == "last")
+                .and_then(|(_, v)| v.parse().ok())
+        })
+        .unwrap_or(100);
+
+    let audit = crate::audit::audit();
+    match audit.read_last(last) {
+        Ok(entries) => json_response(StatusCode::OK, &ApiResponse::success(entries)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_gc(state: Arc<AppState>) -> Response<BoxBody> {
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.gc().await {
+        Ok(removed) => {
+            #[derive(serde::Serialize)]
+            struct GcResult {
+                removed: Vec<String>,
+                count: usize,
+            }
+            let count = removed.len();
+            json_response(
+                StatusCode::OK,
+                &ApiResponse::success(GcResult { removed, count }),
+            )
+        }
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Secrets management
+// ---------------------------------------------------------------------------
+
+/// Entry returned by `GET /secrets` — name only, never the value.
+#[derive(Debug, Serialize)]
+struct SecretListEntry {
+    name: String,
+    created_at: Option<String>,
+}
+
+/// Request body for `POST /secrets`.
+#[derive(Debug, Deserialize)]
+struct CreateSecretRequest {
+    name: String,
+    value: String,
+}
+
+async fn handle_list_secrets() -> Response<BoxBody> {
+    let vault = SecretVault::new(SecretBackend::File);
+    match vault.list() {
+        Ok(entries) => {
+            let list: Vec<SecretListEntry> = entries
+                .into_iter()
+                .map(|(name, meta)| SecretListEntry {
+                    name,
+                    created_at: Some(meta.set_at),
+                })
+                .collect();
+            json_response(StatusCode::OK, &ApiResponse::success(list))
+        }
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to list secrets: {e}")),
+        ),
+    }
+}
+
+async fn handle_create_secret(req: Request<Incoming>) -> Response<BoxBody> {
+    let body: CreateSecretRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    if body.name.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("name is required"),
+        );
+    }
+
+    let vault = SecretVault::new(SecretBackend::File);
+    match vault.set(&body.name, &body.value) {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success("Secret stored".to_string()),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to store secret: {e}")),
+        ),
+    }
+}
+
+async fn handle_delete_secret(name: &str) -> Response<BoxBody> {
+    let vault = SecretVault::new(SecretBackend::File);
+    match vault.delete(name) {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success("Secret deleted".to_string()),
+        ),
+        Err(e) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("Failed to delete secret: {e}")),
+        ),
+    }
+}
+
+async fn handle_list_agents(_state: Arc<AppState>) -> Response<BoxBody> {
+    #[derive(Serialize)]
+    struct AgentInfo {
+        name: String,
+        display_name: String,
+        enabled: bool,
+        description: String,
+    }
+
+    let agent_defs: Vec<(&str, &str, &str, &str)> = vec![
+        (
+            "claude",
+            "Claude Code",
+            "claude",
+            "Anthropic's AI coding agent",
+        ),
+        (
+            "copilot",
+            "Copilot CLI",
+            "copilot",
+            "GitHub's AI coding agent",
+        ),
+        ("gemini", "Gemini CLI", "gemini", "Google's AI coding agent"),
+        ("codex", "Codex CLI", "codex", "OpenAI's AI coding agent"),
+        (
+            "opencode",
+            "OpenCode",
+            "opencode",
+            "Open-source AI coding agent",
+        ),
+        ("amp", "Amp", "amp", "Sourcegraph's AI coding agent"),
+        ("pi", "Pi", "pi", "Mario Zechner's coding agent"),
+    ];
+
+    let agents: Vec<AgentInfo> = agent_defs
+        .into_iter()
+        .map(|(name, display, bin, desc)| {
+            let enabled = std::process::Command::new("sh")
+                .args(["-c", &format!("command -v {} >/dev/null 2>&1", bin)])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            AgentInfo {
+                name: name.into(),
+                display_name: display.into(),
+                enabled,
+                description: desc.into(),
+            }
+        })
+        .collect();
+
+    json_response(StatusCode::OK, &ApiResponse::success(agents))
 }
 
 #[cfg(test)]

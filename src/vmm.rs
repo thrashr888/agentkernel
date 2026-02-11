@@ -75,6 +75,9 @@ pub struct SandboxState {
     /// Volume mounts (slug:/path format)
     #[serde(default)]
     pub volumes: Vec<String>,
+    /// Agent CLI to install on start (e.g., "claude", "gemini", "codex")
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 /// Status of a detached command
@@ -495,7 +498,7 @@ impl VmManager {
             .await
     }
 
-    /// Create a new sandbox with TTL and port mappings
+    /// Create a new sandbox with TTL, port mappings, and optional agent
     pub async fn create_with_options(
         &mut self,
         name: &str,
@@ -504,6 +507,22 @@ impl VmManager {
         memory_mb: u64,
         ttl_seconds: Option<u64>,
         ports: Vec<PortMapping>,
+    ) -> Result<()> {
+        self.create_with_agent(name, image, vcpus, memory_mb, ttl_seconds, ports, None)
+            .await
+    }
+
+    /// Create a new sandbox with TTL, port mappings, and optional agent CLI
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_with_agent(
+        &mut self,
+        name: &str,
+        image: &str,
+        vcpus: u32,
+        memory_mb: u64,
+        ttl_seconds: Option<u64>,
+        ports: Vec<PortMapping>,
+        agent: Option<String>,
     ) -> Result<()> {
         if self.sandboxes.contains_key(name) {
             bail!("Sandbox '{}' already exists", name);
@@ -551,6 +570,7 @@ impl VmManager {
             ssh_enabled: false,
             ssh_host_port: None,
             volumes: Vec::new(),
+            agent,
         };
 
         self.save_sandbox(&state)?;
@@ -683,7 +703,7 @@ impl VmManager {
         };
 
         // Build environment variables if pass_env is enabled
-        let env = if perms.pass_env {
+        let mut env: Vec<(String, String)> = if perms.pass_env {
             ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM"]
                 .iter()
                 .filter_map(|&var| std::env::var(var).ok().map(|val| (var.to_string(), val)))
@@ -691,6 +711,24 @@ impl VmManager {
         } else {
             Vec::new()
         };
+
+        // Pass agent-specific API keys from host environment
+        if let Some(ref agent) = state.agent {
+            let key_vars: &[&str] = match agent.as_str() {
+                "claude" | "amp" => &["ANTHROPIC_API_KEY"],
+                "copilot" => &["GITHUB_TOKEN"],
+                "gemini" => &["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+                "codex" => &["OPENAI_API_KEY"],
+                "opencode" => &["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"],
+                "pi" => &["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
+                _ => &[],
+            };
+            for &var in key_vars {
+                if let Ok(val) = std::env::var(var) {
+                    env.push((var.to_string(), val));
+                }
+            }
+        }
 
         // Build SSH config if enabled
         let ssh_config = if state.ssh_enabled {
@@ -829,6 +867,41 @@ impl VmManager {
             } else {
                 eprintln!("SSH access: enabled on port 22 inside sandbox");
                 eprintln!("  (host port could not be resolved — try explicit: -p 2222:22)");
+            }
+        }
+
+        // Auto-install agent CLI if specified in sandbox state
+        if let Some(ref agent) = state.agent {
+            let install_cmd = match agent.as_str() {
+                "claude" => Some("npm install -g @anthropic-ai/claude-code"),
+                "gemini" => Some("npm install -g @google/gemini-cli"),
+                "codex" => Some("npm install -g @openai/codex"),
+                "opencode" => Some("npm install -g opencode"),
+                "amp" => Some("npm install -g @sourcegraph/amp"),
+                "pi" => Some("npm install -g @mariozechner/pi-coding-agent"),
+                "copilot" => Some("npm install -g @githubnext/github-copilot-cli"),
+                _ => None,
+            };
+            if let Some(cmd) = install_cmd {
+                eprintln!("Installing {} agent CLI...", agent);
+                // Install runs inside the sandbox, not on the host — safe from injection
+                // since agent values are validated against the known set above
+                match sandbox.exec(&["sh", "-c", cmd]).await {
+                    Ok(result) if result.exit_code == 0 => {
+                        eprintln!("{} agent CLI installed successfully", agent);
+                    }
+                    Ok(result) => {
+                        eprintln!(
+                            "Warning: {} agent install exited with code {}: {}",
+                            agent,
+                            result.exit_code,
+                            result.stderr.trim()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Failed to install {} agent CLI: {}", agent, e);
+                    }
+                }
             }
         }
 
@@ -1417,10 +1490,15 @@ impl VmManager {
         self.sandboxes.get(name)
     }
 
-    /// Get the IP address of a running sandbox (Docker backend only for now).
+    /// Get the IP address of a running sandbox.
     pub fn get_container_ip(&self, name: &str) -> Option<String> {
         let container_name = format!("agentkernel-{}", name);
-        crate::backend::docker::get_container_ip(&container_name)
+        let backend = self.sandboxes.get(name).and_then(|s| s.backend);
+        match backend {
+            #[cfg(target_os = "macos")]
+            Some(BackendType::Apple) => crate::backend::apple::get_container_ip(&container_name),
+            _ => crate::backend::docker::get_container_ip(&container_name),
+        }
     }
 
     /// Get the data directory path.
@@ -1482,6 +1560,7 @@ mod tests {
             ssh_enabled: false,
             ssh_host_port: None,
             volumes: Vec::new(),
+            agent: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -1527,6 +1606,7 @@ mod tests {
             ssh_enabled: false,
             ssh_host_port: None,
             volumes: Vec::new(),
+            agent: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -1581,6 +1661,7 @@ mod tests {
             ssh_enabled: false,
             ssh_host_port: None,
             volumes: Vec::new(),
+            agent: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -1628,6 +1709,7 @@ mod tests {
                 ssh_enabled: false,
                 ssh_host_port: None,
                 volumes: Vec::new(),
+                agent: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();

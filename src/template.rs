@@ -46,6 +46,12 @@ const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
     ("ruby", include_str!("../templates/ruby.toml")),
     ("rust", include_str!("../templates/rust.toml")),
     ("typescript", include_str!("../templates/typescript.toml")),
+    // Browser automation
+    ("playwright", include_str!("../templates/playwright.toml")),
+    (
+        "playwright-stealth",
+        include_str!("../templates/playwright-stealth.toml"),
+    ),
     // Specialized
     ("python-ml", include_str!("../templates/python-ml.toml")),
     (
@@ -376,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_builtin_template_count() {
-        assert_eq!(BUILTIN_TEMPLATES.len(), 23);
+        assert_eq!(BUILTIN_TEMPLATES.len(), 25);
     }
 
     #[test]

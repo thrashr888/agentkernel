@@ -165,6 +165,11 @@ MicroVM isolation provides:
 
 Before tagging, ensure CI is green and all quality gates pass locally. See `RELEASE.md` for the full checklist.
 
+## Workflow Rules
+
+- Never commit or run session close protocol without the user explicitly asking. Let the user test first.
+- Run things via Makefile (`make serve`, `make app`). Kill old processes on the ports before starting new ones.
+
 ## Beads Issue Tracking
 
 ```bash
