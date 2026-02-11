@@ -162,9 +162,11 @@ jobs:
           ARM64_SIG=$(cat artifacts/desktop-updater-arm64/*.sig 2>/dev/null || echo "")
           X64_SIG=$(cat artifacts/desktop-updater-x64/*.sig 2>/dev/null || echo "")
 
-          # Find updater filenames
-          ARM64_TAR=$(basename "$(find artifacts/desktop-updater-arm64 -name '*.tar.gz' ! -name '*.sig' 2>/dev/null | head -1)" 2>/dev/null || echo "")
-          X64_TAR=$(basename "$(find artifacts/desktop-updater-x64 -name '*.tar.gz' ! -name '*.sig' 2>/dev/null | head -1)" 2>/dev/null || echo "")
+          # Derive renamed updater filenames (must match Collect step renaming)
+          ARM64_ORIG=$(basename "$(find artifacts/desktop-updater-arm64 -name '*.tar.gz' ! -name '*.sig' 2>/dev/null | head -1)" .app.tar.gz 2>/dev/null || echo "")
+          X64_ORIG=$(basename "$(find artifacts/desktop-updater-x64 -name '*.tar.gz' ! -name '*.sig' 2>/dev/null | head -1)" .app.tar.gz 2>/dev/null || echo "")
+          ARM64_TAR="${ARM64_ORIG}-arm64.app.tar.gz"
+          X64_TAR="${X64_ORIG}-x64.app.tar.gz"
 
           BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
 
@@ -194,11 +196,30 @@ jobs:
           mkdir -p release-files
           # CLI binaries
           cp artifacts/agentkernel-*/*.tar.gz release-files/
-          # Desktop DMGs
-          cp artifacts/desktop-dmg-*/*.dmg release-files/
-          # Updater archives + signatures
-          cp artifacts/desktop-updater-*/*.tar.gz release-files/
-          cp artifacts/desktop-updater-*/*.sig release-files/
+
+          # Desktop DMGs — rename with arch suffix to avoid collision
+          for arch in arm64 x64; do
+            for f in artifacts/desktop-dmg-${arch}/*.dmg; do
+              [ -f "$f" ] || continue
+              base=$(basename "$f" .dmg)
+              cp "$f" "release-files/${base}-${arch}.dmg"
+            done
+          done
+
+          # Updater archives + signatures — rename with arch suffix
+          for arch in arm64 x64; do
+            for f in artifacts/desktop-updater-${arch}/*.tar.gz; do
+              [ -f "$f" ] || continue
+              base=$(basename "$f" .app.tar.gz)
+              cp "$f" "release-files/${base}-${arch}.app.tar.gz"
+            done
+            for f in artifacts/desktop-updater-${arch}/*.sig; do
+              [ -f "$f" ] || continue
+              base=$(basename "$f" .app.tar.gz.sig)
+              cp "$f" "release-files/${base}-${arch}.app.tar.gz.sig"
+            done
+          done
+
           # Updater manifest
           cp artifacts/latest.json release-files/
           echo "Release files:"
