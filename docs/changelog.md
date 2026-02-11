@@ -6,7 +6,9 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
-## Unreleased
+## [v0.11.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.11.0) — ARIA Browser Automation & Auto-Updater
+
+_February 10, 2026_
 
 ### Added
 
