@@ -6,7 +6,9 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
-## v0.10.0 (unreleased) — Browser Automation & Desktop App
+## [v0.10.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.10.0) — Browser Automation & Desktop App
+
+_February 10, 2026_
 
 ### Added
 
@@ -14,7 +16,7 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 - **MCP browser tools** — 5 new tools (`browser_create`, `browser_goto`, `browser_screenshot`, `browser_evaluate`, `browser_remove`) that collapse the 4-step manual orchestration into single tool calls
 - **MCP image content type** — `browser_screenshot` returns native MCP image content (`type: "image"`, PNG) instead of text; new `ToolOutput` enum separates text and image responses in the MCP dispatcher
 - **MCP output truncation** — tool responses capped at 16KB with head(8KB) + tail(8KB) preservation; images bypass truncation
-- **Tauri 2 desktop app** — full macOS desktop application with React/TypeScript frontend and Rust backend via Apple Containers
+- **Tauri 2 desktop app** — full macOS desktop application with React 19/TypeScript frontend and Rust backend via Apple Containers
 - **Desktop sandbox management** — create, start, stop, remove sandboxes; streaming exec with real-time output; file browser with read/write support
 - **Desktop Quick Run** — one-click sandbox execution from the dashboard
 - **Desktop terminal button** — launch terminal sessions into running sandboxes
@@ -29,15 +31,16 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 - **Desktop template profiles** — pre-configured sandbox templates
 - **Desktop policy page** — Cedar policy engine status, interactive policy check tester, reload button
 - **Desktop policy log page** — dedicated page for policy decision audit trail with action and decision filter dropdowns, pagination
-- **Policy HTTP endpoints** — `POST /policy/reload` and `GET /policy/audit` for policy engine management
 - **Desktop sandbox table** — column sorting, status filter buttons with counts (running/stopped/total), search by name/image/IP
 - **Desktop sandbox detail** — copy-to-clipboard for sandbox name
+- **Desktop app CI** — 3-job GitHub Actions workflow (`app-ci.yml`): frontend typecheck + build, Tauri Rust lint + test, macOS cross-compile (ARM64 + x64) with artifact upload
+- **Copilot agent support** — `AgentType::Copilot` adapter for GitHub Copilot CLI; plugin with MCP JSON; example Dockerfile and config
+- **Policy HTTP endpoints** — `POST /policy/reload` and `GET /policy/audit` for policy engine management
 - **Browser automation templates** — `playwright` and `playwright-stealth` built-in templates (Python 3.12, 2GB RAM, Chromium/Firefox/WebKit)
 - **SSH policy action** — `ssh` now accepted in policy check endpoints and CLI
 - **Shared browser scripts** — `src/browser_scripts.rs` module with Playwright script constants shared between MCP tools and future HTTP API endpoints
-- **Amp agent support** — `AgentType::Amp` adapter for Sourcegraph's AmpCode CLI
-- **Pi agent support** — `AgentType::Pi` adapter for pi-coding-agent CLI
 - **POST /sandboxes/:name/start** — HTTP endpoint to start a stopped sandbox
+- **Docs** — desktop app page, browser automation and GitHub Copilot agent added to mkdocs nav
 
 ### Changed
 
@@ -47,9 +50,17 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ### Fixed
 
+- **Agent API key leak** — API keys were injected into sandboxes even when `pass_env=false`; now guarded by security profile
+- **Shell injection in Apple backend** — `write_file_unchecked` interpolated paths into `sh -c`; now uses positional arguments
+- **`is_local_image()` too broad** — matched all `agentkernel-*` images; tightened to only `agentkernel-snap:` snapshot tags
+- **`import_image_from_docker` child process** — `docker save` child was not waited on; now properly awaited with exit status check
+- **Snapshot `ls` unchecked** — `ls -1 /` exit status was not checked in `take_apple`; now fails explicitly on error
+- **Agent install command mismatch** — CLI used `@google/gemini-cli` and `npm install opencode`; aligned with desktop (`@anthropic-ai/gemini-cli`, `cargo install opencode`)
 - **Apple Containers backend** — opaque toast backgrounds, snapshot `--pull=never`, Tauri IPC parameter alignment
 - **Clippy warnings** — resolved across `http_api.rs`, `vmm.rs`, `snapshot.rs`
 - **Policy check SSH action** — fixed HTTP 400 when checking `ssh` action (was missing from match statement)
+- **Enterprise config** — removed `[enterprise]` section from example `agentkernel.toml` (should not ship enabled by default)
+- **Unused import** — removed dead `shlex` import in Python SDK browser module
 
 ---
 
@@ -70,9 +81,6 @@ _February 5, 2026_
 - **`ExecOptions` trait method** — `Sandbox::exec_with_options()` supports workdir, user, and env per-command across all backends
 - **Detached commands** — run long-lived processes in the background with `agentkernel exec --detach`, retrieve logs with `exec-logs`, check status, kill, and list; HTTP API routes at `/sandboxes/{name}/exec/detach` and `/sandboxes/{name}/exec/detached/{id}`; 5 new MCP tools (`sandbox_exec_detach`, `sandbox_exec_status`, `sandbox_exec_logs`, `sandbox_exec_kill`, `sandbox_exec_list`)
 - **SDK updates** — all four SDKs (Rust, Node.js, Python, Swift) now support exec options (`workdir`/`env`/`sudo`), git source cloning (`source_url`/`source_ref`), batch `writeFiles`/`write_files`, and detached commands (`execDetached`/`detachedStatus`/`detachedLogs`/`detachedKill`/`detachedList`)
-- **Amp agent support** — `AgentType::Amp` adapter for Sourcegraph's AmpCode CLI; plugin installer target with MCP JSON integration; `CompatibilityMode::Amp` with Sourcegraph-aware network policy
-- **Pi agent support** — `AgentType::Pi` adapter for pi-coding-agent CLI; plugin installer target with MCP JSON integration; `CompatibilityMode::Pi` with multi-provider network policy
-
 ---
 
 ## [v0.8.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.8.0) — Secure Transport
