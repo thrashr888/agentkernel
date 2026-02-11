@@ -2,6 +2,8 @@
 
 Run AI coding agents in secure, isolated microVMs. Sub-125ms boot times, real hardware isolation.
 
+<img width="2474" height="1550" alt="AgentKernel Desktop App" src="https://github.com/user-attachments/assets/836e6b21-66c7-4915-b5a8-bf95a0824a99" />
+
 ## Installation
 
 ```bash

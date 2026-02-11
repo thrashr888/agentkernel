@@ -1495,6 +1495,7 @@ impl VmManager {
         let container_name = format!("agentkernel-{}", name);
         let backend = self.sandboxes.get(name).and_then(|s| s.backend);
         match backend {
+            #[cfg(target_os = "macos")]
             Some(BackendType::Apple) => crate::backend::apple::get_container_ip(&container_name),
             _ => crate::backend::docker::get_container_ip(&container_name),
         }

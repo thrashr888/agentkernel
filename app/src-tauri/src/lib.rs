@@ -41,23 +41,26 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             // -- Status items (disabled — informational only) --
-            let status_item =
-                MenuItem::with_id(app, "status", "\u{1F534} Connecting\u{2026}", false, None::<&str>)?;
+            let status_item = MenuItem::with_id(
+                app,
+                "status",
+                "\u{1F534} Connecting\u{2026}",
+                false,
+                None::<&str>,
+            )?;
             let sandbox_count =
                 MenuItem::with_id(app, "sandbox_count", "\u{2014}", false, None::<&str>)?;
 
             // -- Navigation items --
             let dashboard =
                 MenuItem::with_id(app, "dashboard", "Open Dashboard", true, None::<&str>)?;
-            let sandboxes =
-                MenuItem::with_id(app, "sandboxes", "Sandboxes", true, None::<&str>)?;
+            let sandboxes = MenuItem::with_id(app, "sandboxes", "Sandboxes", true, None::<&str>)?;
             let secrets = MenuItem::with_id(app, "secrets", "Secrets", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
 
             let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
-            let quit =
-                MenuItem::with_id(app, "quit", "Quit AgentKernel", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit AgentKernel", true, None::<&str>)?;
 
             let menu = Menu::with_items(
                 app,
@@ -124,8 +127,7 @@ pub fn run() {
                     if connected {
                         match client.list_sandboxes().await {
                             Ok(list) => {
-                                let running =
-                                    list.iter().filter(|s| s.status == "running").count();
+                                let running = list.iter().filter(|s| s.status == "running").count();
                                 let total = list.len();
                                 let text = match (total, running) {
                                     (0, _) => "No Sandboxes".to_string(),

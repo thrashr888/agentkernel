@@ -18,8 +18,14 @@ pub async fn install_agent(name: String) -> Result<String, String> {
         "codex" => ("npm", vec!["install", "-g", "@openai/codex"]),
         "opencode" => ("cargo", vec!["install", "opencode"]),
         "amp" => ("npm", vec!["install", "-g", "@sourcegraph/amp"]),
-        "pi" => ("npm", vec!["install", "-g", "@mariozechner/pi-coding-agent"]),
-        "copilot" => ("npm", vec!["install", "-g", "@githubnext/github-copilot-cli"]),
+        "pi" => (
+            "npm",
+            vec!["install", "-g", "@mariozechner/pi-coding-agent"],
+        ),
+        "copilot" => (
+            "npm",
+            vec!["install", "-g", "@githubnext/github-copilot-cli"],
+        ),
         _ => return Err(format!("Unknown agent: {}", name)),
     };
 

@@ -88,7 +88,11 @@ pub async fn open_terminal(name: String, _state: State<'_, AppState>) -> Result<
 
 /// Quickstart: create a sandbox with an agent, install it, and open a terminal running the agent.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn quickstart_agent(agent: String, name: String, state: State<'_, AppState>) -> Result<String, String> {
+pub async fn quickstart_agent(
+    agent: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     let sandbox_name = name;
 
     let client = state.client.lock().map_err(|e| e.to_string())?.clone();
