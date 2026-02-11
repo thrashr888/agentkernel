@@ -127,6 +127,7 @@ jobs:
       - name: Attach CLI binaries to release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           files: artifacts/**/*.tar.gz
 
   helm:
