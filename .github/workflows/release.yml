@@ -30,7 +30,7 @@ jobs:
       - run: cargo test
 
   build:
-    name: Build
+    name: Build CLI (${{ matrix.artifact }})
     needs: test
     runs-on: ${{ matrix.os }}
     strategy:
@@ -97,38 +97,120 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: app/src-tauri -> target
+
       - run: npm ci
         working-directory: app
-      - name: Build and release Tauri app
-        uses: tauri-apps/tauri-action@v0
+
+      - name: Build Tauri app
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        working-directory: app
+        run: npm run tauri build -- --target ${{ matrix.target }}
+
+      - name: Find artifacts
+        id: artifacts
+        run: |
+          BUNDLE_DIR="app/src-tauri/target/${{ matrix.target }}/release/bundle"
+          DMG=$(find "$BUNDLE_DIR/dmg" -name "*.dmg" | head -1)
+          UPDATER=$(find "$BUNDLE_DIR/macos" -name "*.app.tar.gz" ! -name "*.sig" | head -1)
+          SIG="${UPDATER}.sig"
+          echo "dmg=$DMG" >> $GITHUB_OUTPUT
+          echo "updater=$UPDATER" >> $GITHUB_OUTPUT
+          echo "sig=$SIG" >> $GITHUB_OUTPUT
+          echo "Found DMG: $DMG"
+          echo "Found updater: $UPDATER"
+          echo "Found sig: $SIG"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
         with:
-          projectPath: app
-          args: --target ${{ matrix.target }}
-          tagName: ${{ github.ref_name }}
-          releaseName: ${{ github.ref_name }}
-          releaseBody: ""
+          name: desktop-dmg-${{ matrix.arch }}
+          path: ${{ steps.artifacts.outputs.dmg }}
+
+      - name: Upload updater archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-updater-${{ matrix.arch }}
+          path: |
+            ${{ steps.artifacts.outputs.updater }}
+            ${{ steps.artifacts.outputs.sig }}
 
   release:
-    name: Upload CLI Binaries
+    name: Create Release
     needs: [build, desktop-app]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download CLI artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Attach CLI binaries to release
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Generate latest.json for updater
+        run: |
+          VERSION=$(jq -r .version app/src-tauri/tauri.conf.json)
+          TAG="${{ github.ref_name }}"
+          REPO="thrashr888/agentkernel"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Read signatures
+          ARM64_SIG=$(cat artifacts/desktop-updater-arm64/*.sig 2>/dev/null || echo "")
+          X64_SIG=$(cat artifacts/desktop-updater-x64/*.sig 2>/dev/null || echo "")
+
+          # Find updater filenames
+          ARM64_TAR=$(basename "$(find artifacts/desktop-updater-arm64 -name '*.tar.gz' ! -name '*.sig' 2>/dev/null | head -1)" 2>/dev/null || echo "")
+          X64_TAR=$(basename "$(find artifacts/desktop-updater-x64 -name '*.tar.gz' ! -name '*.sig' 2>/dev/null | head -1)" 2>/dev/null || echo "")
+
+          BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
+
+          cat > artifacts/latest.json << ENDJSON
+          {
+            "version": "${VERSION}",
+            "notes": "",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${ARM64_SIG}",
+                "url": "${BASE_URL}/${ARM64_TAR}"
+              },
+              "darwin-x86_64": {
+                "signature": "${X64_SIG}",
+                "url": "${BASE_URL}/${X64_TAR}"
+              }
+            }
+          }
+          ENDJSON
+
+          echo "Generated latest.json:"
+          cat artifacts/latest.json
+
+      - name: Collect release files
+        run: |
+          mkdir -p release-files
+          # CLI binaries
+          cp artifacts/agentkernel-*/*.tar.gz release-files/
+          # Desktop DMGs
+          cp artifacts/desktop-dmg-*/*.dmg release-files/
+          # Updater archives + signatures
+          cp artifacts/desktop-updater-*/*.tar.gz release-files/
+          cp artifacts/desktop-updater-*/*.sig release-files/
+          # Updater manifest
+          cp artifacts/latest.json release-files/
+          echo "Release files:"
+          ls -la release-files/
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: artifacts/**/*.tar.gz
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: release-files/*
 
   helm:
     name: Publish Helm Chart
