@@ -45,6 +45,8 @@ nav:
   - Getting Started: getting-started.md
   - Comparisons: comparisons.md
   - Benchmarks: benchmarks.md
+  - Desktop App: desktop-app.md
+  - Browser Automation: browser-automation.md
   - Changelog: changelog.md
   - Commands:
     - Overview: commands.md
@@ -69,6 +71,7 @@ nav:
     - OpenAI Codex: agent-codex.md
     - Google Gemini: agent-gemini.md
     - OpenCode: agent-opencode.md
+    - GitHub Copilot: agent-copilot.md
   - API:
     - Overview: api.md
     - HTTP API: api-http.md
