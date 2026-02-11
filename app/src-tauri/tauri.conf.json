@@ -26,7 +26,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhDMEQzRjFEMDRBQUVBOEUKUldTTzZxb0VIVDhOaktTNVpMRGFmdVpKaWxEblk0Z0ZkczV2NmlvK24zZkV0MEwwdGxTR2lyZWEK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZDOUNCQTIwMDBEQUIxNTMKUldSVHNkb0FJTHFjL1BOVlBsM1Z5d0NhT1lGR1BEQWJFdG9kRTB5MnhrR2RXWHVESUQ0ZzlLYXcK",
       "endpoints": [
         "https://github.com/thrashr888/agentkernel/releases/latest/download/latest.json"
       ]
