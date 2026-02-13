@@ -45,6 +45,7 @@ nav:
   - Getting Started: getting-started.md
   - Comparisons: comparisons.md
   - Benchmarks: benchmarks.md
+  - Secrets: secrets.md
   - Desktop App: desktop-app.md
   - Browser Automation: browser-automation.md
   - Changelog: changelog.md
@@ -55,6 +56,7 @@ nav:
     - start / stop: cmd-start-stop.md
     - exec / attach: cmd-exec-attach.md
     - list: cmd-list.md
+    - secret: cmd-secrets.md
   - Configuration:
     - Overview: configuration.md
     - agentkernel.toml: config-toml.md

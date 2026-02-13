@@ -1,7 +1,7 @@
 
 # agentkernel secret
 
-Manage secrets (API keys and credentials) in a local vault. Secrets are stored in `~/.agentkernel/secrets.json` with file permissions set to `0600`.
+Manage secrets (API keys and credentials) in the secret vault.
 
 ## Subcommands
 
@@ -46,12 +46,24 @@ Keys:
 agentkernel secret delete GITHUB_TOKEN
 ```
 
-## Storage
+## Storage Backends
 
-- Secrets file: `~/.agentkernel/secrets.json`
-- File permissions: `0600` (owner read/write only)
-- Values are base64-encoded (not encrypted — use OS keychain for production secrets)
+The vault supports three backends, configured in `agentkernel.toml`:
+
+```toml
+[secrets]
+backend = "file"   # "file" (default), "env", or "keyring"
+```
+
+| Backend | Storage | set/delete | Best For |
+|---------|---------|------------|----------|
+| `file` | `~/.agentkernel/secrets.json` (base64-encoded, `0600` perms) | Yes | Local development |
+| `env` | Host environment variables | No (read-only) | CI/CD pipelines |
+| `keyring` | OS keychain (macOS Keychain, Linux secret-service) | Yes | Production workstations |
+
+The `keyring` backend requires building with the `keyring` Cargo feature.
 
 ## See Also
 
-- [Agents](agents) - Agent-specific API key configuration
+- [Secrets Overview](secrets) — proxy injection, file injection, SDK usage, and security model
+- [Agents](agents) — agent-specific API key configuration
