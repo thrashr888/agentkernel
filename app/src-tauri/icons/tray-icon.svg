@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="100 140 780 744" width="44" height="44">
+  <!--
+    AK Monogram for macOS menu bar template icon.
+    No background — transparent so macOS can render as template (auto light/dark).
+    ViewBox cropped tight to the monogram bounds.
+  -->
+  <g fill="black">
+    <!-- Shared vertical bar (A's right leg = K's stem) -->
+    <rect x="420" y="160" width="80" height="704"/>
+
+    <!-- A: left leg (angled from bottom-left to apex) -->
+    <polygon points="120,864 420,160 500,160 200,864"/>
+
+    <!-- A: crossbar -->
+    <rect x="225" y="548" width="275" height="72"/>
+
+    <!-- K: upper arm -->
+    <polygon points="500,465 860,160 860,240 500,545"/>
+
+    <!-- K: lower leg -->
+    <polygon points="500,479 500,559 860,864 860,784"/>
+  </g>
+</svg>

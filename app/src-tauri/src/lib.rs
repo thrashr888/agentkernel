@@ -7,10 +7,11 @@ use state::AppState;
 use std::time::Duration;
 use tauri::{
     image::Image,
-    menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::TrayIconBuilder,
+    menu::{Menu, MenuItem, PredefinedMenuItem, SubmenuBuilder},
+    tray::{TrayIconBuilder, TrayIconId},
     Manager, WindowEvent,
 };
+use types::SandboxInfo;
 
 /// Navigate the main window to a given path using BrowserRouter pushState.
 fn navigate_to(app: &tauri::AppHandle, path: &str) {
@@ -23,6 +24,69 @@ fn navigate_to(app: &tauri::AppHandle, path: &str) {
         );
         let _ = window.eval(&js);
     }
+}
+
+/// Rebuild the tray menu with an up-to-date "Recent Sandboxes" submenu.
+#[allow(clippy::too_many_arguments)]
+fn rebuild_tray_menu(
+    handle: &tauri::AppHandle,
+    tray_id: &TrayIconId,
+    sandboxes: &[SandboxInfo],
+    status_item: &MenuItem<tauri::Wry>,
+    sandbox_count: &MenuItem<tauri::Wry>,
+    quick_create: &MenuItem<tauri::Wry>,
+    dashboard: &MenuItem<tauri::Wry>,
+    sandboxes_nav: &MenuItem<tauri::Wry>,
+    secrets: &MenuItem<tauri::Wry>,
+    settings: &MenuItem<tauri::Wry>,
+    quit: &MenuItem<tauri::Wry>,
+) -> anyhow::Result<()> {
+    // Build the Recent Sandboxes submenu (up to 5 entries)
+    let mut builder = SubmenuBuilder::new(handle, "Recent Sandboxes");
+    let recent: Vec<_> = sandboxes.iter().take(5).collect();
+    if recent.is_empty() {
+        builder = builder.text("no_sandboxes", "No sandboxes");
+    } else {
+        for sb in &recent {
+            let icon = if sb.status == "running" {
+                "\u{1F7E2}"
+            } else {
+                "\u{26AA}"
+            };
+            builder = builder.text(
+                format!("sandbox:{}", sb.name),
+                format!("{icon} {}", sb.name),
+            );
+        }
+    }
+    let recent_sub = builder.build()?;
+
+    let sep1 = PredefinedMenuItem::separator(handle)?;
+    let sep2 = PredefinedMenuItem::separator(handle)?;
+    let sep3 = PredefinedMenuItem::separator(handle)?;
+
+    let menu = Menu::with_items(
+        handle,
+        &[
+            status_item,
+            sandbox_count,
+            &sep1,
+            quick_create,
+            &recent_sub,
+            &sep2,
+            dashboard,
+            sandboxes_nav,
+            secrets,
+            settings,
+            &sep3,
+            quit,
+        ],
+    )?;
+
+    if let Some(tray) = handle.tray_by_id(tray_id) {
+        tray.set_menu(Some(menu))?;
+    }
+    Ok(())
 }
 
 /// Entry point for the Tauri application.
@@ -52,6 +116,13 @@ pub fn run() {
             let sandbox_count =
                 MenuItem::with_id(app, "sandbox_count", "\u{2014}", false, None::<&str>)?;
 
+            // -- Quick actions --
+            let quick_create =
+                MenuItem::with_id(app, "quick_create", "New Sandbox\u{2026}", true, None::<&str>)?;
+            let recent_sandboxes = SubmenuBuilder::new(app, "Recent Sandboxes")
+                .text("no_sandboxes", "No sandboxes")
+                .build()?;
+
             // -- Navigation items --
             let dashboard =
                 MenuItem::with_id(app, "dashboard", "Open Dashboard", true, None::<&str>)?;
@@ -61,6 +132,7 @@ pub fn run() {
 
             let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
+            let sep3 = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit AgentKernel", true, None::<&str>)?;
 
             let menu = Menu::with_items(
@@ -69,36 +141,55 @@ pub fn run() {
                     &status_item,
                     &sandbox_count,
                     &sep1,
+                    &quick_create,
+                    &recent_sandboxes,
+                    &sep2,
                     &dashboard,
                     &sandboxes,
                     &secrets,
                     &settings,
-                    &sep2,
+                    &sep3,
                     &quit,
                 ],
             )?;
 
-            // Load tray icon from bundled PNG
-            let icon = Image::from_bytes(include_bytes!("../icons/icon.png"))?;
+            // Load tray icon — 44x44 template icon for macOS menu bar
+            let icon = Image::from_bytes(include_bytes!("../icons/tray-icon.png"))?;
 
-            let _tray = TrayIconBuilder::with_id("main")
+            let tray = TrayIconBuilder::with_id("main")
                 .menu(&menu)
                 .show_menu_on_left_click(true)
+                .icon_as_template(true)
                 .tooltip("AgentKernel")
                 .icon(icon)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "quit" => app.exit(0),
-                    "dashboard" => navigate_to(app, "/"),
-                    "sandboxes" => navigate_to(app, "/sandboxes"),
-                    "secrets" => navigate_to(app, "/secrets"),
-                    "settings" => navigate_to(app, "/settings"),
-                    _ => {}
+                .on_menu_event(|app, event| {
+                    let id = event.id.as_ref();
+                    match id {
+                        "quit" => app.exit(0),
+                        "quick_create" => navigate_to(app, "/sandboxes?action=create"),
+                        "dashboard" => navigate_to(app, "/"),
+                        "sandboxes" => navigate_to(app, "/sandboxes"),
+                        "secrets" => navigate_to(app, "/secrets"),
+                        "settings" => navigate_to(app, "/settings"),
+                        _ if id.starts_with("sandbox:") => {
+                            let name = &id["sandbox:".len()..];
+                            navigate_to(app, &format!("/sandboxes/{name}"));
+                        }
+                        _ => {}
+                    }
                 })
                 .build(app)?;
 
             // -- Background poller: update tray status every 5 seconds --
             let status_clone = status_item.clone();
             let count_clone = sandbox_count.clone();
+            let quick_create_clone = quick_create.clone();
+            let dashboard_clone = dashboard.clone();
+            let sandboxes_clone = sandboxes.clone();
+            let secrets_clone = secrets.clone();
+            let settings_clone = settings.clone();
+            let quit_clone = quit.clone();
+            let tray_id = tray.id().clone();
             let handle = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
@@ -124,11 +215,12 @@ pub fn run() {
                         "\u{1F534} Disconnected"
                     });
 
-                    // Update sandbox count
+                    // Update sandbox count + recent sandboxes submenu
                     if connected {
                         match client.list_sandboxes().await {
                             Ok(list) => {
-                                let running = list.iter().filter(|s| s.status == "running").count();
+                                let running =
+                                    list.iter().filter(|s| s.status == "running").count();
                                 let total = list.len();
                                 let text = match (total, running) {
                                     (0, _) => "No Sandboxes".to_string(),
@@ -136,6 +228,23 @@ pub fn run() {
                                     _ => format!("{running} Running, {total} Total"),
                                 };
                                 let _ = count_clone.set_text(&text);
+
+                                // Rebuild Recent Sandboxes submenu
+                                if let Err(e) = rebuild_tray_menu(
+                                    &handle,
+                                    &tray_id,
+                                    &list,
+                                    &status_clone,
+                                    &count_clone,
+                                    &quick_create_clone,
+                                    &dashboard_clone,
+                                    &sandboxes_clone,
+                                    &secrets_clone,
+                                    &settings_clone,
+                                    &quit_clone,
+                                ) {
+                                    eprintln!("Failed to rebuild tray menu: {e}");
+                                }
                             }
                             Err(_) => {
                                 let _ = count_clone.set_text("\u{2014}");
