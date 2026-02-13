@@ -307,7 +307,7 @@ The agentkernel desktop app includes a **Secrets** page for managing vault conte
 
 ## See Also
 
-- [Secret CLI Commands](cmd-secrets) — vault management commands
-- [Security Profiles](config-security) — domain filtering, command filtering, seccomp
-- [SDK Reference](sdks) — full SDK documentation
-- [Getting Started](getting-started) — first sandbox walkthrough
+- [Secret CLI Commands](../commands/secrets.md) — vault management commands
+- [Security Profiles](../config/security.md) — domain filtering, command filtering, seccomp
+- [SDK Reference](../sdks/index.md) — full SDK documentation
+- [Getting Started](../getting-started/quick-start.md) — first sandbox walkthrough

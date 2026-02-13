@@ -142,7 +142,7 @@ agentkernel create my-sandbox --backend kubernetes --image alpine:3.20
 - Higher latency than local backends
 - Never auto-detected (must specify `--backend kubernetes`)
 
-See the [Orchestration Guide](orchestration.md) for full configuration and deployment details.
+See the [Orchestration Guide](../operations/index.md) for full configuration and deployment details.
 
 ## Nomad
 
@@ -169,7 +169,7 @@ agentkernel create my-sandbox --backend nomad --image alpine:3.20
 - Higher latency than local backends
 - Never auto-detected (must specify `--backend nomad`)
 
-See the [Orchestration Guide](orchestration.md) for full configuration and deployment details.
+See the [Orchestration Guide](../operations/index.md) for full configuration and deployment details.
 
 ## Auto-Detection
 

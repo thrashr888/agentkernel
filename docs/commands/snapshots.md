@@ -66,5 +66,5 @@ agentkernel snapshot delete before-upgrade
 
 ## See Also
 
-- [Sessions](cmd-sessions) - `session save` combines snapshots with session metadata
-- [Images](cmd-images) - Manage Docker images including snapshot images
+- [Sessions](sessions.md) - `session save` combines snapshots with session metadata
+- [Images](images.md) - Manage Docker images including snapshot images

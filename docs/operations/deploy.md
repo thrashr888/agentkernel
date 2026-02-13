@@ -122,7 +122,7 @@ kubectl -n agentkernel port-forward svc/agentkernel 18888:18888
 ```
 
 For advanced deployments, see:
-- [Kubernetes Backend](orchestration-kubernetes.md) - Full orchestration docs
+- [Kubernetes Backend](kubernetes.md) - Full orchestration docs
 - [Enterprise CRDs](enterprise.md) - AgentKernelPolicy resources
 
 See [`examples/deploy/kubernetes/`](../examples/deploy/kubernetes/) for manifests.
@@ -135,7 +135,7 @@ Deploy as a Nomad job:
 nomad job run agentkernel.nomad
 ```
 
-See [Nomad Backend](orchestration-nomad.md) for full configuration.
+See [Nomad Backend](nomad.md) for full configuration.
 
 ## Building from Source
 
@@ -183,7 +183,7 @@ curl -X POST http://agentkernel:18888/sandboxes/my-sandbox/exec \
 curl -X DELETE http://agentkernel:18888/sandboxes/my-sandbox
 ```
 
-See [HTTP API Reference](api-http.md) for the full endpoint list.
+See [HTTP API Reference](../api/http.md) for the full endpoint list.
 
 ## Monitoring
 

@@ -102,5 +102,5 @@ Volumes are stored in `~/.agentkernel/volumes/<slug>/`. The directory is created
 
 ## See Also
 
-- [Create](cmd-create) - `--volume` flag
-- [Images](cmd-images) - Image management
+- [Create](create.md) - `--volume` flag
+- [Images](images.md) - Image management

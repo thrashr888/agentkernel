@@ -7,13 +7,13 @@ agentkernel provides pre-configured Docker images for popular AI coding agents. 
 
 | Agent | CLI Command | API Key Variable |
 |-------|-------------|------------------|
-| [Claude Code](agent-claude.md) | `claude` | `ANTHROPIC_API_KEY` |
-| [OpenAI Codex](agent-codex.md) | `codex` | `OPENAI_API_KEY` |
-| [Google Gemini](agent-gemini.md) | `gemini` | `GEMINI_API_KEY` |
-| [GitHub Copilot](agent-copilot.md) | `github-copilot` | `GITHUB_TOKEN` |
-| [Amp](agent-amp.md) | `amp` | `ANTHROPIC_API_KEY` |
-| [Pi](agent-pi.md) | `pi` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
-| [OpenCode](agent-opencode.md) | `opencode` | Provider-specific |
+| [Claude Code](claude.md) | `claude` | `ANTHROPIC_API_KEY` |
+| [OpenAI Codex](codex.md) | `codex` | `OPENAI_API_KEY` |
+| [Google Gemini](gemini.md) | `gemini` | `GEMINI_API_KEY` |
+| [GitHub Copilot](copilot.md) | `github-copilot` | `GITHUB_TOKEN` |
+| [Amp](amp.md) | `amp` | `ANTHROPIC_API_KEY` |
+| [Pi](pi.md) | `pi` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
+| [OpenCode](opencode.md) | `opencode` | Provider-specific |
 
 ## Quick Start
 

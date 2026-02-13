@@ -160,7 +160,7 @@ block = ["*.ru", "*.cn", "malware-c2.com"]
 
 ## Command Filtering
 
-Command filtering is **enforced at runtime**. Blocked commands are rejected with an error and logged as `PolicyViolation` audit events (see [audit logging](../commands#audit-logging)).
+Command filtering is **enforced at runtime**. Blocked commands are rejected with an error and logged as `PolicyViolation` audit events (see [audit logging](../commands/index.md#audit-logging)).
 
 Control which commands and binaries can be executed inside the sandbox.
 

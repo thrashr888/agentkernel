@@ -385,7 +385,7 @@ curl http://localhost:18888/sandboxes/my-sandbox/logs
 }
 ```
 
-Returns all audit events associated with the sandbox, sorted by timestamp. See [audit logging](../commands#audit-logging) for event types.
+Returns all audit events associated with the sandbox, sorted by timestamp. See [audit logging](../commands/index.md#audit-logging) for event types.
 
 ### Batch Execution
 

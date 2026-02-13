@@ -9,17 +9,17 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 
 | Command | Description |
 |---------|-------------|
-| [`run`](cmd-run) | Run a command in a temporary sandbox |
-| [`create`](cmd-create) | Create a new sandbox |
-| [`start`](cmd-start-stop) | Start a stopped sandbox |
-| [`stop`](cmd-start-stop) | Stop a running sandbox |
-| [`remove`](cmd-start-stop) | Remove a sandbox |
-| [`exec`](cmd-exec-attach) | Execute a command in a running sandbox |
-| [`attach`](cmd-exec-attach) | Attach to a sandbox's interactive shell |
+| [`run`](run.md) | Run a command in a temporary sandbox |
+| [`create`](create.md) | Create a new sandbox |
+| [`start`](start-stop.md) | Start a stopped sandbox |
+| [`stop`](start-stop.md) | Stop a running sandbox |
+| [`remove`](start-stop.md) | Remove a sandbox |
+| [`exec`](exec-attach.md) | Execute a command in a running sandbox |
+| [`attach`](exec-attach.md) | Attach to a sandbox's interactive shell |
 | `ssh` | SSH into a sandbox (certificate-authenticated) |
 | `ssh-config` | Generate SSH config entry for IDE integration |
 | `ssh-proxy` | ProxyCommand helper for SSH |
-| [`list`](cmd-list) | List all sandboxes (with IP addresses) |
+| [`list`](list.md) | List all sandboxes (with IP addresses) |
 | `extend-ttl` | Extend a sandbox's time-to-live |
 | `cp` | Copy files to/from a sandbox |
 | `info` | Show detailed information about a sandbox (with IP) |
@@ -28,56 +28,56 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 
 | Command | Description |
 |---------|-------------|
-| [`template list`](cmd-templates) | List available templates (built-in + custom) |
-| [`template save`](cmd-templates) | Save a running sandbox as a template |
-| [`template add`](cmd-templates) | Add a template from GitHub |
-| [`template remove`](cmd-templates) | Remove a custom template |
-| [`export-config`](cmd-export-import) | Export sandbox config as TOML |
-| [`import-config`](cmd-export-import) | Create sandbox from a TOML config |
+| [`template list`](templates.md) | List available templates (built-in + custom) |
+| [`template save`](templates.md) | Save a running sandbox as a template |
+| [`template add`](templates.md) | Add a template from GitHub |
+| [`template remove`](templates.md) | Remove a custom template |
+| [`export-config`](export-import.md) | Export sandbox config as TOML |
+| [`import-config`](export-import.md) | Create sandbox from a TOML config |
 
 ### Snapshots & Sessions
 
 | Command | Description |
 |---------|-------------|
-| [`snapshot take`](cmd-snapshots) | Save a sandbox's current state |
-| [`snapshot list`](cmd-snapshots) | List all snapshots |
-| [`snapshot delete`](cmd-snapshots) | Delete a snapshot |
-| [`snapshot restore`](cmd-snapshots) | Restore a sandbox from a snapshot |
-| [`session start`](cmd-sessions) | Start an agent session (sandbox + agent) |
-| [`session list`](cmd-sessions) | List all sessions |
-| [`session stop`](cmd-sessions) | Stop a session |
-| [`session save`](cmd-sessions) | Save a session (snapshot + metadata) |
-| [`session resume`](cmd-sessions) | Resume a stopped/saved session |
-| [`session delete`](cmd-sessions) | Delete a session |
+| [`snapshot take`](snapshots.md) | Save a sandbox's current state |
+| [`snapshot list`](snapshots.md) | List all snapshots |
+| [`snapshot delete`](snapshots.md) | Delete a snapshot |
+| [`snapshot restore`](snapshots.md) | Restore a sandbox from a snapshot |
+| [`session start`](sessions.md) | Start an agent session (sandbox + agent) |
+| [`session list`](sessions.md) | List all sessions |
+| [`session stop`](sessions.md) | Stop a session |
+| [`session save`](sessions.md) | Save a session (snapshot + metadata) |
+| [`session resume`](sessions.md) | Resume a stopped/saved session |
+| [`session delete`](sessions.md) | Delete a session |
 
 ### Pipelines & Parallel Execution
 
 | Command | Description |
 |---------|-------------|
-| [`pipeline`](cmd-pipelines) | Run a multi-step pipeline (TOML-defined) |
-| [`parallel`](cmd-parallel) | Run multiple jobs concurrently |
+| [`pipeline`](pipelines.md) | Run a multi-step pipeline (TOML-defined) |
+| [`parallel`](parallel.md) | Run multiple jobs concurrently |
 
 ### Volumes
 
 | Command | Description |
 |---------|-------------|
-| [`volume create`](cmd-volumes) | Create a persistent volume |
-| [`volume list`](cmd-volumes) | List all volumes |
-| [`volume info`](cmd-volumes) | Show volume details |
-| [`volume delete`](cmd-volumes) | Delete a volume |
+| [`volume create`](volumes.md) | Create a persistent volume |
+| [`volume list`](volumes.md) | List all volumes |
+| [`volume info`](volumes.md) | Show volume details |
+| [`volume delete`](volumes.md) | Delete a volume |
 
 ### Image & Disk Management
 
 | Command | Description |
 |---------|-------------|
-| [`build`](cmd-images) | Build a custom image from Dockerfile |
-| [`images list`](cmd-images) | List Docker images (with sandbox usage) |
-| [`images local-list`](cmd-images) | List locally built images |
-| [`images local-delete`](cmd-images) | Delete a locally built image |
-| [`images local-sync`](cmd-images) | Sync metadata with Docker |
-| [`images prune`](cmd-images) | Remove unused images |
-| [`images pull`](cmd-images) | Pull a Docker image |
-| [`export`](cmd-export-import) | Export sandbox filesystem as tar |
+| [`build`](images.md) | Build a custom image from Dockerfile |
+| [`images list`](images.md) | List Docker images (with sandbox usage) |
+| [`images local-list`](images.md) | List locally built images |
+| [`images local-delete`](images.md) | Delete a locally built image |
+| [`images local-sync`](images.md) | Sync metadata with Docker |
+| [`images prune`](images.md) | Remove unused images |
+| [`images pull`](images.md) | Pull a Docker image |
+| [`export`](export-import.md) | Export sandbox filesystem as tar |
 | `gc` | Garbage-collect expired sandboxes |
 | `clean` | Remove all sandboxes and Docker artifacts |
 
@@ -85,10 +85,10 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 
 | Command | Description |
 |---------|-------------|
-| [`secret set`](cmd-secrets) | Store a secret |
-| [`secret get`](cmd-secrets) | Retrieve a secret |
-| [`secret list`](cmd-secrets) | List stored secret keys |
-| [`secret delete`](cmd-secrets) | Delete a secret |
+| [`secret set`](secrets.md) | Store a secret |
+| [`secret get`](secrets.md) | Retrieve a secret |
+| [`secret list`](secrets.md) | List stored secret keys |
+| [`secret delete`](secrets.md) | Delete a secret |
 
 ### System & Diagnostics
 

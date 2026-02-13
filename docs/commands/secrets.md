@@ -65,5 +65,5 @@ The `keyring` backend requires building with the `keyring` Cargo feature.
 
 ## See Also
 
-- [Secrets Overview](secrets) — proxy injection, file injection, SDK usage, and security model
-- [Agents](agents) — agent-specific API key configuration
+- [Secrets Overview](../features/secrets.md) — proxy injection, file injection, SDK usage, and security model
+- [Agents](../agents/index.md) — agent-specific API key configuration

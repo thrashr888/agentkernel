@@ -91,5 +91,5 @@ agentkernel start my-project
 
 ## See Also
 
-- [Templates](cmd-templates) - Reusable sandbox configurations
-- [Snapshots](cmd-snapshots) - Save/restore full sandbox state (including filesystem)
+- [Templates](templates.md) - Reusable sandbox configurations
+- [Snapshots](snapshots.md) - Save/restore full sandbox state (including filesystem)

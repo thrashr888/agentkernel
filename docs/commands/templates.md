@@ -136,6 +136,6 @@ network = true
 
 ## See Also
 
-- [create](cmd-create) - Create a sandbox with `--template`
-- [run](cmd-run) - Run a command with `--template`
-- [Configuration](config-toml) - Full config file reference
+- [create](create.md) - Create a sandbox with `--template`
+- [run](run.md) - Run a command with `--template`
+- [Configuration](../config/toml.md) - Full config file reference

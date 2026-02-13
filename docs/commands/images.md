@@ -107,5 +107,5 @@ agentkernel images prune --agentkernel-only
 
 ## See Also
 
-- [Snapshots](cmd-snapshots) - Snapshot images appear in the images list
-- [Clean](commands) - `clean --all` removes images and build cache
+- [Snapshots](snapshots.md) - Snapshot images appear in the images list
+- [Clean](index.md) - `clean --all` removes images and build cache

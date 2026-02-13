@@ -161,5 +161,5 @@ The sandbox is created but not started. Use `agentkernel start` to run it.
 
 ## See Also
 
-- [start](../cmd-start-stop) - Start a sandbox
-- [Configuration](../config-toml) - Config file format
+- [start](start-stop.md) - Start a sandbox
+- [Configuration](../config/toml.md) - Config file format

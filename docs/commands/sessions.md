@@ -89,5 +89,5 @@ agentkernel session delete feature-x
 
 ## See Also
 
-- [Snapshots](cmd-snapshots) - Lower-level snapshot management
-- [Agents](agents) - Supported agent types
+- [Snapshots](snapshots.md) - Lower-level snapshot management
+- [Agents](../agents/index.md) - Supported agent types

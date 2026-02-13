@@ -1,17 +1,17 @@
 
 # SDKs
 
-agentkernel provides official SDK clients in five languages. Each SDK wraps the [HTTP API](../api-http) with idiomatic language bindings.
+agentkernel provides official SDK clients in five languages. Each SDK wraps the [HTTP API](../api/http.md) with idiomatic language bindings.
 
 ## Quick Comparison
 
 | SDK | Package | Registry | Install |
 |-----|---------|----------|---------|
-| [Node.js](../sdk-nodejs) | `agentkernel` | [npm](https://www.npmjs.com/package/agentkernel) | `npm install agentkernel` |
-| [Python](../sdk-python) | `agentkernel-sdk` | [PyPI](https://pypi.org/project/agentkernel-sdk/) | `pip install agentkernel-sdk` |
-| [Go](../sdk-golang) | `agentkernel` | [pkg.go.dev](https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang) | `go get github.com/thrashr888/agentkernel/sdk/golang` |
-| [Rust](../sdk-rust) | `agentkernel-sdk` | [crates.io](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` |
-| [Swift](../sdk-swift) | `AgentKernel` | [GitHub](https://github.com/thrashr888/agentkernel/tree/main/sdk/swift) | Swift Package Manager |
+| [Node.js](nodejs.md) | `agentkernel` | [npm](https://www.npmjs.com/package/agentkernel) | `npm install agentkernel` |
+| [Python](python.md) | `agentkernel-sdk` | [PyPI](https://pypi.org/project/agentkernel-sdk/) | `pip install agentkernel-sdk` |
+| [Go](golang.md) | `agentkernel` | [pkg.go.dev](https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang) | `go get github.com/thrashr888/agentkernel/sdk/golang` |
+| [Rust](rust.md) | `agentkernel-sdk` | [crates.io](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` |
+| [Swift](swift.md) | `AgentKernel` | [GitHub](https://github.com/thrashr888/agentkernel/tree/main/sdk/swift) | Swift Package Manager |
 
 All SDKs share the same API surface:
 

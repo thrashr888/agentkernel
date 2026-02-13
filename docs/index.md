@@ -103,7 +103,7 @@ agentkernel picks the best available backend automatically:
 | Kubernetes cluster | K8s Pods | Pod isolation + NetworkPolicy |
 | Nomad cluster | Nomad Jobs | Job allocation isolation |
 
-On Linux with KVM, you get Firecracker -- the same microVM technology that powers AWS Lambda and Fargate. On macOS 26+, Apple Containers provide native VM isolation. On older macOS or systems without KVM, Docker and Podman provide container-level isolation as a fallback. For team and cloud environments, deploy on [Kubernetes](orchestration-kubernetes) or [Nomad](orchestration-nomad) with warm pools, CRDs, and Helm/Nomad Pack support.
+On Linux with KVM, you get Firecracker -- the same microVM technology that powers AWS Lambda and Fargate. On macOS 26+, Apple Containers provide native VM isolation. On older macOS or systems without KVM, Docker and Podman provide container-level isolation as a fallback. For team and cloud environments, deploy on [Kubernetes](operations/kubernetes.md) or [Nomad](operations/nomad.md) with warm pools, CRDs, and Helm/Nomad Pack support.
 
 For team and multi-tenant deployments, Kubernetes and Nomad backends run sandboxes on remote clusters. Same CLI, same API -- sandboxes just run on your cluster instead of your laptop.
 
@@ -172,15 +172,15 @@ await sandbox.exec(["npm", "install"]);
 const tests = await sandbox.exec(["npm", "test"]);
 ```
 
-Official SDKs for [Node.js](sdk-nodejs), [Python](sdk-python), [Go](sdk-golang), [Rust](sdk-rust), and [Swift](sdk-swift). Full REST API for creating, managing, and executing commands in sandboxes. Build agent orchestration systems, CI/CD pipelines, or interactive coding environments on top of agentkernel.
+Official SDKs for [Node.js](sdks/nodejs.md), [Python](sdks/python.md), [Go](sdks/golang.md), [Rust](sdks/rust.md), and [Swift](sdks/swift.md). Full REST API for creating, managing, and executing commands in sandboxes. Build agent orchestration systems, CI/CD pipelines, or interactive coding environments on top of agentkernel.
 
 | SDK | Package | Install |
 |-----|---------|---------|
-| [Node.js](sdk-nodejs) | [`agentkernel`](https://www.npmjs.com/package/agentkernel) | `npm install agentkernel` |
-| [Python](sdk-python) | [`agentkernel-sdk`](https://pypi.org/project/agentkernel-sdk/) | `pip install agentkernel-sdk` |
-| [Go](sdk-golang) | [`agentkernel`](https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang) | `go get github.com/thrashr888/agentkernel/sdk/golang` |
-| [Rust](sdk-rust) | [`agentkernel-sdk`](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` |
-| [Swift](sdk-swift) | `AgentKernel` | Swift Package Manager |
+| [Node.js](sdks/nodejs.md) | [`agentkernel`](https://www.npmjs.com/package/agentkernel) | `npm install agentkernel` |
+| [Python](sdks/python.md) | [`agentkernel-sdk`](https://pypi.org/project/agentkernel-sdk/) | `pip install agentkernel-sdk` |
+| [Go](sdks/golang.md) | [`agentkernel`](https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang) | `go get github.com/thrashr888/agentkernel/sdk/golang` |
+| [Rust](sdks/rust.md) | [`agentkernel-sdk`](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` |
+| [Swift](sdks/swift.md) | `AgentKernel` | Swift Package Manager |
 
 ## Enterprise policy management
 
@@ -247,17 +247,17 @@ agentkernel setup
 agentkernel run python3 -c "print('Hello from sandbox!')"
 ```
 
-- [Installation](installation) - Detailed setup instructions
-- [Getting Started](getting-started) - Your first sandbox
-- [Commands](commands) - Full CLI reference
-- [Configuration](configuration) - Config file format
-- [Templates](cmd-templates) - Pre-configured sandbox environments
-- [Snapshots](cmd-snapshots) - Save and restore sandbox state
-- [Sessions](cmd-sessions) - Agent session lifecycle management
-- [Pipelines](cmd-pipelines) - Multi-step sandbox pipelines
-- [Secrets](cmd-secrets) - API key and credential management
-- [Agents](agents) - Running Claude Code, Codex, Gemini CLI
-- [HTTP API](api) - Programmatic access
-- [SDKs](sdks) - Client libraries for [Node.js](sdk-nodejs), [Python](sdk-python), [Go](sdk-golang), [Rust](sdk-rust), [Swift](sdk-swift)
-- [Benchmarks](benchmarks) - Performance numbers for every backend
-- [Comparisons](comparisons) - How agentkernel compares to E2B, Daytona, Docker, and others
+- [Installation](getting-started/installation.md) - Detailed setup instructions
+- [Getting Started](getting-started/quick-start.md) - Your first sandbox
+- [Commands](commands/index.md) - Full CLI reference
+- [Configuration](config/index.md) - Config file format
+- [Templates](commands/templates.md) - Pre-configured sandbox environments
+- [Snapshots](commands/snapshots.md) - Save and restore sandbox state
+- [Sessions](commands/sessions.md) - Agent session lifecycle management
+- [Pipelines](commands/pipelines.md) - Multi-step sandbox pipelines
+- [Secrets](commands/secrets.md) - API key and credential management
+- [Agents](agents/index.md) - Running Claude Code, Codex, Gemini CLI
+- [HTTP API](api/index.md) - Programmatic access
+- [SDKs](sdks/index.md) - Client libraries for [Node.js](sdks/nodejs.md), [Python](sdks/python.md), [Go](sdks/golang.md), [Rust](sdks/rust.md), [Swift](sdks/swift.md)
+- [Benchmarks](getting-started/benchmarks.md) - Performance numbers for every backend
+- [Comparisons](getting-started/comparisons.md) - How agentkernel compares to E2B, Daytona, Docker, and others

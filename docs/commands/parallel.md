@@ -83,5 +83,5 @@ The exit code is non-zero if any job fails.
 
 ## See Also
 
-- [Pipeline](cmd-pipelines) - Sequential multi-step execution with data flow
-- [Run](cmd-run) - Run a single command
+- [Pipeline](pipelines.md) - Sequential multi-step execution with data flow
+- [Run](run.md) - Run a single command

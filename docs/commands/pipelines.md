@@ -85,5 +85,5 @@ agentkernel pipeline pipeline.toml -B docker
 
 ## See Also
 
-- [Parallel](cmd-parallel) - Run independent jobs concurrently
-- [Run](cmd-run) - Run a single command in a temporary sandbox
+- [Parallel](parallel.md) - Run independent jobs concurrently
+- [Run](run.md) - Run a single command in a temporary sandbox

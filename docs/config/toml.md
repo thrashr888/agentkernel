@@ -203,7 +203,7 @@ max_sandboxes = 200                  # Hard cap on total sandboxes
 | `max_pool_size` | int | 50 | Maximum pool capacity |
 | `max_sandboxes` | int | 200 | Hard cap on total sandboxes |
 
-See the [Orchestration Guide](orchestration.md) for detailed usage and deployment instructions.
+See the [Orchestration Guide](../operations/index.md) for detailed usage and deployment instructions.
 
 ## Full Example
 

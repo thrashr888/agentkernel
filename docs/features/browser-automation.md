@@ -188,7 +188,7 @@ browser_close(name="my-browser", page="default")
 → Closes a named page
 ```
 
-See [MCP Integration](api-mcp.md) for full tool definitions.
+See [MCP Integration](../api/mcp.md) for full tool definitions.
 
 ## HTTP API
 
@@ -209,7 +209,7 @@ GET    /sandboxes/{name}/browser/pages/{page}/content      # Raw page content
 GET    /sandboxes/{name}/browser/events                    # Event stream
 ```
 
-See [HTTP API](api-http.md) for full endpoint documentation.
+See [HTTP API](../api/http.md) for full endpoint documentation.
 
 ## Event Stream
 
@@ -283,6 +283,6 @@ Chromium uses ~500-800 MB at idle. Use at least 2048 MB. For multiple tabs or he
 
 - [Playwright example](https://github.com/thrashr888/agentkernel/tree/main/examples/playwright)
 - [Playwright Stealth example](https://github.com/thrashr888/agentkernel/tree/main/examples/playwright-stealth)
-- [Python SDK](sdk-python.md)
-- [MCP Integration](api-mcp.md)
-- [HTTP API](api-http.md)
+- [Python SDK](../sdks/python.md)
+- [MCP Integration](../api/mcp.md)
+- [HTTP API](../api/http.md)
