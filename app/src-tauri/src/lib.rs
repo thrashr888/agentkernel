@@ -118,6 +118,7 @@ fn rebuild_tray_menu(
             // Actions
             sb_sub = sb_sub
                 .text(format!("sandbox:{}", sb.name), "Open in Dashboard")
+                .text(format!("terminal:{}", sb.name), "Open Terminal")
                 .text(format!("logs:{}", sb.name), "View Logs\u{2026}");
 
             builder = builder.item(&sb_sub.build()?);
@@ -260,6 +261,20 @@ pub fn run() {
                             let name = &id["sandbox:".len()..];
                             navigate_to(app, &format!("/sandboxes/{name}"));
                         }
+                        _ if id.starts_with("terminal:") => {
+                            let name = &id["terminal:".len()..];
+                            let exec_cmd = format!(
+                                "container exec -it agentkernel-{name} /bin/sh"
+                            );
+                            let _ = std::process::Command::new("osascript")
+                                .args([
+                                    "-e",
+                                    &format!(
+                                        "tell application \"Terminal\"\n    activate\n    do script \"{exec_cmd}\"\nend tell"
+                                    ),
+                                ])
+                                .spawn();
+                        }
                         _ if id.starts_with("logs:") => {
                             let name = &id["logs:".len()..];
                             navigate_to(app, &format!("/sandboxes/{name}?tab=logs"));
@@ -322,14 +337,22 @@ pub fn run() {
                                 };
                                 let _ = count_clone.set_text(&text);
 
+                                // Sort: running first, then alphabetically by name
+                                let mut sorted = list;
+                                sorted.sort_by(|a, b| {
+                                    let a_running = a.status == "running";
+                                    let b_running = b.status == "running";
+                                    b_running.cmp(&a_running).then(a.name.cmp(&b.name))
+                                });
+
                                 // Only rebuild the menu when sandbox data actually changes
-                                let fingerprint = sandbox_fingerprint(&list);
+                                let fingerprint = sandbox_fingerprint(&sorted);
                                 if fingerprint != last_fingerprint {
                                     last_fingerprint = fingerprint;
                                     if let Err(e) = rebuild_tray_menu(
                                         &handle,
                                         &tray_id,
-                                        &list,
+                                        &sorted,
                                         &status_clone,
                                         &count_clone,
                                         &quick_create_clone,

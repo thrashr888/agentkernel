@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { Plus, MoreHorizontal, Trash2, Camera, Square, Play, ChevronLeft, ChevronRight, Terminal, Copy, ArrowUpDown, ArrowUp, ArrowDown, Search, X } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSandboxes } from "@/lib/hooks/use-sandboxes";
@@ -48,7 +48,17 @@ import { formatRelativeDate } from "@/lib/utils";
 export function Sandboxes() {
   const { data: sandboxes, isLoading, error } = useSandboxes();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [dialogOpen, setDialogOpen] = useState(false);
+
+  // Open create dialog when navigated with ?action=create (e.g. from tray menu)
+  useEffect(() => {
+    if (searchParams.get("action") === "create") {
+      setDialogOpen(true);
+      searchParams.delete("action");
+      setSearchParams(searchParams, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   const [formName, setFormName] = useState("");
   const [formImage, setFormImage] = useState("alpine:3.20");

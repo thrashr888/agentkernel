@@ -34,9 +34,8 @@ fn test_help() {
     assert_eq!(exit_code, 0);
     assert!(stdout.contains("Run AI coding agents"));
     assert!(stdout.contains("COMMAND"));
-    assert!(stdout.contains("create"));
-    assert!(stdout.contains("start"));
-    assert!(stdout.contains("stop"));
+    assert!(stdout.contains("sandbox"));
+    assert!(stdout.contains("ssh"));
     assert!(stdout.contains("exec"));
 }
 
@@ -58,7 +57,7 @@ fn test_help_subcommand() {
 
 #[test]
 fn test_create_help() {
-    let (exit_code, stdout, _stderr) = run_cmd(&["create", "--help"]);
+    let (exit_code, stdout, _stderr) = run_cmd(&["sandbox", "create", "--help"]);
     assert_eq!(exit_code, 0);
     assert!(stdout.contains("Create a new sandbox"));
     assert!(stdout.contains("NAME")); // positional argument
@@ -68,14 +67,14 @@ fn test_create_help() {
 
 #[test]
 fn test_start_help() {
-    let (exit_code, stdout, _stderr) = run_cmd(&["start", "--help"]);
+    let (exit_code, stdout, _stderr) = run_cmd(&["sandbox", "start", "--help"]);
     assert_eq!(exit_code, 0);
     assert!(stdout.contains("Start a sandbox"));
 }
 
 #[test]
 fn test_stop_help() {
-    let (exit_code, stdout, _stderr) = run_cmd(&["stop", "--help"]);
+    let (exit_code, stdout, _stderr) = run_cmd(&["sandbox", "stop", "--help"]);
     assert_eq!(exit_code, 0);
     assert!(stdout.contains("Stop a running sandbox"));
 }
@@ -96,7 +95,7 @@ fn test_run_help() {
 
 #[test]
 fn test_list_help() {
-    let (exit_code, stdout, _stderr) = run_cmd(&["list", "--help"]);
+    let (exit_code, stdout, _stderr) = run_cmd(&["sandbox", "list", "--help"]);
     assert_eq!(exit_code, 0);
     assert!(stdout.contains("List all sandboxes"));
 }
@@ -112,7 +111,7 @@ fn test_agents_help() {
 
 #[test]
 fn test_list_command() {
-    let (exit_code, stdout, stderr) = run_cmd(&["list"]);
+    let (exit_code, stdout, stderr) = run_cmd(&["sandbox", "list"]);
     // No backend available is acceptable in CI (macOS without Docker/KVM)
     if stderr.contains("No sandbox backend available") {
         return;
@@ -143,9 +142,9 @@ fn test_agents_command() {
 }
 
 #[test]
-fn test_status_command() {
-    let (exit_code, _stdout, _stderr) = run_cmd(&["status"]);
-    // Status should always succeed (shows installation state)
+fn test_doctor_command() {
+    let (exit_code, _stdout, _stderr) = run_cmd(&["doctor"]);
+    // Doctor should always succeed (shows installation state)
     assert_eq!(exit_code, 0);
 }
 
@@ -160,21 +159,21 @@ fn test_invalid_command() {
 
 #[test]
 fn test_create_missing_name() {
-    let (exit_code, _stdout, stderr) = run_cmd(&["create"]);
+    let (exit_code, _stdout, stderr) = run_cmd(&["sandbox", "create"]);
     assert_ne!(exit_code, 0);
     assert!(stderr.contains("required") || stderr.contains("error"));
 }
 
 #[test]
 fn test_start_missing_name() {
-    let (exit_code, _stdout, stderr) = run_cmd(&["start"]);
+    let (exit_code, _stdout, stderr) = run_cmd(&["sandbox", "start"]);
     assert_ne!(exit_code, 0);
     assert!(stderr.contains("required") || stderr.contains("error"));
 }
 
 #[test]
 fn test_stop_missing_name() {
-    let (exit_code, _stdout, stderr) = run_cmd(&["stop"]);
+    let (exit_code, _stdout, stderr) = run_cmd(&["sandbox", "stop"]);
     assert_ne!(exit_code, 0);
     assert!(stderr.contains("required") || stderr.contains("error"));
 }
@@ -188,7 +187,7 @@ fn test_exec_missing_name() {
 
 #[test]
 fn test_start_nonexistent_sandbox() {
-    let (exit_code, _stdout, stderr) = run_cmd(&["start", "nonexistent-sandbox-12345"]);
+    let (exit_code, _stdout, stderr) = run_cmd(&["sandbox", "start", "nonexistent-sandbox-12345"]);
     assert_ne!(exit_code, 0);
     assert!(
         stderr.contains("not found") || stderr.contains("error") || stderr.contains("Error"),
@@ -201,7 +200,7 @@ fn test_start_nonexistent_sandbox() {
 fn test_stop_nonexistent_sandbox() {
     // Stop on nonexistent sandbox should succeed (idempotent)
     // or fail gracefully
-    let (exit_code, _stdout, _stderr) = run_cmd(&["stop", "nonexistent-sandbox-12345"]);
+    let (exit_code, _stdout, _stderr) = run_cmd(&["sandbox", "stop", "nonexistent-sandbox-12345"]);
     // Either success (idempotent) or clean error is acceptable
     assert!(exit_code == 0 || exit_code == 1);
 }
@@ -210,7 +209,7 @@ fn test_stop_nonexistent_sandbox() {
 
 #[test]
 fn test_create_invalid_name_spaces() {
-    let (exit_code, _stdout, stderr) = run_cmd(&["create", "invalid name with spaces"]);
+    let (exit_code, _stdout, stderr) = run_cmd(&["sandbox", "create", "invalid name with spaces"]);
     assert_ne!(exit_code, 0);
     assert!(
         stderr.contains("invalid") || stderr.contains("error") || stderr.contains("Error"),
@@ -221,7 +220,7 @@ fn test_create_invalid_name_spaces() {
 
 #[test]
 fn test_create_invalid_name_special_chars() {
-    let (exit_code, _stdout, stderr) = run_cmd(&["create", "invalid@name!"]);
+    let (exit_code, _stdout, stderr) = run_cmd(&["sandbox", "create", "invalid@name!"]);
     assert_ne!(exit_code, 0);
     assert!(
         stderr.contains("invalid") || stderr.contains("error") || stderr.contains("Error"),
@@ -233,7 +232,7 @@ fn test_create_invalid_name_special_chars() {
 #[test]
 fn test_backend_option() {
     // Test that --backend option is recognized in create help
-    let (exit_code, stdout, _stderr) = run_cmd(&["create", "--help"]);
+    let (exit_code, stdout, _stderr) = run_cmd(&["sandbox", "create", "--help"]);
     assert_eq!(exit_code, 0);
     assert!(stdout.contains("--backend") || stdout.contains("-B"));
 }

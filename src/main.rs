@@ -75,14 +75,94 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    // -- Quick actions (most common, stay at root) --
+    /// Run a command in a temporary sandbox (create, start, exec, stop, remove)
+    Run {
+        /// Command to execute
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        command: Vec<String>,
+        /// Path to agentkernel.toml config file
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+        /// Keep the sandbox after execution (don't remove)
+        #[arg(short, long)]
+        keep: bool,
+        /// Docker image to use (overrides config)
+        #[arg(short, long)]
+        image: Option<String>,
+        /// Security profile: permissive, moderate (default), restrictive
+        #[arg(short, long, default_value = "moderate")]
+        profile: String,
+        /// Disable network access
+        #[arg(long)]
+        no_network: bool,
+        /// Use container pool for faster execution (skips create/destroy overhead)
+        #[arg(short = 'F', long)]
+        fast: bool,
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad (default: auto-detect)
+        #[arg(short = 'B', long)]
+        backend: Option<String>,
+        /// Template to use (built-in name, local name, github:owner/repo/path, or file path)
+        #[arg(long)]
+        template: Option<String>,
+        /// Time-to-live for kept sandboxes (e.g. 1h, 30m, 3d, 0 for no expiry; default: 1h for run)
+        #[arg(long)]
+        ttl: Option<String>,
+        /// Use git project+branch as sandbox name (reuses existing sandbox for same branch)
+        #[arg(long)]
+        branch: bool,
+        /// Publish a port (host:container, container, or host:container/udp). Can be repeated.
+        #[arg(short = 'P', long = "publish")]
+        publish: Vec<String>,
+        /// Enable SSH access to the sandbox
+        #[arg(long)]
+        ssh: bool,
+        /// Bind a secret to a host via proxy (KEY:host, KEY=value:host, KEY:host:header). Can be repeated.
+        #[arg(short = 'S', long = "secret")]
+        secrets: Vec<String>,
+        /// Inject a secret as a file inside the sandbox (KEY from vault). Can be repeated.
+        #[arg(long = "secret-file")]
+        secret_files: Vec<String>,
+    },
+    /// Execute a command in a running sandbox
+    Exec {
+        /// Name of the sandbox
+        name: String,
+        /// Environment variables to set (KEY=VALUE format, can be repeated)
+        #[arg(short, long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Working directory inside the sandbox
+        #[arg(short, long)]
+        workdir: Option<String>,
+        /// Run as root
+        #[arg(long)]
+        sudo: bool,
+        /// Run detached (in background). Returns a command ID for status/logs/kill.
+        #[arg(short, long)]
+        detach: bool,
+        /// Command to execute
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// Attach to a running sandbox (opens interactive shell)
+    Attach {
+        /// Name of the sandbox to attach to
+        name: String,
+        /// Environment variables to set (KEY=VALUE format, can be repeated)
+        #[arg(short, long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Record session to asciicast v2 file (for replay with asciinema)
+        #[arg(long)]
+        record: Option<PathBuf>,
+    },
+
+    // -- Setup --
     /// Set up agentkernel (download kernel, rootfs, Firecracker)
     Setup {
         /// Run non-interactively with defaults
         #[arg(short = 'y', long)]
         yes: bool,
     },
-    /// Show installation status
-    Status,
     /// Initialize a new agentkernel.toml in the current directory
     Init {
         /// Name of the sandbox (defaults to directory name)
@@ -95,6 +175,182 @@ enum Commands {
         #[arg(short, long)]
         template: Option<String>,
     },
+
+    // -- Grouped subcommands --
+    /// Manage sandboxes (lifecycle, files, export)
+    #[command(visible_alias = "sb")]
+    Sandbox {
+        #[command(subcommand)]
+        action: SandboxAction,
+    },
+    /// SSH access (connect, config, proxy)
+    Ssh {
+        #[command(subcommand)]
+        action: SshAction,
+    },
+    /// Manage snapshots
+    Snapshot {
+        #[command(subcommand)]
+        action: SnapshotAction,
+    },
+    /// Manage agent sessions (tied sandbox + agent lifecycle)
+    Session {
+        #[command(subcommand)]
+        action: SessionAction,
+    },
+    /// Manage sandbox templates
+    Template {
+        #[command(subcommand)]
+        action: TemplateAction,
+    },
+    /// Manage secrets (API keys and credentials)
+    Secret {
+        #[command(subcommand)]
+        action: SecretAction,
+    },
+    /// Manage agent plugins (install integration files for Claude, Codex, Gemini, etc.)
+    Plugin {
+        #[command(subcommand)]
+        action: PluginAction,
+    },
+    /// Manage persistent volumes
+    Volume {
+        #[command(subcommand)]
+        action: VolumeAction,
+    },
+    /// Manage Docker image cache (list, prune, pull)
+    Images {
+        #[command(subcommand)]
+        action: ImagesAction,
+    },
+    /// Manage the daemon (VM pool server)
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
+
+    // -- Servers --
+    /// Start HTTP API server for programmatic access
+    Serve {
+        /// Host to bind to
+        #[arg(short = 'H', long, default_value = "127.0.0.1")]
+        host: String,
+        /// Port to listen on
+        #[arg(short, long, default_value = "18888")]
+        port: u16,
+        /// Enable TLS for the API server
+        #[arg(long)]
+        tls: bool,
+        /// Path to TLS certificate PEM file
+        #[arg(long, requires = "tls")]
+        tls_cert: Option<String>,
+        /// Path to TLS private key PEM file
+        #[arg(long, requires = "tls")]
+        tls_key: Option<String>,
+        /// Require TLS (reject plain HTTP)
+        #[arg(long)]
+        require_tls: bool,
+    },
+    /// Start MCP server for Claude Code integration (JSON-RPC over stdio)
+    McpServer,
+
+    // -- Observability --
+    /// List supported AI agents and their availability
+    Agents,
+    /// View audit log
+    Audit {
+        /// Show only events for this sandbox
+        #[arg(short, long)]
+        sandbox: Option<String>,
+        /// Show last N entries (default: 20)
+        #[arg(short, long, default_value = "20")]
+        last: usize,
+        /// Show full log path
+        #[arg(long)]
+        path: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show usage statistics from audit log
+    Stats {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// System diagnostics and health check
+    Doctor,
+    /// Benchmark sandbox backends on your hardware
+    Benchmark {
+        /// Comma-separated backends to test (default: all available)
+        #[arg(short, long)]
+        backends: Option<String>,
+        /// Number of iterations per backend (default: 1)
+        #[arg(short, long, default_value = "1")]
+        iterations: usize,
+        /// Docker image to use for benchmark
+        #[arg(long, default_value = "alpine:3.20")]
+        image: String,
+    },
+    /// Replay a recorded session (asciicast v2 format)
+    Replay {
+        /// Path to the asciicast file
+        file: PathBuf,
+        /// Playback speed multiplier (1.0 = realtime, 2.0 = 2x speed)
+        #[arg(short, long, default_value = "1.0")]
+        speed: f64,
+        /// Maximum time between frames in seconds (for idle time)
+        #[arg(long, default_value = "2.0")]
+        max_idle: f64,
+    },
+
+    // -- Workflows --
+    /// Run a multi-step agent pipeline (chain sandboxes with data flow)
+    Pipeline {
+        /// Path to pipeline.toml file
+        file: PathBuf,
+        /// Backend to use for pipeline sandboxes
+        #[arg(short = 'B', long)]
+        backend: Option<String>,
+    },
+    /// Run multiple jobs in parallel (fan-out, fan-in results)
+    Parallel {
+        /// Jobs in format "name:image:command" or "name:image:tag:command" (repeatable)
+        #[arg(short, long, required = true)]
+        job: Vec<String>,
+        /// Backend to use
+        #[arg(short = 'B', long)]
+        backend: Option<String>,
+    },
+    /// Build a custom image from a Dockerfile
+    Build {
+        /// Name/tag for the built image
+        #[arg(short = 't', long = "tag")]
+        name: String,
+        /// Build context directory
+        #[arg(default_value = ".")]
+        context: PathBuf,
+        /// Path to Dockerfile (default: Dockerfile in context)
+        #[arg(short = 'f', long)]
+        dockerfile: Option<PathBuf>,
+    },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Enterprise policy management (requires --features enterprise)
+    #[cfg(feature = "enterprise")]
+    Policy {
+        #[command(subcommand)]
+        action: PolicyAction,
+    },
+}
+
+#[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
+enum SandboxAction {
     /// Create a new sandbox (microVM)
     Create {
         /// Name of the sandbox (auto-derived from git when --branch is used)
@@ -160,6 +416,28 @@ enum Commands {
         /// Name of the sandbox to remove
         name: String,
     },
+    /// List all sandboxes
+    List {
+        /// Filter to sandboxes matching the current git project
+        #[arg(long)]
+        project: bool,
+    },
+    /// Show detailed information about a sandbox
+    Info {
+        /// Name of the sandbox
+        name: String,
+    },
+    /// Copy files to/from a running sandbox
+    ///
+    /// Examples:
+    ///   agentkernel sandbox cp ./local/file my-sandbox:/remote/path
+    ///   agentkernel sandbox cp my-sandbox:/remote/path ./local/file
+    Cp {
+        /// Source path (./local/file or sandbox:/path)
+        source: String,
+        /// Destination path (./local/file or sandbox:/path)
+        dest: String,
+    },
     /// Extend a sandbox's time-to-live
     ExtendTtl {
         /// Name of the sandbox
@@ -167,259 +445,6 @@ enum Commands {
         /// Additional time (e.g. 1h, 30m, 2d). Adds to current expiry.
         #[arg(long, default_value = "1h")]
         by: String,
-    },
-    /// Attach to a running sandbox (opens interactive shell)
-    Attach {
-        /// Name of the sandbox to attach to
-        name: String,
-        /// Environment variables to set (KEY=VALUE format, can be repeated)
-        #[arg(short, long = "env", value_name = "KEY=VALUE")]
-        env: Vec<String>,
-        /// Record session to asciicast v2 file (for replay with asciinema)
-        #[arg(long)]
-        record: Option<PathBuf>,
-    },
-    /// Execute a command in a running sandbox
-    Exec {
-        /// Name of the sandbox
-        name: String,
-        /// Environment variables to set (KEY=VALUE format, can be repeated)
-        #[arg(short, long = "env", value_name = "KEY=VALUE")]
-        env: Vec<String>,
-        /// Working directory inside the sandbox
-        #[arg(short, long)]
-        workdir: Option<String>,
-        /// Run as root
-        #[arg(long)]
-        sudo: bool,
-        /// Run detached (in background). Returns a command ID for status/logs/kill.
-        #[arg(short, long)]
-        detach: bool,
-        /// Command to execute
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        command: Vec<String>,
-    },
-    /// List detached commands in a sandbox
-    ExecList {
-        /// Name of the sandbox
-        name: String,
-    },
-    /// Get logs from a detached command
-    ExecLogs {
-        /// Name of the sandbox
-        name: String,
-        /// Command ID (from exec --detach)
-        id: String,
-        /// Show stderr instead of stdout
-        #[arg(long)]
-        stderr: bool,
-    },
-    /// Kill a detached command
-    ExecKill {
-        /// Name of the sandbox
-        name: String,
-        /// Command ID (from exec --detach)
-        id: String,
-    },
-    /// Copy files to/from a running sandbox
-    ///
-    /// Examples:
-    ///   agentkernel cp ./local/file my-sandbox:/remote/path
-    ///   agentkernel cp my-sandbox:/remote/path ./local/file
-    Cp {
-        /// Source path (./local/file or sandbox:/path)
-        source: String,
-        /// Destination path (./local/file or sandbox:/path)
-        dest: String,
-    },
-    /// List all sandboxes
-    List {
-        /// Filter to sandboxes matching the current git project
-        #[arg(long)]
-        project: bool,
-    },
-    /// Run a command in a temporary sandbox (create, start, exec, stop, remove)
-    Run {
-        /// Command to execute
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
-        command: Vec<String>,
-        /// Path to agentkernel.toml config file
-        #[arg(short, long)]
-        config: Option<PathBuf>,
-        /// Keep the sandbox after execution (don't remove)
-        #[arg(short, long)]
-        keep: bool,
-        /// Docker image to use (overrides config)
-        #[arg(short, long)]
-        image: Option<String>,
-        /// Security profile: permissive, moderate (default), restrictive
-        #[arg(short, long, default_value = "moderate")]
-        profile: String,
-        /// Disable network access
-        #[arg(long)]
-        no_network: bool,
-        /// Use container pool for faster execution (skips create/destroy overhead)
-        #[arg(short = 'F', long)]
-        fast: bool,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad (default: auto-detect)
-        #[arg(short = 'B', long)]
-        backend: Option<String>,
-        /// Template to use (built-in name, local name, github:owner/repo/path, or file path)
-        #[arg(long)]
-        template: Option<String>,
-        /// Time-to-live for kept sandboxes (e.g. 1h, 30m, 3d, 0 for no expiry; default: 1h for run)
-        #[arg(long)]
-        ttl: Option<String>,
-        /// Use git project+branch as sandbox name (reuses existing sandbox for same branch)
-        #[arg(long)]
-        branch: bool,
-        /// Publish a port (host:container, container, or host:container/udp). Can be repeated.
-        #[arg(short = 'P', long = "publish")]
-        publish: Vec<String>,
-        /// Enable SSH access to the sandbox
-        #[arg(long)]
-        ssh: bool,
-        /// Bind a secret to a host via proxy (KEY:host, KEY=value:host, KEY:host:header). Can be repeated.
-        #[arg(short = 'S', long = "secret")]
-        secrets: Vec<String>,
-        /// Inject a secret as a file inside the sandbox (KEY from vault). Can be repeated.
-        #[arg(long = "secret-file")]
-        secret_files: Vec<String>,
-    },
-    /// Start MCP server for Claude Code integration (JSON-RPC over stdio)
-    McpServer,
-    /// Start HTTP API server for programmatic access
-    Serve {
-        /// Host to bind to
-        #[arg(short = 'H', long, default_value = "127.0.0.1")]
-        host: String,
-        /// Port to listen on
-        #[arg(short, long, default_value = "18888")]
-        port: u16,
-        /// Enable TLS for the API server
-        #[arg(long)]
-        tls: bool,
-        /// Path to TLS certificate PEM file
-        #[arg(long, requires = "tls")]
-        tls_cert: Option<String>,
-        /// Path to TLS private key PEM file
-        #[arg(long, requires = "tls")]
-        tls_key: Option<String>,
-        /// Require TLS (reject plain HTTP)
-        #[arg(long)]
-        require_tls: bool,
-    },
-    /// SSH into a running sandbox
-    Ssh {
-        /// Name of the sandbox
-        name: String,
-        /// Record session to asciicast v2 file (for replay with asciinema)
-        #[arg(long)]
-        record: Option<PathBuf>,
-        /// Command to execute (instead of interactive shell)
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        command: Vec<String>,
-    },
-    /// Generate SSH config for IDE integration (VS Code Remote SSH, JetBrains, Cursor)
-    SshConfig {
-        /// Name of the sandbox (omit for all SSH-enabled sandboxes)
-        name: Option<String>,
-        /// Generate config for all SSH-enabled sandboxes
-        #[arg(long)]
-        all: bool,
-    },
-    /// SSH proxy command for ProxyCommand integration (handles cert signing transparently)
-    SshProxy {
-        /// Name of the sandbox
-        name: String,
-    },
-    /// List supported AI agents and their availability
-    Agents,
-    /// Manage agent plugins (install integration files for Claude, Codex, Gemini, etc.)
-    Plugin {
-        #[command(subcommand)]
-        action: PluginAction,
-    },
-    /// Manage the daemon (VM pool server)
-    Daemon {
-        #[command(subcommand)]
-        action: DaemonAction,
-    },
-    /// View audit log
-    Audit {
-        /// Show only events for this sandbox
-        #[arg(short, long)]
-        sandbox: Option<String>,
-        /// Show last N entries (default: 20)
-        #[arg(short, long, default_value = "20")]
-        last: usize,
-        /// Show full log path
-        #[arg(long)]
-        path: bool,
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-    },
-    /// Replay a recorded session (asciicast v2 format)
-    Replay {
-        /// Path to the asciicast file
-        file: PathBuf,
-        /// Playback speed multiplier (1.0 = realtime, 2.0 = 2x speed)
-        #[arg(short, long, default_value = "1.0")]
-        speed: f64,
-        /// Maximum time between frames in seconds (for idle time)
-        #[arg(long, default_value = "2.0")]
-        max_idle: f64,
-    },
-    /// Manage sandbox templates
-    Template {
-        #[command(subcommand)]
-        action: TemplateAction,
-    },
-    /// System diagnostics and health check
-    Doctor,
-    /// Show usage statistics from audit log
-    Stats {
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-    },
-    /// Manage secrets (API keys and credentials)
-    Secret {
-        #[command(subcommand)]
-        action: SecretAction,
-    },
-    /// Garbage-collect expired sandboxes
-    Gc {
-        /// Show what would be removed without removing
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Show detailed information about a sandbox
-    Info {
-        /// Name of the sandbox
-        name: String,
-    },
-    /// Benchmark sandbox backends on your hardware
-    Benchmark {
-        /// Comma-separated backends to test (default: all available)
-        #[arg(short, long)]
-        backends: Option<String>,
-        /// Number of iterations per backend (default: 1)
-        #[arg(short, long, default_value = "1")]
-        iterations: usize,
-        /// Docker image to use for benchmark
-        #[arg(long, default_value = "alpine:3.20")]
-        image: String,
-    },
-    /// Run multiple jobs in parallel (fan-out, fan-in results)
-    Parallel {
-        /// Jobs in format "name:image:command" or "name:image:tag:command" (repeatable)
-        #[arg(short, long, required = true)]
-        job: Vec<String>,
-        /// Backend to use
-        #[arg(short = 'B', long)]
-        backend: Option<String>,
     },
     /// Export a sandbox's filesystem as a tar archive
     Export {
@@ -445,28 +470,33 @@ enum Commands {
         #[arg(short = 'B', long)]
         backend: Option<String>,
     },
-    /// Manage Docker image cache (list, prune, pull)
-    Images {
-        #[command(subcommand)]
-        action: ImagesAction,
+    /// List detached commands in a sandbox
+    ExecList {
+        /// Name of the sandbox
+        name: String,
     },
-    /// Run a multi-step agent pipeline (chain sandboxes with data flow)
-    Pipeline {
-        /// Path to pipeline.toml file
-        file: PathBuf,
-        /// Backend to use for pipeline sandboxes
-        #[arg(short = 'B', long)]
-        backend: Option<String>,
+    /// Get logs from a detached command
+    ExecLogs {
+        /// Name of the sandbox
+        name: String,
+        /// Command ID (from exec --detach)
+        id: String,
+        /// Show stderr instead of stdout
+        #[arg(long)]
+        stderr: bool,
     },
-    /// Manage agent sessions (tied sandbox + agent lifecycle)
-    Session {
-        #[command(subcommand)]
-        action: SessionAction,
+    /// Kill a detached command
+    ExecKill {
+        /// Name of the sandbox
+        name: String,
+        /// Command ID (from exec --detach)
+        id: String,
     },
-    /// Snapshot a sandbox (save its current state for later restore)
-    Snapshot {
-        #[command(subcommand)]
-        action: SnapshotAction,
+    /// Garbage-collect expired sandboxes
+    Gc {
+        /// Show what would be removed without removing
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Remove all sandboxes and agentkernel Docker artifacts to free disk space
     Clean {
@@ -477,34 +507,33 @@ enum Commands {
         #[arg(long)]
         all: bool,
     },
-    /// Generate shell completions
-    Completions {
-        /// Shell to generate completions for
-        #[arg(value_enum)]
-        shell: clap_complete::Shell,
-    },
-    /// Enterprise policy management (requires --features enterprise)
-    #[cfg(feature = "enterprise")]
-    Policy {
-        #[command(subcommand)]
-        action: PolicyAction,
-    },
-    /// Manage persistent volumes
-    Volume {
-        #[command(subcommand)]
-        action: VolumeAction,
-    },
-    /// Build a custom image from a Dockerfile
-    Build {
-        /// Name/tag for the built image
-        #[arg(short = 't', long = "tag")]
+}
+
+#[derive(Subcommand)]
+enum SshAction {
+    /// SSH into a running sandbox
+    Connect {
+        /// Name of the sandbox
         name: String,
-        /// Build context directory
-        #[arg(default_value = ".")]
-        context: PathBuf,
-        /// Path to Dockerfile (default: Dockerfile in context)
-        #[arg(short = 'f', long)]
-        dockerfile: Option<PathBuf>,
+        /// Record session to asciicast v2 file (for replay with asciinema)
+        #[arg(long)]
+        record: Option<PathBuf>,
+        /// Command to execute (instead of interactive shell)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// Generate SSH config for IDE integration (VS Code Remote SSH, JetBrains, Cursor)
+    Config {
+        /// Name of the sandbox (omit for all SSH-enabled sandboxes)
+        name: Option<String>,
+        /// Generate config for all SSH-enabled sandboxes
+        #[arg(long)]
+        all: bool,
+    },
+    /// SSH proxy command for ProxyCommand integration (handles cert signing transparently)
+    Proxy {
+        /// Name of the sandbox
+        name: String,
     },
 }
 
@@ -751,16 +780,6 @@ async fn main() -> Result<()> {
         Commands::Setup { yes } => {
             run_setup(yes).await?;
         }
-        Commands::Status => {
-            let status = check_installation();
-            status.print();
-
-            if status.is_ready() {
-                println!("\nAgentkernel is ready to use!");
-            } else {
-                println!("\nRun 'agentkernel setup' to complete installation.");
-            }
-        }
         Commands::Template { action } => match action {
             TemplateAction::List => {
                 let templates = template::list_all();
@@ -889,350 +908,609 @@ memory_mb = 512
             println!("  agentkernel start {}", sandbox_name);
             println!("  agentkernel attach {}", sandbox_name);
         }
-        Commands::Create {
-            name,
-            agent,
-            config,
-            dir: _,
-            backend,
-            template: tmpl,
-            ttl,
-            branch,
-            publish,
-            ssh: ssh_flag,
-            source,
-            git_ref,
-            volumes,
-            secrets: secret_bindings_raw,
-            secret_files: secret_file_keys,
-        } => {
-            // Resolve sandbox name: --branch auto-derives from git, otherwise require explicit name
-            let name = if branch {
-                if name.is_some() {
-                    bail!("Cannot use both --branch and an explicit name");
-                }
-                let ctx = git_utils::detect()
-                    .map_err(|_| anyhow::anyhow!("--branch requires a git repository"))?;
-                let derived = ctx.sandbox_name();
-                println!("Using git-derived sandbox name: {}", derived);
-                derived
-            } else {
-                name.ok_or_else(|| {
-                    anyhow::anyhow!("Sandbox name required. Use --branch to auto-derive from git.")
-                })?
-            };
+        Commands::Sandbox { action } => match action {
+            SandboxAction::Create {
+                name,
+                agent,
+                config,
+                dir: _,
+                backend,
+                template: tmpl,
+                ttl,
+                branch,
+                publish,
+                ssh: ssh_flag,
+                source,
+                git_ref,
+                volumes,
+                secrets: secret_bindings_raw,
+                secret_files: secret_file_keys,
+            } => {
+                // Resolve sandbox name: --branch auto-derives from git, otherwise require explicit name
+                let name = if branch {
+                    if name.is_some() {
+                        bail!("Cannot use both --branch and an explicit name");
+                    }
+                    let ctx = git_utils::detect()
+                        .map_err(|_| anyhow::anyhow!("--branch requires a git repository"))?;
+                    let derived = ctx.sandbox_name();
+                    println!("Using git-derived sandbox name: {}", derived);
+                    derived
+                } else {
+                    name.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Sandbox name required. Use --branch to auto-derive from git."
+                        )
+                    })?
+                };
 
-            // Validate sandbox name (security: prevents command injection)
-            validation::validate_sandbox_name(&name)?;
+                // Validate sandbox name (security: prevents command injection)
+                validation::validate_sandbox_name(&name)?;
 
-            // Check setup status first
-            let status = check_installation();
-            if !status.is_ready() {
-                bail!(
-                    "Agentkernel is not fully set up. Run 'agentkernel setup' first.\n\
+                // Check setup status first
+                let status = check_installation();
+                if !status.is_ready() {
+                    bail!(
+                        "Agentkernel is not fully set up. Run 'agentkernel setup' first.\n\
                      Missing: {}",
-                    missing_components(&status)
-                );
-            }
-
-            // Load config: --config > --template > minimal default
-            let (cfg, config_base_dir) = if let Some(ref config_path) = config {
-                let cfg = Config::from_file(config_path)?;
-                let base_dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
-                (cfg, Some(base_dir))
-            } else if let Some(ref tmpl_name) = tmpl {
-                let resolved = template::resolve(tmpl_name)?;
-                println!("Using template '{}' ({})", resolved.name, resolved.source);
-                let mut cfg = resolved.parse()?;
-                cfg.sandbox.name = name.clone();
-                (cfg, None)
-            } else {
-                (Config::minimal(&name, &agent), None)
-            };
-
-            // Validate config and print warnings
-            for warning in cfg.validate() {
-                eprintln!("Warning: {}", warning);
-            }
-
-            // Parse backend option if provided
-            let backend_type = if let Some(ref b) = backend {
-                Some(
-                    b.parse::<crate::backend::BackendType>()
-                        .map_err(|e| anyhow::anyhow!(e))?,
-                )
-            } else {
-                None
-            };
-            let mut manager = VmManager::with_backend(backend_type)?;
-
-            // Build from Dockerfile if configured, otherwise use base image
-            let docker_image = if let Some(ref base_dir) = config_base_dir {
-                let base_image = cfg.docker_image();
-                build::build_or_use_image(&name, &base_image, base_dir, &cfg)?
-            } else {
-                cfg.docker_image()
-            };
-
-            println!(
-                "Creating sandbox '{}' with image '{}'...",
-                name, docker_image
-            );
-            println!("  vCPUs: {}", cfg.resources.vcpus);
-            println!("  Memory: {} MB", cfg.resources.memory_mb);
-
-            let ttl_secs = ttl.map(|t| parse_ttl(&t)).transpose()?.filter(|&s| s > 0); // 0 means no expiry
-
-            // Parse port mappings from CLI --publish flags and config file [network].ports
-            let mut ports: Vec<crate::backend::PortMapping> = publish
-                .iter()
-                .map(|s| crate::backend::PortMapping::parse(s))
-                .collect::<Result<Vec<_>>>()?;
-
-            // Merge config file ports (CLI takes precedence, config adds extras)
-            if let Ok(config_ports) = cfg.network.port_mappings() {
-                for cp in config_ports {
-                    if !ports.contains(&cp) {
-                        ports.push(cp);
-                    }
-                }
-            }
-
-            // Handle --ssh flag: add SSH port mapping and configure SSH
-            let enable_ssh = ssh_flag || cfg.security.transport.ssh;
-            if enable_ssh {
-                // Auto-add SSH port mapping if not already present
-                let has_ssh_port = ports.iter().any(|p| p.container_port == 22);
-                if !has_ssh_port {
-                    ports.push(crate::backend::PortMapping {
-                        host_port: None, // auto-assign
-                        container_port: 22,
-                        protocol: crate::backend::PortProtocol::Tcp,
-                    });
-                }
-                println!("  SSH: enabled (certificate-only auth)");
-            }
-
-            if !ports.is_empty() {
-                println!(
-                    "  Ports: {}",
-                    ports
-                        .iter()
-                        .map(|p| p.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-            }
-
-            // Parse volume mounts
-            let volume_mounts: Vec<volume::VolumeMount> = volumes
-                .iter()
-                .map(|s| volume::VolumeMount::parse(s))
-                .collect::<Result<Vec<_>>>()?;
-
-            // Validate volumes exist
-            if !volume_mounts.is_empty() {
-                let vol_manager = volume::VolumeManager::new()?;
-                vol_manager.validate_mounts(&volume_mounts)?;
-                println!(
-                    "  Volumes: {}",
-                    volume_mounts
-                        .iter()
-                        .map(|v| format!("{}:{}", v.slug, v.mount_path))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-            }
-
-            // Parse secret bindings
-            let mut parsed_bindings = Vec::new();
-            if !secret_bindings_raw.is_empty() {
-                let vault = secrets::SecretVault::new(secrets::SecretBackend::default());
-                for raw in &secret_bindings_raw {
-                    let (binding, inline_value) = proxy::SecretBinding::parse_cli(raw)?;
-                    // If inline value provided, store it in the vault
-                    if let Some(val) = inline_value {
-                        vault.set(&binding.secret_key, &val)?;
-                    }
-                    println!(
-                        "  Secret: {} -> {} (header: {})",
-                        binding.secret_key, binding.target_host, binding.header_name
+                        missing_components(&status)
                     );
-                    parsed_bindings.push(binding);
                 }
-            }
 
-            manager
-                .create_with_options(
-                    &name,
-                    &docker_image,
-                    cfg.resources.vcpus,
-                    cfg.resources.memory_mb,
-                    ttl_secs,
-                    ports,
-                )
-                .await?;
+                // Load config: --config > --template > minimal default
+                let (cfg, config_base_dir) = if let Some(ref config_path) = config {
+                    let cfg = Config::from_file(config_path)?;
+                    let base_dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+                    (cfg, Some(base_dir))
+                } else if let Some(ref tmpl_name) = tmpl {
+                    let resolved = template::resolve(tmpl_name)?;
+                    println!("Using template '{}' ({})", resolved.name, resolved.source);
+                    let mut cfg = resolved.parse()?;
+                    cfg.sandbox.name = name.clone();
+                    (cfg, None)
+                } else {
+                    (Config::minimal(&name, &agent), None)
+                };
 
-            // Store secret bindings in sandbox state
-            if !parsed_bindings.is_empty() {
-                let binding_strs: Vec<String> = secret_bindings_raw;
-                manager.set_secret_bindings(&name, &binding_strs)?;
-            }
-
-            // Store secret file keys in sandbox state
-            if !secret_file_keys.is_empty() {
-                for key in &secret_file_keys {
-                    vsock_secrets::validate_secret_key(key)?;
+                // Validate config and print warnings
+                for warning in cfg.validate() {
+                    eprintln!("Warning: {}", warning);
                 }
-                manager.set_secret_files(&name, &secret_file_keys)?;
+
+                // Parse backend option if provided
+                let backend_type = if let Some(ref b) = backend {
+                    Some(
+                        b.parse::<crate::backend::BackendType>()
+                            .map_err(|e| anyhow::anyhow!(e))?,
+                    )
+                } else {
+                    None
+                };
+                let mut manager = VmManager::with_backend(backend_type)?;
+
+                // Build from Dockerfile if configured, otherwise use base image
+                let docker_image = if let Some(ref base_dir) = config_base_dir {
+                    let base_image = cfg.docker_image();
+                    build::build_or_use_image(&name, &base_image, base_dir, &cfg)?
+                } else {
+                    cfg.docker_image()
+                };
+
                 println!(
-                    "  Secret files: {} key(s) will be injected at {}",
-                    secret_file_keys.len(),
-                    vsock_secrets::DEFAULT_SECRETS_PATH,
+                    "Creating sandbox '{}' with image '{}'...",
+                    name, docker_image
                 );
-            }
+                println!("  vCPUs: {}", cfg.resources.vcpus);
+                println!("  Memory: {} MB", cfg.resources.memory_mb);
 
-            // If SSH enabled, update the sandbox state
-            if enable_ssh {
-                manager.set_ssh_enabled(&name, true)?;
-            }
+                let ttl_secs = ttl.map(|t| parse_ttl(&t)).transpose()?.filter(|&s| s > 0); // 0 means no expiry
 
-            println!("\nSandbox '{}' created.", name);
-            if let Some(secs) = ttl_secs {
-                println!("  TTL: {} (expires automatically)", format_ttl(secs));
-            }
+                // Parse port mappings from CLI --publish flags and config file [network].ports
+                let mut ports: Vec<crate::backend::PortMapping> = publish
+                    .iter()
+                    .map(|s| crate::backend::PortMapping::parse(s))
+                    .collect::<Result<Vec<_>>>()?;
 
-            // If --source provided, auto-start and clone the repo
-            if let Some(ref source_url) = source {
-                // Strip optional "git:" prefix
-                let url = source_url.strip_prefix("git:").unwrap_or(source_url);
+                // Merge config file ports (CLI takes precedence, config adds extras)
+                if let Ok(config_ports) = cfg.network.port_mappings() {
+                    for cp in config_ports {
+                        if !ports.contains(&cp) {
+                            ports.push(cp);
+                        }
+                    }
+                }
 
-                println!("\nStarting sandbox and cloning {}...", url);
-                manager.start(&name).await?;
+                // Handle --ssh flag: add SSH port mapping and configure SSH
+                let enable_ssh = ssh_flag || cfg.security.transport.ssh;
+                if enable_ssh {
+                    // Auto-add SSH port mapping if not already present
+                    let has_ssh_port = ports.iter().any(|p| p.container_port == 22);
+                    if !has_ssh_port {
+                        ports.push(crate::backend::PortMapping {
+                            host_port: None, // auto-assign
+                            container_port: 22,
+                            protocol: crate::backend::PortProtocol::Tcp,
+                        });
+                    }
+                    println!("  SSH: enabled (certificate-only auth)");
+                }
 
-                // Install git if needed, then clone
-                let install_cmd = vec![
+                if !ports.is_empty() {
+                    println!(
+                        "  Ports: {}",
+                        ports
+                            .iter()
+                            .map(|p| p.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+
+                // Parse volume mounts
+                let volume_mounts: Vec<volume::VolumeMount> = volumes
+                    .iter()
+                    .map(|s| volume::VolumeMount::parse(s))
+                    .collect::<Result<Vec<_>>>()?;
+
+                // Validate volumes exist
+                if !volume_mounts.is_empty() {
+                    let vol_manager = volume::VolumeManager::new()?;
+                    vol_manager.validate_mounts(&volume_mounts)?;
+                    println!(
+                        "  Volumes: {}",
+                        volume_mounts
+                            .iter()
+                            .map(|v| format!("{}:{}", v.slug, v.mount_path))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+
+                // Parse secret bindings
+                let mut parsed_bindings = Vec::new();
+                if !secret_bindings_raw.is_empty() {
+                    let vault = secrets::SecretVault::new(secrets::SecretBackend::default());
+                    for raw in &secret_bindings_raw {
+                        let (binding, inline_value) = proxy::SecretBinding::parse_cli(raw)?;
+                        // If inline value provided, store it in the vault
+                        if let Some(val) = inline_value {
+                            vault.set(&binding.secret_key, &val)?;
+                        }
+                        println!(
+                            "  Secret: {} -> {} (header: {})",
+                            binding.secret_key, binding.target_host, binding.header_name
+                        );
+                        parsed_bindings.push(binding);
+                    }
+                }
+
+                manager
+                    .create_with_options(
+                        &name,
+                        &docker_image,
+                        cfg.resources.vcpus,
+                        cfg.resources.memory_mb,
+                        ttl_secs,
+                        ports,
+                    )
+                    .await?;
+
+                // Store secret bindings in sandbox state
+                if !parsed_bindings.is_empty() {
+                    let binding_strs: Vec<String> = secret_bindings_raw;
+                    manager.set_secret_bindings(&name, &binding_strs)?;
+                }
+
+                // Store secret file keys in sandbox state
+                if !secret_file_keys.is_empty() {
+                    for key in &secret_file_keys {
+                        vsock_secrets::validate_secret_key(key)?;
+                    }
+                    manager.set_secret_files(&name, &secret_file_keys)?;
+                    println!(
+                        "  Secret files: {} key(s) will be injected at {}",
+                        secret_file_keys.len(),
+                        vsock_secrets::DEFAULT_SECRETS_PATH,
+                    );
+                }
+
+                // If SSH enabled, update the sandbox state
+                if enable_ssh {
+                    manager.set_ssh_enabled(&name, true)?;
+                }
+
+                println!("\nSandbox '{}' created.", name);
+                if let Some(secs) = ttl_secs {
+                    println!("  TTL: {} (expires automatically)", format_ttl(secs));
+                }
+
+                // If --source provided, auto-start and clone the repo
+                if let Some(ref source_url) = source {
+                    // Strip optional "git:" prefix
+                    let url = source_url.strip_prefix("git:").unwrap_or(source_url);
+
+                    println!("\nStarting sandbox and cloning {}...", url);
+                    manager.start(&name).await?;
+
+                    // Install git if needed, then clone
+                    let install_cmd = vec![
                     "sh".to_string(),
                     "-c".to_string(),
                     "which git >/dev/null 2>&1 || apk add --no-cache git >/dev/null 2>&1 || apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1 || yum install -y git >/dev/null 2>&1 || true".to_string(),
                 ];
-                let _ = manager.exec_cmd(&name, &install_cmd).await;
+                    let _ = manager.exec_cmd(&name, &install_cmd).await;
 
-                let clone_cmd = vec![
-                    "git".to_string(),
-                    "clone".to_string(),
-                    url.to_string(),
-                    "/workspace".to_string(),
-                ];
-                manager.exec_cmd(&name, &clone_cmd).await?;
-
-                // Checkout specific ref if requested
-                if let Some(ref git_ref_val) = git_ref {
-                    let checkout_cmd = vec![
+                    let clone_cmd = vec![
                         "git".to_string(),
-                        "-C".to_string(),
+                        "clone".to_string(),
+                        url.to_string(),
                         "/workspace".to_string(),
-                        "checkout".to_string(),
-                        git_ref_val.clone(),
                     ];
-                    manager.exec_cmd(&name, &checkout_cmd).await?;
-                    println!("Cloned {} (ref: {}) into /workspace", url, git_ref_val);
-                } else {
-                    println!("Cloned {} into /workspace", url);
-                }
+                    manager.exec_cmd(&name, &clone_cmd).await?;
 
-                println!("\nTo connect:");
-                if enable_ssh {
-                    println!("  agentkernel ssh {}", name);
+                    // Checkout specific ref if requested
+                    if let Some(ref git_ref_val) = git_ref {
+                        let checkout_cmd = vec![
+                            "git".to_string(),
+                            "-C".to_string(),
+                            "/workspace".to_string(),
+                            "checkout".to_string(),
+                            git_ref_val.clone(),
+                        ];
+                        manager.exec_cmd(&name, &checkout_cmd).await?;
+                        println!("Cloned {} (ref: {}) into /workspace", url, git_ref_val);
+                    } else {
+                        println!("Cloned {} into /workspace", url);
+                    }
+
+                    println!("\nTo connect:");
+                    if enable_ssh {
+                        println!("  agentkernel ssh {}", name);
+                    } else {
+                        println!("  agentkernel attach {}", name);
+                    }
                 } else {
-                    println!("  agentkernel attach {}", name);
-                }
-            } else {
-                println!("\nNext steps:");
-                println!("  1. agentkernel start {}", name);
-                if enable_ssh {
-                    println!("  2. agentkernel ssh {}", name);
-                } else {
-                    println!("  2. agentkernel attach {}", name);
+                    println!("\nNext steps:");
+                    println!("  1. agentkernel start {}", name);
+                    if enable_ssh {
+                        println!("  2. agentkernel ssh {}", name);
+                    } else {
+                        println!("  2. agentkernel attach {}", name);
+                    }
                 }
             }
-        }
-        Commands::Start { name, backend } => {
-            validation::validate_sandbox_name(&name)?;
+            SandboxAction::Start { name, backend } => {
+                validation::validate_sandbox_name(&name)?;
 
-            let status = check_installation();
-            if !status.is_ready() {
-                bail!("Agentkernel is not fully set up. Run 'agentkernel setup' first.");
+                let status = check_installation();
+                if !status.is_ready() {
+                    bail!("Agentkernel is not fully set up. Run 'agentkernel setup' first.");
+                }
+
+                // Parse backend option if provided
+                let backend_type = if let Some(ref b) = backend {
+                    Some(
+                        b.parse::<crate::backend::BackendType>()
+                            .map_err(|e| anyhow::anyhow!(e))?,
+                    )
+                } else {
+                    None
+                };
+                let mut manager = VmManager::with_backend(backend_type)?;
+
+                if !manager.exists(&name) {
+                    bail!(
+                        "Sandbox '{}' not found. Create it first with: agentkernel create {}",
+                        name,
+                        name
+                    );
+                }
+
+                println!("Starting sandbox '{}'...", name);
+                manager.start(&name).await?;
+                println!("Sandbox '{}' started.", name);
+                if manager
+                    .get_sandbox_state(&name)
+                    .is_some_and(|s| s.ssh_enabled)
+                {
+                    println!("\nTo connect: agentkernel ssh {}", name);
+                } else {
+                    println!("\nTo attach: agentkernel attach {}", name);
+                }
             }
+            SandboxAction::Stop { name } => {
+                validation::validate_sandbox_name(&name)?;
 
-            // Parse backend option if provided
-            let backend_type = if let Some(ref b) = backend {
-                Some(
-                    b.parse::<crate::backend::BackendType>()
-                        .map_err(|e| anyhow::anyhow!(e))?,
-                )
-            } else {
-                None
-            };
-            let mut manager = VmManager::with_backend(backend_type)?;
+                let mut manager = VmManager::new()?;
 
-            if !manager.exists(&name) {
-                bail!(
-                    "Sandbox '{}' not found. Create it first with: agentkernel create {}",
-                    name,
-                    name
+                if !manager.exists(&name) {
+                    bail!("Sandbox '{}' not found", name);
+                }
+
+                println!("Stopping sandbox '{}'...", name);
+                manager.stop(&name).await?;
+                println!("Sandbox '{}' stopped.", name);
+            }
+            SandboxAction::Remove { name } => {
+                validation::validate_sandbox_name(&name)?;
+
+                let mut manager = VmManager::new()?;
+                println!("Removing sandbox '{}'...", name);
+                manager.remove(&name).await?;
+                println!("Sandbox '{}' removed.", name);
+            }
+            SandboxAction::ExtendTtl { name, by } => {
+                validation::validate_sandbox_name(&name)?;
+
+                let mut manager = VmManager::new()?;
+                if !manager.exists(&name) {
+                    bail!("Sandbox '{}' not found", name);
+                }
+
+                let additional_secs = crate::ssh::parse_ttl_to_secs(&by)?;
+                let new_expiry = manager.extend_ttl(&name, additional_secs)?;
+
+                match new_expiry {
+                    Some(exp) => println!("Extended TTL for '{}'. New expiry: {}", name, exp),
+                    None => println!("Sandbox '{}' now has no expiry (TTL disabled).", name),
+                }
+            }
+            SandboxAction::ExecList { name } => {
+                validation::validate_sandbox_name(&name)?;
+                let manager = VmManager::new()?;
+                let commands = manager.detached_list(Some(&name));
+                println!("{}", serde_json::to_string_pretty(&commands)?);
+            }
+            SandboxAction::ExecLogs { name, id, stderr } => {
+                validation::validate_sandbox_name(&name)?;
+                let mut manager = VmManager::new()?;
+                let stream = if stderr { Some("stderr") } else { None };
+                let output = manager.detached_logs(&id, stream).await?;
+                print!("{}", output);
+            }
+            SandboxAction::ExecKill { name, id } => {
+                validation::validate_sandbox_name(&name)?;
+                let mut manager = VmManager::new()?;
+                manager.detached_kill(&id).await?;
+                println!("Command {} killed", id);
+            }
+            SandboxAction::Cp { source, dest } => {
+                // Parse source and destination to determine direction
+                // Format: sandbox:/path or ./local/path
+                let (src_sandbox, src_path) = parse_cp_path(&source);
+                let (dst_sandbox, dst_path) = parse_cp_path(&dest);
+
+                match (src_sandbox, dst_sandbox) {
+                    (Some(sandbox), None) => {
+                        // Copy from sandbox to local
+                        validation::validate_sandbox_name(&sandbox)?;
+                        let mut manager = VmManager::new()?;
+
+                        if !manager.exists(&sandbox) {
+                            bail!("Sandbox '{}' not found", sandbox);
+                        }
+                        if !manager.is_running(&sandbox) {
+                            bail!("Sandbox '{}' is not running", sandbox);
+                        }
+
+                        let content = manager.read_file(&sandbox, &src_path).await?;
+                        std::fs::write(&dst_path, content)?;
+                        println!(
+                            "Copied {} bytes from {}:{} to {}",
+                            std::fs::metadata(&dst_path)?.len(),
+                            sandbox,
+                            src_path,
+                            dst_path
+                        );
+                    }
+                    (None, Some(sandbox)) => {
+                        // Copy from local to sandbox
+                        validation::validate_sandbox_name(&sandbox)?;
+                        let mut manager = VmManager::new()?;
+
+                        if !manager.exists(&sandbox) {
+                            bail!("Sandbox '{}' not found", sandbox);
+                        }
+                        if !manager.is_running(&sandbox) {
+                            bail!("Sandbox '{}' is not running", sandbox);
+                        }
+
+                        let content = std::fs::read(&src_path)?;
+                        manager.write_file(&sandbox, &dst_path, &content).await?;
+                        println!(
+                            "Copied {} bytes from {} to {}:{}",
+                            content.len(),
+                            src_path,
+                            sandbox,
+                            dst_path
+                        );
+                    }
+                    (Some(_), Some(_)) => {
+                        bail!("Cannot copy between sandboxes. Copy to local first.");
+                    }
+                    (None, None) => {
+                        bail!("At least one path must be a sandbox path (sandbox:/path)");
+                    }
+                }
+            }
+            SandboxAction::List { project } => {
+                let manager = VmManager::new()?;
+                let vms = manager.list();
+
+                // Optionally filter by current git project prefix
+                let project_prefix = if project {
+                    match git_utils::detect() {
+                        Ok(ctx) => {
+                            println!("Filtering by git project: {}\n", ctx.project);
+                            Some(ctx.project)
+                        }
+                        Err(_) => {
+                            bail!("--project requires a git repository");
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                let filtered: Vec<_> = vms
+                    .into_iter()
+                    .filter(|(name, _, _)| {
+                        if let Some(ref prefix) = project_prefix {
+                            name.starts_with(&format!("{}-", prefix)) || name == prefix
+                        } else {
+                            true
+                        }
+                    })
+                    .collect();
+
+                if filtered.is_empty() {
+                    if project_prefix.is_some() {
+                        println!("No sandboxes found for this project.");
+                    } else {
+                        println!("No sandboxes found.");
+                    }
+                    println!("\nCreate one with: agentkernel create <name>");
+                } else {
+                    println!(
+                        "{:<30} {:<10} {:<10} {:<17} PORTS",
+                        "NAME", "STATUS", "BACKEND", "IP"
+                    );
+                    for (name, running, backend) in filtered {
+                        let status = if running { "running" } else { "stopped" };
+                        let backend_str = backend
+                            .map(|b| format!("{}", b))
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let ip_str = if running {
+                            manager
+                                .get_container_ip(name)
+                                .unwrap_or_else(|| "-".to_string())
+                        } else {
+                            "-".to_string()
+                        };
+                        let ports_str = manager
+                            .get_state(name)
+                            .map(|s| {
+                                s.ports
+                                    .iter()
+                                    .map(|p| p.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
+                            .unwrap_or_default();
+                        println!(
+                            "{:<30} {:<10} {:<10} {:<17} {}",
+                            name, status, backend_str, ip_str, ports_str
+                        );
+                    }
+                }
+            }
+            SandboxAction::Gc { dry_run } => {
+                let mut manager = VmManager::new()?;
+                let expired = manager.expired();
+                if expired.is_empty() {
+                    println!("No expired sandboxes.");
+                } else if dry_run {
+                    println!("Would remove {} expired sandbox(es):", expired.len());
+                    for name in &expired {
+                        println!("  {}", name);
+                    }
+                } else {
+                    let removed = manager.gc().await?;
+                    println!("Removed {} expired sandbox(es):", removed.len());
+                    for name in &removed {
+                        println!("  {}", name);
+                    }
+                }
+            }
+            SandboxAction::Info { name } => {
+                validation::validate_sandbox_name(&name)?;
+                run_info(&name)?;
+            }
+            SandboxAction::Export { name, output } => {
+                validation::validate_sandbox_name(&name)?;
+                let output_file = output.unwrap_or_else(|| format!("{}.tar", name));
+
+                // Use docker export to get the full filesystem
+                let container_name = format!("agentkernel-{}", name);
+                println!("Exporting sandbox '{}' to {}...", name, output_file);
+                let status = std::process::Command::new("docker")
+                    .args(["export", "-o", &output_file, &container_name])
+                    .status()
+                    .map_err(|e| anyhow::anyhow!("Failed to run docker export: {}", e))?;
+
+                if !status.success() {
+                    bail!("docker export failed for sandbox '{}'", name);
+                }
+
+                let size = std::fs::metadata(&output_file)?.len();
+                let size_mb = size as f64 / 1_048_576.0;
+                println!("Exported {:.1} MB to {}", size_mb, output_file);
+            }
+            SandboxAction::ExportConfig { name } => {
+                let manager = VmManager::new()?;
+                let state = manager
+                    .get_state(&name)
+                    .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+
+                // Generate a TOML config from the sandbox state
+                let config = format!(
+                    "[sandbox]\n\
+                 name = \"{}\"\n\
+                 base_image = \"{}\"\n\
+                 \n\
+                 [resources]\n\
+                 vcpus = {}\n\
+                 memory_mb = {}\n",
+                    state.name, state.image, state.vcpus, state.memory_mb,
                 );
+
+                print!("{}", config);
             }
+            SandboxAction::ImportConfig {
+                file,
+                r#as: as_name,
+                backend,
+            } => {
+                if !file.exists() {
+                    bail!("Config file not found: {}", file.display());
+                }
 
-            println!("Starting sandbox '{}'...", name);
-            manager.start(&name).await?;
-            println!("Sandbox '{}' started.", name);
-            if manager
-                .get_sandbox_state(&name)
-                .is_some_and(|s| s.ssh_enabled)
-            {
-                println!("\nTo connect: agentkernel ssh {}", name);
-            } else {
-                println!("\nTo attach: agentkernel attach {}", name);
+                let cfg = Config::from_file(&file)?;
+                let name = as_name.unwrap_or_else(|| cfg.sandbox.name.clone());
+                validation::validate_sandbox_name(&name)?;
+
+                let backend_type = if let Some(ref b) = backend {
+                    Some(
+                        b.parse::<crate::backend::BackendType>()
+                            .map_err(|e| anyhow::anyhow!(e))?,
+                    )
+                } else {
+                    None
+                };
+                let mut manager = VmManager::with_backend(backend_type)?;
+
+                let docker_image = cfg.docker_image();
+                println!(
+                    "Importing config as sandbox '{}' (image: {})...",
+                    name, docker_image
+                );
+                manager
+                    .create(
+                        &name,
+                        &docker_image,
+                        cfg.resources.vcpus,
+                        cfg.resources.memory_mb,
+                    )
+                    .await?;
+
+                println!("Sandbox '{}' created from config.", name);
+                println!("\nNext steps:");
+                println!("  agentkernel start {}", name);
             }
-        }
-        Commands::Stop { name } => {
-            validation::validate_sandbox_name(&name)?;
-
-            let mut manager = VmManager::new()?;
-
-            if !manager.exists(&name) {
-                bail!("Sandbox '{}' not found", name);
+            SandboxAction::Clean { force, all } => {
+                run_clean(force, all).await?;
             }
-
-            println!("Stopping sandbox '{}'...", name);
-            manager.stop(&name).await?;
-            println!("Sandbox '{}' stopped.", name);
-        }
-        Commands::Remove { name } => {
-            validation::validate_sandbox_name(&name)?;
-
-            let mut manager = VmManager::new()?;
-            println!("Removing sandbox '{}'...", name);
-            manager.remove(&name).await?;
-            println!("Sandbox '{}' removed.", name);
-        }
-        Commands::ExtendTtl { name, by } => {
-            validation::validate_sandbox_name(&name)?;
-
-            let mut manager = VmManager::new()?;
-            if !manager.exists(&name) {
-                bail!("Sandbox '{}' not found", name);
-            }
-
-            let additional_secs = crate::ssh::parse_ttl_to_secs(&by)?;
-            let new_expiry = manager.extend_ttl(&name, additional_secs)?;
-
-            match new_expiry {
-                Some(exp) => println!("Extended TTL for '{}'. New expiry: {}", name, exp),
-                None => println!("Sandbox '{}' now has no expiry (TTL disabled).", name),
-            }
-        }
+        },
         Commands::Attach { name, env, record } => {
             validation::validate_sandbox_name(&name)?;
 
@@ -1339,155 +1617,6 @@ memory_mb = 512
             } else {
                 let output = manager.exec_cmd_full(&name, &command, &opts).await?;
                 print!("{}", output);
-            }
-        }
-        Commands::ExecList { name } => {
-            validation::validate_sandbox_name(&name)?;
-            let manager = VmManager::new()?;
-            let commands = manager.detached_list(Some(&name));
-            println!("{}", serde_json::to_string_pretty(&commands)?);
-        }
-        Commands::ExecLogs { name, id, stderr } => {
-            validation::validate_sandbox_name(&name)?;
-            let mut manager = VmManager::new()?;
-            let stream = if stderr { Some("stderr") } else { None };
-            let output = manager.detached_logs(&id, stream).await?;
-            print!("{}", output);
-        }
-        Commands::ExecKill { name, id } => {
-            validation::validate_sandbox_name(&name)?;
-            let mut manager = VmManager::new()?;
-            manager.detached_kill(&id).await?;
-            println!("Command {} killed", id);
-        }
-        Commands::Cp { source, dest } => {
-            // Parse source and destination to determine direction
-            // Format: sandbox:/path or ./local/path
-            let (src_sandbox, src_path) = parse_cp_path(&source);
-            let (dst_sandbox, dst_path) = parse_cp_path(&dest);
-
-            match (src_sandbox, dst_sandbox) {
-                (Some(sandbox), None) => {
-                    // Copy from sandbox to local
-                    validation::validate_sandbox_name(&sandbox)?;
-                    let mut manager = VmManager::new()?;
-
-                    if !manager.exists(&sandbox) {
-                        bail!("Sandbox '{}' not found", sandbox);
-                    }
-                    if !manager.is_running(&sandbox) {
-                        bail!("Sandbox '{}' is not running", sandbox);
-                    }
-
-                    let content = manager.read_file(&sandbox, &src_path).await?;
-                    std::fs::write(&dst_path, content)?;
-                    println!(
-                        "Copied {} bytes from {}:{} to {}",
-                        std::fs::metadata(&dst_path)?.len(),
-                        sandbox,
-                        src_path,
-                        dst_path
-                    );
-                }
-                (None, Some(sandbox)) => {
-                    // Copy from local to sandbox
-                    validation::validate_sandbox_name(&sandbox)?;
-                    let mut manager = VmManager::new()?;
-
-                    if !manager.exists(&sandbox) {
-                        bail!("Sandbox '{}' not found", sandbox);
-                    }
-                    if !manager.is_running(&sandbox) {
-                        bail!("Sandbox '{}' is not running", sandbox);
-                    }
-
-                    let content = std::fs::read(&src_path)?;
-                    manager.write_file(&sandbox, &dst_path, &content).await?;
-                    println!(
-                        "Copied {} bytes from {} to {}:{}",
-                        content.len(),
-                        src_path,
-                        sandbox,
-                        dst_path
-                    );
-                }
-                (Some(_), Some(_)) => {
-                    bail!("Cannot copy between sandboxes. Copy to local first.");
-                }
-                (None, None) => {
-                    bail!("At least one path must be a sandbox path (sandbox:/path)");
-                }
-            }
-        }
-        Commands::List { project } => {
-            let manager = VmManager::new()?;
-            let vms = manager.list();
-
-            // Optionally filter by current git project prefix
-            let project_prefix = if project {
-                match git_utils::detect() {
-                    Ok(ctx) => {
-                        println!("Filtering by git project: {}\n", ctx.project);
-                        Some(ctx.project)
-                    }
-                    Err(_) => {
-                        bail!("--project requires a git repository");
-                    }
-                }
-            } else {
-                None
-            };
-
-            let filtered: Vec<_> = vms
-                .into_iter()
-                .filter(|(name, _, _)| {
-                    if let Some(ref prefix) = project_prefix {
-                        name.starts_with(&format!("{}-", prefix)) || name == prefix
-                    } else {
-                        true
-                    }
-                })
-                .collect();
-
-            if filtered.is_empty() {
-                if project_prefix.is_some() {
-                    println!("No sandboxes found for this project.");
-                } else {
-                    println!("No sandboxes found.");
-                }
-                println!("\nCreate one with: agentkernel create <name>");
-            } else {
-                println!(
-                    "{:<30} {:<10} {:<10} {:<17} PORTS",
-                    "NAME", "STATUS", "BACKEND", "IP"
-                );
-                for (name, running, backend) in filtered {
-                    let status = if running { "running" } else { "stopped" };
-                    let backend_str = backend
-                        .map(|b| format!("{}", b))
-                        .unwrap_or_else(|| "unknown".to_string());
-                    let ip_str = if running {
-                        manager
-                            .get_container_ip(name)
-                            .unwrap_or_else(|| "-".to_string())
-                    } else {
-                        "-".to_string()
-                    };
-                    let ports_str = manager
-                        .get_state(name)
-                        .map(|s| {
-                            s.ports
-                                .iter()
-                                .map(|p| p.to_string())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        })
-                        .unwrap_or_default();
-                    println!(
-                        "{:<30} {:<10} {:<10} {:<17} {}",
-                        name, status, backend_str, ip_str, ports_str
-                    );
-                }
             }
         }
         Commands::Run {
@@ -1837,416 +1966,428 @@ memory_mb = 512
 
             http_api::run_server_with_tls(addr, tls_config).await?;
         }
-        Commands::Ssh {
-            name,
-            record,
-            command,
-        } => {
-            let manager = VmManager::new()?;
+        Commands::Ssh { action } => match action {
+            SshAction::Connect {
+                name,
+                record,
+                command,
+            } => {
+                let manager = VmManager::new()?;
 
-            // 1. Look up the sandbox — it must exist and be SSH-enabled
-            let state = manager
-                .get_sandbox_state(&name)
-                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+                // 1. Look up the sandbox — it must exist and be SSH-enabled
+                let state = manager
+                    .get_sandbox_state(&name)
+                    .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
 
-            if !state.ssh_enabled {
-                bail!(
-                    "SSH is not enabled on sandbox '{}'. \
+                if !state.ssh_enabled {
+                    bail!(
+                        "SSH is not enabled on sandbox '{}'. \
                      Recreate it with --ssh to enable SSH access.",
-                    name
-                );
-            }
-
-            // 2. Determine the SSH host port
-            let host_port = state
-                .ssh_host_port
-                .or_else(|| {
-                    state
-                        .ports
-                        .iter()
-                        .find(|p| p.container_port == 22)
-                        .and_then(|p| p.host_port)
-                })
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "No SSH host port found for sandbox '{}'. \
-                         The sandbox may need a port mapping for port 22.",
                         name
-                    )
-                })?;
-
-            // Audit: log SSH connection
-            audit::log_event(audit::AuditEvent::SshConnected {
-                sandbox: name.clone(),
-                host_port,
-                ssh_user: "sandbox".to_string(),
-            });
-            let start_time = std::time::Instant::now();
-
-            // 3. Read the CA private key saved during sandbox start
-            let ca_key_path = manager.get_data_dir().join(format!("{}-ssh-ca.key", name));
-            let ca_private_key = std::fs::read_to_string(&ca_key_path).map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to read CA key at {}: {}. \
-                     Was the sandbox started with --ssh?",
-                    ca_key_path.display(),
-                    e
-                )
-            })?;
-
-            // 4. Generate an ephemeral client keypair
-            let (client_private, client_public) = ssh::generate_client_keypair()?;
-
-            // 5. Sign the client public key with the stored CA key
-            let ttl_secs = ssh::parse_ttl_to_secs("30m")?;
-            let cert = ssh::sign_client_key_local(
-                &ca_private_key,
-                &client_public,
-                &["sandbox"],
-                ttl_secs,
-            )?;
-
-            // 6. Write cert and private key to persistent location
-            //    (~/.agentkernel/ssh/{name}/ so raw `ssh -i` works too)
-            let ssh_dir = dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".agentkernel")
-                .join("ssh")
-                .join(&name);
-            std::fs::create_dir_all(&ssh_dir)?;
-
-            let client_key_path = ssh_dir.join("client_key");
-            let cert_path = ssh_dir.join("client_key-cert.pub");
-            std::fs::write(&client_key_path, &client_private)?;
-            std::fs::write(&cert_path, &cert)?;
-
-            // Set permissions on the private key (owner read-only)
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&client_key_path, std::fs::Permissions::from_mode(0o600))?;
-            }
-
-            // 7. Build the ssh command
-            let mut ssh_cmd = std::process::Command::new("ssh");
-            ssh_cmd
-                .arg("-o")
-                .arg("StrictHostKeyChecking=no")
-                .arg("-o")
-                .arg("UserKnownHostsFile=/dev/null")
-                .arg("-o")
-                .arg("LogLevel=ERROR")
-                .arg("-i")
-                .arg(&client_key_path)
-                .arg("-o")
-                .arg(format!("CertificateFile={}", cert_path.display()))
-                .arg("-p")
-                .arg(host_port.to_string());
-
-            // Request PTY for interactive sessions when we have a terminal
-            if command.is_empty() {
-                use std::io::IsTerminal;
-                if std::io::stdin().is_terminal() {
-                    ssh_cmd.arg("-t");
-                }
-            }
-
-            ssh_cmd.arg("sandbox@localhost");
-
-            // Append remote command if provided
-            if !command.is_empty() {
-                ssh_cmd.arg("--");
-                for arg in &command {
-                    ssh_cmd.arg(arg);
-                }
-            }
-
-            // Resolve recording path (if a directory, generate a filename)
-            let record_path = record.map(|p| {
-                if p.is_dir() {
-                    p.join(asciicast::generate_recording_name(&name))
-                } else {
-                    p
-                }
-            });
-
-            if let Some(ref record_path) = record_path {
-                // 8a. Recording mode: capture output through pipes
-                if let Some(parent) = record_path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-
-                let mut recorder = asciicast::AsciicastRecorder::with_header(
-                    record_path,
-                    asciicast::AsciicastHeader::from_terminal()
-                        .with_title(format!("agentkernel ssh {}", name))
-                        .with_command(format!("agentkernel ssh {}", name)),
-                );
-
-                let mut child = ssh_cmd
-                    .stdin(std::process::Stdio::inherit())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .spawn()
-                    .map_err(|e| {
-                        anyhow::anyhow!(
-                            "Failed to execute ssh command: {}. Is OpenSSH installed?",
-                            e
-                        )
-                    })?;
-
-                // Read stdout and record it
-                if let Some(mut stdout) = child.stdout.take() {
-                    use std::io::Read;
-                    let mut buf = [0u8; 4096];
-                    loop {
-                        match stdout.read(&mut buf) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let data = String::from_utf8_lossy(&buf[..n]);
-                                recorder.record_output(&*data);
-                                print!("{}", data);
-                                use std::io::Write;
-                                std::io::stdout().flush().ok();
-                            }
-                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                            Err(_) => break,
-                        }
-                    }
-                }
-
-                let status = child.wait()?;
-                if let Err(e) = recorder.save() {
-                    eprintln!("Warning: Failed to save recording: {}", e);
-                } else {
-                    eprintln!("Session recording saved to: {}", record_path.display());
-                    eprintln!(
-                        "  Replay with: agentkernel replay {}",
-                        record_path.display()
                     );
                 }
 
-                // Audit: log SSH disconnect
-                let duration = start_time.elapsed().as_secs();
-                audit::log_event(audit::AuditEvent::SshDisconnected {
-                    sandbox: name.clone(),
-                    duration_secs: duration,
-                    recording: Some(record_path.display().to_string()),
-                });
-
-                // 9. Temp files cleaned up automatically when temp_dir drops
-
-                if !status.success() {
-                    std::process::exit(status.code().unwrap_or(1));
-                }
-            } else {
-                // 8b. Non-recording mode: exec() replaces this process with ssh
-                //     for proper terminal/PTY handling
-                eprintln!(
-                    "  or: ssh -i {} -p {} sandbox@localhost",
-                    client_key_path.display(),
-                    host_port
-                );
-                use std::io::Write;
-                std::io::stderr().flush().ok();
-
-                #[cfg(unix)]
-                {
-                    use std::os::unix::process::CommandExt;
-                    let err = ssh_cmd.exec();
-                    bail!("Failed to exec ssh: {}", err);
-                }
-
-                #[cfg(not(unix))]
-                {
-                    let status = ssh_cmd
-                        .stdin(std::process::Stdio::inherit())
-                        .stdout(std::process::Stdio::inherit())
-                        .stderr(std::process::Stdio::inherit())
-                        .status()
-                        .map_err(|e| {
-                            anyhow::anyhow!("Failed to execute ssh: {}. Is OpenSSH installed?", e)
-                        })?;
-                    if !status.success() {
-                        std::process::exit(status.code().unwrap_or(1));
-                    }
-                }
-            }
-        }
-        Commands::SshConfig { name, all } => {
-            if name.is_none() && !all {
-                bail!("Specify a sandbox name or use --all");
-            }
-
-            let manager = VmManager::new()?;
-
-            // Collect the sandbox names to generate config for
-            let names: Vec<String> = if all {
-                manager
-                    .list()
-                    .into_iter()
-                    .filter_map(|(n, _running, _backend)| {
-                        let state = manager.get_sandbox_state(n)?;
-                        if state.ssh_enabled {
-                            Some(n.to_string())
-                        } else {
-                            None
-                        }
+                // 2. Determine the SSH host port
+                let host_port = state
+                    .ssh_host_port
+                    .or_else(|| {
+                        state
+                            .ports
+                            .iter()
+                            .find(|p| p.container_port == 22)
+                            .and_then(|p| p.host_port)
                     })
-                    .collect()
-            } else {
-                vec![name.unwrap()]
-            };
-
-            if names.is_empty() {
-                bail!("No SSH-enabled sandboxes found");
-            }
-
-            // Resolve home directory for cert/key paths
-            let home = dirs::home_dir()
-                .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-
-            println!("# Generated by agentkernel ssh-config");
-
-            for sandbox_name in &names {
-                let state = match manager.get_sandbox_state(sandbox_name) {
-                    Some(s) => s,
-                    None => {
-                        eprintln!("Warning: sandbox '{}' not found, skipping", sandbox_name);
-                        continue;
-                    }
-                };
-
-                if !state.ssh_enabled {
-                    eprintln!("Warning: SSH not enabled on '{}', skipping", sandbox_name);
-                    continue;
-                }
-
-                // Resolve host port (same logic as Ssh command)
-                let host_port = state.ssh_host_port.or_else(|| {
-                    state
-                        .ports
-                        .iter()
-                        .find(|p| p.container_port == 22)
-                        .and_then(|p| p.host_port)
-                });
-
-                let host_port = match host_port {
-                    Some(p) => p,
-                    None => {
-                        eprintln!("Warning: no SSH host port for '{}', skipping", sandbox_name);
-                        continue;
-                    }
-                };
-
-                let ssh_dir = home.join(".agentkernel").join("ssh").join(sandbox_name);
-
-                println!();
-                println!("Host agentkernel-{}", sandbox_name);
-                println!("    HostName localhost");
-                println!("    Port {}", host_port);
-                println!("    User sandbox");
-                println!("    IdentityFile {}", ssh_dir.join("client_key").display());
-                println!(
-                    "    CertificateFile {}",
-                    ssh_dir.join("client_key-cert.pub").display()
-                );
-                println!("    ProxyCommand agentkernel ssh-proxy {}", sandbox_name);
-                println!("    StrictHostKeyChecking no");
-                println!("    UserKnownHostsFile /dev/null");
-            }
-        }
-        Commands::SshProxy { name } => {
-            let manager = VmManager::new()?;
-
-            // 1. Look up the sandbox — it must exist and be SSH-enabled
-            let state = manager
-                .get_sandbox_state(&name)
-                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
-
-            if !state.ssh_enabled {
-                bail!(
-                    "SSH is not enabled on sandbox '{}'. \
-                     Recreate it with --ssh to enable SSH access.",
-                    name
-                );
-            }
-
-            // 2. Resolve host port (same logic as Ssh command)
-            let host_port = state
-                .ssh_host_port
-                .or_else(|| {
-                    state
-                        .ports
-                        .iter()
-                        .find(|p| p.container_port == 22)
-                        .and_then(|p| p.host_port)
-                })
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "No SSH host port found for sandbox '{}'. \
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "No SSH host port found for sandbox '{}'. \
                          The sandbox may need a port mapping for port 22.",
-                        name
+                            name
+                        )
+                    })?;
+
+                // Audit: log SSH connection
+                audit::log_event(audit::AuditEvent::SshConnected {
+                    sandbox: name.clone(),
+                    host_port,
+                    ssh_user: "sandbox".to_string(),
+                });
+                let start_time = std::time::Instant::now();
+
+                // 3. Read the CA private key saved during sandbox start
+                let ca_key_path = manager.get_data_dir().join(format!("{}-ssh-ca.key", name));
+                let ca_private_key = std::fs::read_to_string(&ca_key_path).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to read CA key at {}: {}. \
+                     Was the sandbox started with --ssh?",
+                        ca_key_path.display(),
+                        e
                     )
                 })?;
 
-            // 3. Read the CA private key saved during sandbox creation
-            let ca_key_path = manager.get_data_dir().join(format!("{}-ssh-ca.key", name));
-            let ca_private_key = std::fs::read_to_string(&ca_key_path).map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to read CA key at {}: {}. \
-                     Was the sandbox started with --ssh?",
-                    ca_key_path.display(),
-                    e
-                )
-            })?;
+                // 4. Generate an ephemeral client keypair
+                let (client_private, client_public) = ssh::generate_client_keypair()?;
 
-            // 4. Generate an ephemeral client keypair
-            let (client_private, client_public) = ssh::generate_client_keypair()?;
+                // 5. Sign the client public key with the stored CA key
+                let ttl_secs = ssh::parse_ttl_to_secs("30m")?;
+                let cert = ssh::sign_client_key_local(
+                    &ca_private_key,
+                    &client_public,
+                    &["sandbox"],
+                    ttl_secs,
+                )?;
 
-            // 5. Sign the client public key with the stored CA key
-            let ttl_secs = ssh::parse_ttl_to_secs("30m")?;
-            let cert = ssh::sign_client_key_local(
-                &ca_private_key,
-                &client_public,
-                &["sandbox"],
-                ttl_secs,
-            )?;
+                // 6. Write cert and private key to persistent location
+                //    (~/.agentkernel/ssh/{name}/ so raw `ssh -i` works too)
+                let ssh_dir = dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".agentkernel")
+                    .join("ssh")
+                    .join(&name);
+                std::fs::create_dir_all(&ssh_dir)?;
 
-            // 6. Write cert and key to a well-known location for the SSH config
-            let home = dirs::home_dir()
-                .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-            let ssh_dir = home.join(".agentkernel").join("ssh").join(&name);
-            std::fs::create_dir_all(&ssh_dir)?;
+                let client_key_path = ssh_dir.join("client_key");
+                let cert_path = ssh_dir.join("client_key-cert.pub");
+                std::fs::write(&client_key_path, &client_private)?;
+                std::fs::write(&cert_path, &cert)?;
 
-            let client_key_path = ssh_dir.join("client_key");
-            let cert_path = ssh_dir.join("client_key-cert.pub");
-            std::fs::write(&client_key_path, &client_private)?;
-            std::fs::write(&cert_path, &cert)?;
+                // Set permissions on the private key (owner read-only)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(
+                        &client_key_path,
+                        std::fs::Permissions::from_mode(0o600),
+                    )?;
+                }
 
-            // Set permissions on the private key (owner read-only)
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&client_key_path, std::fs::Permissions::from_mode(0o600))?;
+                // 7. Build the ssh command
+                let mut ssh_cmd = std::process::Command::new("ssh");
+                ssh_cmd
+                    .arg("-o")
+                    .arg("StrictHostKeyChecking=no")
+                    .arg("-o")
+                    .arg("UserKnownHostsFile=/dev/null")
+                    .arg("-o")
+                    .arg("LogLevel=ERROR")
+                    .arg("-i")
+                    .arg(&client_key_path)
+                    .arg("-o")
+                    .arg(format!("CertificateFile={}", cert_path.display()))
+                    .arg("-p")
+                    .arg(host_port.to_string());
+
+                // Request PTY for interactive sessions when we have a terminal
+                if command.is_empty() {
+                    use std::io::IsTerminal;
+                    if std::io::stdin().is_terminal() {
+                        ssh_cmd.arg("-t");
+                    }
+                }
+
+                ssh_cmd.arg("sandbox@localhost");
+
+                // Append remote command if provided
+                if !command.is_empty() {
+                    ssh_cmd.arg("--");
+                    for arg in &command {
+                        ssh_cmd.arg(arg);
+                    }
+                }
+
+                // Resolve recording path (if a directory, generate a filename)
+                let record_path = record.map(|p| {
+                    if p.is_dir() {
+                        p.join(asciicast::generate_recording_name(&name))
+                    } else {
+                        p
+                    }
+                });
+
+                if let Some(ref record_path) = record_path {
+                    // 8a. Recording mode: capture output through pipes
+                    if let Some(parent) = record_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+
+                    let mut recorder = asciicast::AsciicastRecorder::with_header(
+                        record_path,
+                        asciicast::AsciicastHeader::from_terminal()
+                            .with_title(format!("agentkernel ssh {}", name))
+                            .with_command(format!("agentkernel ssh {}", name)),
+                    );
+
+                    let mut child = ssh_cmd
+                        .stdin(std::process::Stdio::inherit())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "Failed to execute ssh command: {}. Is OpenSSH installed?",
+                                e
+                            )
+                        })?;
+
+                    // Read stdout and record it
+                    if let Some(mut stdout) = child.stdout.take() {
+                        use std::io::Read;
+                        let mut buf = [0u8; 4096];
+                        loop {
+                            match stdout.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    let data = String::from_utf8_lossy(&buf[..n]);
+                                    recorder.record_output(&*data);
+                                    print!("{}", data);
+                                    use std::io::Write;
+                                    std::io::stdout().flush().ok();
+                                }
+                                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                                Err(_) => break,
+                            }
+                        }
+                    }
+
+                    let status = child.wait()?;
+                    if let Err(e) = recorder.save() {
+                        eprintln!("Warning: Failed to save recording: {}", e);
+                    } else {
+                        eprintln!("Session recording saved to: {}", record_path.display());
+                        eprintln!(
+                            "  Replay with: agentkernel replay {}",
+                            record_path.display()
+                        );
+                    }
+
+                    // Audit: log SSH disconnect
+                    let duration = start_time.elapsed().as_secs();
+                    audit::log_event(audit::AuditEvent::SshDisconnected {
+                        sandbox: name.clone(),
+                        duration_secs: duration,
+                        recording: Some(record_path.display().to_string()),
+                    });
+
+                    // 9. Temp files cleaned up automatically when temp_dir drops
+
+                    if !status.success() {
+                        std::process::exit(status.code().unwrap_or(1));
+                    }
+                } else {
+                    // 8b. Non-recording mode: exec() replaces this process with ssh
+                    //     for proper terminal/PTY handling
+                    eprintln!(
+                        "  or: ssh -i {} -p {} sandbox@localhost",
+                        client_key_path.display(),
+                        host_port
+                    );
+                    use std::io::Write;
+                    std::io::stderr().flush().ok();
+
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::CommandExt;
+                        let err = ssh_cmd.exec();
+                        bail!("Failed to exec ssh: {}", err);
+                    }
+
+                    #[cfg(not(unix))]
+                    {
+                        let status = ssh_cmd
+                            .stdin(std::process::Stdio::inherit())
+                            .stdout(std::process::Stdio::inherit())
+                            .stderr(std::process::Stdio::inherit())
+                            .status()
+                            .map_err(|e| {
+                                anyhow::anyhow!(
+                                    "Failed to execute ssh: {}. Is OpenSSH installed?",
+                                    e
+                                )
+                            })?;
+                        if !status.success() {
+                            std::process::exit(status.code().unwrap_or(1));
+                        }
+                    }
+                }
             }
+            SshAction::Config { name, all } => {
+                if name.is_none() && !all {
+                    bail!("Specify a sandbox name or use --all");
+                }
 
-            eprintln!(
-                "agentkernel ssh-proxy: signed cert for '{}', connecting to localhost:{}",
-                name, host_port
-            );
+                let manager = VmManager::new()?;
 
-            // 7. Raw TCP pipe: connect to localhost:{host_port} and pipe stdin/stdout
-            let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", host_port)).await?;
-            let (mut rd, mut wr) = stream.into_split();
-            let mut stdin = tokio::io::stdin();
-            let mut stdout = tokio::io::stdout();
+                // Collect the sandbox names to generate config for
+                let names: Vec<String> = if all {
+                    manager
+                        .list()
+                        .into_iter()
+                        .filter_map(|(n, _running, _backend)| {
+                            let state = manager.get_sandbox_state(n)?;
+                            if state.ssh_enabled {
+                                Some(n.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                } else {
+                    vec![name.unwrap()]
+                };
 
-            tokio::select! {
-                result = tokio::io::copy(&mut stdin, &mut wr) => { result?; },
-                result = tokio::io::copy(&mut rd, &mut stdout) => { result?; },
-            };
-        }
+                if names.is_empty() {
+                    bail!("No SSH-enabled sandboxes found");
+                }
+
+                // Resolve home directory for cert/key paths
+                let home = dirs::home_dir()
+                    .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+
+                println!("# Generated by agentkernel ssh-config");
+
+                for sandbox_name in &names {
+                    let state = match manager.get_sandbox_state(sandbox_name) {
+                        Some(s) => s,
+                        None => {
+                            eprintln!("Warning: sandbox '{}' not found, skipping", sandbox_name);
+                            continue;
+                        }
+                    };
+
+                    if !state.ssh_enabled {
+                        eprintln!("Warning: SSH not enabled on '{}', skipping", sandbox_name);
+                        continue;
+                    }
+
+                    // Resolve host port (same logic as Ssh command)
+                    let host_port = state.ssh_host_port.or_else(|| {
+                        state
+                            .ports
+                            .iter()
+                            .find(|p| p.container_port == 22)
+                            .and_then(|p| p.host_port)
+                    });
+
+                    let host_port = match host_port {
+                        Some(p) => p,
+                        None => {
+                            eprintln!("Warning: no SSH host port for '{}', skipping", sandbox_name);
+                            continue;
+                        }
+                    };
+
+                    let ssh_dir = home.join(".agentkernel").join("ssh").join(sandbox_name);
+
+                    println!();
+                    println!("Host agentkernel-{}", sandbox_name);
+                    println!("    HostName localhost");
+                    println!("    Port {}", host_port);
+                    println!("    User sandbox");
+                    println!("    IdentityFile {}", ssh_dir.join("client_key").display());
+                    println!(
+                        "    CertificateFile {}",
+                        ssh_dir.join("client_key-cert.pub").display()
+                    );
+                    println!("    ProxyCommand agentkernel ssh-proxy {}", sandbox_name);
+                    println!("    StrictHostKeyChecking no");
+                    println!("    UserKnownHostsFile /dev/null");
+                }
+            }
+            SshAction::Proxy { name } => {
+                let manager = VmManager::new()?;
+
+                // 1. Look up the sandbox — it must exist and be SSH-enabled
+                let state = manager
+                    .get_sandbox_state(&name)
+                    .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+
+                if !state.ssh_enabled {
+                    bail!(
+                        "SSH is not enabled on sandbox '{}'. \
+                     Recreate it with --ssh to enable SSH access.",
+                        name
+                    );
+                }
+
+                // 2. Resolve host port (same logic as Ssh command)
+                let host_port = state
+                    .ssh_host_port
+                    .or_else(|| {
+                        state
+                            .ports
+                            .iter()
+                            .find(|p| p.container_port == 22)
+                            .and_then(|p| p.host_port)
+                    })
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "No SSH host port found for sandbox '{}'. \
+                         The sandbox may need a port mapping for port 22.",
+                            name
+                        )
+                    })?;
+
+                // 3. Read the CA private key saved during sandbox creation
+                let ca_key_path = manager.get_data_dir().join(format!("{}-ssh-ca.key", name));
+                let ca_private_key = std::fs::read_to_string(&ca_key_path).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to read CA key at {}: {}. \
+                     Was the sandbox started with --ssh?",
+                        ca_key_path.display(),
+                        e
+                    )
+                })?;
+
+                // 4. Generate an ephemeral client keypair
+                let (client_private, client_public) = ssh::generate_client_keypair()?;
+
+                // 5. Sign the client public key with the stored CA key
+                let ttl_secs = ssh::parse_ttl_to_secs("30m")?;
+                let cert = ssh::sign_client_key_local(
+                    &ca_private_key,
+                    &client_public,
+                    &["sandbox"],
+                    ttl_secs,
+                )?;
+
+                // 6. Write cert and key to a well-known location for the SSH config
+                let home = dirs::home_dir()
+                    .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+                let ssh_dir = home.join(".agentkernel").join("ssh").join(&name);
+                std::fs::create_dir_all(&ssh_dir)?;
+
+                let client_key_path = ssh_dir.join("client_key");
+                let cert_path = ssh_dir.join("client_key-cert.pub");
+                std::fs::write(&client_key_path, &client_private)?;
+                std::fs::write(&cert_path, &cert)?;
+
+                // Set permissions on the private key (owner read-only)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(
+                        &client_key_path,
+                        std::fs::Permissions::from_mode(0o600),
+                    )?;
+                }
+
+                eprintln!(
+                    "agentkernel ssh-proxy: signed cert for '{}', connecting to localhost:{}",
+                    name, host_port
+                );
+
+                // 7. Raw TCP pipe: connect to localhost:{host_port} and pipe stdin/stdout
+                let stream =
+                    tokio::net::TcpStream::connect(format!("127.0.0.1:{}", host_port)).await?;
+                let (mut rd, mut wr) = stream.into_split();
+                let mut stdin = tokio::io::stdin();
+                let mut stdout = tokio::io::stdout();
+
+                tokio::select! {
+                    result = tokio::io::copy(&mut stdin, &mut wr) => { result?; },
+                    result = tokio::io::copy(&mut rd, &mut stdout) => { result?; },
+                };
+            }
+        },
         Commands::Agents => {
             println!("{:<15} {:<15} API KEY", "AGENT", "STATUS");
             println!("{:-<45}", "");
@@ -2572,28 +2713,6 @@ memory_mb = 512
                 }
             }
         }
-        Commands::Gc { dry_run } => {
-            let mut manager = VmManager::new()?;
-            let expired = manager.expired();
-            if expired.is_empty() {
-                println!("No expired sandboxes.");
-            } else if dry_run {
-                println!("Would remove {} expired sandbox(es):", expired.len());
-                for name in &expired {
-                    println!("  {}", name);
-                }
-            } else {
-                let removed = manager.gc().await?;
-                println!("Removed {} expired sandbox(es):", removed.len());
-                for name in &removed {
-                    println!("  {}", name);
-                }
-            }
-        }
-        Commands::Info { name } => {
-            validation::validate_sandbox_name(&name)?;
-            run_info(&name)?;
-        }
         Commands::Benchmark {
             backends,
             iterations,
@@ -2736,87 +2855,6 @@ memory_mb = 512
                     total_elapsed.as_secs_f64()
                 );
             }
-        }
-        Commands::Export { name, output } => {
-            validation::validate_sandbox_name(&name)?;
-            let output_file = output.unwrap_or_else(|| format!("{}.tar", name));
-
-            // Use docker export to get the full filesystem
-            let container_name = format!("agentkernel-{}", name);
-            println!("Exporting sandbox '{}' to {}...", name, output_file);
-            let status = std::process::Command::new("docker")
-                .args(["export", "-o", &output_file, &container_name])
-                .status()
-                .map_err(|e| anyhow::anyhow!("Failed to run docker export: {}", e))?;
-
-            if !status.success() {
-                bail!("docker export failed for sandbox '{}'", name);
-            }
-
-            let size = std::fs::metadata(&output_file)?.len();
-            let size_mb = size as f64 / 1_048_576.0;
-            println!("Exported {:.1} MB to {}", size_mb, output_file);
-        }
-        Commands::ExportConfig { name } => {
-            let manager = VmManager::new()?;
-            let state = manager
-                .get_state(&name)
-                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
-
-            // Generate a TOML config from the sandbox state
-            let config = format!(
-                "[sandbox]\n\
-                 name = \"{}\"\n\
-                 base_image = \"{}\"\n\
-                 \n\
-                 [resources]\n\
-                 vcpus = {}\n\
-                 memory_mb = {}\n",
-                state.name, state.image, state.vcpus, state.memory_mb,
-            );
-
-            print!("{}", config);
-        }
-        Commands::ImportConfig {
-            file,
-            r#as: as_name,
-            backend,
-        } => {
-            if !file.exists() {
-                bail!("Config file not found: {}", file.display());
-            }
-
-            let cfg = Config::from_file(&file)?;
-            let name = as_name.unwrap_or_else(|| cfg.sandbox.name.clone());
-            validation::validate_sandbox_name(&name)?;
-
-            let backend_type = if let Some(ref b) = backend {
-                Some(
-                    b.parse::<crate::backend::BackendType>()
-                        .map_err(|e| anyhow::anyhow!(e))?,
-                )
-            } else {
-                None
-            };
-            let mut manager = VmManager::with_backend(backend_type)?;
-
-            let docker_image = cfg.docker_image();
-            println!(
-                "Importing config as sandbox '{}' (image: {})...",
-                name, docker_image
-            );
-            manager
-                .create(
-                    &name,
-                    &docker_image,
-                    cfg.resources.vcpus,
-                    cfg.resources.memory_mb,
-                )
-                .await?;
-
-            println!("Sandbox '{}' created from config.", name);
-            println!("\nNext steps:");
-            println!("  agentkernel start {}", name);
         }
         Commands::Images { action } => match action {
             ImagesAction::List { all } => {
@@ -3250,9 +3288,6 @@ memory_mb = 512
                 println!("  agentkernel attach {}", restore_name);
             }
         },
-        Commands::Clean { force, all } => {
-            run_clean(force, all).await?;
-        }
         Commands::Completions { shell } => {
             clap_complete::generate(
                 shell,

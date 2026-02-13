@@ -32,18 +32,37 @@ function AKLogo({ className }: { className?: string }) {
   );
 }
 
-const navItems = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/sandboxes", label: "Sandboxes", icon: Box },
-  { to: "/templates", label: "Templates", icon: FileCode },
-  { to: "/snapshots", label: "Snapshots", icon: Camera },
-  { to: "/plugins", label: "Plugins", icon: Puzzle },
-  { to: "/audit", label: "Audit Log", icon: ScrollText },
-  { to: "/diagnostics", label: "Diagnostics", icon: Activity },
-  { to: "/policy", label: "Policy", icon: Shield },
-  { to: "/policy/log", label: "Policy Log", icon: ClipboardList },
-  { to: "/secrets", label: "Secrets", icon: KeyRound },
-  { to: "/settings", label: "Settings", icon: Settings },
+const navSections = [
+  {
+    items: [
+      { to: "/", label: "Dashboard", icon: LayoutDashboard },
+    ],
+  },
+  {
+    label: "Workflow",
+    items: [
+      { to: "/sandboxes", label: "Sandboxes", icon: Box },
+      { to: "/templates", label: "Templates", icon: FileCode },
+      { to: "/snapshots", label: "Snapshots", icon: Camera },
+      { to: "/secrets", label: "Secrets", icon: KeyRound },
+    ],
+  },
+  {
+    label: "Extensions",
+    items: [
+      { to: "/plugins", label: "Plugins", icon: Puzzle },
+      { to: "/policy", label: "Policy", icon: Shield },
+      { to: "/policy/log", label: "Policy Log", icon: ClipboardList },
+    ],
+  },
+  {
+    label: "System",
+    items: [
+      { to: "/audit", label: "Audit Log", icon: ScrollText },
+      { to: "/diagnostics", label: "Diagnostics", icon: Activity },
+      { to: "/settings", label: "Settings", icon: Settings },
+    ],
+  },
 ];
 
 export function Sidebar() {
@@ -56,25 +75,35 @@ export function Sidebar() {
         </span>
       </div>
       <Separator />
-      <nav className="flex flex-1 flex-col gap-1 p-2">
-        {navItems.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.to === "/"}
-            className={({ isActive }) =>
-              cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                "hover:bg-accent hover:text-accent-foreground",
-                isActive
-                  ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground"
-              )
-            }
-          >
-            <item.icon className="h-4 w-4" />
-            {item.label}
-          </NavLink>
+      <nav className="flex flex-1 flex-col gap-0.5 p-2">
+        {navSections.map((section, i) => (
+          <div key={i}>
+            {i > 0 && <Separator className="my-2" />}
+            {section.label && (
+              <span className="px-3 py-1 text-xs font-medium uppercase tracking-wider text-muted-foreground/60">
+                {section.label}
+              </span>
+            )}
+            {section.items.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.to === "/"}
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                    "hover:bg-accent hover:text-accent-foreground",
+                    isActive
+                      ? "bg-primary/10 text-primary"
+                      : "text-muted-foreground"
+                  )
+                }
+              >
+                <item.icon className="h-4 w-4" />
+                {item.label}
+              </NavLink>
+            ))}
+          </div>
         ))}
       </nav>
     </aside>
