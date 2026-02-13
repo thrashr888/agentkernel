@@ -26,6 +26,26 @@ fn navigate_to(app: &tauri::AppHandle, path: &str) {
     }
 }
 
+/// Compute a fingerprint of the sandbox list so we can skip menu rebuilds
+/// when nothing has changed (rebuilding replaces the menu and closes it).
+fn sandbox_fingerprint(sandboxes: &[SandboxInfo]) -> String {
+    sandboxes
+        .iter()
+        .take(5)
+        .map(|s| {
+            format!(
+                "{}:{}:{}:{}:{}",
+                s.name,
+                s.status,
+                s.ip.as_deref().unwrap_or(""),
+                s.vcpus.unwrap_or(0),
+                s.memory_mb.unwrap_or(0),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
 /// Rebuild the tray menu with an up-to-date "Recent Sandboxes" submenu.
 #[allow(clippy::too_many_arguments)]
 fn rebuild_tray_menu(
@@ -41,47 +61,112 @@ fn rebuild_tray_menu(
     settings: &MenuItem<tauri::Wry>,
     quit: &MenuItem<tauri::Wry>,
 ) -> anyhow::Result<()> {
-    // Build the Recent Sandboxes submenu (up to 5 entries)
+    // Build the Recent Sandboxes submenu (up to 5 entries, with stats)
     let mut builder = SubmenuBuilder::new(handle, "Recent Sandboxes");
     let recent: Vec<_> = sandboxes.iter().take(5).collect();
     if recent.is_empty() {
         builder = builder.text("no_sandboxes", "No sandboxes");
     } else {
         for sb in &recent {
+            // Per-sandbox submenu with stats and actions
             let icon = if sb.status == "running" {
                 "\u{1F7E2}"
             } else {
                 "\u{26AA}"
             };
-            builder = builder.text(
-                format!("sandbox:{}", sb.name),
-                format!("{icon} {}", sb.name),
+
+            let mut sb_sub = SubmenuBuilder::new(handle, format!("{icon} {}", sb.name));
+
+            // Stats line (disabled — informational)
+            let mut stats_parts = Vec::new();
+            if let Some(ip) = &sb.ip {
+                stats_parts.push(ip.clone());
+            }
+            if let (Some(vcpus), Some(mem)) = (sb.vcpus, sb.memory_mb) {
+                stats_parts.push(format!("{vcpus}vCPU / {mem}MB"));
+            }
+            if !stats_parts.is_empty() {
+                let stats_text = stats_parts.join(" \u{2014} ");
+                sb_sub = sb_sub.item(
+                    &MenuItem::with_id(
+                        handle,
+                        format!("stats:{}", sb.name),
+                        &stats_text,
+                        false,
+                        None::<&str>,
+                    )?,
+                );
+            }
+
+            // Backend + image info
+            let image_text = sb
+                .image
+                .as_deref()
+                .unwrap_or("unknown");
+            sb_sub = sb_sub.item(
+                &MenuItem::with_id(
+                    handle,
+                    format!("info:{}", sb.name),
+                    format!("{} \u{2014} {image_text}", sb.backend),
+                    false,
+                    None::<&str>,
+                )?,
             );
+
+            sb_sub = sb_sub.separator();
+
+            // Actions
+            sb_sub = sb_sub
+                .text(format!("sandbox:{}", sb.name), "Open in Dashboard")
+                .text(format!("logs:{}", sb.name), "View Logs\u{2026}");
+
+            builder = builder.item(&sb_sub.build()?);
         }
     }
     let recent_sub = builder.build()?;
+
+    // Resource summary line (disabled — informational)
+    let running: Vec<_> = sandboxes.iter().filter(|s| s.status == "running").collect();
+    let total_vcpus: u32 = running.iter().filter_map(|s| s.vcpus).sum();
+    let total_mem: u64 = running.iter().filter_map(|s| s.memory_mb).sum();
+    let resource_text = if running.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "\u{2699}\u{FE0F} {total_vcpus} vCPUs, {} MB allocated",
+            total_mem
+        ))
+    };
+    let resource_item = resource_text.as_ref().map(|text| {
+        MenuItem::with_id(handle, "resources", text.as_str(), false, None::<&str>)
+    }).transpose()?;
 
     let sep1 = PredefinedMenuItem::separator(handle)?;
     let sep2 = PredefinedMenuItem::separator(handle)?;
     let sep3 = PredefinedMenuItem::separator(handle)?;
 
-    let menu = Menu::with_items(
-        handle,
-        &[
-            status_item,
-            sandbox_count,
-            &sep1,
-            quick_create,
-            &recent_sub,
-            &sep2,
-            dashboard,
-            sandboxes_nav,
-            secrets,
-            settings,
-            &sep3,
-            quit,
-        ],
-    )?;
+    // Build menu — conditionally include resource summary
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![
+        status_item,
+        sandbox_count,
+    ];
+    if let Some(ref ri) = resource_item {
+        items.push(ri);
+    }
+    items.extend_from_slice(&[
+        &sep1,
+        quick_create,
+        &recent_sub,
+        &sep2,
+        dashboard,
+        sandboxes_nav,
+        secrets,
+        settings,
+        &sep3,
+        quit,
+    ]);
+
+    let menu = Menu::with_items(handle, &items)?;
 
     if let Some(tray) = handle.tray_by_id(tray_id) {
         tray.set_menu(Some(menu))?;
@@ -175,6 +260,10 @@ pub fn run() {
                             let name = &id["sandbox:".len()..];
                             navigate_to(app, &format!("/sandboxes/{name}"));
                         }
+                        _ if id.starts_with("logs:") => {
+                            let name = &id["logs:".len()..];
+                            navigate_to(app, &format!("/sandboxes/{name}?tab=logs"));
+                        }
                         _ => {}
                     }
                 })
@@ -193,6 +282,10 @@ pub fn run() {
             let handle = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
+                // Track last sandbox state to avoid rebuilding (and closing) the
+                // tray menu when nothing has changed.
+                let mut last_fingerprint = String::new();
+
                 loop {
                     let client = handle
                         .state::<AppState>()
@@ -229,21 +322,25 @@ pub fn run() {
                                 };
                                 let _ = count_clone.set_text(&text);
 
-                                // Rebuild Recent Sandboxes submenu
-                                if let Err(e) = rebuild_tray_menu(
-                                    &handle,
-                                    &tray_id,
-                                    &list,
-                                    &status_clone,
-                                    &count_clone,
-                                    &quick_create_clone,
-                                    &dashboard_clone,
-                                    &sandboxes_clone,
-                                    &secrets_clone,
-                                    &settings_clone,
-                                    &quit_clone,
-                                ) {
-                                    eprintln!("Failed to rebuild tray menu: {e}");
+                                // Only rebuild the menu when sandbox data actually changes
+                                let fingerprint = sandbox_fingerprint(&list);
+                                if fingerprint != last_fingerprint {
+                                    last_fingerprint = fingerprint;
+                                    if let Err(e) = rebuild_tray_menu(
+                                        &handle,
+                                        &tray_id,
+                                        &list,
+                                        &status_clone,
+                                        &count_clone,
+                                        &quick_create_clone,
+                                        &dashboard_clone,
+                                        &sandboxes_clone,
+                                        &secrets_clone,
+                                        &settings_clone,
+                                        &quit_clone,
+                                    ) {
+                                        eprintln!("Failed to rebuild tray menu: {e}");
+                                    }
                                 }
                             }
                             Err(_) => {

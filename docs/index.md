@@ -90,6 +90,24 @@ agentkernel run --profile restrictive python3 script.py
 agentkernel run --no-network curl example.com  # Will fail
 ```
 
+## Secrets never enter the VM
+
+AI agents need API keys to call LLMs, but putting secrets inside sandboxes defeats the purpose of isolation. A compromised agent could exfiltrate your `ANTHROPIC_API_KEY` to any host.
+
+agentkernel solves this with **network-layer secret injection** -- the Gondolin pattern. A host-side HTTPS proxy intercepts outbound requests and injects credentials at the network layer, scoped to specific domains. The real secret never crosses the VM boundary.
+
+```bash
+# Inject API key into requests to api.openai.com only
+agentkernel create my-agent --secret OPENAI_API_KEY:api.openai.com
+
+# Inside the sandbox:
+# curl https://api.openai.com/v1/models → Authorization header injected
+# curl https://evil.com → blocked (403)
+# echo $OPENAI_API_KEY → "ak-proxy-managed" (placeholder)
+```
+
+The sandbox sees placeholder env vars so tools pass existence checks, but the real key stays on the host. Unauthorized domains are blocked. No other sandbox runtime offers this -- most inject secrets as env vars or mounted files, which a compromised agent can read and exfiltrate.
+
 ## It runs everywhere
 
 agentkernel picks the best available backend automatically:

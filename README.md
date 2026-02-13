@@ -254,7 +254,25 @@ agentkernel parallel \
 
 Pipeline steps are defined in TOML with `name`, `image`, `command`, and optional `input`/`output` directories for data passing between steps.
 
-## Secrets & Image Management
+## Secrets — Credential Isolation
+
+AI agents need API keys to call LLMs, but putting secrets inside sandboxes defeats the purpose of isolation. A compromised agent could exfiltrate your credentials to any host.
+
+agentkernel solves this with **network-layer secret injection** (the Gondolin pattern): secrets never enter the VM. Instead, a host-side proxy intercepts outbound HTTPS requests and injects credentials at the network layer, scoped to specific domains.
+
+```bash
+# Inject OPENAI_API_KEY into requests to api.openai.com only
+agentkernel create my-agent --secret OPENAI_API_KEY:api.openai.com
+
+# Inside the sandbox:
+# - curl https://api.openai.com/v1/models → Authorization header injected automatically
+# - curl https://evil.com → blocked (403)
+# - echo $OPENAI_API_KEY → "ak-proxy-managed" (placeholder, not the real key)
+```
+
+The sandbox sees placeholder env vars so tools don't fail existence checks, but the real secret never crosses the VM boundary. Unauthorized hosts are blocked entirely. This is a fundamentally different security model from injecting secrets as environment variables or mounted files.
+
+Three vault backends for storing secrets: file (default), environment variables (CI/CD), or OS keychain (macOS Keychain, Linux secret-service). File-based injection via VSOCK is also supported for secrets that aren't HTTP headers.
 
 ```bash
 # Secrets vault: store API keys and credentials
