@@ -41,14 +41,16 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Installation: installation.md
-  - Getting Started: getting-started.md
-  - Comparisons: comparisons.md
-  - Benchmarks: benchmarks.md
-  - Secrets: secrets.md
-  - Desktop App: desktop-app.md
-  - Browser Automation: browser-automation.md
-  - Changelog: changelog.md
+  - Getting Started:
+    - Installation: installation.md
+    - Quick Start: getting-started.md
+    - Comparisons: comparisons.md
+    - Benchmarks: benchmarks.md
+  - Features:
+    - Secrets: secrets.md
+    - Browser Automation: browser-automation.md
+    - Desktop App: desktop-app.md
+    - Compliance Mapping: compliance-mapping.md
   - Commands:
     - Overview: commands.md
     - run: cmd-run.md
@@ -57,23 +59,28 @@ nav:
     - exec / attach: cmd-exec-attach.md
     - list: cmd-list.md
     - secret: cmd-secrets.md
+    - images: cmd-images.md
+    - volumes: cmd-volumes.md
+    - snapshots: cmd-snapshots.md
+    - sessions: cmd-sessions.md
+    - templates: cmd-templates.md
+    - export / import: cmd-export-import.md
+    - parallel: cmd-parallel.md
+    - pipelines: cmd-pipelines.md
   - Configuration:
     - Overview: configuration.md
     - agentkernel.toml: config-toml.md
     - Security Profiles: config-security.md
     - Backends: config-backends.md
-  - Orchestration:
-    - Overview: orchestration.md
-    - Kubernetes: orchestration-kubernetes.md
-    - Nomad: orchestration-nomad.md
-    - Deployment: deploy.md
   - AI Agents:
     - Overview: agents.md
     - Claude Code: agent-claude.md
     - OpenAI Codex: agent-codex.md
     - Google Gemini: agent-gemini.md
+    - Amp: agent-amp.md
     - OpenCode: agent-opencode.md
     - GitHub Copilot: agent-copilot.md
+    - Pi: agent-pi.md
   - API:
     - Overview: api.md
     - HTTP API: api-http.md
@@ -86,6 +93,12 @@ nav:
     - Go: sdk-golang.md
     - Rust: sdk-rust.md
     - Swift: sdk-swift.md
+  - Operations:
+    - Overview: orchestration.md
+    - Kubernetes: orchestration-kubernetes.md
+    - Nomad: orchestration-nomad.md
+    - Deployment: deploy.md
+  - Changelog: changelog.md
 
 extra:
   social:
