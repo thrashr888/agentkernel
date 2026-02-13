@@ -40,6 +40,17 @@ export interface CreateSandboxOptions {
   source_ref?: string;
   /** Volume mounts (slug:/path or slug:/path:ro). Create volumes via CLI first. */
   volumes?: string[];
+  /**
+   * Secret bindings for proxy-based injection (Gondolin pattern).
+   * Secrets are injected as HTTP headers by the host proxy — they never enter the VM.
+   * Formats: "KEY=value:host", "KEY:host", "KEY:host:header"
+   */
+  secrets?: string[];
+  /**
+   * Secret keys to inject as files at /run/agentkernel/secrets/KEY.
+   * Values are resolved from the secret vault.
+   */
+  secret_files?: string[];
 }
 
 /** Options for executing a command in a sandbox. */

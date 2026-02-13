@@ -86,6 +86,17 @@ pub struct CreateSandboxOptions {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[serde(default)]
     pub volumes: Vec<String>,
+    /// Secret bindings for proxy-based injection (Gondolin pattern).
+    /// Secrets are injected as HTTP headers by the host proxy — they never enter the VM.
+    /// Formats: `"KEY=value:host"`, `"KEY:host"`, `"KEY:host:header"`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
+    pub secrets: Vec<String>,
+    /// Secret keys to inject as files at `/run/agentkernel/secrets/KEY`.
+    /// Values are resolved from the secret vault.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
+    pub secret_files: Vec<String>,
 }
 
 /// Create sandbox request body (internal).
@@ -107,6 +118,12 @@ pub(crate) struct CreateRequest {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[serde(default)]
     pub volumes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
+    pub secrets: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
+    pub secret_files: Vec<String>,
 }
 
 /// Options for executing a command in a sandbox.

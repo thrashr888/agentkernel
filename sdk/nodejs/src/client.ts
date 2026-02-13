@@ -129,6 +129,8 @@ export class AgentKernel {
       source_url: opts?.source_url,
       source_ref: opts?.source_ref,
       volumes: opts?.volumes,
+      secrets: opts?.secrets,
+      secret_files: opts?.secret_files,
     });
   }
 

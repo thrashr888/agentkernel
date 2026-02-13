@@ -24,6 +24,10 @@ mod permissions;
 mod pipeline;
 mod plugin_installer;
 mod pool;
+#[allow(dead_code)]
+mod proxy;
+#[allow(dead_code)]
+mod proxy_hooks;
 mod rootfs;
 mod sandbox_pool;
 mod seatbelt;
@@ -40,6 +44,8 @@ mod validation;
 mod vmm;
 mod volume;
 mod vsock;
+#[allow(dead_code)]
+mod vsock_secrets;
 
 // Enterprise modules (behind feature flag)
 // identity has public API surface for CLI login, middleware, and Cedar helpers
@@ -129,6 +135,12 @@ enum Commands {
         /// Mount a persistent volume (slug:/path or slug:/path:ro). Can be repeated.
         #[arg(short = 'v', long = "volume")]
         volumes: Vec<String>,
+        /// Bind a secret to a host via proxy (KEY:host, KEY=value:host, KEY:host:header). Can be repeated.
+        #[arg(short = 'S', long = "secret")]
+        secrets: Vec<String>,
+        /// Inject a secret as a file inside the sandbox (KEY from vault). Can be repeated.
+        #[arg(long = "secret-file")]
+        secret_files: Vec<String>,
     },
     /// Start a sandbox
     Start {
@@ -267,6 +279,12 @@ enum Commands {
         /// Enable SSH access to the sandbox
         #[arg(long)]
         ssh: bool,
+        /// Bind a secret to a host via proxy (KEY:host, KEY=value:host, KEY:host:header). Can be repeated.
+        #[arg(short = 'S', long = "secret")]
+        secrets: Vec<String>,
+        /// Inject a secret as a file inside the sandbox (KEY from vault). Can be repeated.
+        #[arg(long = "secret-file")]
+        secret_files: Vec<String>,
     },
     /// Start MCP server for Claude Code integration (JSON-RPC over stdio)
     McpServer,
@@ -885,6 +903,8 @@ memory_mb = 512
             source,
             git_ref,
             volumes,
+            secrets: secret_bindings_raw,
+            secret_files: secret_file_keys,
         } => {
             // Resolve sandbox name: --branch auto-derives from git, otherwise require explicit name
             let name = if branch {
@@ -1024,6 +1044,24 @@ memory_mb = 512
                 );
             }
 
+            // Parse secret bindings
+            let mut parsed_bindings = Vec::new();
+            if !secret_bindings_raw.is_empty() {
+                let vault = secrets::SecretVault::new(secrets::SecretBackend::default());
+                for raw in &secret_bindings_raw {
+                    let (binding, inline_value) = proxy::SecretBinding::parse_cli(raw)?;
+                    // If inline value provided, store it in the vault
+                    if let Some(val) = inline_value {
+                        vault.set(&binding.secret_key, &val)?;
+                    }
+                    println!(
+                        "  Secret: {} -> {} (header: {})",
+                        binding.secret_key, binding.target_host, binding.header_name
+                    );
+                    parsed_bindings.push(binding);
+                }
+            }
+
             manager
                 .create_with_options(
                     &name,
@@ -1034,6 +1072,25 @@ memory_mb = 512
                     ports,
                 )
                 .await?;
+
+            // Store secret bindings in sandbox state
+            if !parsed_bindings.is_empty() {
+                let binding_strs: Vec<String> = secret_bindings_raw;
+                manager.set_secret_bindings(&name, &binding_strs)?;
+            }
+
+            // Store secret file keys in sandbox state
+            if !secret_file_keys.is_empty() {
+                for key in &secret_file_keys {
+                    vsock_secrets::validate_secret_key(key)?;
+                }
+                manager.set_secret_files(&name, &secret_file_keys)?;
+                println!(
+                    "  Secret files: {} key(s) will be injected at {}",
+                    secret_file_keys.len(),
+                    vsock_secrets::DEFAULT_SECRETS_PATH,
+                );
+            }
 
             // If SSH enabled, update the sandbox state
             if enable_ssh {

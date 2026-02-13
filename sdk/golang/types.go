@@ -24,6 +24,13 @@ type CreateSandboxOptions struct {
 	Profile  SecurityProfile `json:"profile,omitempty"`
 	// Volumes are mount specs (slug:/path or slug:/path:ro). Create volumes via CLI first.
 	Volumes []string `json:"volumes,omitempty"`
+	// Secrets are proxy-based secret bindings (Gondolin pattern).
+	// Secrets are injected as HTTP headers by the host proxy — they never enter the VM.
+	// Formats: "KEY=value:host", "KEY:host", "KEY:host:header".
+	Secrets []string `json:"secrets,omitempty"`
+	// SecretFiles are secret keys to inject as files at /run/agentkernel/secrets/KEY.
+	// Values are resolved from the secret vault.
+	SecretFiles []string `json:"secret_files,omitempty"`
 }
 
 // RunOutput is the result of a run or exec command.
@@ -65,12 +72,14 @@ type runRequest struct {
 
 // createRequest is the POST /sandboxes body.
 type createRequest struct {
-	Name     string          `json:"name"`
-	Image    string          `json:"image,omitempty"`
-	VCPUs    int             `json:"vcpus,omitempty"`
-	MemoryMB int             `json:"memory_mb,omitempty"`
-	Profile  SecurityProfile `json:"profile,omitempty"`
-	Volumes  []string        `json:"volumes,omitempty"`
+	Name        string          `json:"name"`
+	Image       string          `json:"image,omitempty"`
+	VCPUs       int             `json:"vcpus,omitempty"`
+	MemoryMB    int             `json:"memory_mb,omitempty"`
+	Profile     SecurityProfile `json:"profile,omitempty"`
+	Volumes     []string        `json:"volumes,omitempty"`
+	Secrets     []string        `json:"secrets,omitempty"`
+	SecretFiles []string        `json:"secret_files,omitempty"`
 }
 
 // execRequest is the POST /sandboxes/{name}/exec body.

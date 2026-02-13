@@ -1,0 +1,916 @@
+//! Network-layer secret injection proxy (Gondolin pattern).
+//!
+//! Runs an HTTP forward proxy on the host that intercepts sandbox traffic.
+//! Secrets are injected as HTTP headers for allowed hosts — they never enter the VM.
+//!
+//! The proxy supports:
+//! - Domain allowlist enforcement (blocks unauthorized destinations)
+//! - Secret header injection (Authorization, x-api-key, etc.)
+//! - HTTPS MITM via per-host TLS certificates signed by a generated CA
+//! - Audit logging of all proxied requests
+
+use anyhow::{Context, Result, bail};
+use http_body_util::BodyExt;
+use hyper::body::Incoming;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Method, Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{RwLock, oneshot};
+
+use crate::proxy_hooks::{HookEvent, HookRegistry, ProxyEvent, dispatch_hooks, new_registry};
+
+/// A secret binding: maps a secret key to a target host and HTTP header.
+#[derive(Debug, Clone)]
+pub struct SecretBinding {
+    /// Key in SecretVault (e.g. "OPENAI_API_KEY")
+    pub secret_key: String,
+    /// Target host where this secret is injected (e.g. "api.openai.com")
+    pub target_host: String,
+    /// Header name to set (default: "Authorization")
+    pub header_name: String,
+    /// Header value prefix (default: "Bearer ")
+    pub header_prefix: String,
+}
+
+impl SecretBinding {
+    /// Parse a CLI binding string.
+    ///
+    /// Formats:
+    /// - `KEY=value:host` — inline value, bind to host
+    /// - `KEY:host` — lookup KEY in vault, bind to host
+    /// - `KEY:host:header` — lookup KEY, bind to host, use custom header name
+    ///
+    /// Returns `(binding, Option<inline_value>)`.
+    pub fn parse_cli(s: &str) -> Result<(Self, Option<String>)> {
+        // Check for inline value: KEY=value:host
+        if let Some(eq_pos) = s.find('=') {
+            let key = &s[..eq_pos];
+            let rest = &s[eq_pos + 1..];
+
+            // rest is "value:host" or "value:host:header"
+            let parts: Vec<&str> = rest.rsplitn(2, ':').collect();
+            if parts.len() < 2 {
+                bail!(
+                    "Invalid secret binding '{}'. Expected KEY=value:host or KEY:host",
+                    s
+                );
+            }
+            // rsplitn reverses: parts[0] = host (or header), parts[1] = value (or value:host)
+            // Actually let's parse more carefully
+            let colon_positions: Vec<usize> = rest.match_indices(':').map(|(i, _)| i).collect();
+            if colon_positions.is_empty() {
+                bail!("Invalid secret binding '{}'. Expected KEY=value:host", s);
+            }
+
+            // Last colon separates host from value
+            let last_colon = *colon_positions.last().unwrap();
+            let value = &rest[..last_colon];
+            let host = &rest[last_colon + 1..];
+
+            if key.is_empty() || value.is_empty() || host.is_empty() {
+                bail!(
+                    "Invalid secret binding '{}'. KEY, value, and host must be non-empty",
+                    s
+                );
+            }
+
+            Ok((
+                SecretBinding {
+                    secret_key: key.to_string(),
+                    target_host: host.to_string(),
+                    header_name: "Authorization".to_string(),
+                    header_prefix: "Bearer ".to_string(),
+                },
+                Some(value.to_string()),
+            ))
+        } else {
+            // Vault lookup: KEY:host or KEY:host:header
+            let parts: Vec<&str> = s.splitn(3, ':').collect();
+            match parts.len() {
+                2 => {
+                    if parts[0].is_empty() || parts[1].is_empty() {
+                        bail!(
+                            "Invalid secret binding '{}'. KEY and host must be non-empty",
+                            s
+                        );
+                    }
+                    Ok((
+                        SecretBinding {
+                            secret_key: parts[0].to_string(),
+                            target_host: parts[1].to_string(),
+                            header_name: "Authorization".to_string(),
+                            header_prefix: "Bearer ".to_string(),
+                        },
+                        None,
+                    ))
+                }
+                3 => {
+                    if parts[0].is_empty() || parts[1].is_empty() || parts[2].is_empty() {
+                        bail!(
+                            "Invalid secret binding '{}'. KEY, host, and header must be non-empty",
+                            s
+                        );
+                    }
+                    Ok((
+                        SecretBinding {
+                            secret_key: parts[0].to_string(),
+                            target_host: parts[1].to_string(),
+                            header_name: parts[2].to_string(),
+                            header_prefix: String::new(),
+                        },
+                        None,
+                    ))
+                }
+                _ => bail!(
+                    "Invalid secret binding '{}'. Expected KEY:host or KEY=value:host",
+                    s
+                ),
+            }
+        }
+    }
+}
+
+/// Configuration for a proxy instance.
+#[derive(Debug, Clone)]
+pub struct ProxyConfig {
+    /// Address to listen on (e.g. 127.0.0.1:0 for auto-assign)
+    pub listen_addr: SocketAddr,
+    /// Secret bindings for header injection
+    pub bindings: Vec<SecretBinding>,
+    /// Allowed destination hosts
+    pub allowed_hosts: Vec<String>,
+    /// Blocked destination hosts
+    pub blocked_hosts: Vec<String>,
+    /// If true, only allowed_hosts can be accessed
+    pub allowlist_only: bool,
+    /// Sandbox name (for logging)
+    pub sandbox_name: String,
+    /// Hooks to dispatch on proxy events
+    pub hooks: Vec<crate::proxy_hooks::ProxyHook>,
+}
+
+/// Handle to a running proxy instance.
+pub struct ProxyHandle {
+    /// Actual address the proxy is listening on
+    pub addr: SocketAddr,
+    /// PEM-encoded CA certificate (for injection into sandbox trust store)
+    pub ca_cert_pem: String,
+    /// Shutdown signal
+    pub shutdown_tx: oneshot::Sender<()>,
+    /// Hook registry for managing hooks at runtime
+    pub hook_registry: HookRegistry,
+}
+
+/// Shared state for the proxy.
+struct ProxyState {
+    config: ProxyConfig,
+    /// Resolved secrets: host -> (header_name, header_value)
+    resolved_secrets: HashMap<String, (String, String)>,
+    /// CA signing context (cert + key pair) for generating per-host certs
+    ca_signer: Arc<CaSigner>,
+    /// Cached per-host TLS server configs (for MITM)
+    cert_cache: HashMap<String, Arc<rustls::ServerConfig>>,
+    /// Hook registry for dispatching proxy events
+    hook_registry: HookRegistry,
+}
+
+/// Holds the CA cert and key pair for signing per-host certs.
+pub struct CaSigner {
+    cert: rcgen::Certificate,
+    key_pair: rcgen::KeyPair,
+}
+
+/// Generate a CA certificate and key pair for the proxy.
+///
+/// Returns `(ca_cert_pem, CaSigner)`. The PEM is for injection into sandbox trust stores.
+pub fn generate_proxy_ca() -> Result<(String, CaSigner)> {
+    use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyUsagePurpose};
+
+    let mut params =
+        CertificateParams::new(Vec::<String>::new()).context("Failed to create CA params")?;
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "AgentKernel Proxy CA");
+    params
+        .distinguished_name
+        .push(rcgen::DnType::OrganizationName, "AgentKernel");
+
+    let key_pair = rcgen::KeyPair::generate().context("Failed to generate CA key pair")?;
+    let ca_cert = params
+        .self_signed(&key_pair)
+        .context("Failed to self-sign CA certificate")?;
+
+    let cert_pem = ca_cert.pem();
+
+    Ok((
+        cert_pem,
+        CaSigner {
+            cert: ca_cert,
+            key_pair,
+        },
+    ))
+}
+
+/// Generate a per-host TLS certificate signed by the proxy CA.
+///
+/// Returns a rustls `ServerConfig` ready to accept TLS connections for this host.
+fn generate_host_tls_config(host: &str, ca: &CaSigner) -> Result<Arc<rustls::ServerConfig>> {
+    use rcgen::{CertificateParams, IsCa, KeyUsagePurpose};
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+    let host_only = host.split(':').next().unwrap_or(host);
+    let mut params = CertificateParams::new(vec![host_only.to_string()])
+        .context("Failed to create host cert params")?;
+    params.is_ca = IsCa::NoCa;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, host_only);
+
+    let host_key = rcgen::KeyPair::generate().context("Failed to generate host key")?;
+    let host_cert = params
+        .signed_by(&host_key, &ca.cert, &ca.key_pair)
+        .context("Failed to sign host cert")?;
+
+    let cert_chain = vec![CertificateDer::from(host_cert.der().to_vec())];
+    let key_der = PrivateKeyDer::try_from(host_key.serialize_der())
+        .map_err(|e| anyhow::anyhow!("Failed to convert host key: {}", e))?;
+
+    let tls_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, key_der)
+        .context("Failed to build TLS config")?;
+
+    Ok(Arc::new(tls_config))
+}
+
+/// Check if a host is allowed by the proxy's domain policy.
+pub fn is_host_allowed(host: &str, config: &ProxyConfig) -> bool {
+    // Strip port if present
+    let host_only = host.split(':').next().unwrap_or(host);
+
+    // Check blocklist first
+    for blocked in &config.blocked_hosts {
+        if matches_domain(host_only, blocked) {
+            return false;
+        }
+    }
+
+    // If allowlist_only, host must be in allowed_hosts
+    if config.allowlist_only {
+        return config
+            .allowed_hosts
+            .iter()
+            .any(|a| matches_domain(host_only, a));
+    }
+
+    // Otherwise, allow unless blocked
+    true
+}
+
+/// Check if a hostname matches a domain pattern (supports *.example.com wildcards).
+fn matches_domain(host: &str, pattern: &str) -> bool {
+    if pattern.starts_with("*.") {
+        let suffix = &pattern[1..]; // ".example.com"
+        host.ends_with(suffix) || host == &pattern[2..]
+    } else {
+        host == pattern
+    }
+}
+
+/// Start the proxy server.
+///
+/// `resolved_secrets` maps host -> (header_name, header_value).
+/// The caller is responsible for resolving secrets from the vault.
+pub async fn start_proxy(
+    config: ProxyConfig,
+    resolved_secrets: HashMap<String, (String, String)>,
+) -> Result<ProxyHandle> {
+    // Ensure rustls crypto provider is installed (needed for TLS MITM)
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // Generate CA for MITM
+    let (ca_cert_pem, ca_signer) = generate_proxy_ca()?;
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    let hook_registry = new_registry(config.hooks.clone());
+
+    let listener = TcpListener::bind(&config.listen_addr)
+        .await
+        .context("Failed to bind proxy listener")?;
+    let actual_addr = listener.local_addr()?;
+
+    let state = Arc::new(RwLock::new(ProxyState {
+        config,
+        resolved_secrets,
+        ca_signer: Arc::new(ca_signer),
+        cert_cache: HashMap::new(),
+        hook_registry: hook_registry.clone(),
+    }));
+
+    // Spawn the proxy accept loop
+    let _handle = tokio::spawn(run_proxy(listener, state, shutdown_rx));
+
+    eprintln!("[proxy] Listening on {}", actual_addr);
+
+    Ok(ProxyHandle {
+        addr: actual_addr,
+        ca_cert_pem,
+        shutdown_tx,
+        hook_registry,
+    })
+}
+
+async fn run_proxy(
+    listener: TcpListener,
+    state: Arc<RwLock<ProxyState>>,
+    mut shutdown_rx: oneshot::Receiver<()>,
+) {
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                match result {
+                    Ok((stream, _addr)) => {
+                        let state = state.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_connection(stream, state).await {
+                                eprintln!("[proxy] Connection error: {}", e);
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("[proxy] Accept error: {}", e);
+                    }
+                }
+            }
+            _ = &mut shutdown_rx => {
+                eprintln!("[proxy] Shutting down");
+                break;
+            }
+        }
+    }
+}
+
+async fn handle_connection(stream: TcpStream, state: Arc<RwLock<ProxyState>>) -> Result<()> {
+    let io = TokioIo::new(stream);
+
+    http1::Builder::new()
+        .preserve_header_case(true)
+        .title_case_headers(true)
+        .serve_connection(
+            io,
+            service_fn(move |req| {
+                let state = state.clone();
+                async move { handle_request(req, state).await }
+            }),
+        )
+        .with_upgrades()
+        .await
+        .context("HTTP connection error")?;
+
+    Ok(())
+}
+
+type BoxBody = http_body_util::combinators::BoxBody<bytes::Bytes, hyper::Error>;
+
+fn empty_body() -> BoxBody {
+    use http_body_util::Empty;
+    Empty::new().map_err(|never| match never {}).boxed()
+}
+
+fn full_body(s: impl Into<bytes::Bytes>) -> BoxBody {
+    use http_body_util::Full;
+    Full::new(s.into()).map_err(|never| match never {}).boxed()
+}
+
+async fn handle_request(
+    req: Request<Incoming>,
+    state: Arc<RwLock<ProxyState>>,
+) -> Result<Response<BoxBody>, hyper::Error> {
+    if req.method() == Method::CONNECT {
+        handle_connect(req, state).await
+    } else {
+        handle_plain_http(req, state).await
+    }
+}
+
+/// Handle HTTPS CONNECT with MITM for secret header injection.
+///
+/// For hosts with secret bindings: terminates TLS from client using a cert
+/// signed by proxy CA, connects upstream with real TLS, bridges HTTP with
+/// header injection.
+///
+/// For hosts without bindings: plain tunnel (passthrough) — no MITM needed.
+async fn handle_connect(
+    req: Request<Incoming>,
+    state: Arc<RwLock<ProxyState>>,
+) -> Result<Response<BoxBody>, hyper::Error> {
+    let host = req
+        .uri()
+        .authority()
+        .map(|a| a.to_string())
+        .unwrap_or_default();
+
+    let host_only = host.split(':').next().unwrap_or(&host).to_string();
+
+    let s = state.read().await;
+    if !is_host_allowed(&host, &s.config) {
+        eprintln!(
+            "[proxy] BLOCKED CONNECT to {} (sandbox: {})",
+            host, s.config.sandbox_name
+        );
+        let mut resp = Response::new(full_body("Forbidden: host not in allowlist"));
+        *resp.status_mut() = StatusCode::FORBIDDEN;
+        return Ok(resp);
+    }
+
+    let has_secret = s.resolved_secrets.contains_key(&host_only);
+    let secret_info = s.resolved_secrets.get(&host_only).cloned();
+    let ca_signer = s.ca_signer.clone();
+    let sandbox_name = s.config.sandbox_name.clone();
+    let registry = s.hook_registry.clone();
+    drop(s);
+
+    // Dispatch OnRequest hook for CONNECT
+    dispatch_hooks(
+        &HookEvent::OnRequest,
+        &ProxyEvent {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            sandbox: sandbox_name.clone(),
+            method: "CONNECT".to_string(),
+            url: host.clone(),
+            host: host_only.clone(),
+            status: None,
+            secret_injected: has_secret,
+            latency_ms: None,
+        },
+        &registry,
+    )
+    .await;
+
+    let addr = if host.contains(':') {
+        host.clone()
+    } else {
+        format!("{}:443", host)
+    };
+
+    // If no secret for this host, use plain tunnel (no MITM overhead)
+    if secret_info.is_none() {
+        tokio::task::spawn(async move {
+            match hyper::upgrade::on(req).await {
+                Ok(upgraded) => {
+                    if let Ok(upstream) = TcpStream::connect(&addr).await {
+                        let (mut cr, mut cw) = tokio::io::split(TokioIo::new(upgraded));
+                        let (mut ur, mut uw) = tokio::io::split(upstream);
+                        let _ = tokio::try_join!(
+                            tokio::io::copy(&mut cr, &mut uw),
+                            tokio::io::copy(&mut ur, &mut cw)
+                        );
+                    }
+                }
+                Err(e) => eprintln!("[proxy] Upgrade error: {}", e),
+            }
+        });
+        return Ok(Response::new(empty_body()));
+    }
+
+    // MITM path: terminate TLS from client, inject headers, forward to upstream
+    let state_for_mitm = state.clone();
+    tokio::task::spawn(async move {
+        let (header_name, header_value) = secret_info.unwrap();
+
+        let upgraded = match hyper::upgrade::on(req).await {
+            Ok(u) => u,
+            Err(e) => {
+                eprintln!("[proxy] Upgrade error: {}", e);
+                return;
+            }
+        };
+
+        // Get or generate TLS config for this host
+        let tls_config = {
+            let mut s = state_for_mitm.write().await;
+            if let Some(cfg) = s.cert_cache.get(&host_only) {
+                cfg.clone()
+            } else {
+                match generate_host_tls_config(&host_only, &ca_signer) {
+                    Ok(cfg) => {
+                        s.cert_cache.insert(host_only.clone(), cfg.clone());
+                        cfg
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[proxy] Failed to generate host cert for {}: {}",
+                            host_only, e
+                        );
+                        return;
+                    }
+                }
+            }
+        };
+
+        // TLS-accept the client connection using our MITM cert
+        let tls_acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
+        let client_tls = match tls_acceptor.accept(TokioIo::new(upgraded)).await {
+            Ok(stream) => stream,
+            Err(e) => {
+                eprintln!("[proxy] TLS accept error for {}: {}", host_only, e);
+                return;
+            }
+        };
+
+        // Bridge: read HTTP from client TLS, inject header, forward to upstream HTTPS
+        if let Err(e) = mitm_bridge(
+            client_tls,
+            &addr,
+            &host_only,
+            &header_name,
+            &header_value,
+            &sandbox_name,
+        )
+        .await
+        {
+            eprintln!("[proxy] MITM bridge error for {}: {}", host_only, e);
+        }
+    });
+
+    Ok(Response::new(empty_body()))
+}
+
+/// Bridge between client (TLS-terminated) and upstream (TLS), injecting secret headers.
+async fn mitm_bridge(
+    client_tls: tokio_rustls::server::TlsStream<TokioIo<hyper::upgrade::Upgraded>>,
+    upstream_addr: &str,
+    host: &str,
+    header_name: &str,
+    header_value: &str,
+    sandbox_name: &str,
+) -> Result<()> {
+    // Connect to upstream with real TLS
+    let upstream_tcp = TcpStream::connect(upstream_addr)
+        .await
+        .with_context(|| format!("Failed to connect to upstream {}", upstream_addr))?;
+
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let upstream_tls_config = Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth(),
+    );
+
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+        .map_err(|e| anyhow::anyhow!("Invalid server name '{}': {}", host, e))?;
+    let connector = tokio_rustls::TlsConnector::from(upstream_tls_config);
+    let upstream_tls = connector
+        .connect(server_name, upstream_tcp)
+        .await
+        .with_context(|| format!("TLS connect to {} failed", host))?;
+
+    // HTTP bridge: read requests from client, inject header, send to upstream
+    let client_io = TokioIo::new(client_tls);
+    let upstream_io = TokioIo::new(upstream_tls);
+
+    let header_name = header_name.to_string();
+    let header_value = header_value.to_string();
+    let sandbox_name = sandbox_name.to_string();
+
+    // Use hyper to serve the client side and forward to upstream
+    let (upstream_sender, upstream_conn) = hyper::client::conn::http1::handshake(upstream_io)
+        .await
+        .context("Upstream HTTP handshake failed")?;
+
+    tokio::spawn(async move {
+        if let Err(e) = upstream_conn.await {
+            eprintln!("[proxy] Upstream connection error: {}", e);
+        }
+    });
+
+    let sender = Arc::new(tokio::sync::Mutex::new(upstream_sender));
+
+    http1::Builder::new()
+        .preserve_header_case(true)
+        .title_case_headers(true)
+        .serve_connection(
+            client_io,
+            service_fn(move |mut req: Request<Incoming>| {
+                let hn = header_name.clone();
+                let hv = header_value.clone();
+                let sn = sandbox_name.clone();
+                let sender = sender.clone();
+                async move {
+                    // Inject the secret header
+                    if let Ok(val) = hyper::header::HeaderValue::from_str(&hv)
+                        && let Ok(name) = hyper::header::HeaderName::from_bytes(hn.as_bytes())
+                    {
+                        req.headers_mut().insert(name, val);
+                    }
+                    eprintln!(
+                        "[proxy] MITM {} {} (sandbox: {}, secret: true)",
+                        req.method(),
+                        req.uri(),
+                        sn
+                    );
+
+                    let mut sender = sender.lock().await;
+                    match sender.send_request(req).await {
+                        Ok(resp) => {
+                            let (parts, body) = resp.into_parts();
+                            Ok::<_, hyper::Error>(Response::from_parts(parts, body.boxed()))
+                        }
+                        Err(e) => {
+                            eprintln!("[proxy] MITM upstream error: {}", e);
+                            let mut resp = Response::new(full_body(format!("Proxy error: {}", e)));
+                            *resp.status_mut() = StatusCode::BAD_GATEWAY;
+                            Ok(resp)
+                        }
+                    }
+                }
+            }),
+        )
+        .await
+        .context("MITM HTTP server error")?;
+
+    Ok(())
+}
+
+/// Handle plain HTTP requests with header injection.
+async fn handle_plain_http(
+    mut req: Request<Incoming>,
+    state: Arc<RwLock<ProxyState>>,
+) -> Result<Response<BoxBody>, hyper::Error> {
+    let host = req
+        .uri()
+        .host()
+        .or_else(|| {
+            req.headers()
+                .get("host")
+                .and_then(|h| h.to_str().ok())
+                .map(|h| h.split(':').next().unwrap_or(h))
+        })
+        .unwrap_or("")
+        .to_string();
+
+    let s = state.read().await;
+    if !is_host_allowed(&host, &s.config) {
+        eprintln!(
+            "[proxy] BLOCKED HTTP {} {} (sandbox: {})",
+            req.method(),
+            req.uri(),
+            s.config.sandbox_name
+        );
+        let mut resp = Response::new(full_body("Forbidden: host not in allowlist"));
+        *resp.status_mut() = StatusCode::FORBIDDEN;
+        return Ok(resp);
+    }
+
+    // Inject secret header if we have a binding for this host
+    let mut secret_injected = false;
+    if let Some((header_name, header_value)) = s.resolved_secrets.get(&host)
+        && let Ok(value) = hyper::header::HeaderValue::from_str(header_value)
+    {
+        req.headers_mut().insert(
+            hyper::header::HeaderName::from_bytes(header_name.as_bytes())
+                .unwrap_or(hyper::header::AUTHORIZATION),
+            value,
+        );
+        secret_injected = true;
+    }
+
+    let sandbox_name = s.config.sandbox_name.clone();
+    let method_str = req.method().to_string();
+    let url_str = req.uri().to_string();
+    let registry = s.hook_registry.clone();
+    drop(s);
+
+    // Dispatch OnRequest hook
+    let start = std::time::Instant::now();
+    dispatch_hooks(
+        &HookEvent::OnRequest,
+        &ProxyEvent {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            sandbox: sandbox_name.clone(),
+            method: method_str.clone(),
+            url: url_str.clone(),
+            host: host.clone(),
+            status: None,
+            secret_injected,
+            latency_ms: None,
+        },
+        &registry,
+    )
+    .await;
+
+    // Forward the request to the upstream server
+    match forward_request(req).await {
+        Ok(resp) => {
+            let latency = start.elapsed().as_millis() as u64;
+            let status = resp.status().as_u16();
+            dispatch_hooks(
+                &HookEvent::OnResponse,
+                &ProxyEvent {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    sandbox: sandbox_name,
+                    method: method_str,
+                    url: url_str,
+                    host,
+                    status: Some(status),
+                    secret_injected,
+                    latency_ms: Some(latency),
+                },
+                &registry,
+            )
+            .await;
+            Ok(resp)
+        }
+        Err(e) => {
+            eprintln!("[proxy] Forward error: {}", e);
+            let mut resp = Response::new(full_body(format!("Proxy error: {}", e)));
+            *resp.status_mut() = StatusCode::BAD_GATEWAY;
+            Ok(resp)
+        }
+    }
+}
+
+/// Forward an HTTP request to the upstream server.
+async fn forward_request(req: Request<Incoming>) -> Result<Response<BoxBody>> {
+    use http_body_util::BodyExt;
+
+    let uri = req.uri().clone();
+    let host = uri.host().context("No host in request URI")?;
+    let port = uri.port_u16().unwrap_or(80);
+    let addr = format!("{}:{}", host, port);
+
+    let stream = TcpStream::connect(&addr)
+        .await
+        .with_context(|| format!("Failed to connect to {}", addr))?;
+
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .context("HTTP handshake failed")?;
+
+    tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            eprintln!("[proxy] Connection task error: {}", e);
+        }
+    });
+
+    let resp = sender
+        .send_request(req)
+        .await
+        .context("Failed to send request")?;
+
+    // Convert response body
+    let (parts, body) = resp.into_parts();
+    let body = body.boxed();
+    Ok(Response::from_parts(parts, body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_cli_inline_value() {
+        let (binding, value) =
+            SecretBinding::parse_cli("OPENAI_API_KEY=sk-test123:api.openai.com").unwrap();
+        assert_eq!(binding.secret_key, "OPENAI_API_KEY");
+        assert_eq!(binding.target_host, "api.openai.com");
+        assert_eq!(binding.header_name, "Authorization");
+        assert_eq!(binding.header_prefix, "Bearer ");
+        assert_eq!(value, Some("sk-test123".to_string()));
+    }
+
+    #[test]
+    fn test_parse_cli_vault_lookup() {
+        let (binding, value) = SecretBinding::parse_cli("OPENAI_API_KEY:api.openai.com").unwrap();
+        assert_eq!(binding.secret_key, "OPENAI_API_KEY");
+        assert_eq!(binding.target_host, "api.openai.com");
+        assert_eq!(binding.header_name, "Authorization");
+        assert_eq!(binding.header_prefix, "Bearer ");
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn test_parse_cli_custom_header() {
+        let (binding, value) =
+            SecretBinding::parse_cli("ANTHROPIC_API_KEY:api.anthropic.com:x-api-key").unwrap();
+        assert_eq!(binding.secret_key, "ANTHROPIC_API_KEY");
+        assert_eq!(binding.target_host, "api.anthropic.com");
+        assert_eq!(binding.header_name, "x-api-key");
+        assert_eq!(binding.header_prefix, "");
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn test_parse_cli_inline_value_with_colons() {
+        // Value contains colons (like a base64 key)
+        let (binding, value) = SecretBinding::parse_cli("MY_KEY=abc:def:ghi:my-host.com").unwrap();
+        assert_eq!(binding.secret_key, "MY_KEY");
+        assert_eq!(binding.target_host, "my-host.com");
+        assert_eq!(value, Some("abc:def:ghi".to_string()));
+    }
+
+    #[test]
+    fn test_parse_cli_invalid() {
+        assert!(SecretBinding::parse_cli("NOHOST").is_err());
+        assert!(SecretBinding::parse_cli("=:").is_err());
+        assert!(SecretBinding::parse_cli(":host").is_err());
+    }
+
+    #[test]
+    fn test_is_host_allowed_basic() {
+        let config = ProxyConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            bindings: vec![],
+            allowed_hosts: vec!["api.openai.com".to_string()],
+            blocked_hosts: vec!["evil.com".to_string()],
+            allowlist_only: false,
+            sandbox_name: "test".to_string(),
+            hooks: vec![],
+        };
+
+        assert!(is_host_allowed("api.openai.com", &config));
+        assert!(is_host_allowed("example.com", &config)); // not blocked, not allowlist_only
+        assert!(!is_host_allowed("evil.com", &config));
+    }
+
+    #[test]
+    fn test_is_host_allowed_allowlist_only() {
+        let config = ProxyConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            bindings: vec![],
+            allowed_hosts: vec!["api.openai.com".to_string(), "*.anthropic.com".to_string()],
+            blocked_hosts: vec![],
+            allowlist_only: true,
+            sandbox_name: "test".to_string(),
+            hooks: vec![],
+        };
+
+        assert!(is_host_allowed("api.openai.com", &config));
+        assert!(is_host_allowed("api.anthropic.com", &config));
+        assert!(!is_host_allowed("evil.com", &config));
+        assert!(!is_host_allowed("example.com", &config));
+    }
+
+    #[test]
+    fn test_is_host_allowed_wildcard() {
+        let config = ProxyConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            bindings: vec![],
+            allowed_hosts: vec!["*.openai.com".to_string()],
+            blocked_hosts: vec![],
+            allowlist_only: true,
+            sandbox_name: "test".to_string(),
+            hooks: vec![],
+        };
+
+        assert!(is_host_allowed("api.openai.com", &config));
+        assert!(is_host_allowed("files.openai.com", &config));
+        assert!(is_host_allowed("openai.com", &config)); // bare domain matches too
+        assert!(!is_host_allowed("api.anthropic.com", &config));
+    }
+
+    #[test]
+    fn test_is_host_allowed_with_port() {
+        let config = ProxyConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            bindings: vec![],
+            allowed_hosts: vec!["api.openai.com".to_string()],
+            blocked_hosts: vec![],
+            allowlist_only: true,
+            sandbox_name: "test".to_string(),
+            hooks: vec![],
+        };
+
+        assert!(is_host_allowed("api.openai.com:443", &config));
+    }
+
+    #[test]
+    fn test_matches_domain() {
+        assert!(matches_domain("api.openai.com", "api.openai.com"));
+        assert!(matches_domain("api.openai.com", "*.openai.com"));
+        assert!(matches_domain("openai.com", "*.openai.com"));
+        assert!(!matches_domain("api.anthropic.com", "*.openai.com"));
+        assert!(!matches_domain("evil.com", "api.openai.com"));
+    }
+
+    #[test]
+    fn test_generate_proxy_ca() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let (cert_pem, signer) = generate_proxy_ca().unwrap();
+        assert!(cert_pem.contains("BEGIN CERTIFICATE"));
+        // Verify we can sign a host cert with the CA
+        let tls_config = generate_host_tls_config("api.openai.com", &signer).unwrap();
+        assert!(Arc::strong_count(&tls_config) == 1);
+    }
+}

@@ -6,6 +6,30 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## v0.12.0 — Secrets & Secure Communication (Unreleased)
+
+_In progress — `feat/secrets-management` branch_
+
+### Added
+
+- **Network-layer secret injection** — HTTP forward proxy (Gondolin pattern) injects secrets as HTTP headers; secrets never enter the VM. Supports domain allowlists, HTTPS MITM via per-host TLS certificates signed by a generated CA, and audit logging of all proxied requests
+- **Secret bindings CLI** — `--secret KEY=value:host`, `--secret KEY:host`, `--secret KEY:host:header` syntax for binding secrets to target API hosts with configurable header names
+- **VSOCK-based secret injection** — `--secret-file KEY` writes secrets as files at `/run/agentkernel/secrets/KEY` with restricted permissions (chmod 400); secrets available via filesystem without appearing in env vars or process listings
+- **HTTP proxy hooks** — register webhook, file, or audit hooks to observe proxied requests/responses; `POST/GET/DELETE /proxy/hooks` API endpoints for runtime hook management; fire-and-forget webhook delivery with JSONL file logging
+- **Proxy hooks config** — `[[proxy.hooks]]` TOML config section for declaring hooks at startup
+- **CA cert auto-injection** — proxy CA certificate automatically injected into sandbox trust stores with `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE` env vars for language-specific trust
+- **SDK secrets support** — `secrets` and `secret_files` parameters added to `CreateSandboxOptions` across all 5 SDKs (TypeScript, Python, Rust, Go, Swift)
+- **Gondolin demo examples** — end-to-end secrets proxy demos for all 5 SDK languages in `examples/secrets-proxy/`
+
+### Fixed
+
+- **Apple backend exec deadlock** — `exec_with_env` used blocking `std::process::Command` which starved the tokio runtime when the exec'd process made requests through the proxy; switched to `tokio::process::Command`
+- **rustls CryptoProvider panic** — proxy MITM path crashed at runtime because no crypto provider was installed; added `ring::default_provider().install_default()` in `start_proxy()`
+- **CA bundle replacement** — `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` pointed to the proxy CA cert alone, replacing the system trust store; now creates a combined bundle (system CAs + proxy CA)
+- **Python SDK null serialization** — `create_sandbox` sent `null` for unset optional fields (`volumes`, etc.) which the Rust API rejected; now strips `None` values before serializing
+
+---
+
 ## [v0.11.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.11.0) — ARIA Browser Automation & Auto-Updater
 
 _February 10, 2026_
