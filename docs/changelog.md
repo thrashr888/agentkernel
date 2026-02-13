@@ -6,7 +6,9 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
-## Unreleased — Desktop Tray & Resource Visibility
+## [v0.13.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.13.0) — CLI Restructure, Tray & Metrics
+
+_February 12, 2026_
 
 ### Added
 

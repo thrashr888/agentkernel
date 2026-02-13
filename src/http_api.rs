@@ -439,10 +439,7 @@ async fn handle_request(
         let body = crate::metrics::gather();
         return Ok(Response::builder()
             .status(StatusCode::OK)
-            .header(
-                "Content-Type",
-                "text/plain; version=0.0.4; charset=utf-8",
-            )
+            .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
             .body(full(body))
             .unwrap());
     }

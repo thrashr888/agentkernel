@@ -14,10 +14,7 @@ static REGISTRY: LazyLock<Registry> = LazyLock::new(Registry::new);
 
 static HTTP_REQUESTS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     let c = IntCounterVec::new(
-        prometheus::opts!(
-            "agentkernel_http_requests_total",
-            "Total HTTP API requests"
-        ),
+        prometheus::opts!("agentkernel_http_requests_total", "Total HTTP API requests"),
         &["method", "path", "status"],
     )
     .expect("metric can be created");
