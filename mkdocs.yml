@@ -41,49 +41,66 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Installation: installation.md
-  - Getting Started: getting-started.md
-  - Comparisons: comparisons.md
-  - Benchmarks: benchmarks.md
-  - Desktop App: desktop-app.md
-  - Browser Automation: browser-automation.md
-  - Changelog: changelog.md
+  - Getting Started:
+    - Overview: getting-started/index.md
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quick-start.md
+    - Comparisons: getting-started/comparisons.md
+    - Benchmarks: getting-started/benchmarks.md
+  - Features:
+    - Overview: features/index.md
+    - Secrets: features/secrets.md
+    - Browser Automation: features/browser-automation.md
+    - Desktop App: features/desktop-app.md
+    - Compliance Mapping: features/compliance-mapping.md
   - Commands:
-    - Overview: commands.md
-    - run: cmd-run.md
-    - create: cmd-create.md
-    - start / stop: cmd-start-stop.md
-    - exec / attach: cmd-exec-attach.md
-    - list: cmd-list.md
+    - Overview: commands/index.md
+    - run: commands/run.md
+    - create: commands/create.md
+    - start / stop: commands/start-stop.md
+    - exec / attach: commands/exec-attach.md
+    - list: commands/list.md
+    - secret: commands/secrets.md
+    - images: commands/images.md
+    - volumes: commands/volumes.md
+    - snapshots: commands/snapshots.md
+    - sessions: commands/sessions.md
+    - templates: commands/templates.md
+    - export / import: commands/export-import.md
+    - parallel: commands/parallel.md
+    - pipelines: commands/pipelines.md
   - Configuration:
-    - Overview: configuration.md
-    - agentkernel.toml: config-toml.md
-    - Security Profiles: config-security.md
-    - Backends: config-backends.md
-  - Orchestration:
-    - Overview: orchestration.md
-    - Kubernetes: orchestration-kubernetes.md
-    - Nomad: orchestration-nomad.md
-    - Deployment: deploy.md
+    - Overview: config/index.md
+    - agentkernel.toml: config/toml.md
+    - Security Profiles: config/security.md
+    - Backends: config/backends.md
   - AI Agents:
-    - Overview: agents.md
-    - Claude Code: agent-claude.md
-    - OpenAI Codex: agent-codex.md
-    - Google Gemini: agent-gemini.md
-    - OpenCode: agent-opencode.md
-    - GitHub Copilot: agent-copilot.md
+    - Overview: agents/index.md
+    - Claude Code: agents/claude.md
+    - OpenAI Codex: agents/codex.md
+    - Google Gemini: agents/gemini.md
+    - Amp: agents/amp.md
+    - OpenCode: agents/opencode.md
+    - GitHub Copilot: agents/copilot.md
+    - Pi: agents/pi.md
   - API:
-    - Overview: api.md
-    - HTTP API: api-http.md
-    - OpenAPI Spec: api-openapi.md
-    - MCP Server: api-mcp.md
+    - Overview: api/index.md
+    - HTTP API: api/http.md
+    - OpenAPI Spec: api/openapi.md
+    - MCP Server: api/mcp.md
   - SDKs:
-    - Overview: sdks.md
-    - Node.js: sdk-nodejs.md
-    - Python: sdk-python.md
-    - Go: sdk-golang.md
-    - Rust: sdk-rust.md
-    - Swift: sdk-swift.md
+    - Overview: sdks/index.md
+    - Node.js: sdks/nodejs.md
+    - Python: sdks/python.md
+    - Go: sdks/golang.md
+    - Rust: sdks/rust.md
+    - Swift: sdks/swift.md
+  - Operations:
+    - Overview: operations/index.md
+    - Kubernetes: operations/kubernetes.md
+    - Nomad: operations/nomad.md
+    - Deployment: operations/deploy.md
+  - Changelog: changelog.md
 
 extra:
   social:

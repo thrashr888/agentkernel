@@ -187,6 +187,8 @@ func (c *Client) CreateSandbox(ctx context.Context, name string, opts *CreateSan
 		body.MemoryMB = opts.MemoryMB
 		body.Profile = opts.Profile
 		body.Volumes = opts.Volumes
+		body.Secrets = opts.Secrets
+		body.SecretFiles = opts.SecretFiles
 	}
 	var result SandboxInfo
 	err := c.request(ctx, http.MethodPost, "/sandboxes", body, &result)

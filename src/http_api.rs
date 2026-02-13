@@ -75,6 +75,12 @@ struct CreateRequest {
     /// Agent CLI to auto-install on start (e.g., "claude", "gemini", "codex")
     #[serde(default)]
     agent: Option<String>,
+    /// Secret bindings for proxy injection (e.g., ["OPENAI_API_KEY:api.openai.com"])
+    #[serde(default)]
+    secrets: Vec<String>,
+    /// Secret keys to inject as files (e.g., ["MY_SECRET"])
+    #[serde(default)]
+    secret_files: Vec<String>,
 }
 
 /// Request to write a file
@@ -194,6 +200,8 @@ struct SandboxInfo {
     created_at: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     ports: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proxy_port: Option<u16>,
 }
 
 /// Run command response
@@ -556,6 +564,11 @@ async fn handle_request(
         (Method::GET, ["secrets"]) => handle_list_secrets().await,
         (Method::POST, ["secrets"]) => handle_create_secret(req).await,
         (Method::DELETE, ["secrets", name]) => handle_delete_secret(name).await,
+
+        // Proxy hooks
+        (Method::GET, ["proxy", "hooks"]) => handle_list_proxy_hooks(state).await,
+        (Method::POST, ["proxy", "hooks"]) => handle_register_proxy_hook(req, state).await,
+        (Method::DELETE, ["proxy", "hooks", name]) => handle_remove_proxy_hook(name, state).await,
 
         // Garbage collection
         (Method::POST, ["gc"]) => handle_gc(state).await,
@@ -975,6 +988,7 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
                 memory_mb: state_info.map(|s| s.memory_mb),
                 created_at: state_info.map(|s| s.created_at.clone()),
                 ports,
+                proxy_port: state_info.and_then(|s| s.proxy_port),
             }
         })
         .collect();
@@ -1081,6 +1095,28 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         );
     }
 
+    // Set secret bindings if provided
+    if !body.secrets.is_empty()
+        && let Err(e) = manager.set_secret_bindings(&body.name, &body.secrets)
+    {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(format!("Invalid secret bindings: {}", e)),
+        );
+    }
+
+    // Set secret file keys if provided
+    if !body.secret_files.is_empty()
+        && let Err(e) = manager.set_secret_files(&body.name, &body.secret_files)
+    {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(format!("Invalid secret file keys: {}", e)),
+        );
+    }
+
     // Resolve profile for start_with_permissions
     let perms = if let Some(ref profile_str) = body.profile {
         match resolve_profile(profile_str) {
@@ -1164,6 +1200,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             memory_mb: Some(memory_mb),
             created_at: None,
             ports: port_strings,
+            proxy_port: None,
         }),
     )
 }
@@ -1213,6 +1250,7 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                     memory_mb: state_info.map(|s| s.memory_mb),
                     created_at: state_info.map(|s| s.created_at.clone()),
                     ports,
+                    proxy_port: state_info.and_then(|s| s.proxy_port),
                 }),
             );
         }
@@ -1763,6 +1801,7 @@ async fn handle_resize_sandbox(
             memory_mb: Some(new_memory),
             created_at: state_info.map(|s| s.created_at.clone()),
             ports: result_ports,
+            proxy_port: state_info.and_then(|s| s.proxy_port),
         }),
     )
 }
@@ -1986,6 +2025,7 @@ async fn handle_restore_snapshot(
                     memory_mb: Some(meta.memory_mb),
                     created_at: state_info.map(|s| s.created_at.clone()),
                     ports,
+                    proxy_port: state_info.and_then(|s| s.proxy_port),
                 }),
             )
         }
@@ -2935,6 +2975,84 @@ async fn handle_delete_secret(name: &str) -> Response<BoxBody> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Proxy hooks management
+// ---------------------------------------------------------------------------
+
+async fn handle_list_proxy_hooks(_state: Arc<AppState>) -> Response<BoxBody> {
+    use crate::proxy_hooks::ProxyHook;
+
+    // Collect hooks from all running proxy handles (global registry)
+    let handles = VmManager::proxy_handles_registry().read().await;
+    let mut all_hooks: Vec<ProxyHook> = Vec::new();
+    for handle in handles.values() {
+        let registry = handle.hook_registry.read().await;
+        all_hooks.extend(registry.list());
+    }
+    drop(handles);
+
+    json_response(StatusCode::OK, &ApiResponse::success(all_hooks))
+}
+
+async fn handle_register_proxy_hook(
+    req: Request<Incoming>,
+    _state: Arc<AppState>,
+) -> Response<BoxBody> {
+    use crate::proxy_hooks::ProxyHook;
+
+    let body: ProxyHook = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    // Register the hook in all running proxies (global registry)
+    let handles = VmManager::proxy_handles_registry().read().await;
+    let mut registered = 0;
+    for handle in handles.values() {
+        let mut registry = handle.hook_registry.write().await;
+        if let Err(e) = registry.register(body.clone()) {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(format!("Invalid hook: {e}")),
+            );
+        }
+        registered += 1;
+    }
+    drop(handles);
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(format!(
+            "Hook '{}' registered in {} proxies",
+            body.name, registered
+        )),
+    )
+}
+
+async fn handle_remove_proxy_hook(name: &str, _state: Arc<AppState>) -> Response<BoxBody> {
+    let handles = VmManager::proxy_handles_registry().read().await;
+    let mut removed = 0;
+    for handle in handles.values() {
+        let mut registry = handle.hook_registry.write().await;
+        if registry.remove(name) {
+            removed += 1;
+        }
+    }
+    drop(handles);
+
+    if removed > 0 {
+        json_response(
+            StatusCode::OK,
+            &ApiResponse::success(format!("Hook '{}' removed from {} proxies", name, removed)),
+        )
+    } else {
+        json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("Hook '{}' not found", name)),
+        )
+    }
+}
+
 async fn handle_list_agents(_state: Arc<AppState>) -> Response<BoxBody> {
     #[derive(Serialize)]
     struct AgentInfo {
@@ -3393,6 +3511,7 @@ mod tests {
             memory_mb: None,
             created_at: None,
             ports: vec![],
+            proxy_port: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"name\":\"test-sandbox\""));
@@ -3464,6 +3583,7 @@ mod tests {
             memory_mb: None,
             created_at: None,
             ports: vec![],
+            proxy_port: None,
         };
         let response = json_response(StatusCode::CREATED, &ApiResponse::success(info));
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -3560,6 +3680,7 @@ mod tests {
             memory_mb: Some(2048),
             created_at: Some("2026-01-30T12:00:00Z".to_string()),
             ports: vec![],
+            proxy_port: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"image\":\"python:3.12\""));
@@ -3580,6 +3701,7 @@ mod tests {
             memory_mb: None,
             created_at: None,
             ports: vec![],
+            proxy_port: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(!json.contains("image"));

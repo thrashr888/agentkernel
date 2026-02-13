@@ -167,17 +167,21 @@ class AgentKernel:
         source_url: str | None = None,
         source_ref: str | None = None,
         volumes: list[str] | None = None,
+        secrets: list[str] | None = None,
+        secret_files: list[str] | None = None,
     ) -> SandboxInfo:
         """Create a new sandbox."""
+        body = {
+            "name": name, "image": image, "vcpus": vcpus,
+            "memory_mb": memory_mb, "profile": profile,
+            "source_url": source_url, "source_ref": source_ref,
+            "volumes": volumes,
+            "secrets": secrets, "secret_files": secret_files,
+        }
         data = self._request(
             "POST",
             "/sandboxes",
-            json={
-                "name": name, "image": image, "vcpus": vcpus,
-                "memory_mb": memory_mb, "profile": profile,
-                "source_url": source_url, "source_ref": source_ref,
-                "volumes": volumes,
-            },
+            json={k: v for k, v in body.items() if v is not None},
         )
         return SandboxInfo(**data)
 

@@ -1,8 +1,17 @@
 """agentkernel SDK — run AI coding agents in secure, isolated microVMs."""
 
-from .async_client import AsyncAgentKernel, AsyncSandboxSession
-from .browser import AsyncBrowserSession, BrowserSession
 from .client import AgentKernel, SandboxSession
+
+# Lazy imports for optional async/browser dependencies (httpx, playwright)
+try:
+    from .async_client import AsyncAgentKernel, AsyncSandboxSession
+except ImportError:
+    pass
+
+try:
+    from .browser import AsyncBrowserSession, BrowserSession
+except (ImportError, SyntaxError):
+    pass
 from .errors import (
     AgentKernelError,
     AuthError,

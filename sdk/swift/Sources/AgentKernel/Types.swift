@@ -36,6 +36,13 @@ public struct CreateSandboxOptions: Sendable {
     public var sourceRef: String?
     /// Volume mounts (slug:/path or slug:/path:ro). Create volumes via CLI first.
     public var volumes: [String]?
+    /// Secret bindings for proxy-based injection (Gondolin pattern).
+    /// Secrets are injected as HTTP headers by the host proxy — they never enter the VM.
+    /// Formats: "KEY=value:host", "KEY:host", "KEY:host:header".
+    public var secrets: [String]?
+    /// Secret keys to inject as files at /run/agentkernel/secrets/KEY.
+    /// Values are resolved from the secret vault.
+    public var secretFiles: [String]?
 
     public init(
         image: String? = nil,
@@ -44,7 +51,9 @@ public struct CreateSandboxOptions: Sendable {
         profile: SecurityProfile? = nil,
         sourceURL: String? = nil,
         sourceRef: String? = nil,
-        volumes: [String]? = nil
+        volumes: [String]? = nil,
+        secrets: [String]? = nil,
+        secretFiles: [String]? = nil
     ) {
         self.image = image
         self.vcpus = vcpus
@@ -53,6 +62,8 @@ public struct CreateSandboxOptions: Sendable {
         self.sourceURL = sourceURL
         self.sourceRef = sourceRef
         self.volumes = volumes
+        self.secrets = secrets
+        self.secretFiles = secretFiles
     }
 }
 
@@ -131,6 +142,8 @@ struct CreateRequest: Encodable {
     let source_url: String?
     let source_ref: String?
     let volumes: [String]?
+    let secrets: [String]?
+    let secret_files: [String]?
 }
 
 /// Exec request body.

@@ -302,6 +302,9 @@ pub struct Config {
     /// API server configuration
     #[serde(default)]
     pub api: ApiConfig,
+    /// Proxy hooks configuration
+    #[serde(default)]
+    pub proxy: ProxyHooksConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -500,6 +503,40 @@ impl NetworkConfig {
     }
 }
 
+/// Proxy hooks configuration.
+///
+/// ```toml
+/// [[proxy.hooks]]
+/// name = "audit-to-file"
+/// event = "on_request"
+/// [proxy.hooks.target]
+/// type = "file"
+/// path = "/var/log/agentkernel/proxy.jsonl"
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProxyHooksConfig {
+    /// Hooks to register on proxy startup.
+    #[serde(default)]
+    pub hooks: Vec<ProxyHookEntry>,
+}
+
+/// A single proxy hook entry in the config file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyHookEntry {
+    pub name: String,
+    pub event: String,
+    pub target: ProxyHookTargetEntry,
+}
+
+/// Target for a proxy hook in the config file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProxyHookTargetEntry {
+    Webhook { url: String },
+    File { path: String },
+    Audit,
+}
+
 impl Config {
     /// Load configuration from a TOML file.
     pub fn from_file(path: &Path) -> Result<Self> {
@@ -534,6 +571,7 @@ impl Config {
             orchestrator: OrchestratorConfig::default(),
             enterprise: EnterpriseConfig::default(),
             api: ApiConfig::default(),
+            proxy: ProxyHooksConfig::default(),
         }
     }
 

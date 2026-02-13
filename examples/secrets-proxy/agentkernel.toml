@@ -1,0 +1,41 @@
+# Secrets Proxy Example
+# Demonstrates network-layer secret injection (Gondolin pattern)
+# and HTTP proxy hooks for request/response observation.
+#
+# Secrets are injected as HTTP headers by the host proxy — they never
+# enter the sandbox VM. The sandbox only sees placeholder env vars.
+
+[sandbox]
+name = "secrets-proxy"
+base_image = "python:3.12-alpine"
+
+[agent]
+preferred = "claude"
+
+[resources]
+vcpus = 1
+memory_mb = 512
+
+[security]
+profile = "moderate"
+
+# Domain filtering: only allow the API hosts we have secrets for
+[security.domains]
+allow = ["api.openai.com", "api.anthropic.com", "httpbin.org"]
+allowlist_only = false
+
+# Proxy hooks: log all proxied requests to a JSONL file
+[[proxy.hooks]]
+name = "request-logger"
+event = "on_request"
+
+[proxy.hooks.target]
+type = "file"
+path = "/tmp/agentkernel-proxy-events.jsonl"
+
+[[proxy.hooks]]
+name = "response-logger"
+event = "on_response"
+
+[proxy.hooks.target]
+type = "audit"

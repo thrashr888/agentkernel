@@ -13,6 +13,8 @@ use crate::docker_backend::detect_container_runtime;
 use crate::languages::docker_image_to_firecracker_runtime;
 use crate::permissions::Permissions;
 use crate::pool::ContainerPool;
+use crate::proxy::{ProxyConfig, ProxyHandle, SecretBinding};
+use crate::secrets::{SecretBackend, SecretVault};
 use crate::validation;
 use crate::volume::{VolumeManager, VolumeMount};
 use anyhow::{Result, bail};
@@ -21,6 +23,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::sync::RwLock;
+
+/// Global proxy handle registry. Proxy handles must outlive individual VmManager
+/// instances since VmManager is created fresh per HTTP request.
+static PROXY_HANDLES: std::sync::LazyLock<RwLock<HashMap<String, ProxyHandle>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 use tokio::sync::OnceCell;
 
 /// Global container pool for fast ephemeral runs
@@ -78,6 +86,15 @@ pub struct SandboxState {
     /// Agent CLI to install on start (e.g., "claude", "gemini", "codex")
     #[serde(default)]
     pub agent: Option<String>,
+    /// Secret bindings for proxy injection (raw CLI strings, e.g. "KEY:host")
+    #[serde(default)]
+    pub secret_bindings: Vec<String>,
+    /// Secret keys to inject as files (e.g. ["OPENAI_API_KEY"])
+    #[serde(default)]
+    pub secret_files: Vec<String>,
+    /// Host port of the running proxy (if any)
+    #[serde(default)]
+    pub proxy_port: Option<u16>,
 }
 
 /// Status of a detached command
@@ -571,6 +588,9 @@ impl VmManager {
             ssh_host_port: None,
             volumes: Vec::new(),
             agent,
+            secret_bindings: Vec::new(),
+            secret_files: Vec::new(),
+            proxy_port: None,
         };
 
         self.save_sandbox(&state)?;
@@ -593,6 +613,40 @@ impl VmManager {
                 .get_mut(name)
                 .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
             state.ssh_enabled = enabled;
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    /// Set secret bindings for a sandbox (raw CLI strings for proxy injection).
+    pub fn set_secret_bindings(&mut self, name: &str, bindings: &[String]) -> Result<()> {
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.secret_bindings = bindings.to_vec();
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    /// Set secret file keys for a sandbox (injected as files on start).
+    pub fn set_secret_files(&mut self, name: &str, keys: &[String]) -> Result<()> {
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.secret_files = keys.to_vec();
         }
         let state = self
             .sandboxes
@@ -730,6 +784,124 @@ impl VmManager {
             }
         }
 
+        // Start secret injection proxy if bindings are configured
+        if !state.secret_bindings.is_empty() {
+            let vault = SecretVault::new(SecretBackend::default());
+
+            // Parse bindings and resolve secrets
+            let mut bindings = Vec::new();
+            let mut resolved_secrets = HashMap::new();
+            for raw in &state.secret_bindings {
+                let (binding, inline_value) = SecretBinding::parse_cli(raw)?;
+                if let Some(val) = inline_value {
+                    vault.set(&binding.secret_key, &val)?;
+                }
+                // Resolve the secret value
+                if let Ok(Some(secret_val)) = vault.get(&binding.secret_key) {
+                    let header_value = format!("{}{}", binding.header_prefix, secret_val);
+                    resolved_secrets.insert(
+                        binding.target_host.clone(),
+                        (binding.header_name.clone(), header_value),
+                    );
+                    // Set placeholder env var (real secret never enters VM)
+                    env.push((binding.secret_key.clone(), "ak-proxy-managed".to_string()));
+                } else {
+                    eprintln!(
+                        "Warning: Secret '{}' not found in vault, skipping binding",
+                        binding.secret_key
+                    );
+                }
+                bindings.push(binding);
+            }
+
+            if !resolved_secrets.is_empty() {
+                let allowed_hosts: Vec<String> =
+                    bindings.iter().map(|b| b.target_host.clone()).collect();
+                // Bind proxy to 0.0.0.0 so VMs on the host network can reach it
+                let proxy_config = ProxyConfig {
+                    listen_addr: "0.0.0.0:0".parse().unwrap(),
+                    bindings,
+                    allowed_hosts,
+                    blocked_hosts: Vec::new(),
+                    allowlist_only: false,
+                    sandbox_name: name.to_string(),
+                    hooks: Vec::new(),
+                };
+
+                match crate::proxy::start_proxy(proxy_config, resolved_secrets).await {
+                    Ok(handle) => {
+                        let proxy_addr = handle.addr;
+                        // Determine the proxy host for the sandbox to reach
+                        let proxy_host = match backend {
+                            BackendType::Apple => {
+                                // Apple VMs reach host at gateway 192.168.64.1
+                                format!("192.168.64.1:{}", proxy_addr.port())
+                            }
+                            BackendType::Docker | BackendType::Podman => {
+                                if cfg!(target_os = "macos") {
+                                    format!("host.docker.internal:{}", proxy_addr.port())
+                                } else {
+                                    format!("172.17.0.1:{}", proxy_addr.port())
+                                }
+                            }
+                            _ => {
+                                // Firecracker, Hyperlight, etc. — use loopback
+                                format!("127.0.0.1:{}", proxy_addr.port())
+                            }
+                        };
+
+                        // Inject proxy env vars
+                        env.push(("HTTP_PROXY".to_string(), format!("http://{}", proxy_host)));
+                        env.push(("HTTPS_PROXY".to_string(), format!("http://{}", proxy_host)));
+                        env.push(("http_proxy".to_string(), format!("http://{}", proxy_host)));
+                        env.push(("https_proxy".to_string(), format!("http://{}", proxy_host)));
+                        env.push(("NO_PROXY".to_string(), "localhost,127.0.0.1".to_string()));
+
+                        // NODE_EXTRA_CA_CERTS is additive — just points to proxy CA
+                        env.push((
+                            "NODE_EXTRA_CA_CERTS".to_string(),
+                            "/usr/local/share/ca-certificates/agentkernel-proxy.crt".to_string(),
+                        ));
+                        // SSL_CERT_FILE / REQUESTS_CA_BUNDLE replace the trust store.
+                        // We'll create a combined bundle post-start. Point to it here.
+                        env.push((
+                            "REQUESTS_CA_BUNDLE".to_string(),
+                            "/etc/ssl/certs/agentkernel-combined.crt".to_string(),
+                        ));
+                        env.push((
+                            "SSL_CERT_FILE".to_string(),
+                            "/etc/ssl/certs/agentkernel-combined.crt".to_string(),
+                        ));
+
+                        // Save proxy port to state
+                        if let Some(s) = self.sandboxes.get_mut(name) {
+                            s.proxy_port = Some(proxy_addr.port());
+                        }
+                        self.save_sandbox(self.sandboxes.get(name).unwrap())?;
+
+                        eprintln!(
+                            "Secret proxy started on port {} ({} binding(s))",
+                            proxy_addr.port(),
+                            state.secret_bindings.len()
+                        );
+
+                        PROXY_HANDLES.write().await.insert(name.to_string(), handle);
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Failed to start secret proxy: {}", e);
+                    }
+                }
+            }
+        }
+
+        // If secret files are configured, set the env var so sandbox knows where to find them
+        if !state.secret_files.is_empty() {
+            env.push((
+                "AGENTKERNEL_SECRETS_PATH".to_string(),
+                crate::vsock_secrets::DEFAULT_SECRETS_PATH.to_string(),
+            ));
+        }
+
         // Build SSH config if enabled
         let ssh_config = if state.ssh_enabled {
             let mut ssh_cfg = crate::ssh::SshConfig {
@@ -787,6 +959,77 @@ impl VmManager {
         // Inject non-SSH files first
         if !files.is_empty() {
             sandbox.inject_files(files).await?;
+        }
+
+        // Inject proxy CA certificate into sandbox trust store
+        {
+            let handles = PROXY_HANDLES.read().await;
+            if let Some(handle) = handles.get(name) {
+                let ca_files = vec![FileInjection {
+                    dest: "/usr/local/share/ca-certificates/agentkernel-proxy.crt".to_string(),
+                    content: handle.ca_cert_pem.as_bytes().to_vec(),
+                }];
+                sandbox.inject_files(&ca_files).await?;
+
+                // Create a combined CA bundle: system certs + our proxy CA.
+                // This works across distros (Debian: /etc/ssl/certs/ca-certificates.crt,
+                // Alpine: /etc/ssl/certs/ca-certificates.crt, RHEL: /etc/pki/tls/certs/ca-bundle.crt).
+                // Fallback: if no system bundle exists, use only our CA cert.
+                let _ = sandbox
+                    .exec(&[
+                        "sh",
+                        "-c",
+                        "cat /etc/ssl/certs/ca-certificates.crt /usr/local/share/ca-certificates/agentkernel-proxy.crt > /etc/ssl/certs/agentkernel-combined.crt 2>/dev/null || \
+                         cat /etc/pki/tls/certs/ca-bundle.crt /usr/local/share/ca-certificates/agentkernel-proxy.crt > /etc/ssl/certs/agentkernel-combined.crt 2>/dev/null || \
+                         cp /usr/local/share/ca-certificates/agentkernel-proxy.crt /etc/ssl/certs/agentkernel-combined.crt",
+                    ])
+                    .await;
+
+                // Also run update-ca-certificates for tools that use system store directly
+                let _ = sandbox
+                    .exec(&[
+                        "sh",
+                        "-c",
+                        "update-ca-certificates 2>/dev/null || update-ca-trust 2>/dev/null || true",
+                    ])
+                    .await;
+            }
+        }
+
+        // Inject secrets as files if configured
+        if !state.secret_files.is_empty() {
+            let vault = SecretVault::new(SecretBackend::default());
+            let mut resolved = HashMap::new();
+            for key in &state.secret_files {
+                if let Ok(Some(val)) = vault.get(key) {
+                    resolved.insert(key.clone(), val);
+                } else {
+                    eprintln!(
+                        "Warning: Secret '{}' not found in vault, skipping file injection",
+                        key
+                    );
+                }
+            }
+            if !resolved.is_empty() {
+                match crate::vsock_secrets::inject_secrets_as_files(
+                    sandbox.as_mut(),
+                    crate::vsock_secrets::DEFAULT_SECRETS_PATH,
+                    &resolved,
+                )
+                .await
+                {
+                    Ok(injected) => {
+                        eprintln!(
+                            "Injected {} secret file(s) at {}",
+                            injected.len(),
+                            crate::vsock_secrets::DEFAULT_SECRETS_PATH,
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Failed to inject secret files: {}", e);
+                    }
+                }
+            }
         }
 
         // If SSH is enabled, install sshd THEN inject SSH files
@@ -1228,6 +1471,10 @@ impl VmManager {
 
     /// Stop a sandbox
     pub async fn stop(&mut self, name: &str) -> Result<()> {
+        // Shut down the proxy if running
+        if let Some(handle) = PROXY_HANDLES.write().await.remove(name) {
+            let _ = handle.shutdown_tx.send(());
+        }
         if let Some(mut sandbox) = self.running.remove(name) {
             sandbox.stop().await?;
             log_event(AuditEvent::SandboxStopped {
@@ -1239,6 +1486,10 @@ impl VmManager {
 
     /// Remove a sandbox
     pub async fn remove(&mut self, name: &str) -> Result<()> {
+        // Shut down the proxy if running
+        if let Some(handle) = PROXY_HANDLES.write().await.remove(name) {
+            let _ = handle.shutdown_tx.send(());
+        }
         if let Some(mut sandbox) = self.running.remove(name) {
             let _ = sandbox.stop().await;
         }
@@ -1314,6 +1565,11 @@ impl VmManager {
     #[allow(dead_code)]
     pub fn backend(&self) -> BackendType {
         self.backend
+    }
+
+    /// Get a reference to the global proxy handles registry.
+    pub fn proxy_handles_registry() -> &'static RwLock<HashMap<String, ProxyHandle>> {
+        &PROXY_HANDLES
     }
 
     /// Run a command using the container pool (fast path for ephemeral runs)
@@ -1561,6 +1817,9 @@ mod tests {
             ssh_host_port: None,
             volumes: Vec::new(),
             agent: None,
+            secret_bindings: Vec::new(),
+            secret_files: Vec::new(),
+            proxy_port: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -1607,6 +1866,9 @@ mod tests {
             ssh_host_port: None,
             volumes: Vec::new(),
             agent: None,
+            secret_bindings: Vec::new(),
+            secret_files: Vec::new(),
+            proxy_port: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -1662,6 +1924,9 @@ mod tests {
             ssh_host_port: None,
             volumes: Vec::new(),
             agent: None,
+            secret_bindings: Vec::new(),
+            secret_files: Vec::new(),
+            proxy_port: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -1710,6 +1975,9 @@ mod tests {
                 ssh_host_port: None,
                 volumes: Vec::new(),
                 agent: None,
+                secret_bindings: Vec::new(),
+                secret_files: Vec::new(),
+                proxy_port: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();

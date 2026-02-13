@@ -306,9 +306,14 @@ impl Sandbox for AppleSandbox {
         args.push(container_name);
         args.extend(cmd.iter().map(|s| s.to_string()));
 
-        let output = Command::new("container")
+        // Use tokio::process::Command so exec doesn't block the tokio runtime.
+        // This is critical for the secret proxy: the proxy runs as a tokio task,
+        // and blocking with std::process::Command would starve it when the exec'd
+        // process makes requests through the proxy (deadlock).
+        let output = tokio::process::Command::new("container")
             .args(&args)
             .output()
+            .await
             .context("Failed to run command in Apple container")?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();

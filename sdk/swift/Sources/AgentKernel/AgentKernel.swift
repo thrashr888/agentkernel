@@ -110,7 +110,9 @@ public actor AgentKernel {
             profile: options?.profile,
             source_url: options?.sourceURL,
             source_ref: options?.sourceRef,
-            volumes: options?.volumes
+            volumes: options?.volumes,
+            secrets: options?.secrets,
+            secret_files: options?.secretFiles
         )
         return try await request(method: "POST", path: "/sandboxes", body: body)
     }

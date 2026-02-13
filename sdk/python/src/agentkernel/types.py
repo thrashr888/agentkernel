@@ -49,6 +49,11 @@ class CreateSandboxOptions(BaseModel):
     source_ref: str | None = None
     volumes: list[str] | None = None
     """Volume mounts (slug:/path or slug:/path:ro). Create volumes via CLI first."""
+    secrets: list[str] | None = None
+    """Secret bindings for proxy-based injection (Gondolin pattern).
+    Formats: "KEY=value:host", "KEY:host", "KEY:host:header"."""
+    secret_files: list[str] | None = None
+    """Secret keys to inject as files at /run/agentkernel/secrets/KEY."""
 
 
 class ExecOptions(BaseModel):
