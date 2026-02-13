@@ -16,6 +16,7 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 - **Resource summary in tray** — running sandbox count with total vCPU and memory allocation displayed in the tray menu
 - **Dashboard resource cards** — vCPU and Memory allocation cards added to the dashboard StatusCards (blue/purple), showing totals across running sandboxes with auto GB formatting
 - **Credential isolation docs** — Gondolin pattern (network-layer secret injection) highlighted in README and homepage as a key differentiator; code examples showing proxy behavior and domain scoping
+- **Prometheus metrics endpoint** — `GET /metrics` exposes HTTP request count/latency, sandbox lifecycle counters/histograms, active sandbox gauge, command execution metrics, and build info in Prometheus text exposition format; path labels normalized to prevent cardinality explosion
 
 ### Changed
 

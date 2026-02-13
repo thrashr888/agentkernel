@@ -422,7 +422,9 @@ async fn handle_request(
     state: Arc<AppState>,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let method = req.method().clone();
+    let method_str = method.to_string();
     let path = req.uri().path().to_string();
+    let start = std::time::Instant::now();
 
     // Parse path segments
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -430,6 +432,19 @@ async fn handle_request(
     // Health check doesn't require authentication
     if method == Method::GET && segments.as_slice() == ["health"] {
         return Ok(json_response(StatusCode::OK, &ApiResponse::success("ok")));
+    }
+
+    // Prometheus metrics endpoint (no auth, like health)
+    if method == Method::GET && segments.as_slice() == ["metrics"] {
+        let body = crate::metrics::gather();
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(
+                "Content-Type",
+                "text/plain; version=0.0.4; charset=utf-8",
+            )
+            .body(full(body))
+            .unwrap());
     }
 
     // Check authentication for all other endpoints
@@ -630,6 +645,13 @@ async fn handle_request(
             &ApiResponse::<()>::error("Not found"),
         ),
     };
+
+    crate::metrics::record_http_request(
+        &method_str,
+        &path,
+        response.status().as_u16(),
+        start.elapsed().as_secs_f64(),
+    );
 
     Ok(response)
 }

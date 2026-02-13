@@ -38,6 +38,7 @@ mod snapshot;
 #[allow(dead_code)]
 mod ssh;
 mod stats;
+mod metrics;
 mod template;
 mod tls;
 mod validation;

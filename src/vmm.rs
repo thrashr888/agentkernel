@@ -251,6 +251,8 @@ impl VmManager {
         // Detect already-running sandboxes
         manager.detect_running_sandboxes();
 
+        crate::metrics::set_active_sandboxes(manager.sandboxes.len() as i64);
+
         Ok(manager)
     }
 
@@ -541,6 +543,8 @@ impl VmManager {
         ports: Vec<PortMapping>,
         agent: Option<String>,
     ) -> Result<()> {
+        let create_start = std::time::Instant::now();
+
         if self.sandboxes.contains_key(name) {
             bail!("Sandbox '{}' already exists", name);
         }
@@ -601,6 +605,12 @@ impl VmManager {
             image: effective_image,
             backend: self.backend.to_string(),
         });
+        crate::metrics::record_sandbox_lifecycle(
+            "created",
+            &self.backend.to_string(),
+            create_start.elapsed().as_secs_f64(),
+        );
+        crate::metrics::inc_active_sandboxes();
 
         Ok(())
     }
@@ -726,6 +736,7 @@ impl VmManager {
         perms: &Permissions,
         files: &[FileInjection],
     ) -> Result<()> {
+        let start_time = std::time::Instant::now();
         let state = self
             .sandboxes
             .get(name)
@@ -1154,6 +1165,11 @@ impl VmManager {
             name: name.to_string(),
             profile: Some(format!("{:?}", perms)),
         });
+        crate::metrics::record_sandbox_lifecycle(
+            "started",
+            &backend.to_string(),
+            start_time.elapsed().as_secs_f64(),
+        );
 
         Ok(())
     }
@@ -1232,7 +1248,12 @@ impl VmManager {
 
         let cmd_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
 
+        let exec_start = std::time::Instant::now();
         let result = sandbox.exec_with_options(&cmd_refs, opts).await?;
+        crate::metrics::record_command(
+            &self.backend.to_string(),
+            exec_start.elapsed().as_secs_f64(),
+        );
 
         log_event(AuditEvent::CommandExecuted {
             sandbox: name.to_string(),
@@ -1471,6 +1492,7 @@ impl VmManager {
 
     /// Stop a sandbox
     pub async fn stop(&mut self, name: &str) -> Result<()> {
+        let stop_start = std::time::Instant::now();
         // Shut down the proxy if running
         if let Some(handle) = PROXY_HANDLES.write().await.remove(name) {
             let _ = handle.shutdown_tx.send(());
@@ -1480,12 +1502,18 @@ impl VmManager {
             log_event(AuditEvent::SandboxStopped {
                 name: name.to_string(),
             });
+            crate::metrics::record_sandbox_lifecycle(
+                "stopped",
+                &self.backend.to_string(),
+                stop_start.elapsed().as_secs_f64(),
+            );
         }
         Ok(())
     }
 
     /// Remove a sandbox
     pub async fn remove(&mut self, name: &str) -> Result<()> {
+        let remove_start = std::time::Instant::now();
         // Shut down the proxy if running
         if let Some(handle) = PROXY_HANDLES.write().await.remove(name) {
             let _ = handle.shutdown_tx.send(());
@@ -1500,6 +1528,12 @@ impl VmManager {
         log_event(AuditEvent::SandboxRemoved {
             name: name.to_string(),
         });
+        crate::metrics::record_sandbox_lifecycle(
+            "removed",
+            &self.backend.to_string(),
+            remove_start.elapsed().as_secs_f64(),
+        );
+        crate::metrics::dec_active_sandboxes();
 
         Ok(())
     }
@@ -1577,8 +1611,10 @@ impl VmManager {
         Self::enforce_command_policy(cmd)?;
         let pool = get_pool().await?;
         let container = pool.acquire().await?;
+        let exec_start = std::time::Instant::now();
         let result = container.run_command(cmd).await;
         pool.release(container).await;
+        crate::metrics::record_command("pool", exec_start.elapsed().as_secs_f64());
         result
     }
 
