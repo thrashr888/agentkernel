@@ -247,10 +247,10 @@ The `goto()` method returns a `PageResult`:
 For one-off use without an SDK:
 
 ```bash
-agentkernel create --template playwright my-browser
+agentkernel sandbox create --template playwright my-browser
 agentkernel file write my-browser /app/scrape.py < scrape.py
 agentkernel exec my-browser -- python3 /app/scrape.py https://example.com
-agentkernel remove my-browser
+agentkernel sandbox remove my-browser
 ```
 
 ## Configuration

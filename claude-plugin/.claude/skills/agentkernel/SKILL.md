@@ -107,7 +107,7 @@ Keep the sandbox after execution:
 
 ```bash
 agentkernel run --keep npm test
-# Later: agentkernel remove run-<id>
+# Later: agentkernel sandbox remove run-<id>
 ```
 
 ### Persistent Sandboxes
@@ -116,16 +116,16 @@ For longer-running work:
 
 ```bash
 # Create and start
-agentkernel create my-sandbox
-agentkernel start my-sandbox
+agentkernel sandbox create my-sandbox
+agentkernel sandbox start my-sandbox
 
 # Execute commands
 agentkernel exec my-sandbox npm test
 agentkernel exec my-sandbox python -m pytest
 
 # Clean up
-agentkernel stop my-sandbox
-agentkernel remove my-sandbox
+agentkernel sandbox stop my-sandbox
+agentkernel sandbox remove my-sandbox
 ```
 
 ## Supported Languages
@@ -379,5 +379,5 @@ If a command fails, the sandbox is automatically cleaned up. Use `--keep` to pre
 ```bash
 agentkernel run --keep failing-command
 # Inspect: docker exec -it agentkernel-run-<id> sh
-# Clean up: agentkernel remove run-<id>
+# Clean up: agentkernel sandbox remove run-<id>
 ```

@@ -9,10 +9,10 @@ A Docker image with Google Gemini CLI pre-installed for use with agentkernel.
 docker build -t agentkernel/gemini .
 
 # Create a sandbox with this image
-agentkernel create my-project --config agentkernel.toml
+agentkernel sandbox create my-project --config agentkernel.toml
 
 # Start and attach
-agentkernel start my-project
+agentkernel sandbox start my-project
 agentkernel attach my-project
 
 # Inside the sandbox, run Gemini

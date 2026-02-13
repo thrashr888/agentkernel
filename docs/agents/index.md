@@ -28,10 +28,10 @@ agentkernel plugin install claude     # or: codex, gemini, copilot, amp, pi, ope
 
 ```bash
 # Create a sandbox with Claude Code
-agentkernel create my-agent --config examples/agents/claude-code/agentkernel.toml
+agentkernel sandbox create my-agent --config examples/agents/claude-code/agentkernel.toml
 
 # Start and run with your API key
-agentkernel start my-agent
+agentkernel sandbox start my-agent
 agentkernel exec my-agent -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY -- claude -p "Hello"
 ```
 

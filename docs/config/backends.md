@@ -21,7 +21,7 @@ The most widely compatible backend. Uses Docker Desktop on macOS or Docker Engin
 
 ```bash
 # Force Docker backend
-agentkernel create my-sandbox --backend docker
+agentkernel sandbox create my-sandbox --backend docker
 ```
 
 **Pros:**
@@ -38,7 +38,7 @@ agentkernel create my-sandbox --backend docker
 Drop-in Docker replacement that runs rootless by default.
 
 ```bash
-agentkernel create my-sandbox --backend podman
+agentkernel sandbox create my-sandbox --backend podman
 ```
 
 **Pros:**
@@ -55,7 +55,7 @@ agentkernel create my-sandbox --backend podman
 Amazon's microVM technology. Provides true hardware isolation with minimal overhead.
 
 ```bash
-agentkernel create my-sandbox --backend firecracker
+agentkernel sandbox create my-sandbox --backend firecracker
 ```
 
 **Requirements:**
@@ -104,7 +104,7 @@ agentkernel run --backend hyperlight module.wasm
 Native container support on macOS Tahoe (26+).
 
 ```bash
-agentkernel create my-sandbox --backend apple
+agentkernel sandbox create my-sandbox --backend apple
 ```
 
 **Pros:**
@@ -123,7 +123,7 @@ Run sandboxes as Kubernetes Pods on any cluster. Requires building with `--featu
 ```bash
 cargo build --features kubernetes
 
-agentkernel create my-sandbox --backend kubernetes --image alpine:3.20
+agentkernel sandbox create my-sandbox --backend kubernetes --image alpine:3.20
 ```
 
 **Requirements:**
@@ -151,7 +151,7 @@ Run sandboxes as HashiCorp Nomad job allocations. Requires building with `--feat
 ```bash
 cargo build --features nomad
 
-agentkernel create my-sandbox --backend nomad --image alpine:3.20
+agentkernel sandbox create my-sandbox --backend nomad --image alpine:3.20
 ```
 
 **Requirements:**
@@ -194,12 +194,12 @@ When you create a sandbox, the backend is saved with it. Subsequent operations a
 
 ```bash
 # Create with Docker
-agentkernel create my-sandbox --backend docker
+agentkernel sandbox create my-sandbox --backend docker
 
 # These automatically use Docker (no --backend needed)
-agentkernel start my-sandbox
+agentkernel sandbox start my-sandbox
 agentkernel exec my-sandbox -- echo hello
-agentkernel list  # Shows BACKEND column
+agentkernel sandbox list  # Shows BACKEND column
 ```
 
 ## Mixing Backends
@@ -207,7 +207,7 @@ agentkernel list  # Shows BACKEND column
 You can have sandboxes using different backends:
 
 ```
-$ agentkernel list
+$ agentkernel sandbox list
 NAME          STATUS     BACKEND
 project-a     running    docker
 project-b     stopped    podman

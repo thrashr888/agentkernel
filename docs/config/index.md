@@ -9,10 +9,10 @@ Place `agentkernel.toml` in your project directory, or specify a path with `--co
 
 ```bash
 # Use config in current directory
-agentkernel create my-sandbox --config agentkernel.toml
+agentkernel sandbox create my-sandbox --config agentkernel.toml
 
 # Use config from specific path
-agentkernel create my-sandbox --config /path/to/agentkernel.toml
+agentkernel sandbox create my-sandbox --config /path/to/agentkernel.toml
 ```
 
 ## Quick Example

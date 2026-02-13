@@ -5,24 +5,39 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 
 ## Quick Reference
 
-### Core Sandbox Commands
+### Daily Drivers (Root Level)
 
 | Command | Description |
 |---------|-------------|
 | [`run`](run.md) | Run a command in a temporary sandbox |
-| [`create`](create.md) | Create a new sandbox |
-| [`start`](start-stop.md) | Start a stopped sandbox |
-| [`stop`](start-stop.md) | Stop a running sandbox |
-| [`remove`](start-stop.md) | Remove a sandbox |
 | [`exec`](exec-attach.md) | Execute a command in a running sandbox |
 | [`attach`](exec-attach.md) | Attach to a sandbox's interactive shell |
-| `ssh` | SSH into a sandbox (certificate-authenticated) |
-| `ssh-config` | Generate SSH config entry for IDE integration |
-| `ssh-proxy` | ProxyCommand helper for SSH |
-| [`list`](list.md) | List all sandboxes (with IP addresses) |
-| `extend-ttl` | Extend a sandbox's time-to-live |
-| `cp` | Copy files to/from a sandbox |
-| `info` | Show detailed information about a sandbox (with IP) |
+
+### Sandbox Lifecycle (`sandbox` / `sb`)
+
+| Command | Description |
+|---------|-------------|
+| [`sandbox create`](create.md) | Create a new sandbox |
+| [`sandbox start`](start-stop.md) | Start a stopped sandbox |
+| [`sandbox stop`](start-stop.md) | Stop a running sandbox |
+| [`sandbox remove`](start-stop.md) | Remove a sandbox |
+| [`sandbox list`](list.md) | List all sandboxes (with IP addresses) |
+| `sandbox info` | Show detailed information about a sandbox (with IP) |
+| `sandbox extend-ttl` | Extend a sandbox's time-to-live |
+| `sandbox cp` | Copy files to/from a sandbox |
+| `sandbox gc` | Garbage-collect expired sandboxes |
+| `sandbox clean` | Remove all sandboxes and Docker artifacts |
+| `sandbox exec-list` | List running exec processes |
+| `sandbox exec-logs` | View exec process logs |
+| `sandbox exec-kill` | Kill a running exec process |
+
+### SSH (`ssh`)
+
+| Command | Description |
+|---------|-------------|
+| `ssh connect` | SSH into a sandbox (certificate-authenticated) |
+| `ssh config` | Generate SSH config entry for IDE integration |
+| `ssh proxy` | ProxyCommand helper for SSH |
 
 ### Templates & Configuration
 
@@ -32,8 +47,8 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 | [`template save`](templates.md) | Save a running sandbox as a template |
 | [`template add`](templates.md) | Add a template from GitHub |
 | [`template remove`](templates.md) | Remove a custom template |
-| [`export-config`](export-import.md) | Export sandbox config as TOML |
-| [`import-config`](export-import.md) | Create sandbox from a TOML config |
+| [`sandbox export-config`](export-import.md) | Export sandbox config as TOML |
+| [`sandbox import-config`](export-import.md) | Create sandbox from a TOML config |
 
 ### Snapshots & Sessions
 
@@ -77,9 +92,7 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 | [`images local-sync`](images.md) | Sync metadata with Docker |
 | [`images prune`](images.md) | Remove unused images |
 | [`images pull`](images.md) | Pull a Docker image |
-| [`export`](export-import.md) | Export sandbox filesystem as tar |
-| `gc` | Garbage-collect expired sandboxes |
-| `clean` | Remove all sandboxes and Docker artifacts |
+| [`sandbox export`](export-import.md) | Export sandbox filesystem as tar |
 
 ### Secrets
 
@@ -121,37 +134,37 @@ agentkernel run python3 script.py
 
 ### Create from template
 ```bash
-agentkernel create my-sandbox --template python -B docker
-agentkernel start my-sandbox
+agentkernel sandbox create my-sandbox --template python -B docker
+agentkernel sandbox start my-sandbox
 agentkernel exec my-sandbox -- python3 --version
 ```
 
 ### Per-branch sandboxes
 ```bash
 # Auto-names sandbox from git project + branch
-agentkernel create --branch -B docker
-agentkernel list --project    # Filter to current project
+agentkernel sandbox create --branch -B docker
+agentkernel sandbox list --project    # Filter to current project
 ```
 
 ### Persistent sandbox
 ```bash
-agentkernel create my-sandbox
-agentkernel start my-sandbox
+agentkernel sandbox create my-sandbox
+agentkernel sandbox start my-sandbox
 agentkernel exec my-sandbox -- npm test
-agentkernel stop my-sandbox
+agentkernel sandbox stop my-sandbox
 ```
 
 ### Sandbox with TTL
 ```bash
 # Create a sandbox with 2-hour TTL
-agentkernel create my-sandbox --ttl 2h
-agentkernel start my-sandbox
+agentkernel sandbox create my-sandbox --ttl 2h
+agentkernel sandbox start my-sandbox
 
 # Extend the TTL by 1 hour (default)
-agentkernel extend-ttl my-sandbox
+agentkernel sandbox extend-ttl my-sandbox
 
 # Extend by specific duration
-agentkernel extend-ttl my-sandbox --by 30m
+agentkernel sandbox extend-ttl my-sandbox --by 30m
 ```
 
 ### Snapshot and restore
@@ -178,8 +191,8 @@ agentkernel parallel \
 
 ### Interactive development
 ```bash
-agentkernel create dev --config agentkernel.toml
-agentkernel start dev
+agentkernel sandbox create dev --config agentkernel.toml
+agentkernel sandbox start dev
 agentkernel attach dev
 ```
 
@@ -189,13 +202,13 @@ agentkernel attach dev
 agentkernel volume create mydata
 
 # Use it in a sandbox
-agentkernel create dev --volume mydata:/data
-agentkernel start dev
+agentkernel sandbox create dev --volume mydata:/data
+agentkernel sandbox start dev
 agentkernel exec dev -- echo "hello" > /data/test.txt
-agentkernel stop dev
+agentkernel sandbox stop dev
 
 # Data persists across restarts
-agentkernel start dev
+agentkernel sandbox start dev
 agentkernel exec dev -- cat /data/test.txt
 ```
 
@@ -205,26 +218,26 @@ agentkernel exec dev -- cat /data/test.txt
 agentkernel build -t my-tools .
 
 # Use in a sandbox
-agentkernel create dev --image my-tools
+agentkernel sandbox create dev --image my-tools
 ```
 
 ### SSH access
 ```bash
 # Create with SSH enabled
-agentkernel create dev --ssh -B docker
-agentkernel start dev
+agentkernel sandbox create dev --ssh -B docker
+agentkernel sandbox start dev
 
 # SSH in (generates ephemeral cert automatically)
-agentkernel ssh dev
+agentkernel ssh connect dev
 
 # Run a command over SSH
-agentkernel ssh dev -- ls -la /
+agentkernel ssh connect dev -- ls -la /
 
 # Record the session
-agentkernel ssh dev --record ./session.cast
+agentkernel ssh connect dev --record ./session.cast
 
 # Generate SSH config for VS Code Remote-SSH
-agentkernel ssh-config dev >> ~/.ssh/config
+agentkernel ssh config dev >> ~/.ssh/config
 ```
 
 ### Session recording and playback
@@ -257,14 +270,14 @@ The audit log is stored as JSONL at `~/.agentkernel/audit.jsonl`. Each line is a
 
 | Event | Fields | When |
 |-------|--------|------|
-| `sandbox_created` | name, image, backend | `create` |
-| `sandbox_started` | name, profile | `start` |
-| `sandbox_stopped` | name | `stop` |
-| `sandbox_removed` | name | `remove` |
+| `sandbox_created` | name, image, backend | `sandbox create` |
+| `sandbox_started` | name, profile | `sandbox start` |
+| `sandbox_stopped` | name | `sandbox stop` |
+| `sandbox_removed` | name | `sandbox remove` |
 | `command_executed` | sandbox, command, exit_code | `exec` / `run` |
-| `file_written` | sandbox, path | `cp` to sandbox |
-| `file_read` | sandbox, path | `cp` from sandbox |
+| `file_written` | sandbox, path | `sandbox cp` to sandbox |
+| `file_read` | sandbox, path | `sandbox cp` from sandbox |
 | `session_attached` | sandbox | `attach` |
-| `ssh_connected` | sandbox, user, cert_fingerprint | `ssh` (connect) |
-| `ssh_disconnected` | sandbox, duration_secs, recording | `ssh` (disconnect) |
+| `ssh_connected` | sandbox, user, cert_fingerprint | `ssh connect` |
+| `ssh_disconnected` | sandbox, duration_secs, recording | `ssh connect` (disconnect) |
 | `policy_violation` | sandbox, policy, details | Blocked command |

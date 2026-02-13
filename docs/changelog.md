@@ -6,6 +6,32 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## Unreleased — Desktop Tray & Resource Visibility
+
+### Added
+
+- **macOS tray template icon** — 22pt (@2x) transparent AK monogram rendered as a macOS template image; auto-adapts to light/dark menu bar
+- **Quick Create from tray** — "New Sandbox..." menu item opens the create dialog directly from the system tray
+- **Recent Sandboxes submenu** — tray shows up to 5 sandboxes as nested submenus with per-sandbox stats (IP, vCPU/memory), backend/image info, "Open in Dashboard", "Open Terminal", and "View Logs..." actions
+- **Resource summary in tray** — running sandbox count with total vCPU and memory allocation displayed in the tray menu
+- **Dashboard resource cards** — vCPU and Memory allocation cards added to the dashboard StatusCards (blue/purple), showing totals across running sandboxes with auto GB formatting
+- **Credential isolation docs** — Gondolin pattern (network-layer secret injection) highlighted in README and homepage as a key differentiator; code examples showing proxy behavior and domain scoping
+
+### Changed
+
+- **CLI restructured into subcommand groups** — sandbox lifecycle commands (create, start, stop, remove, list, info, cp, extend-ttl, export, gc, clean) moved under `agentkernel sandbox` (alias `sb`); SSH commands moved under `agentkernel ssh` (connect, config, proxy); `run`, `exec`, `attach` remain at root as quick-access commands. Top-level commands reduced from 44 to 30.
+- **`status` command removed** — `doctor` already provides diagnostics and installation status
+- **Sidebar grouped into sections** — Dashboard, Workflow (Sandboxes, Templates, Snapshots, Secrets), Extensions (Plugins, Policy, Policy Log), System (Audit Log, Diagnostics, Settings)
+- **Documentation updated for CLI restructure** — all docs, READMEs, agent guides, config references, and plugin skill updated to use `agentkernel sandbox create/start/stop/...` and `agentkernel ssh connect/config` patterns
+
+### Fixed
+
+- **Tray menu closing on refresh** — added fingerprint-based change detection so the tray menu only rebuilds when sandbox data actually changes, preventing the menu from dismissing every 5 seconds
+- **Tray sandbox order shuffling** — sandboxes sorted deterministically (running first, then alphabetically) before display and fingerprinting
+- **New Sandbox tray action** — now opens the create modal instead of just navigating to the sandboxes page
+
+---
+
 ## [v0.12.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.12.0) — Secrets & Secure Communication
 
 _February 12, 2026_

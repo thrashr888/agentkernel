@@ -26,10 +26,10 @@ For longer sessions, create a named sandbox:
 
 ```bash
 # Create a sandbox
-agentkernel create my-sandbox --image python:3.12-alpine
+agentkernel sandbox create my-sandbox --image python:3.12-alpine
 
 # Start it
-agentkernel start my-sandbox
+agentkernel sandbox start my-sandbox
 
 # Run commands
 agentkernel exec my-sandbox -- python3 --version
@@ -39,10 +39,10 @@ agentkernel exec my-sandbox -- pip install requests
 agentkernel attach my-sandbox
 
 # Stop when done
-agentkernel stop my-sandbox
+agentkernel sandbox stop my-sandbox
 
 # Remove the sandbox
-agentkernel remove my-sandbox
+agentkernel sandbox remove my-sandbox
 ```
 
 ## Using Config Files
@@ -68,7 +68,7 @@ network = true
 Then reference it:
 
 ```bash
-agentkernel create dev --config agentkernel.toml
+agentkernel sandbox create dev --config agentkernel.toml
 ```
 
 ## Running AI Agents
@@ -77,8 +77,8 @@ See the [Agents](../agents/index.md) section for running Claude Code, Codex, and
 
 ```bash
 # Quick example with Claude Code
-agentkernel create claude-sandbox --config examples/agents/claude-code/agentkernel.toml
-agentkernel start claude-sandbox
+agentkernel sandbox create claude-sandbox --config examples/agents/claude-code/agentkernel.toml
+agentkernel sandbox start claude-sandbox
 agentkernel attach claude-sandbox -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
 ```
 

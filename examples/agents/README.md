@@ -19,10 +19,10 @@ Images are built automatically from Dockerfiles when you create a sandbox.
 
 ```bash
 # 1. Create a sandbox (builds image automatically from Dockerfile)
-agentkernel create my-project --config examples/agents/claude-code/agentkernel.toml --backend docker
+agentkernel sandbox create my-project --config examples/agents/claude-code/agentkernel.toml --backend docker
 
 # 2. Start and attach
-agentkernel start my-project --backend docker
+agentkernel sandbox start my-project --backend docker
 agentkernel attach my-project
 
 # 3. Run the agent inside the sandbox

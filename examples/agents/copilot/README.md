@@ -6,10 +6,10 @@ A Docker image with GitHub Copilot CLI pre-installed for use with agentkernel.
 
 ```bash
 # Create a sandbox (builds the image automatically)
-agentkernel create my-project --config agentkernel.toml --dir /path/to/your/project
+agentkernel sandbox create my-project --config agentkernel.toml --dir /path/to/your/project
 
 # Start and attach
-agentkernel start my-project
+agentkernel sandbox start my-project
 agentkernel attach my-project
 
 # Inside the sandbox, run Copilot CLI
@@ -31,7 +31,7 @@ When creating a sandbox, pass your token:
 ```bash
 # Option 1: Set in environment before creating
 export GITHUB_TOKEN=ghp_...
-agentkernel create my-project --image agentkernel/copilot
+agentkernel sandbox create my-project --image agentkernel/copilot
 
 # Option 2: Pass via exec
 agentkernel exec my-project -- env GITHUB_TOKEN=$GITHUB_TOKEN github-copilot

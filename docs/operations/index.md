@@ -3,7 +3,7 @@
 
 agentkernel supports Kubernetes and HashiCorp Nomad as orchestration backends for running sandboxes on remote clusters. These complement the local backends (Docker, Podman, Firecracker, Apple, Hyperlight) for team, cloud, and multi-tenant environments.
 
-Both backends implement the same `Sandbox` trait as local backends. All CLI commands (`create`, `start`, `exec`, `stop`, `list`) work identically — only the `--backend` flag changes.
+Both backends implement the same `Sandbox` trait as local backends. All CLI commands (`sandbox create`, `sandbox start`, `exec`, `sandbox stop`, `sandbox list`) work identically — only the `--backend` flag changes.
 
 ## Comparison
 

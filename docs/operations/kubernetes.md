@@ -7,10 +7,10 @@ Run sandboxes as Kubernetes Pods on any cluster. Each sandbox is a Pod running `
 
 ```bash
 # Create and run a sandbox on Kubernetes
-agentkernel create my-sandbox --backend kubernetes --image alpine:3.20
-agentkernel start my-sandbox
+agentkernel sandbox create my-sandbox --backend kubernetes --image alpine:3.20
+agentkernel sandbox start my-sandbox
 agentkernel exec my-sandbox -- echo "hello from k8s"
-agentkernel stop my-sandbox
+agentkernel sandbox stop my-sandbox
 ```
 
 Or use `run` for ephemeral one-shot execution:

@@ -54,10 +54,10 @@ You can also run Copilot CLI itself inside an isolated sandbox container:
 
 ```bash
 # Create sandbox with Copilot CLI pre-installed
-agentkernel create copilot-dev --config examples/agents/copilot/agentkernel.toml
+agentkernel sandbox create copilot-dev --config examples/agents/copilot/agentkernel.toml
 
 # Start the sandbox
-agentkernel start copilot-dev
+agentkernel sandbox start copilot-dev
 
 # Run Copilot CLI with your token
 agentkernel attach copilot-dev -e GITHUB_TOKEN=$GITHUB_TOKEN

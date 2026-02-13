@@ -8,7 +8,7 @@ Use OpenAI's Codex CLI with agentkernel for isolated code execution.
 | Level | How It Works | Setup |
 |-------|-------------|-------|
 | **MCP Tools** | Codex calls agentkernel MCP tools for sandbox control | `agentkernel plugin install codex` |
-| **Full Isolation** | Run Codex itself inside an agentkernel sandbox | `agentkernel create` + `agentkernel attach` |
+| **Full Isolation** | Run Codex itself inside an agentkernel sandbox | `agentkernel sandbox create` + `agentkernel attach` |
 
 Codex has its own [native sandbox](https://developers.openai.com/codex/security/) using OS-level primitives (Seatbelt on macOS, Landlock + seccomp on Linux). That sandbox cannot be replaced with a custom runtime. The MCP plugin gives Codex access to agentkernel sandboxes as tools it can call.
 
@@ -36,10 +36,10 @@ Run Codex itself inside an isolated sandbox:
 
 ```bash
 # Create sandbox with Codex pre-installed
-agentkernel create codex-dev --config examples/agents/codex/agentkernel.toml
+agentkernel sandbox create codex-dev --config examples/agents/codex/agentkernel.toml
 
 # Start the sandbox
-agentkernel start codex-dev
+agentkernel sandbox start codex-dev
 
 # Run Codex with your API key
 agentkernel attach codex-dev -e OPENAI_API_KEY=$OPENAI_API_KEY

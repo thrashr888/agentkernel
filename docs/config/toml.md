@@ -41,7 +41,7 @@ NODE_VERSION = "22"           # Build arguments
 | `no_cache` | bool | Force rebuild without cache |
 | `args` | table | Build arguments passed to `docker build` |
 
-When `dockerfile` is specified, `agentkernel create` automatically builds the image.
+When `dockerfile` is specified, `agentkernel sandbox create` automatically builds the image.
 
 ## [agent]
 
@@ -140,7 +140,7 @@ cert_ttl = "30m"                        # Client certificate validity
 | `vault_ssh_mount` | string | `ssh` | Vault SSH secrets engine mount path |
 | `vault_ssh_role` | string | `agentkernel-client` | Vault SSH signing role |
 
-Without Vault, a per-sandbox CA keypair is generated locally. Client certs are signed on each `agentkernel ssh` invocation and stored in `~/.agentkernel/ssh/<name>/`.
+Without Vault, a per-sandbox CA keypair is generated locally. Client certs are signed on each `agentkernel ssh connect` invocation and stored in `~/.agentkernel/ssh/<name>/`.
 
 ## [[files]]
 

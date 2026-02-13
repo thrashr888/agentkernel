@@ -1,5 +1,5 @@
 
-# agentkernel start / stop
+# agentkernel sandbox start / stop
 
 Manage the lifecycle of persistent sandboxes.
 
@@ -10,7 +10,7 @@ Start a stopped sandbox.
 ### Usage
 
 ```bash
-agentkernel start [OPTIONS] <NAME>
+agentkernel sandbox start [OPTIONS] <NAME>
 ```
 
 ### Options
@@ -23,10 +23,10 @@ agentkernel start [OPTIONS] <NAME>
 
 ```bash
 # Start a sandbox
-agentkernel start my-sandbox
+agentkernel sandbox start my-sandbox
 
 # Verify it's running
-agentkernel list
+agentkernel sandbox list
 ```
 
 ### What Happens
@@ -45,17 +45,17 @@ Stop a running sandbox. The sandbox state is preserved and can be started again.
 ### Usage
 
 ```bash
-agentkernel stop <NAME>
+agentkernel sandbox stop <NAME>
 ```
 
 ### Examples
 
 ```bash
 # Stop a sandbox
-agentkernel stop my-sandbox
+agentkernel sandbox stop my-sandbox
 
 # Verify it's stopped
-agentkernel list
+agentkernel sandbox list
 # NAME          STATUS     BACKEND
 # my-sandbox    stopped    docker
 ```
@@ -65,7 +65,7 @@ agentkernel list
 1. Sends stop signal to the container/VM
 2. Waits for graceful shutdown
 3. Sandbox state is preserved on disk
-4. Can be started again with `agentkernel start`
+4. Can be started again with `agentkernel sandbox start`
 
 ---
 
@@ -76,17 +76,17 @@ Permanently delete a sandbox and its state.
 ### Usage
 
 ```bash
-agentkernel remove <NAME>
+agentkernel sandbox remove <NAME>
 ```
 
 ### Examples
 
 ```bash
 # Remove a stopped sandbox
-agentkernel remove my-sandbox
+agentkernel sandbox remove my-sandbox
 
 # Force remove a running sandbox (stops it first)
-agentkernel remove my-sandbox
+agentkernel sandbox remove my-sandbox
 ```
 
 ### What Happens

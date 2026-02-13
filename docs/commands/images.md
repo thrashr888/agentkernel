@@ -39,8 +39,8 @@ RUN pip install numpy pandas scikit-learn
 Use custom images in sandboxes:
 
 ```bash
-agentkernel create ml-sandbox --image my-tools
-agentkernel start ml-sandbox
+agentkernel sandbox create ml-sandbox --image my-tools
+agentkernel sandbox start ml-sandbox
 agentkernel exec ml-sandbox -- python3 -c "import numpy; print(numpy.__version__)"
 ```
 
@@ -108,4 +108,4 @@ agentkernel images prune --agentkernel-only
 ## See Also
 
 - [Snapshots](snapshots.md) - Snapshot images appear in the images list
-- [Clean](index.md) - `clean --all` removes images and build cache
+- [sandbox clean](index.md) - `sandbox clean --all` removes images and build cache

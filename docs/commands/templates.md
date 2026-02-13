@@ -1,7 +1,7 @@
 
 # agentkernel template
 
-Manage sandbox templates. Templates are pre-configured `agentkernel.toml` configs that can be used with `create --template` or `run --template`.
+Manage sandbox templates. Templates are pre-configured `agentkernel.toml` configs that can be used with `sandbox create --template` or `run --template`.
 
 ## Subcommands
 
@@ -73,23 +73,23 @@ my-custom            local      ubuntu:24.04
 ### Create from template
 
 ```bash
-agentkernel create my-sandbox --template python
-agentkernel create ci-runner --template rust-ci -B docker
+agentkernel sandbox create my-sandbox --template python
+agentkernel sandbox create ci-runner --template rust-ci -B docker
 ```
 
 ### Spin up a browser IDE
 
 ```bash
-agentkernel create my-ide --template vscode
-agentkernel start my-ide
+agentkernel sandbox create my-ide --template vscode
+agentkernel sandbox start my-ide
 # Open http://localhost:3000
 ```
 
 ### Self-hosted Git server
 
 ```bash
-agentkernel create my-git --template gitea
-agentkernel start my-git
+agentkernel sandbox create my-git --template gitea
+agentkernel sandbox start my-git
 # Open http://localhost:3000
 ```
 
@@ -136,6 +136,6 @@ network = true
 
 ## See Also
 
-- [create](create.md) - Create a sandbox with `--template`
+- [sandbox create](create.md) - Create a sandbox with `--template`
 - [run](run.md) - Run a command with `--template`
 - [Configuration](../config/toml.md) - Full config file reference

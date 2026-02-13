@@ -34,12 +34,12 @@ agentkernel run cargo build
 agentkernel run pytest
 
 # Create from a template
-agentkernel create my-project --template python
-agentkernel start my-project
+agentkernel sandbox create my-project --template python
+agentkernel sandbox start my-project
 agentkernel exec my-project -- pytest
 
 # Or auto-name from your git branch
-agentkernel create --branch -B docker
+agentkernel sandbox create --branch -B docker
 
 # Run with a specific image
 agentkernel run --image postgres:16-alpine psql --version
@@ -109,16 +109,16 @@ For longer-running work, create named sandboxes:
 
 ```bash
 # Create a sandbox
-agentkernel create my-project --dir .
+agentkernel sandbox create my-project --dir .
 
 # Create from a template with auto-expiry
-agentkernel create ci-test --template node-ci --ttl 1h
+agentkernel sandbox create ci-test --template node-ci --ttl 1h
 
 # Create per-branch sandboxes (auto-named from git branch)
-agentkernel create --branch -B docker
+agentkernel sandbox create --branch -B docker
 
 # Start it
-agentkernel start my-project
+agentkernel sandbox start my-project
 
 # Run commands
 agentkernel exec my-project -- npm test
@@ -128,17 +128,17 @@ agentkernel exec my-project -- python -m pytest
 agentkernel attach my-project
 
 # SSH into a sandbox (certificate-authenticated)
-agentkernel create my-box --ssh -B docker
-agentkernel start my-box
-agentkernel ssh my-box
+agentkernel sandbox create my-box --ssh -B docker
+agentkernel sandbox start my-box
+agentkernel ssh connect my-box
 
 # Stop and remove
-agentkernel stop my-project
-agentkernel remove my-project
+agentkernel sandbox stop my-project
+agentkernel sandbox remove my-project
 
 # List all sandboxes (shows IP addresses for running containers)
-agentkernel list
-agentkernel list --project my-app
+agentkernel sandbox list
+agentkernel sandbox list --project my-app
 ```
 
 ## Security Profiles
@@ -171,23 +171,23 @@ SSH into sandboxes with automatic certificate authentication. No passwords, no m
 
 ```bash
 # Create an SSH-enabled sandbox
-agentkernel create dev --ssh -B docker
-agentkernel start dev
+agentkernel sandbox create dev --ssh -B docker
+agentkernel sandbox start dev
 
 # SSH in (ephemeral certs are generated automatically)
-agentkernel ssh dev
+agentkernel ssh connect dev
 
 # Run a command over SSH
-agentkernel ssh dev -- ls -la
+agentkernel ssh connect dev -- ls -la
 
 # Record a session (asciicast format)
-agentkernel ssh dev --record ./session.cast
+agentkernel ssh connect dev --record ./session.cast
 
 # Use the raw ssh command (printed on connect)
 ssh -i ~/.agentkernel/ssh/dev/client_key -p 52341 sandbox@localhost
 
 # Generate SSH config for IDE integration (VS Code Remote-SSH, etc.)
-agentkernel ssh-config dev >> ~/.ssh/config
+agentkernel ssh config dev >> ~/.ssh/config
 ```
 
 **How it works:**
@@ -206,8 +206,8 @@ Pre-configured sandbox environments for common use cases. 18+ built-in templates
 agentkernel template list
 
 # Create a sandbox from a template
-agentkernel create my-project --template python
-agentkernel create ci --template rust-ci
+agentkernel sandbox create my-project --template python
+agentkernel sandbox create ci --template rust-ci
 
 # Save a running sandbox as a reusable template
 agentkernel template save --from my-sandbox my-custom-template
@@ -262,7 +262,7 @@ agentkernel solves this with **network-layer secret injection** (the Gondolin pa
 
 ```bash
 # Inject OPENAI_API_KEY into requests to api.openai.com only
-agentkernel create my-agent --secret OPENAI_API_KEY:api.openai.com
+agentkernel sandbox create my-agent --secret OPENAI_API_KEY:api.openai.com
 
 # Inside the sandbox:
 # - curl https://api.openai.com/v1/models → Authorization header injected automatically
@@ -287,22 +287,22 @@ agentkernel images pull python:3.12-alpine
 agentkernel images prune
 
 # Export/import sandbox configs
-agentkernel export-config my-sandbox > my-sandbox.toml
-agentkernel import-config my-sandbox.toml --as new-sandbox -B docker
+agentkernel sandbox export-config my-sandbox > my-sandbox.toml
+agentkernel sandbox import-config my-sandbox.toml --as new-sandbox -B docker
 
 # Export sandbox filesystem
-agentkernel export my-sandbox -o backup.tar
+agentkernel sandbox export my-sandbox -o backup.tar
 ```
 
 ## Maintenance
 
 ```bash
 # Garbage collection (remove expired/stopped sandboxes)
-agentkernel gc
-agentkernel gc --dry-run
+agentkernel sandbox gc
+agentkernel sandbox gc --dry-run
 
 # Clean up everything (containers, images, cache)
-agentkernel clean --all
+agentkernel sandbox clean --all
 
 # System diagnostics
 agentkernel doctor

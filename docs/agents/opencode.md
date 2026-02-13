@@ -102,10 +102,10 @@ You can also run OpenCode itself inside a sandbox container:
 
 ```bash
 # Create sandbox with OpenCode pre-installed
-agentkernel create opencode-dev --config examples/agents/opencode/agentkernel.toml
+agentkernel sandbox create opencode-dev --config examples/agents/opencode/agentkernel.toml
 
 # Start the sandbox
-agentkernel start opencode-dev
+agentkernel sandbox start opencode-dev
 
 # Run OpenCode inside the sandbox
 agentkernel attach opencode-dev

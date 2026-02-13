@@ -8,7 +8,7 @@ Use Google's Gemini CLI with agentkernel for isolated code execution.
 | Level | How It Works | Setup |
 |-------|-------------|-------|
 | **MCP Tools** | Gemini calls agentkernel tools for sandbox management | `agentkernel plugin install gemini` |
-| **Full Isolation** | Run Gemini CLI itself inside an agentkernel sandbox | `agentkernel create` + `agentkernel attach` |
+| **Full Isolation** | Run Gemini CLI itself inside an agentkernel sandbox | `agentkernel sandbox create` + `agentkernel attach` |
 
 Gemini CLI also has its own [native Docker sandbox](https://geminicli.com/docs/cli/sandbox/) that is separate from agentkernel. That sandbox is managed by Gemini itself and cannot be replaced with a custom runtime.
 
@@ -48,10 +48,10 @@ Run Gemini CLI itself inside an agentkernel sandbox:
 
 ```bash
 # Create sandbox with Gemini pre-installed
-agentkernel create gemini-dev --config examples/agents/gemini/agentkernel.toml
+agentkernel sandbox create gemini-dev --config examples/agents/gemini/agentkernel.toml
 
 # Start the sandbox
-agentkernel start gemini-dev
+agentkernel sandbox start gemini-dev
 
 # Run Gemini with your API key
 agentkernel attach gemini-dev -e GEMINI_API_KEY=$GEMINI_API_KEY

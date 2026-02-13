@@ -6,10 +6,10 @@ A Docker image with Pi (Mario Zechner's coding agent) pre-installed for use with
 
 ```bash
 # Create a sandbox (builds the image automatically)
-agentkernel create my-project --config agentkernel.toml --dir /path/to/your/project
+agentkernel sandbox create my-project --config agentkernel.toml --dir /path/to/your/project
 
 # Start and attach
-agentkernel start my-project
+agentkernel sandbox start my-project
 agentkernel attach my-project
 
 # Inside the sandbox, run Pi

@@ -67,7 +67,7 @@ agentkernel run --profile permissive curl https://api.example.com
 agentkernel run --keep python3 script.py
 
 # Later, inspect the sandbox
-agentkernel list
+agentkernel sandbox list
 agentkernel exec <sandbox-name> -- cat /tmp/debug.log
 ```
 

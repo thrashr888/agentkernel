@@ -1,12 +1,12 @@
 
-# agentkernel create
+# agentkernel sandbox create
 
 Create a new persistent sandbox. The sandbox remains available until explicitly removed.
 
 ## Usage
 
 ```bash
-agentkernel create [OPTIONS] [NAME]
+agentkernel sandbox create [OPTIONS] [NAME]
 ```
 
 ## Arguments
@@ -34,27 +34,27 @@ agentkernel create [OPTIONS] [NAME]
 
 ```bash
 # Create with default settings
-agentkernel create my-sandbox
+agentkernel sandbox create my-sandbox
 
 # Create with specific agent preset
-agentkernel create my-sandbox --agent claude
+agentkernel sandbox create my-sandbox --agent claude
 ```
 
 ### Using a config file
 
 ```bash
 # Create from config (auto-builds Dockerfile if specified)
-agentkernel create my-project --config agentkernel.toml
+agentkernel sandbox create my-project --config agentkernel.toml
 
 # Use example agent configs
-agentkernel create claude-dev --config examples/agents/claude-code/agentkernel.toml
+agentkernel sandbox create claude-dev --config examples/agents/claude-code/agentkernel.toml
 ```
 
 ### With project directory
 
 ```bash
 # Mount current directory into sandbox
-agentkernel create my-project --config agentkernel.toml --dir .
+agentkernel sandbox create my-project --config agentkernel.toml --dir .
 ```
 
 ### From a template
@@ -64,50 +64,50 @@ agentkernel create my-project --config agentkernel.toml --dir .
 agentkernel template list
 
 # Create from built-in template
-agentkernel create my-sandbox --template python
-agentkernel create my-sandbox --template rust-ci
-agentkernel create my-sandbox --template claude-sandbox
+agentkernel sandbox create my-sandbox --template python
+agentkernel sandbox create my-sandbox --template rust-ci
+agentkernel sandbox create my-sandbox --template claude-sandbox
 ```
 
 ### Per-branch sandboxes
 
 ```bash
 # Auto-derive name from git project + branch (e.g. "myproject-feature-auth")
-agentkernel create --branch -B docker
+agentkernel sandbox create --branch -B docker
 
 # Reuse the same sandbox across sessions for the same branch
-agentkernel create --branch -B docker  # creates or reuses
+agentkernel sandbox create --branch -B docker  # creates or reuses
 ```
 
 ### With TTL (auto-expiry)
 
 ```bash
 # Sandbox expires after 1 hour
-agentkernel create my-sandbox --ttl 1h
+agentkernel sandbox create my-sandbox --ttl 1h
 
 # Expires after 3 days
-agentkernel create my-sandbox --ttl 3d
+agentkernel sandbox create my-sandbox --ttl 3d
 
 # No expiry (default)
-agentkernel create my-sandbox --ttl 0
+agentkernel sandbox create my-sandbox --ttl 0
 ```
 
-Run `agentkernel gc` to garbage-collect expired sandboxes.
+Run `agentkernel sandbox gc` to garbage-collect expired sandboxes.
 
 ### Port mapping
 
 ```bash
 # Map host port 8080 to container port 80
-agentkernel create web-app -p 8080:80
+agentkernel sandbox create web-app -p 8080:80
 
 # Multiple port mappings
-agentkernel create web-app -p 8080:80 -p 3000:3000
+agentkernel sandbox create web-app -p 8080:80 -p 3000:3000
 
 # Container port only (host port auto-assigned)
-agentkernel create api -p 3000
+agentkernel sandbox create api -p 3000
 
 # UDP port mapping
-agentkernel create dns -p 5353:53/udp
+agentkernel sandbox create dns -p 5353:53/udp
 ```
 
 Ports are also configurable in `agentkernel.toml`:
@@ -121,10 +121,10 @@ ports = ["8080:80", "3000"]
 
 ```bash
 # Force Docker backend
-agentkernel create my-sandbox -B docker
+agentkernel sandbox create my-sandbox -B docker
 
 # Use Firecracker (Linux with KVM)
-agentkernel create my-sandbox -B firecracker
+agentkernel sandbox create my-sandbox -B firecracker
 ```
 
 ## Auto-Build from Dockerfile
@@ -141,7 +141,7 @@ name = "my-app"
 ```
 
 ```bash
-$ agentkernel create my-app --config agentkernel.toml
+$ agentkernel sandbox create my-app --config agentkernel.toml
 Building image from Dockerfile...
 Built image: agentkernel-my-app:a1b2c3d4
 Creating sandbox 'my-app' with image 'agentkernel-my-app:a1b2c3d4'...
@@ -157,9 +157,9 @@ Images are cached based on content hash - subsequent creates reuse the cached im
 4. Creates container/VM with specified resources
 5. Saves sandbox state to `~/.local/share/agentkernel/sandboxes/`
 
-The sandbox is created but not started. Use `agentkernel start` to run it.
+The sandbox is created but not started. Use `agentkernel sandbox start` to run it.
 
 ## See Also
 
-- [start](start-stop.md) - Start a sandbox
+- [sandbox start](start-stop.md) - Start a sandbox
 - [Configuration](../config/toml.md) - Config file format

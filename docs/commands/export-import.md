@@ -1,5 +1,5 @@
 
-# agentkernel export / import-config
+# agentkernel sandbox export / export-config / import-config
 
 Export sandbox filesystems and configurations, and import configurations to create new sandboxes.
 
@@ -7,9 +7,9 @@ Export sandbox filesystems and configurations, and import configurations to crea
 
 | Command | Description |
 |---------|-------------|
-| `export <NAME> [-o FILE]` | Export sandbox filesystem as a tar archive |
-| `export-config <NAME>` | Export sandbox config as TOML (prints to stdout) |
-| `import-config <FILE> [--as NAME] [-B BACKEND]` | Create a sandbox from a TOML config |
+| `sandbox export <NAME> [-o FILE]` | Export sandbox filesystem as a tar archive |
+| `sandbox export-config <NAME>` | Export sandbox config as TOML (prints to stdout) |
+| `sandbox import-config <FILE> [--as NAME] [-B BACKEND]` | Create a sandbox from a TOML config |
 
 ## Export Filesystem
 
@@ -17,10 +17,10 @@ Export the full filesystem of a sandbox as a tar archive:
 
 ```bash
 # Default output: <name>.tar
-agentkernel export my-sandbox
+agentkernel sandbox export my-sandbox
 
 # Custom output path
-agentkernel export my-sandbox -o /tmp/backup.tar
+agentkernel sandbox export my-sandbox -o /tmp/backup.tar
 ```
 
 Output:
@@ -36,7 +36,7 @@ The sandbox must be running for `export` to work (it uses `docker export`).
 Export a sandbox's settings as TOML for sharing or backup:
 
 ```bash
-$ agentkernel export-config my-sandbox
+$ agentkernel sandbox export-config my-sandbox
 [sandbox]
 name = "my-sandbox"
 base_image = "python:3.12-alpine"
@@ -49,7 +49,7 @@ memory_mb = 512
 Redirect to a file:
 
 ```bash
-agentkernel export-config my-sandbox > my-sandbox.toml
+agentkernel sandbox export-config my-sandbox > my-sandbox.toml
 ```
 
 ## Import Configuration
@@ -58,13 +58,13 @@ Create a new sandbox from an exported TOML config:
 
 ```bash
 # Use the name from the config
-agentkernel import-config my-sandbox.toml
+agentkernel sandbox import-config my-sandbox.toml
 
 # Override the name
-agentkernel import-config my-sandbox.toml --as new-sandbox
+agentkernel sandbox import-config my-sandbox.toml --as new-sandbox
 
 # Specify backend
-agentkernel import-config my-sandbox.toml --as imported -B docker
+agentkernel sandbox import-config my-sandbox.toml --as imported -B docker
 ```
 
 Output:
@@ -73,20 +73,20 @@ Importing config as sandbox 'new-sandbox' (image: python:3.12-alpine)...
 Sandbox 'new-sandbox' created from config.
 
 Next steps:
-  agentkernel start new-sandbox
+  agentkernel sandbox start new-sandbox
 ```
 
 ## Workflow: Share a Sandbox Configuration
 
 ```bash
 # On machine A: export
-agentkernel export-config my-project > my-project.toml
+agentkernel sandbox export-config my-project > my-project.toml
 
 # Transfer the file (git, email, etc.)
 
 # On machine B: import
-agentkernel import-config my-project.toml -B docker
-agentkernel start my-project
+agentkernel sandbox import-config my-project.toml -B docker
+agentkernel sandbox start my-project
 ```
 
 ## See Also

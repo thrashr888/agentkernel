@@ -45,10 +45,10 @@ You can also run Amp itself inside an isolated sandbox container:
 
 ```bash
 # Create sandbox with Amp pre-installed
-agentkernel create amp-dev --config examples/agents/amp/agentkernel.toml
+agentkernel sandbox create amp-dev --config examples/agents/amp/agentkernel.toml
 
 # Start the sandbox
-agentkernel start amp-dev
+agentkernel sandbox start amp-dev
 
 # Run Amp with your API key
 agentkernel attach amp-dev -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY

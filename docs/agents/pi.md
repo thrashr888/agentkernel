@@ -120,10 +120,10 @@ You can also run Pi itself inside an isolated sandbox container:
 
 ```bash
 # Create sandbox with Pi pre-installed
-agentkernel create pi-dev --config examples/agents/pi/agentkernel.toml
+agentkernel sandbox create pi-dev --config examples/agents/pi/agentkernel.toml
 
 # Start the sandbox
-agentkernel start pi-dev
+agentkernel sandbox start pi-dev
 
 # Run Pi inside the sandbox
 agentkernel attach pi-dev

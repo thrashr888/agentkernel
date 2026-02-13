@@ -1,12 +1,12 @@
 
-# agentkernel list
+# agentkernel sandbox list
 
 List all sandboxes and their status.
 
 ## Usage
 
 ```bash
-agentkernel list [OPTIONS]
+agentkernel sandbox list [OPTIONS]
 ```
 
 ## Options
@@ -38,17 +38,17 @@ myrepo-feature-auth            running    docker
 
 ```bash
 # List all sandboxes
-agentkernel list
+agentkernel sandbox list
 
 # Filter to sandboxes for the current git project
 # (matches sandboxes whose name starts with the project directory name)
-agentkernel list --project
+agentkernel sandbox list --project
 
 # No sandboxes
-$ agentkernel list
+$ agentkernel sandbox list
 No sandboxes found.
 
-Create one with: agentkernel create <name>
+Create one with: agentkernel sandbox create <name>
 ```
 
 ## Notes

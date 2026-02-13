@@ -39,12 +39,12 @@ agentkernel run npm test
 agentkernel run cargo build
 
 # Create from a template
-agentkernel create my-project --template python
-agentkernel start my-project
+agentkernel sandbox create my-project --template python
+agentkernel sandbox start my-project
 agentkernel exec my-project -- pytest
 
 # Or auto-name from your git branch
-agentkernel create --branch -B docker
+agentkernel sandbox create --branch -B docker
 ```
 
 agentkernel auto-detects the runtime from your command or project files. Run `python3` and it pulls `python:3.12-alpine`. Run `cargo build` and it pulls `rust:1.85-alpine`. No configuration needed for 12+ languages -- JavaScript, Python, Rust, Go, Ruby, Java, C#, C/C++, PHP, Elixir, Terraform, and Shell.
@@ -58,8 +58,8 @@ Claude Code, Codex, Gemini CLI, GitHub Copilot, Amp, OpenCode, Pi -- agentkernel
 agentkernel agents
 
 # Run Claude Code in a sandbox
-agentkernel create my-project --config examples/agents/claude-code/agentkernel.toml
-agentkernel start my-project
+agentkernel sandbox create my-project --config examples/agents/claude-code/agentkernel.toml
+agentkernel sandbox start my-project
 agentkernel attach my-project -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
 ```
 
@@ -98,7 +98,7 @@ agentkernel solves this with **network-layer secret injection** -- the Gondolin 
 
 ```bash
 # Inject API key into requests to api.openai.com only
-agentkernel create my-agent --secret OPENAI_API_KEY:api.openai.com
+agentkernel sandbox create my-agent --secret OPENAI_API_KEY:api.openai.com
 
 # Inside the sandbox:
 # curl https://api.openai.com/v1/models → Authorization header injected
@@ -141,7 +141,7 @@ Templates, snapshots, sessions, pipelines, and parallel execution — everything
 
 ```bash
 # Templates: pre-configured sandbox environments
-agentkernel create ci --template rust-ci
+agentkernel sandbox create ci --template rust-ci
 
 # Snapshots: save and restore sandbox state
 agentkernel snapshot take my-sandbox --name before-upgrade

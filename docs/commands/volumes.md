@@ -41,13 +41,13 @@ Mount volumes when creating a sandbox with `--volume` or `-v`:
 
 ```bash
 # Mount mydata volume at /data
-agentkernel create dev --volume mydata:/data
+agentkernel sandbox create dev --volume mydata:/data
 
 # Mount read-only
-agentkernel create dev --volume mydata:/data:ro
+agentkernel sandbox create dev --volume mydata:/data:ro
 
 # Multiple volumes
-agentkernel create dev \
+agentkernel sandbox create dev \
   --volume mydata:/data \
   --volume cache:/cache
 ```
@@ -56,8 +56,8 @@ The volume must exist before mounting. Create it first:
 
 ```bash
 agentkernel volume create mydata
-agentkernel create dev --volume mydata:/data
-agentkernel start dev
+agentkernel sandbox create dev --volume mydata:/data
+agentkernel sandbox start dev
 agentkernel exec dev -- ls /data
 ```
 
@@ -102,5 +102,5 @@ Volumes are stored in `~/.agentkernel/volumes/<slug>/`. The directory is created
 
 ## See Also
 
-- [Create](create.md) - `--volume` flag
+- [sandbox create](create.md) - `--volume` flag
 - [Images](images.md) - Image management

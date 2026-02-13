@@ -6,10 +6,10 @@ A Docker image with Claude Code CLI pre-installed for use with agentkernel.
 
 ```bash
 # Create a sandbox (builds the image automatically)
-agentkernel create my-project --config agentkernel.toml --dir /path/to/your/project
+agentkernel sandbox create my-project --config agentkernel.toml --dir /path/to/your/project
 
 # Start and attach
-agentkernel start my-project
+agentkernel sandbox start my-project
 agentkernel attach my-project
 
 # Inside the sandbox, run Claude Code
@@ -31,7 +31,7 @@ When creating a sandbox, pass your API key:
 ```bash
 # Option 1: Set in environment before creating
 export ANTHROPIC_API_KEY=sk-ant-...
-agentkernel create my-project --image agentkernel/claude-code
+agentkernel sandbox create my-project --image agentkernel/claude-code
 
 # Option 2: Pass via exec
 agentkernel exec my-project -- env ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY claude

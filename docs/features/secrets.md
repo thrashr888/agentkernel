@@ -10,11 +10,11 @@ agentkernel provides secure secret management for AI agent sandboxes. Secrets ca
 agentkernel secret set OPENAI_API_KEY sk-proj-...
 
 # Run a sandbox with proxy-injected secrets (Gondolin pattern)
-agentkernel create my-agent --image python:3.12-slim \
+agentkernel sandbox create my-agent --image python:3.12-slim \
   --secret OPENAI_API_KEY:api.openai.com
 
 # Or inject secrets as files
-agentkernel create my-agent --image python:3.12-slim \
+agentkernel sandbox create my-agent --image python:3.12-slim \
   --secret-file OPENAI_API_KEY
 ```
 
@@ -86,16 +86,16 @@ The recommended approach. Secrets never enter the sandbox VM — they are inject
 
 ```bash
 # Bind a vault secret to a host (defaults to Authorization: Bearer header)
-agentkernel create my-agent --secret OPENAI_API_KEY:api.openai.com
+agentkernel sandbox create my-agent --secret OPENAI_API_KEY:api.openai.com
 
 # Inline value (useful for one-off testing)
-agentkernel create my-agent --secret OPENAI_API_KEY=sk-proj-xxx:api.openai.com
+agentkernel sandbox create my-agent --secret OPENAI_API_KEY=sk-proj-xxx:api.openai.com
 
 # Custom header name (e.g., Anthropic uses x-api-key)
-agentkernel create my-agent --secret ANTHROPIC_API_KEY:api.anthropic.com:x-api-key
+agentkernel sandbox create my-agent --secret ANTHROPIC_API_KEY:api.anthropic.com:x-api-key
 
 # Multiple bindings
-agentkernel create my-agent \
+agentkernel sandbox create my-agent \
   --secret OPENAI_API_KEY:api.openai.com \
   --secret ANTHROPIC_API_KEY:api.anthropic.com:x-api-key \
   --secret GITHUB_TOKEN:api.github.com
@@ -126,10 +126,10 @@ Secrets are written as files inside the sandbox at `/run/agentkernel/secrets/KEY
 
 ```bash
 # Inject a vault secret as a file
-agentkernel create my-agent --secret-file MY_SECRET
+agentkernel sandbox create my-agent --secret-file MY_SECRET
 
 # Multiple files
-agentkernel create my-agent \
+agentkernel sandbox create my-agent \
   --secret-file DATABASE_URL \
   --secret-file SERVICE_ACCOUNT_JSON
 ```
@@ -154,7 +154,7 @@ with open(f"{secrets_path}/DATABASE_URL") as f:
 You can use proxy injection and file injection together:
 
 ```bash
-agentkernel create my-agent \
+agentkernel sandbox create my-agent \
   --secret OPENAI_API_KEY:api.openai.com \
   --secret-file DATABASE_URL
 ```

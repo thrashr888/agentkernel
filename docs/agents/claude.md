@@ -8,7 +8,7 @@ Use [Claude Code](https://claude.ai/code) with agentkernel for isolated code exe
 | Level | How It Works | Setup |
 |-------|-------------|-------|
 | **MCP Tools** | Claude calls agentkernel MCP tools for sandbox control | `agentkernel plugin install claude` |
-| **Full Isolation** | Run Claude Code itself inside an agentkernel sandbox | `agentkernel create` + `agentkernel attach` |
+| **Full Isolation** | Run Claude Code itself inside an agentkernel sandbox | `agentkernel sandbox create` + `agentkernel attach` |
 
 Claude Code has its own [native sandbox](https://code.claude.com/docs/en/sandboxing) using OS-level primitives (Seatbelt on macOS, bubblewrap on Linux). That sandbox cannot be replaced with a custom runtime. The MCP plugin gives Claude access to agentkernel sandboxes as tools it can call.
 
@@ -46,10 +46,10 @@ Run Claude Code itself inside an isolated sandbox:
 
 ```bash
 # Create sandbox with Claude Code pre-installed
-agentkernel create claude-dev --config examples/agents/claude-code/agentkernel.toml
+agentkernel sandbox create claude-dev --config examples/agents/claude-code/agentkernel.toml
 
 # Start the sandbox
-agentkernel start claude-dev
+agentkernel sandbox start claude-dev
 
 # Run Claude with your API key
 agentkernel attach claude-dev -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
@@ -118,7 +118,7 @@ Mount your project into the sandbox:
 
 ```bash
 # Create with your project
-agentkernel create my-project \
+agentkernel sandbox create my-project \
   --config examples/agents/claude-code/agentkernel.toml \
   --dir /path/to/your/project
 
