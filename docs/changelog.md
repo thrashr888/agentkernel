@@ -6,9 +6,9 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
-## v0.12.0 — Secrets & Secure Communication (Unreleased)
+## [v0.12.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.12.0) — Secrets & Secure Communication
 
-_In progress — `feat/secrets-management` branch_
+_February 12, 2026_
 
 ### Added
 
@@ -20,6 +20,13 @@ _In progress — `feat/secrets-management` branch_
 - **CA cert auto-injection** — proxy CA certificate automatically injected into sandbox trust stores with `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE` env vars for language-specific trust
 - **SDK secrets support** — `secrets` and `secret_files` parameters added to `CreateSandboxOptions` across all 5 SDKs (TypeScript, Python, Rust, Go, Swift)
 - **Gondolin demo examples** — end-to-end secrets proxy demos for all 5 SDK languages in `examples/secrets-proxy/`
+- **Secrets documentation** — comprehensive `docs/features/secrets.md` covering vault backends, proxy injection, file injection, SDK usage, security model comparison, and proxy hooks
+
+### Changed
+
+- **Docs restructured into subdirectories** — 53 pages reorganized from flat `docs/` into 8 sections (`getting-started/`, `features/`, `commands/`, `config/`, `agents/`, `api/`, `sdks/`, `operations/`); all internal cross-references updated; section index pages added
+- **jsonwebtoken 9 → 10** — addresses type confusion vulnerability (authorization bypass); no API changes required
+- **bytes 1.11.0 → 1.11.1** — fixes integer overflow in `BytesMut::reserve` (sdk/rust and guest-agent)
 
 ### Fixed
 
