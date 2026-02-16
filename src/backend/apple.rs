@@ -330,15 +330,40 @@ impl Sandbox for AppleSandbox {
     async fn stop(&mut self) -> Result<()> {
         let container_name = self.container_name();
 
-        // Stop with short timeout
-        let _ = Command::new("container")
+        // Stop with short timeout — use tokio to avoid blocking forever
+        // if the VM process is stuck (e.g. spinning at 100%+ CPU).
+        let stop_timeout = std::time::Duration::from_secs(10);
+        let mut stop_child = tokio::process::Command::new("container")
             .args(["stop", "-t", "1", &container_name])
-            .output();
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok();
+        if let Some(ref mut child) = stop_child {
+            match tokio::time::timeout(stop_timeout, child.wait()).await {
+                Ok(_) => {}
+                Err(_) => {
+                    // Timed out — kill the stop process itself
+                    let _ = child.kill().await;
+                }
+            }
+        }
 
-        // Force delete
-        let _ = Command::new("container")
+        // Force delete (also with timeout)
+        let mut del_child = tokio::process::Command::new("container")
             .args(["delete", "-f", &container_name])
-            .output();
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok();
+        if let Some(ref mut child) = del_child {
+            match tokio::time::timeout(stop_timeout, child.wait()).await {
+                Ok(_) => {}
+                Err(_) => {
+                    let _ = child.kill().await;
+                }
+            }
+        }
 
         self.running = false;
         Ok(())
