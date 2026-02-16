@@ -59,11 +59,20 @@ This is the currently implemented server-side orchestration runtime contract.
     "name": "optional-name",
     "command": ["cmd", "arg1"],
     "image": "optional-image",
-    "fast": true
+    "fast": true,
+    "retry_policy": {
+      "max_attempts": 3,
+      "initial_interval_ms": 1000,
+      "backoff_coefficient": 2.0,
+      "max_interval_ms": 30000,
+      "non_retryable_errors": ["PermissionDenied"]
+    }
   }
 }
 ```
 `name`, `image`, and `fast` are optional. `command` is required.
+`retry_policy` is optional; defaults are max 3 attempts with exponential
+backoff (1s, 2s, 4s).
 
 2. Wait-for-event directive:
 ```json
@@ -86,7 +95,8 @@ Lifecycle labels below map to durable protocol events:
 
 1. Activity path:
 - `Started` -> `Scheduled` -> `Completed` (success)
-- `Started` -> `Scheduled` -> `Failed` (activity failure)
+- `Started` -> `Scheduled` -> `Failed` (activity attempt failure)
+- `Started` -> `Scheduled` -> `Failed` ... -> `Completed` (after retries)
 - `Terminated` can occur from `Pending` or `Running`
 
 2. Wait-for-event path:

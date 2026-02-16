@@ -21,6 +21,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -214,10 +215,54 @@ struct RuntimeActivity {
     image: Option<String>,
     #[serde(default = "default_fast")]
     fast: bool,
+    #[serde(default)]
+    retry_policy: Option<RuntimeRetryPolicy>,
 }
 
 fn default_activity_name() -> String {
     "activity".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RuntimeRetryPolicy {
+    #[serde(default = "default_max_attempts")]
+    max_attempts: u32,
+    #[serde(default = "default_initial_interval_ms")]
+    initial_interval_ms: u64,
+    #[serde(default = "default_backoff_coefficient")]
+    backoff_coefficient: f64,
+    #[serde(default = "default_max_interval_ms")]
+    max_interval_ms: u64,
+    #[serde(default)]
+    non_retryable_errors: Vec<String>,
+}
+
+fn default_max_attempts() -> u32 {
+    3
+}
+
+fn default_initial_interval_ms() -> u64 {
+    1000
+}
+
+fn default_backoff_coefficient() -> f64 {
+    2.0
+}
+
+fn default_max_interval_ms() -> u64 {
+    30_000
+}
+
+impl Default for RuntimeRetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: default_max_attempts(),
+            initial_interval_ms: default_initial_interval_ms(),
+            backoff_coefficient: default_backoff_coefficient(),
+            max_interval_ms: default_max_interval_ms(),
+            non_retryable_errors: Vec::new(),
+        }
+    }
 }
 
 /// Response for detached command logs
@@ -3417,6 +3462,13 @@ async fn process_orchestration_record(
             return Ok(());
         }
 
+        let retry_policy = activity.retry_policy.clone().unwrap_or_default();
+        let failure_events: Vec<&OrchestrationEvent> = history
+            .iter()
+            .filter(|event| event.event_type == "ActivityFailed")
+            .collect();
+        let failure_attempts = failure_events.len() as u32;
+
         if record.status == OrchestrationStatus::Pending {
             let _ = store.update(
                 &orchestration_id,
@@ -3460,36 +3512,49 @@ async fn process_orchestration_record(
             return Ok(());
         }
 
-        if let Some(error) = history.iter().rev().find_map(|event| {
-            if event.event_type != "ActivityFailed" {
-                return None;
-            }
-            event
-                .data
-                .as_ref()
-                .and_then(|d| d.get("error"))
+        if failure_attempts > 0 {
+            let last_error = failure_events
+                .last()
+                .and_then(|event| event.data.as_ref())
+                .and_then(|data| data.get("error"))
                 .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        }) {
-            if !history
-                .iter()
-                .any(|event| event.event_type == "OrchestratorFailed")
-            {
-                store.append_event(
+                .unwrap_or("activity failed")
+                .to_string();
+
+            if failure_attempts >= retry_policy.max_attempts {
+                if !history
+                    .iter()
+                    .any(|event| event.event_type == "OrchestratorFailed")
+                {
+                    store.append_event(
+                        &orchestration_id,
+                        "OrchestratorFailed",
+                        serde_json::json!({ "error": last_error }),
+                    )?;
+                }
+                let _ = store.update(
                     &orchestration_id,
-                    "OrchestratorFailed",
-                    serde_json::json!({ "error": error }),
+                    UpdateOrchestration {
+                        status: Some(OrchestrationStatus::Failed),
+                        output: None,
+                        error: Some(last_error),
+                    },
                 )?;
+                return Ok(());
             }
-            let _ = store.update(
-                &orchestration_id,
-                UpdateOrchestration {
-                    status: Some(OrchestrationStatus::Failed),
-                    output: None,
-                    error: Some(error),
-                },
-            )?;
-            return Ok(());
+
+            if let Some(last_failure) = failure_events.last()
+                && let Ok(last_failure_at) =
+                    chrono::DateTime::parse_from_rfc3339(&last_failure.timestamp)
+            {
+                let required_delay = compute_retry_delay_ms(&retry_policy, failure_attempts);
+                let elapsed_ms = (chrono::Utc::now() - last_failure_at.with_timezone(&chrono::Utc))
+                    .num_milliseconds()
+                    .max(0) as u64;
+                if elapsed_ms < required_delay {
+                    return Ok(());
+                }
+            }
         }
 
         if !history
@@ -3497,12 +3562,8 @@ async fn process_orchestration_record(
             .any(|event| event.event_type == "ActivityScheduled")
         {
             let sequence = history.last().map(|event| event.sequence + 1).unwrap_or(1);
-            let idempotency_key = format!(
-                "{}:{}:{}",
-                orchestration_id,
-                activity.name.clone(),
-                sequence
-            );
+            let idempotency_key =
+                compute_idempotency_key(&orchestration_id, &activity.name, sequence);
             store.append_event(
                 &orchestration_id,
                 "ActivityScheduled",
@@ -3511,12 +3572,26 @@ async fn process_orchestration_record(
                     "input": {
                         "command": activity.command.clone(),
                         "image": activity.image.clone(),
-                        "fast": activity.fast
+                        "fast": activity.fast,
+                        "retry_policy": {
+                            "max_attempts": retry_policy.max_attempts,
+                            "initial_interval_ms": retry_policy.initial_interval_ms,
+                            "backoff_coefficient": retry_policy.backoff_coefficient,
+                            "max_interval_ms": retry_policy.max_interval_ms,
+                            "non_retryable_errors": retry_policy.non_retryable_errors.clone(),
+                        }
                     },
                     "idempotency_key": idempotency_key
                 }),
             )?;
         }
+
+        let attempt = failure_attempts + 1;
+        store.append_event(
+            &orchestration_id,
+            "ActivityStarted",
+            serde_json::json!({ "attempt": attempt }),
+        )?;
 
         match execute_runtime_activity(&activity).await {
             Ok(output) => {
@@ -3542,28 +3617,42 @@ async fn process_orchestration_record(
             }
             Err(e) => {
                 let error = e.to_string();
+                let retryable = is_retryable_error(&error, &retry_policy)
+                    && attempt < retry_policy.max_attempts;
                 store.append_event(
                     &orchestration_id,
                     "ActivityFailed",
                     serde_json::json!({
                         "error": error,
-                        "attempt": 1,
-                        "retryable": false
+                        "attempt": attempt,
+                        "retryable": retryable
                     }),
                 )?;
-                store.append_event(
-                    &orchestration_id,
-                    "OrchestratorFailed",
-                    serde_json::json!({ "error": error }),
-                )?;
-                let _ = store.update(
-                    &orchestration_id,
-                    UpdateOrchestration {
-                        status: Some(OrchestrationStatus::Failed),
-                        output: None,
-                        error: Some(error),
-                    },
-                )?;
+
+                if retryable {
+                    let _ = store.update(
+                        &orchestration_id,
+                        UpdateOrchestration {
+                            status: Some(OrchestrationStatus::Running),
+                            output: None,
+                            error: Some(error),
+                        },
+                    )?;
+                } else {
+                    store.append_event(
+                        &orchestration_id,
+                        "OrchestratorFailed",
+                        serde_json::json!({ "error": error }),
+                    )?;
+                    let _ = store.update(
+                        &orchestration_id,
+                        UpdateOrchestration {
+                            status: Some(OrchestrationStatus::Failed),
+                            output: None,
+                            error: Some(error),
+                        },
+                    )?;
+                }
             }
         }
 
@@ -3600,6 +3689,27 @@ fn parse_runtime_input(
         Some(value) => serde_json::from_value(value),
         None => serde_json::from_value(serde_json::json!({})),
     }
+}
+
+fn compute_idempotency_key(orchestration_id: &str, activity_name: &str, sequence: i64) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{orchestration_id}:{activity_name}:{sequence}"));
+    format!("{:x}", hasher.finalize())
+}
+
+fn compute_retry_delay_ms(policy: &RuntimeRetryPolicy, failure_attempts: u32) -> u64 {
+    let exponent = failure_attempts.saturating_sub(1);
+    let multiplier = policy.backoff_coefficient.powi(exponent as i32);
+    let next = (policy.initial_interval_ms as f64 * multiplier).round();
+    let clamped = next.max(policy.initial_interval_ms as f64) as u64;
+    clamped.min(policy.max_interval_ms)
+}
+
+fn is_retryable_error(error: &str, policy: &RuntimeRetryPolicy) -> bool {
+    !policy
+        .non_retryable_errors
+        .iter()
+        .any(|marker| !marker.is_empty() && error.contains(marker))
 }
 
 async fn execute_runtime_activity(activity: &RuntimeActivity) -> Result<String> {
@@ -4763,6 +4873,41 @@ mod tests {
                 .iter()
                 .any(|event| event.event_type == "EventConsumed")
         );
+    }
+
+    #[test]
+    fn test_compute_idempotency_key_is_stable() {
+        let first = compute_idempotency_key("orch-1", "run-tests", 7);
+        let second = compute_idempotency_key("orch-1", "run-tests", 7);
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    fn test_compute_retry_delay_backoff() {
+        let policy = RuntimeRetryPolicy {
+            max_attempts: 3,
+            initial_interval_ms: 1000,
+            backoff_coefficient: 2.0,
+            max_interval_ms: 30_000,
+            non_retryable_errors: vec![],
+        };
+        assert_eq!(compute_retry_delay_ms(&policy, 1), 1000);
+        assert_eq!(compute_retry_delay_ms(&policy, 2), 2000);
+        assert_eq!(compute_retry_delay_ms(&policy, 3), 4000);
+    }
+
+    #[test]
+    fn test_non_retryable_error_match() {
+        let policy = RuntimeRetryPolicy {
+            max_attempts: 3,
+            initial_interval_ms: 1000,
+            backoff_coefficient: 2.0,
+            max_interval_ms: 30_000,
+            non_retryable_errors: vec!["PermissionDenied".to_string()],
+        };
+        assert!(!is_retryable_error("PermissionDenied: blocked", &policy));
+        assert!(is_retryable_error("Temporary network issue", &policy));
     }
 
     // === Extended CreateRequest tests ===
