@@ -178,6 +178,11 @@ public typealias DurableObject = [String: Any]
 
 /// Opaque schedule representation.
 public typealias Schedule = [String: Any]
+/// Opaque durable store representation.
+public typealias DurableStore = [String: Any]
+public typealias DurableStoreQueryResult = [String: Any]
+public typealias DurableStoreExecuteResult = [String: Any]
+public typealias DurableStoreCommandResult = [String: Any]
 
 /// A command for batch execution.
 public struct BatchCommand: Encodable, Sendable {

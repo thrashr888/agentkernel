@@ -2,7 +2,7 @@
 
 use crate::durable_storage::DurableStorage;
 use anyhow::{Context, Result};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 
 /// Lifecycle state for durable orchestrations.
@@ -77,6 +77,87 @@ pub struct OrchestrationDefinition {
     pub definition: serde_json::Value,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Backing engine for a durable store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DurableStoreKind {
+    Sqlite,
+    Postgres,
+    Mysql,
+    Redis,
+}
+
+impl std::fmt::Display for DurableStoreKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DurableStoreKind::Sqlite => write!(f, "sqlite"),
+            DurableStoreKind::Postgres => write!(f, "postgres"),
+            DurableStoreKind::Mysql => write!(f, "mysql"),
+            DurableStoreKind::Redis => write!(f, "redis"),
+        }
+    }
+}
+
+impl std::str::FromStr for DurableStoreKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "sqlite" => Ok(Self::Sqlite),
+            "postgres" => Ok(Self::Postgres),
+            "mysql" => Ok(Self::Mysql),
+            "redis" => Ok(Self::Redis),
+            other => Err(format!("invalid durable store kind '{other}'")),
+        }
+    }
+}
+
+/// Persisted durable store metadata record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DurableStoreRecord {
+    pub id: String,
+    pub name: String,
+    pub kind: DurableStoreKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+    pub config: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Create request for durable store metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateDurableStore {
+    pub name: String,
+    pub kind: DurableStoreKind,
+    #[serde(default)]
+    pub sandbox: Option<String>,
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
+}
+
+/// Query response payload for durable stores.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DurableStoreQueryResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<serde_json::Value>,
+    pub row_count: usize,
+}
+
+/// Execute response payload for durable stores.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DurableStoreExecuteResult {
+    pub rows_affected: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_insert_rowid: Option<i64>,
+}
+
+/// Response payload for store command execution (for command-oriented engines).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DurableStoreCommandResult {
+    pub result: serde_json::Value,
 }
 
 /// Create request for orchestration persistence.
@@ -356,6 +437,171 @@ LIMIT ?1 OFFSET ?2
         Ok(deleted > 0)
     }
 
+    pub fn create_store(&self, req: CreateDurableStore) -> Result<DurableStoreRecord> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let id = uuid::Uuid::now_v7().to_string();
+        let name = req.name.trim().to_string();
+        let kind = req.kind;
+        let sandbox = req.sandbox;
+        let mut config = req.config.unwrap_or_else(|| serde_json::json!({}));
+
+        if kind == DurableStoreKind::Sqlite && !config.get("path").is_some() {
+            config = serde_json::json!({
+                "path": Self::default_sqlite_store_path(&id).to_string_lossy(),
+            });
+        }
+
+        let config_json = serde_json::to_string(&config)?;
+        let conn = self.storage.open_connection()?;
+        conn.execute(
+            r#"
+INSERT INTO stores(id, name, kind, sandbox, config_json, created_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+"#,
+            params![id, name, kind.to_string(), sandbox, config_json, now, now],
+        )
+        .context("failed to create durable store metadata")?;
+
+        self.get_store(&id)?.context("store missing after create")
+    }
+
+    pub fn get_store(&self, id: &str) -> Result<Option<DurableStoreRecord>> {
+        let conn = self.storage.open_connection()?;
+        conn.query_row(
+            r#"
+SELECT id, name, kind, sandbox, config_json, created_at, updated_at
+FROM stores
+WHERE id = ?1
+"#,
+            [id],
+            Self::row_to_store,
+        )
+        .optional()
+        .context("failed to get durable store")
+    }
+
+    pub fn list_stores(&self, limit: usize, offset: usize) -> Result<Vec<DurableStoreRecord>> {
+        let conn = self.storage.open_connection()?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+SELECT id, name, kind, sandbox, config_json, created_at, updated_at
+FROM stores
+ORDER BY created_at DESC
+LIMIT ?1 OFFSET ?2
+"#,
+            )
+            .context("failed to prepare list stores query")?;
+
+        let rows = stmt
+            .query_map(params![limit as i64, offset as i64], Self::row_to_store)
+            .context("failed to execute list stores query")?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.context("failed to parse store row")?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_store(&self, id: &str) -> Result<bool> {
+        let conn = self.storage.open_connection()?;
+        let deleted = conn
+            .execute("DELETE FROM stores WHERE id = ?1", [id])
+            .context("failed to delete durable store")?;
+        Ok(deleted > 0)
+    }
+
+    pub fn query_store(
+        &self,
+        id: &str,
+        sql: &str,
+        params: Vec<serde_json::Value>,
+    ) -> Result<Option<DurableStoreQueryResult>> {
+        let Some(store) = self.get_store(id)? else {
+            return Ok(None);
+        };
+
+        let conn = self.connect_durable_store(&store)?;
+        let mut stmt = conn
+            .prepare(sql)
+            .with_context(|| format!("failed preparing store query for store {}", store.id))?;
+        let column_names: Vec<String> = stmt
+            .column_names()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let sql_params: Vec<rusqlite::types::Value> =
+            params.into_iter().map(Self::json_to_sql_value).collect();
+        let mut rows = stmt
+            .query(params_from_iter(sql_params.iter()))
+            .context("failed executing store query")?;
+
+        let mut out_rows = Vec::new();
+        while let Some(row) = rows.next().context("failed reading store query row")? {
+            let mut object = serde_json::Map::new();
+            for (idx, col) in column_names.iter().enumerate() {
+                let value_ref = row
+                    .get_ref(idx)
+                    .with_context(|| format!("failed to read column {idx}"))?;
+                object.insert(col.clone(), Self::sql_value_ref_to_json(value_ref));
+            }
+            out_rows.push(serde_json::Value::Object(object));
+        }
+
+        Ok(Some(DurableStoreQueryResult {
+            columns: column_names,
+            row_count: out_rows.len(),
+            rows: out_rows,
+        }))
+    }
+
+    pub fn execute_store(
+        &self,
+        id: &str,
+        sql: &str,
+        params: Vec<serde_json::Value>,
+    ) -> Result<Option<DurableStoreExecuteResult>> {
+        let Some(store) = self.get_store(id)? else {
+            return Ok(None);
+        };
+
+        let conn = self.connect_durable_store(&store)?;
+        let sql_params: Vec<rusqlite::types::Value> =
+            params.into_iter().map(Self::json_to_sql_value).collect();
+        let rows_affected = conn
+            .execute(sql, params_from_iter(sql_params.iter()))
+            .context("failed executing store statement")?;
+
+        Ok(Some(DurableStoreExecuteResult {
+            rows_affected,
+            last_insert_rowid: Some(conn.last_insert_rowid()),
+        }))
+    }
+
+    pub fn command_store(
+        &self,
+        id: &str,
+        command: Vec<String>,
+    ) -> Result<Option<DurableStoreCommandResult>> {
+        let Some(store) = self.get_store(id)? else {
+            return Ok(None);
+        };
+
+        if command.is_empty() {
+            anyhow::bail!("command must not be empty");
+        }
+
+        match store.kind {
+            DurableStoreKind::Redis => {
+                anyhow::bail!("redis durable stores are not executable in this runtime yet")
+            }
+            DurableStoreKind::Sqlite | DurableStoreKind::Postgres | DurableStoreKind::Mysql => {
+                anyhow::bail!("store kind does not support command endpoint")
+            }
+        }
+    }
+
     pub fn update(
         &self,
         id: &str,
@@ -465,6 +711,123 @@ WHERE id = ?1
             created_at: row.get(2)?,
             updated_at: row.get(3)?,
         })
+    }
+
+    fn row_to_store(row: &rusqlite::Row<'_>) -> rusqlite::Result<DurableStoreRecord> {
+        let kind_raw: String = row.get(2)?;
+        let kind = kind_raw.parse::<DurableStoreKind>().map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                2,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+            )
+        })?;
+        let config_raw: String = row.get(4)?;
+        let config = serde_json::from_str(&config_raw).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+
+        Ok(DurableStoreRecord {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            kind,
+            sandbox: row.get(3)?,
+            config,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+        })
+    }
+
+    fn connect_durable_store(&self, store: &DurableStoreRecord) -> Result<rusqlite::Connection> {
+        match store.kind {
+            DurableStoreKind::Sqlite => {
+                let path = store
+                    .config
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| Self::default_sqlite_store_path(&store.id));
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!(
+                            "failed to create sqlite store directory {}",
+                            parent.display()
+                        )
+                    })?;
+                }
+                let conn = rusqlite::Connection::open(path)
+                    .context("failed to open sqlite durable store")?;
+                conn.execute_batch(
+                    r#"
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA busy_timeout = 5000;
+PRAGMA foreign_keys = ON;
+"#,
+                )
+                .context("failed to apply sqlite store pragmas")?;
+                Ok(conn)
+            }
+            DurableStoreKind::Postgres => {
+                anyhow::bail!("postgres durable stores are not executable in this runtime yet")
+            }
+            DurableStoreKind::Mysql => {
+                anyhow::bail!("mysql durable stores are not executable in this runtime yet")
+            }
+            DurableStoreKind::Redis => {
+                anyhow::bail!("redis durable stores must use the command endpoint")
+            }
+        }
+    }
+
+    fn default_sqlite_store_path(id: &str) -> std::path::PathBuf {
+        let durable_root = DurableStorage::default_db_path()
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/agentkernel/durable"));
+        durable_root.join("stores").join(format!("{id}.db"))
+    }
+
+    fn json_to_sql_value(value: serde_json::Value) -> rusqlite::types::Value {
+        use rusqlite::types::Value;
+
+        match value {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(v) => Value::Integer(i64::from(v)),
+            serde_json::Value::Number(n) => {
+                if let Some(v) = n.as_i64() {
+                    Value::Integer(v)
+                } else if let Some(v) = n.as_u64() {
+                    match i64::try_from(v) {
+                        Ok(i) => Value::Integer(i),
+                        Err(_) => Value::Real(v as f64),
+                    }
+                } else if let Some(v) = n.as_f64() {
+                    Value::Real(v)
+                } else {
+                    Value::Null
+                }
+            }
+            serde_json::Value::String(s) => Value::Text(s),
+            serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                Value::Text(value.to_string())
+            }
+        }
+    }
+
+    fn sql_value_ref_to_json(value: rusqlite::types::ValueRef<'_>) -> serde_json::Value {
+        use rusqlite::types::ValueRef;
+
+        match value {
+            ValueRef::Null => serde_json::Value::Null,
+            ValueRef::Integer(v) => serde_json::Value::from(v),
+            ValueRef::Real(v) => serde_json::Value::from(v),
+            ValueRef::Text(v) => serde_json::Value::String(String::from_utf8_lossy(v).to_string()),
+            ValueRef::Blob(v) => serde_json::Value::String(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                v,
+            )),
+        }
     }
 }
 
@@ -594,5 +957,69 @@ mod tests {
         let deleted = store.delete_definition("deploy-pipeline").unwrap();
         assert!(deleted);
         assert!(store.get_definition("deploy-pipeline").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_create_query_execute_sqlite_store() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let storage = DurableStorage::new(temp.path().join("orchestrations.db")).unwrap();
+        let store = OrchestrationStore::new(storage);
+        let sqlite_path = temp.path().join("store.db");
+
+        let created = store
+            .create_store(CreateDurableStore {
+                name: "agent-state".to_string(),
+                kind: DurableStoreKind::Sqlite,
+                sandbox: Some("sandbox-a".to_string()),
+                config: Some(serde_json::json!({
+                    "path": sqlite_path.to_string_lossy()
+                })),
+            })
+            .unwrap();
+        assert_eq!(created.name, "agent-state");
+        assert_eq!(created.kind, DurableStoreKind::Sqlite);
+
+        store
+            .execute_store(
+                &created.id,
+                "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+                vec![],
+            )
+            .unwrap()
+            .unwrap();
+
+        let inserted = store
+            .execute_store(
+                &created.id,
+                "INSERT INTO items(name) VALUES (?)",
+                vec![serde_json::json!("alpha")],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(inserted.rows_affected, 1);
+
+        let queried = store
+            .query_store(
+                &created.id,
+                "SELECT id, name FROM items WHERE name = ?",
+                vec![serde_json::json!("alpha")],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(queried.row_count, 1);
+        assert_eq!(
+            queried.rows[0]
+                .get("name")
+                .and_then(serde_json::Value::as_str),
+            Some("alpha")
+        );
+
+        let listed = store.list_stores(10, 0).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, created.id);
+
+        let deleted = store.delete_store(&created.id).unwrap();
+        assert!(deleted);
+        assert!(store.get_store(&created.id).unwrap().is_none());
     }
 }

@@ -13,6 +13,7 @@ import type {
   BatchCommand,
   BatchFileWriteResponse,
   BatchRunResponse,
+  CreateStoreRequest,
   CreateObjectRequest,
   CreateOrchestrationRequest,
   CreateScheduleRequest,
@@ -23,6 +24,10 @@ import type {
   ExtendTtlOptions,
   ExtendTtlResponse,
   DurableObject,
+  DurableStore,
+  DurableStoreCommandResponse,
+  DurableStoreExecuteResponse,
+  DurableStoreQueryResponse,
   FileReadResponse,
   FileWriteOptions,
   OrchestrationDefinition,
@@ -402,6 +407,62 @@ export class AgentKernel {
     return this.request<Schedule>(
       "GET",
       `/schedules/${encodeURIComponent(id)}`,
+    );
+  }
+
+  /** List all durable stores. */
+  async listStores(): Promise<DurableStore[]> {
+    return this.request<DurableStore[]>("GET", "/stores");
+  }
+
+  /** Create a durable store. */
+  async createStore(payload: CreateStoreRequest): Promise<DurableStore> {
+    return this.request<DurableStore>("POST", "/stores", payload);
+  }
+
+  /** Get a durable store by identifier. */
+  async getStore(id: string): Promise<DurableStore> {
+    return this.request<DurableStore>("GET", `/stores/${encodeURIComponent(id)}`);
+  }
+
+  /** Delete a durable store by identifier. */
+  async deleteStore(id: string): Promise<string> {
+    return this.request<string>("DELETE", `/stores/${encodeURIComponent(id)}`);
+  }
+
+  /** Execute a read query against a durable store. */
+  async queryStore(
+    id: string,
+    payload: Record<string, unknown>,
+  ): Promise<DurableStoreQueryResponse> {
+    return this.request<DurableStoreQueryResponse>(
+      "POST",
+      `/stores/${encodeURIComponent(id)}/query`,
+      payload,
+    );
+  }
+
+  /** Execute a write statement against a durable store. */
+  async executeStore(
+    id: string,
+    payload: Record<string, unknown>,
+  ): Promise<DurableStoreExecuteResponse> {
+    return this.request<DurableStoreExecuteResponse>(
+      "POST",
+      `/stores/${encodeURIComponent(id)}/execute`,
+      payload,
+    );
+  }
+
+  /** Execute a command against a durable store (Redis-style engines). */
+  async commandStore(
+    id: string,
+    payload: Record<string, unknown>,
+  ): Promise<DurableStoreCommandResponse> {
+    return this.request<DurableStoreCommandResponse>(
+      "POST",
+      `/stores/${encodeURIComponent(id)}/command`,
+      payload,
     );
   }
 

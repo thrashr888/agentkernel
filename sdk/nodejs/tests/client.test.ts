@@ -326,6 +326,104 @@ describe("AgentKernel", () => {
     });
   });
 
+  describe("listStores", () => {
+    it("uses /stores path", async () => {
+      server.use(
+        http.get(`${BASE_URL}/stores`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/stores");
+          return HttpResponse.json({ success: true, data: [] });
+        }),
+      );
+      await client().listStores();
+    });
+  });
+
+  describe("createStore", () => {
+    it("uses /stores path", async () => {
+      server.use(
+        http.post(`${BASE_URL}/stores`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/stores");
+          return HttpResponse.json({ success: true, data: { id: "store-1" } });
+        }),
+      );
+      await client().createStore({ name: "store-1", kind: "sqlite" });
+    });
+  });
+
+  describe("getStore", () => {
+    it("uses /stores/{id} path", async () => {
+      server.use(
+        http.get(`${BASE_URL}/stores/store-1`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/stores/store-1");
+          return HttpResponse.json({ success: true, data: { id: "store-1" } });
+        }),
+      );
+      await client().getStore("store-1");
+    });
+  });
+
+  describe("deleteStore", () => {
+    it("uses /stores/{id} path", async () => {
+      server.use(
+        http.delete(`${BASE_URL}/stores/store-1`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/stores/store-1");
+          return HttpResponse.json({ success: true, data: "deleted" });
+        }),
+      );
+      await client().deleteStore("store-1");
+    });
+  });
+
+  describe("queryStore", () => {
+    it("uses /stores/{id}/query path", async () => {
+      server.use(
+        http.post(`${BASE_URL}/stores/store-1/query`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/stores/store-1/query");
+          return HttpResponse.json({
+            success: true,
+            data: { columns: ["id"], rows: [{ id: 1 }], row_count: 1 },
+          });
+        }),
+      );
+      await client().queryStore("store-1", { sql: "select 1", params: [] });
+    });
+  });
+
+  describe("executeStore", () => {
+    it("uses /stores/{id}/execute path", async () => {
+      server.use(
+        http.post(`${BASE_URL}/stores/store-1/execute`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/stores/store-1/execute");
+          return HttpResponse.json({
+            success: true,
+            data: { rows_affected: 1, last_insert_rowid: 1 },
+          });
+        }),
+      );
+      await client().executeStore("store-1", {
+        sql: "insert into t(v) values (?)",
+        params: ["x"],
+      });
+    });
+  });
+
+  describe("commandStore", () => {
+    it("uses /stores/{id}/command path", async () => {
+      server.use(
+        http.post(`${BASE_URL}/stores/store-1/command`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/stores/store-1/command");
+          return HttpResponse.json({
+            success: true,
+            data: { result: "OK" },
+          });
+        }),
+      );
+      await client().commandStore("store-1", {
+        command: ["PING"],
+      });
+    });
+  });
+
   describe("removeSandbox", () => {
     it("removes a sandbox", async () => {
       await expect(client().removeSandbox("my-sandbox")).resolves.toBeUndefined();

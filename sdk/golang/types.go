@@ -143,6 +143,21 @@ type Schedule map[string]interface{}
 // CreateScheduleRequest is the request body for POST /schedules.
 type CreateScheduleRequest map[string]interface{}
 
+// DurableStore is an opaque durable store payload.
+type DurableStore map[string]interface{}
+
+// CreateStoreRequest is the request body for POST /stores.
+type CreateStoreRequest map[string]interface{}
+
+// DurableStoreQueryResult is the response from POST /stores/{id}/query.
+type DurableStoreQueryResult map[string]interface{}
+
+// DurableStoreExecuteResult is the response from POST /stores/{id}/execute.
+type DurableStoreExecuteResult map[string]interface{}
+
+// DurableStoreCommandResult is the response from POST /stores/{id}/command.
+type DurableStoreCommandResult map[string]interface{}
+
 // ExtendTtlResponse is the response from extending a sandbox's TTL.
 type ExtendTtlResponse struct {
 	ExpiresAt string `json:"expires_at,omitempty"`

@@ -538,6 +538,75 @@ impl AgentKernel {
         .await
     }
 
+    /// List all durable stores.
+    pub async fn list_stores(&self) -> Result<Vec<DurableStore>> {
+        self.request(reqwest::Method::GET, "/stores", None::<&()>).await
+    }
+
+    /// Create a new durable store.
+    pub async fn create_store(&self, payload: DurableStoreCreateRequest) -> Result<DurableStore> {
+        self.request(reqwest::Method::POST, "/stores", Some(&payload))
+            .await
+    }
+
+    /// Get a durable store by id.
+    pub async fn get_store(&self, id: &str) -> Result<DurableStore> {
+        self.request(reqwest::Method::GET, &format!("/stores/{id}"), None::<&()>)
+            .await
+    }
+
+    /// Delete a durable store by id.
+    pub async fn delete_store(&self, id: &str) -> Result<String> {
+        self.request(
+            reqwest::Method::DELETE,
+            &format!("/stores/{id}"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Run a read query against a durable store.
+    pub async fn query_store(
+        &self,
+        id: &str,
+        payload: serde_json::Value,
+    ) -> Result<DurableStoreQueryResult> {
+        self.request(
+            reqwest::Method::POST,
+            &format!("/stores/{id}/query"),
+            Some(&payload),
+        )
+        .await
+    }
+
+    /// Run a write statement against a durable store.
+    pub async fn execute_store(
+        &self,
+        id: &str,
+        payload: serde_json::Value,
+    ) -> Result<DurableStoreExecuteResult> {
+        self.request(
+            reqwest::Method::POST,
+            &format!("/stores/{id}/execute"),
+            Some(&payload),
+        )
+        .await
+    }
+
+    /// Run a command against a durable store (Redis-style engines).
+    pub async fn command_store(
+        &self,
+        id: &str,
+        payload: serde_json::Value,
+    ) -> Result<DurableStoreCommandResult> {
+        self.request(
+            reqwest::Method::POST,
+            &format!("/stores/{id}/command"),
+            Some(&payload),
+        )
+        .await
+    }
+
     /// Extend a sandbox's time-to-live.
     pub async fn extend_ttl(&self, name: &str, by: &str) -> Result<ExtendTtlResponse> {
         let body = ExtendTtlRequest { by: by.to_string() };

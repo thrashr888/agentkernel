@@ -1,0 +1,13 @@
+{
+  "name": "postgres-main",
+  "kind": "postgres",
+  "sandbox": "default",
+  "config": {
+    "host": "db.internal",
+    "port": 5432,
+    "database": "app",
+    "user": "app_user",
+    "password_secret": "POSTGRES_PASSWORD",
+    "sslmode": "require"
+  }
+}

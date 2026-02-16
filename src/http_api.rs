@@ -30,8 +30,9 @@ use tokio::time::{Duration, sleep};
 use crate::languages;
 use crate::opencode::OpenCodeState;
 use crate::orchestration_store::{
-    CreateOrchestration, OrchestrationEvent, OrchestrationRecord, OrchestrationStatus,
-    OrchestrationStore, UpdateOrchestration,
+    CreateDurableStore, CreateOrchestration, DurableStoreCommandResult, DurableStoreExecuteResult,
+    DurableStoreKind, DurableStoreQueryResult, OrchestrationEvent, OrchestrationRecord,
+    OrchestrationStatus, OrchestrationStore, UpdateOrchestration,
 };
 use crate::permissions::SecurityProfile;
 use crate::secrets::{SecretBackend, SecretVault};
@@ -186,6 +187,31 @@ struct RaiseOrchestrationEventRequest {
 struct TerminateOrchestrationRequest {
     #[serde(default)]
     reason: Option<String>,
+}
+
+/// Request to create durable store metadata.
+#[derive(Debug, Deserialize)]
+struct CreateDurableStoreRequest {
+    name: String,
+    kind: DurableStoreKind,
+    #[serde(default)]
+    sandbox: Option<String>,
+    #[serde(default)]
+    config: Option<serde_json::Value>,
+}
+
+/// Request to run SQL against a durable store.
+#[derive(Debug, Deserialize)]
+struct DurableStoreSqlRequest {
+    sql: String,
+    #[serde(default)]
+    params: Vec<serde_json::Value>,
+}
+
+/// Request to run command-oriented operations against a durable store.
+#[derive(Debug, Deserialize)]
+struct DurableStoreCommandRequest {
+    command: Vec<String>,
 }
 
 /// Detailed orchestration payload including append-only history.
@@ -667,6 +693,23 @@ async fn handle_request(
         }
         (Method::DELETE, ["orchestrations", orchestration_id]) => {
             handle_delete_orchestration(orchestration_id, state).await
+        }
+
+        // Durable store scaffolding
+        (Method::GET, ["stores"]) => handle_list_durable_stores(state).await,
+        (Method::POST, ["stores"]) => handle_create_durable_store(req, state).await,
+        (Method::POST, ["stores", store_id, "query"]) => {
+            handle_query_durable_store(req, store_id, state).await
+        }
+        (Method::POST, ["stores", store_id, "execute"]) => {
+            handle_execute_durable_store(req, store_id, state).await
+        }
+        (Method::POST, ["stores", store_id, "command"]) => {
+            handle_command_durable_store(req, store_id, state).await
+        }
+        (Method::GET, ["stores", store_id]) => handle_get_durable_store(store_id, state).await,
+        (Method::DELETE, ["stores", store_id]) => {
+            handle_delete_durable_store(store_id, state).await
         }
 
         // List sandboxes
@@ -1357,6 +1400,235 @@ async fn handle_delete_orchestration_definition(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
         ),
+    }
+}
+
+async fn handle_create_durable_store(
+    req: Request<Incoming>,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let body: CreateDurableStoreRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    if body.name.trim().is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("name is required"),
+        );
+    }
+
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.create_store(CreateDurableStore {
+        name: body.name,
+        kind: body.kind,
+        sandbox: body.sandbox,
+        config: body.config,
+    }) {
+        Ok(created) => json_response(StatusCode::CREATED, &ApiResponse::success(created)),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("UNIQUE constraint failed: stores.name") {
+                return json_response(
+                    StatusCode::CONFLICT,
+                    &ApiResponse::<()>::error("Store name already exists"),
+                );
+            }
+            json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(msg),
+            )
+        }
+    }
+}
+
+async fn handle_list_durable_stores(state: Arc<AppState>) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.list_stores(200, 0) {
+        Ok(stores) => json_response(StatusCode::OK, &ApiResponse::success(stores)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_get_durable_store(store_id: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.get_store(store_id) {
+        Ok(Some(found)) => json_response(StatusCode::OK, &ApiResponse::success(found)),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Store not found"),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_delete_durable_store(store_id: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.delete_store(store_id) {
+        Ok(true) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success(serde_json::json!({
+                "deleted": true,
+                "id": store_id,
+            })),
+        ),
+        Ok(false) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Store not found"),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_query_durable_store(
+    req: Request<Incoming>,
+    store_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let body: DurableStoreSqlRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    if body.sql.trim().is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("sql is required"),
+        );
+    }
+
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.query_store(store_id, &body.sql, body.params) {
+        Ok(Some(result)) => json_response(
+            StatusCode::OK,
+            &ApiResponse::<DurableStoreQueryResult>::success(result),
+        ),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Store not found"),
+        ),
+        Err(e) => {
+            let msg = e.to_string();
+            let status = if msg.contains("not executable in this runtime yet") {
+                StatusCode::NOT_IMPLEMENTED
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            json_response(status, &ApiResponse::<()>::error(msg))
+        }
+    }
+}
+
+async fn handle_execute_durable_store(
+    req: Request<Incoming>,
+    store_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let body: DurableStoreSqlRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    if body.sql.trim().is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("sql is required"),
+        );
+    }
+
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.execute_store(store_id, &body.sql, body.params) {
+        Ok(Some(result)) => json_response(
+            StatusCode::OK,
+            &ApiResponse::<DurableStoreExecuteResult>::success(result),
+        ),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Store not found"),
+        ),
+        Err(e) => {
+            let msg = e.to_string();
+            let status = if msg.contains("not executable in this runtime yet") {
+                StatusCode::NOT_IMPLEMENTED
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            json_response(status, &ApiResponse::<()>::error(msg))
+        }
+    }
+}
+
+async fn handle_command_durable_store(
+    req: Request<Incoming>,
+    store_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let body: DurableStoreCommandRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    if body.command.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("command must not be empty"),
+        );
+    }
+
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.command_store(store_id, body.command) {
+        Ok(Some(result)) => json_response(
+            StatusCode::OK,
+            &ApiResponse::<DurableStoreCommandResult>::success(result),
+        ),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Store not found"),
+        ),
+        Err(e) => {
+            let msg = e.to_string();
+            let status = if msg.contains("not executable in this runtime yet") {
+                StatusCode::NOT_IMPLEMENTED
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            json_response(status, &ApiResponse::<()>::error(msg))
+        }
     }
 }
 
@@ -4999,6 +5271,34 @@ mod tests {
             segments,
             vec!["orchestrations", "definitions", "deploy-pipeline"]
         );
+    }
+
+    #[test]
+    fn test_path_segments_stores() {
+        let path = "/stores";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["stores"]);
+    }
+
+    #[test]
+    fn test_path_segments_store_id() {
+        let path = "/stores/store-1";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["stores", "store-1"]);
+    }
+
+    #[test]
+    fn test_path_segments_store_query() {
+        let path = "/stores/store-1/query";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["stores", "store-1", "query"]);
+    }
+
+    #[test]
+    fn test_path_segments_store_command() {
+        let path = "/stores/store-1/command";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["stores", "store-1", "command"]);
     }
 
     #[tokio::test]

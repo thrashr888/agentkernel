@@ -53,6 +53,23 @@ CREATE TABLE IF NOT EXISTS orchestration_definitions (
 );
 "#,
     ),
+    (
+        4,
+        r#"
+CREATE TABLE IF NOT EXISTS stores (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    sandbox TEXT,
+    config_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_stores_name ON stores(name);
+CREATE INDEX IF NOT EXISTS idx_stores_kind ON stores(kind);
+"#,
+    ),
 ];
 
 /// SQLite durable storage wrapper with schema bootstrap.
@@ -195,6 +212,6 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(migration_count, 3);
+        assert_eq!(migration_count, 4);
     }
 }

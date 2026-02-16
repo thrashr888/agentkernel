@@ -470,6 +470,131 @@ func TestGetSchedule(t *testing.T) {
 	}
 }
 
+func TestListStores(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/stores") {
+			t.Fatalf("expected /stores, got %s", r.URL.Path)
+		}
+		jsonOK(w, []map[string]interface{}{})
+	})
+	defer srv.Close()
+
+	_, err := client.ListStores(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateStore(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/stores") {
+			t.Fatalf("expected /stores, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{"id": "store-1"})
+	})
+	defer srv.Close()
+
+	body := CreateStoreRequest{"name": "store-1", "kind": "sqlite"}
+	_, err := client.CreateStore(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetStore(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/stores/store-1") {
+			t.Fatalf("expected /stores/store-1, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{"id": "store-1"})
+	})
+	defer srv.Close()
+
+	_, err := client.GetStore(context.Background(), "store-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeleteStore(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "DELETE" {
+			t.Fatalf("expected DELETE, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/stores/store-1") {
+			t.Fatalf("expected /stores/store-1, got %s", r.URL.Path)
+		}
+		jsonOK(w, "deleted")
+	})
+	defer srv.Close()
+
+	err := client.DeleteStore(context.Background(), "store-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestQueryStore(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/stores/store-1/query") {
+			t.Fatalf("expected /stores/store-1/query, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{
+			"columns":   []string{"id"},
+			"rows":      []map[string]interface{}{{"id": 1}},
+			"row_count": 1,
+		})
+	})
+	defer srv.Close()
+
+	_, err := client.QueryStore(context.Background(), "store-1", map[string]interface{}{"sql": "select 1", "params": []interface{}{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExecuteStore(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/stores/store-1/execute") {
+			t.Fatalf("expected /stores/store-1/execute, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{"rows_affected": 1, "last_insert_rowid": 1})
+	})
+	defer srv.Close()
+
+	_, err := client.ExecuteStore(context.Background(), "store-1", map[string]interface{}{"sql": "insert into t(v) values (?)", "params": []interface{}{"x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCommandStore(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/stores/store-1/command") {
+			t.Fatalf("expected /stores/store-1/command, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{"result": "PONG"})
+	})
+	defer srv.Close()
+
+	_, err := client.CommandStore(context.Background(), "store-1", map[string]interface{}{"command": []string{"PING"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWithSandbox(t *testing.T) {
 	var paths []string
 	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {

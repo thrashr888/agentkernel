@@ -36,6 +36,13 @@ Download: [openapi.yaml](openapi.yaml)
 | GET | `/schedules` | List schedules |
 | POST | `/schedules` | Create schedule |
 | GET | `/schedules/{id}` | Get schedule by id |
+| GET | `/stores` | List durable stores |
+| POST | `/stores` | Create durable store |
+| GET | `/stores/{id}` | Get durable store by id |
+| DELETE | `/stores/{id}` | Delete durable store by id |
+| POST | `/stores/{id}/query` | Query durable store |
+| POST | `/stores/{id}/execute` | Execute write on durable store |
+| POST | `/stores/{id}/command` | Execute command on durable store (Redis) |
 
 ### Authentication
 

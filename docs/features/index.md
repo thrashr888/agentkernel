@@ -10,4 +10,5 @@ Key capabilities beyond basic sandbox management.
 - [Compliance Mapping](compliance-mapping.md) — SOC 2, HIPAA, and PCI DSS control mapping
 - [Durable Functions](durable-functions.md) — Checkpoint-based orchestration with deterministic replay
 - [Durable Objects](durable-objects.md) — Stateful sandbox actors with hibernation and alarms
+- [Durable Stores](durable-stores.md) — SQLite/Postgres storage bindings with shared query/execute contracts
 - [Durable Protocol](durable-protocol.md) — Wire protocol, SQLite schema, and event log format

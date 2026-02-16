@@ -1,8 +1,8 @@
-# Durable Sandboxes: Functions & Objects
+# Durable Sandboxes: Functions, Objects, and Stores
 
 > RFC for agentkernel-d11 epic. Covers server-owned orchestration runtime,
-> durable function orchestrations, and durable object actors — all built on
-> agentkernel sandboxes.
+> durable function orchestrations, durable object actors, and durable SQL
+> stores — all built on agentkernel sandboxes.
 
 ## Problem
 
@@ -135,6 +135,20 @@ gc_interval_hours = 6
 vacuum_threshold_percent = 20
 ```
 
+### 7. Durable Stores (SQLite + Postgres + MySQL + Redis)
+
+Durable Stores expose SQL storage through a shared control-plane API while
+preserving engine-specific behavior.
+
+- Common lifecycle API (`create/list/get/delete`) across SDKs.
+- Common execution API (`query` for reads, `execute` for writes).
+- Engine-native SQL (no forced SQL dialect abstraction).
+- Engine config remains explicit in `store.config`:
+  - SQLite: file path + local durability settings.
+  - Postgres: connection metadata / secret references.
+  - MySQL: connection metadata / secret references.
+  - Redis: host/db/credential metadata + command endpoint.
+
 ---
 
 ## Architecture
@@ -163,6 +177,7 @@ full schema. Summary:
 - `objects` — durable object instances (id, class, status, last_active).
 - `object_storage` — key-value pairs per object (the "durable" state).
 - `alarms` — scheduled object method calls.
+- `stores` — durable store metadata (kind, config, sandbox, timestamps).
 
 ### HTTP API Extensions
 
@@ -178,6 +193,13 @@ POST   /objects/:class/:id/call     # Call a method on an object
 GET    /objects                      # List objects (with filters)
 GET    /objects/:class/:id           # Get object status + storage
 DELETE /objects/:class/:id           # Delete object + storage
+
+GET    /stores                       # List durable stores
+POST   /stores                       # Create durable store
+GET    /stores/:id                   # Get durable store metadata
+DELETE /stores/:id                   # Delete durable store metadata
+POST   /stores/:id/query             # Read query
+POST   /stores/:id/execute           # Write statement
 ```
 
 ### SDK Wrappers
@@ -192,6 +214,10 @@ All 5 SDKs (Python, Node.js, Go, Rust, Swift) get thin wrappers:
 - **Durable Objects**: `client.object(class, id).call(method, args)`,
   `client.object(class, id).status()`,
   `client.object(class, id).delete()`.
+
+- **Durable Stores**: `client.stores.create(payload)`,
+  `client.stores.query(id, sql, params)`,
+  `client.stores.execute(id, sql, params)`.
 
 SDKs are **thin HTTP clients**. All orchestration logic runs server-side.
 
@@ -220,7 +246,13 @@ SDKs are **thin HTTP clients**. All orchestration logic runs server-side.
 - Alarms: scheduled method invocations via daemon
 - SDK wrappers (all 5)
 
-### Phase 4: Cron Scheduling (agentkernel-0me)
+### Phase 4: Durable Stores (agentkernel-d11.1)
+- Store API endpoints (`/stores`)
+- SQLite execution path (`query` + `execute`)
+- Postgres-compatible control-plane contract
+- SDK wrappers (all 5)
+
+### Phase 5: Cron Scheduling (agentkernel-0me)
 - Daemon-integrated cron scheduler
 - Cron expressions → orchestration triggers
 - Desktop app UI (agentkernel-ov4)
