@@ -96,6 +96,7 @@ allow = [
 help_text = """
 Description: Template 'terraform' sandbox profile.
 How to use: Start the sandbox and run your workflow inside /workspace.
+Example command: terraform version
 Binaries available: terraform, hcptf, aws, az, gcloud, gsutil
 Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
 """

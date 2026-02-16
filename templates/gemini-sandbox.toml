@@ -27,6 +27,7 @@ allow = ["generativelanguage.googleapis.com"]
 help_text = """
 Description: Template 'gemini-sandbox' sandbox profile.
 How to use: Start the sandbox and run your workflow inside /workspace.
+Example command: ls -la /workspace
 Binaries available: node, npm, npx
 Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
 """

@@ -166,7 +166,22 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "postgres:17-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
-            init_script: None,
+            init_script: Some(
+                concat!(
+                    "set -e\n",
+                    "if ! pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then\n",
+                    "  export POSTGRES_HOST_AUTH_METHOD=trust\n",
+                    "  nohup docker-entrypoint.sh postgres >/tmp/postgres.log 2>&1 &\n",
+                    "  for _ in $(seq 1 30); do\n",
+                    "    if pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then\n",
+                    "      break\n",
+                    "    fi\n",
+                    "    sleep 1\n",
+                    "  done\n",
+                    "fi\n",
+                )
+                .into(),
+            ),
             help_text: None,
             secrets: BTreeMap::new(),
         },
@@ -177,7 +192,21 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "mysql:8.4".into(),
             vcpus: 2,
             memory_mb: 1024,
-            init_script: None,
+            init_script: Some(
+                concat!(
+                    "set -e\n",
+                    "if ! mysqladmin ping -h 127.0.0.1 --silent >/dev/null 2>&1; then\n",
+                    "  MYSQL_ALLOW_EMPTY_PASSWORD=yes nohup docker-entrypoint.sh mysqld >/tmp/mysql.log 2>&1 &\n",
+                    "  for _ in $(seq 1 45); do\n",
+                    "    if mysqladmin ping -h 127.0.0.1 --silent >/dev/null 2>&1; then\n",
+                    "      break\n",
+                    "    fi\n",
+                    "    sleep 1\n",
+                    "  done\n",
+                    "fi\n",
+                )
+                .into(),
+            ),
             help_text: None,
             secrets: BTreeMap::new(),
         },
@@ -188,7 +217,15 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "redis:7-alpine".into(),
             vcpus: 1,
             memory_mb: 512,
-            init_script: None,
+            init_script: Some(
+                concat!(
+                    "set -e\n",
+                    "if ! redis-cli -h 127.0.0.1 -p 6379 ping >/dev/null 2>&1; then\n",
+                    "  redis-server --daemonize yes\n",
+                    "fi\n",
+                )
+                .into(),
+            ),
             help_text: None,
             secrets: BTreeMap::new(),
         },
@@ -415,27 +452,28 @@ fn builtin_templates() -> Vec<TemplateInfo> {
 
 fn default_help_text(template: &TemplateInfo) -> String {
     let usage = usage_for_template(&template.name);
+    let example = example_for_template(&template.name);
     let binaries = binaries_for_template(&template.name);
     let services_ports = services_ports_for_template(&template.name);
     format!(
-        "Description: {}\n\nHow to use: {}\n\nBinaries available: {}\n\nServices and ports: {}",
-        template.description, usage, binaries, services_ports
+        "Description: {}\n\nHow to use: {}\n\nExample command: {}\n\nBinaries available: {}\n\nServices and ports: {}",
+        template.description, usage, example, binaries, services_ports
     )
 }
 
 fn usage_for_template(name: &str) -> &'static str {
     match name {
         "sqlite" => {
-            "Start the sandbox, then run `sqlite /workspace/data/app.db` to create/query a local database."
+            "Start the sandbox, then run SQLite commands against a local database file."
         }
         "postgres" => {
-            "Start the sandbox, then run `psql -h 127.0.0.1 -U app -d app` from inside the sandbox. Note: use `psql`, not `pgsql`."
+            "PostgreSQL is started by the init script when the sandbox boots. Note: use `psql`, not `pgsql`."
         }
         "mysql" => {
-            "Start the sandbox, then run `mysql -h 127.0.0.1 -u app -p app` from inside the sandbox."
+            "MySQL is started by the init script when the sandbox boots."
         }
         "redis" => {
-            "Start the sandbox, then run `redis-cli -h 127.0.0.1 -p 6379 ping` from inside the sandbox."
+            "Redis is started by the init script when the sandbox boots."
         }
         "playwright" | "playwright-stealth" => {
             "Install Python deps in your project, then run Playwright scripts from /workspace."
@@ -447,6 +485,24 @@ fn usage_for_template(name: &str) -> &'static str {
             "Start the sandbox and open the mapped web port in your browser to access the Git UI."
         }
         _ => "Start the sandbox, attach with `agentkernel attach <name>`, and run commands in /workspace.",
+    }
+}
+
+fn example_for_template(name: &str) -> &'static str {
+    match name {
+        "sqlite" => r#"sqlite /workspace/data/app.db "CREATE TABLE IF NOT EXISTS t(id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t(v) VALUES ('hello'); SELECT * FROM t;""#,
+        "postgres" => r#"psql -h 127.0.0.1 -U postgres -d postgres -c "SELECT version();""#,
+        "mysql" => r#"mysql -h 127.0.0.1 -u root -e "SELECT VERSION();""#,
+        "redis" => "redis-cli -h 127.0.0.1 -p 6379 ping",
+        "node" | "node-fullstack" | "typescript" => "node -v",
+        "python" | "python-ml" => "python --version",
+        "go" => "go version",
+        "java" => "java -version",
+        "rust" | "rust-ci" => "cargo --version",
+        "ruby" => "ruby -v",
+        "dotnet" => "dotnet --version",
+        "terraform" => "terraform version",
+        _ => "ls -la /workspace",
     }
 }
 

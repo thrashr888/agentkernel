@@ -20,6 +20,7 @@ allow = ["pypi.org", "files.pythonhosted.org", "playwright.azureedge.net"]
 help_text = """
 Description: Template 'playwright' sandbox profile.
 How to use: Start the sandbox and run your workflow inside /workspace.
+Example command: ls -la /workspace
 Binaries available: python, pip
 Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
 """

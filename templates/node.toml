@@ -19,6 +19,7 @@ allow = ["registry.npmjs.org"]
 help_text = """
 Description: Template 'node' sandbox profile.
 How to use: Start the sandbox and run your workflow inside /workspace.
+Example command: node -v
 Binaries available: node, npm, npx
 Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
 """

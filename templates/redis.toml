@@ -4,6 +4,13 @@
 [sandbox]
 name = "redis"
 base_image = "redis:7-alpine"
+init_script = """
+set -e
+
+if ! redis-cli -h 127.0.0.1 -p 6379 ping >/dev/null 2>&1; then
+  redis-server --daemonize yes
+fi
+"""
 
 [resources]
 vcpus = 1
@@ -19,7 +26,8 @@ network = true
 [template]
 help_text = """
 Description: Template 'redis' sandbox profile.
-How to use: Start the sandbox, then run: redis-cli -h 127.0.0.1 -p 6379 ping
+How to use: Redis is started by the init script when the sandbox boots. If needed, start manually with: redis-server --daemonize yes
+Example command: redis-cli -h 127.0.0.1 -p 6379 ping
 Binaries available: redis-server, redis-cli
 Services and ports: Redis listens on 6379/tcp.
 """
