@@ -416,6 +416,35 @@ impl AgentKernel {
         .await
     }
 
+    /// Raise an external event for an orchestration.
+    pub async fn signal_orchestration(
+        &self,
+        id: &str,
+        payload: serde_json::Value,
+    ) -> Result<Orchestration> {
+        self.request(
+            reqwest::Method::POST,
+            &format!("/orchestrations/{id}/events"),
+            Some(&payload),
+        )
+        .await
+    }
+
+    /// Terminate an orchestration.
+    pub async fn terminate_orchestration(
+        &self,
+        id: &str,
+        payload: Option<serde_json::Value>,
+    ) -> Result<Orchestration> {
+        let body = payload.unwrap_or_else(|| serde_json::json!({}));
+        self.request(
+            reqwest::Method::POST,
+            &format!("/orchestrations/{id}/terminate"),
+            Some(&body),
+        )
+        .await
+    }
+
     /// List all objects.
     pub async fn list_objects(&self) -> Result<Vec<DurableObject>> {
         self.request(reqwest::Method::GET, "/objects", None::<&()>).await

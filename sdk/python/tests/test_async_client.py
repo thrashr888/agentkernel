@@ -75,6 +75,24 @@ class TestAsyncDurableOrchestrations:
         assert request is not None
         assert request.url.path == "/orchestrations/orch-1"
 
+    async def test_signal_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"accepted": True}})
+        async with make_client() as client:
+            await client.signal_orchestration("orch-1", {"name": "approval"})
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/orchestrations/orch-1/events"
+
+    async def test_terminate_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(
+            json={"success": True, "data": {"id": "orch-1", "status": "terminated"}},
+        )
+        async with make_client() as client:
+            await client.terminate_orchestration("orch-1", {"reason": "manual"})
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/orchestrations/orch-1/terminate"
+
 
 class TestAsyncDurableObjects:
     async def test_list_path(self, httpx_mock: HTTPXMock) -> None:

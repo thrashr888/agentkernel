@@ -221,6 +221,28 @@ final class AgentKernelTests: XCTestCase {
         XCTAssertEqual(result["id"] as? String, "orch-1")
     }
 
+    func testSignalOrchestrationPath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/orchestrations/orch-1/events")
+            XCTAssertEqual(request.httpMethod, "POST")
+            return jsonResponse(#"{"success":true,"data":{"accepted":true}}"#)
+        }
+        let result = try await client.signalOrchestration("orch-1", payload: ["name": "approval"])
+        XCTAssertEqual(result["accepted"] as? Bool, true)
+    }
+
+    func testTerminateOrchestrationPath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/orchestrations/orch-1/terminate")
+            XCTAssertEqual(request.httpMethod, "POST")
+            return jsonResponse(#"{"success":true,"data":{"id":"orch-1","status":"terminated"}}"#)
+        }
+        let result = try await client.terminateOrchestration("orch-1", payload: ["reason": "manual"])
+        XCTAssertEqual(result["status"] as? String, "terminated")
+    }
+
     func testListObjectsPath() async throws {
         let client = makeClient()
         MockURLProtocol.requestHandler = { request in

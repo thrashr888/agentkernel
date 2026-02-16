@@ -270,6 +270,42 @@ func TestGetOrchestration(t *testing.T) {
 	}
 }
 
+func TestSignalOrchestration(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/orchestrations/orch-1/events") {
+			t.Fatalf("expected /orchestrations/orch-1/events, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{"accepted": true})
+	})
+	defer srv.Close()
+
+	_, err := client.SignalOrchestration(context.Background(), "orch-1", map[string]interface{}{"name": "approval"})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTerminateOrchestration(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/orchestrations/orch-1/terminate") {
+			t.Fatalf("expected /orchestrations/orch-1/terminate, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{"id": "orch-1", "status": "terminated"})
+	})
+	defer srv.Close()
+
+	_, err := client.TerminateOrchestration(context.Background(), "orch-1", map[string]interface{}{"reason": "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestListObjects(t *testing.T) {
 	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/objects") {
