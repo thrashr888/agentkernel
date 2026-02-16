@@ -463,6 +463,69 @@ func (c *Client) GetSchedule(ctx context.Context, id string) (*Schedule, error) 
 	return &result, nil
 }
 
+// ListStores returns all durable stores.
+func (c *Client) ListStores(ctx context.Context) ([]DurableStore, error) {
+	var result []DurableStore
+	err := c.request(ctx, http.MethodGet, "/stores", nil, &result)
+	return result, err
+}
+
+// CreateStore creates a new durable store.
+func (c *Client) CreateStore(ctx context.Context, body CreateStoreRequest) (*DurableStore, error) {
+	var result DurableStore
+	err := c.request(ctx, http.MethodPost, "/stores", body, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// GetStore returns a durable store by id.
+func (c *Client) GetStore(ctx context.Context, id string) (*DurableStore, error) {
+	var result DurableStore
+	err := c.request(ctx, http.MethodGet, "/stores/"+id, nil, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// DeleteStore deletes a durable store by id.
+func (c *Client) DeleteStore(ctx context.Context, id string) error {
+	var result string
+	return c.request(ctx, http.MethodDelete, "/stores/"+id, nil, &result)
+}
+
+// QueryStore runs a read query against a durable store.
+func (c *Client) QueryStore(ctx context.Context, id string, body map[string]interface{}) (*DurableStoreQueryResult, error) {
+	var result DurableStoreQueryResult
+	err := c.request(ctx, http.MethodPost, "/stores/"+id+"/query", body, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// ExecuteStore runs a write statement against a durable store.
+func (c *Client) ExecuteStore(ctx context.Context, id string, body map[string]interface{}) (*DurableStoreExecuteResult, error) {
+	var result DurableStoreExecuteResult
+	err := c.request(ctx, http.MethodPost, "/stores/"+id+"/execute", body, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// CommandStore runs a command against a durable store (Redis-style engines).
+func (c *Client) CommandStore(ctx context.Context, id string, body map[string]interface{}) (*DurableStoreCommandResult, error) {
+	var result DurableStoreCommandResult
+	err := c.request(ctx, http.MethodPost, "/stores/"+id+"/command", body, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // ExtendTTL extends a sandbox's time-to-live. Returns the new expiry time.
 func (c *Client) ExtendTTL(ctx context.Context, name string, by string) (*ExtendTtlResponse, error) {
 	body := extendTtlRequest{By: by}

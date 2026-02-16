@@ -111,6 +111,20 @@ CREATE TABLE alarms (
 );
 
 CREATE INDEX idx_alarms_pending ON alarms(fire_at) WHERE fired = 0;
+
+-- Durable Stores
+CREATE TABLE stores (
+    id           TEXT PRIMARY KEY,        -- UUIDv7
+    name         TEXT NOT NULL UNIQUE,
+    kind         TEXT NOT NULL,           -- sqlite | postgres | mysql | redis
+    sandbox      TEXT,                    -- optional sandbox affinity
+    config_json  BLOB NOT NULL,           -- JSON-encoded engine config
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
+    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now'))
+);
+
+CREATE INDEX idx_stores_kind ON stores(kind);
+CREATE INDEX idx_stores_name ON stores(name);
 ```
 
 ## Event Types
@@ -377,15 +391,111 @@ exist. Auto-wakes the sandbox if hibernating.
 }
 ```
 
+### POST /stores
+
+Create a durable store definition.
+
+**Request:**
+```json
+{
+  "name": "agent-state",
+  "kind": "sqlite",
+  "sandbox": "build-runner",
+  "config": {
+    "path": ".agentkernel/stores/agent-state.db"
+  }
+}
+```
+
+**Response (201):**
+```json
+{
+  "id": "019abc12-1234-7def-89ab-0123456789ab",
+  "name": "agent-state",
+  "kind": "sqlite",
+  "sandbox": "build-runner",
+  "config": {
+    "path": ".agentkernel/stores/agent-state.db"
+  },
+  "created_at": "2026-02-16T00:00:00Z",
+  "updated_at": "2026-02-16T00:00:00Z"
+}
+```
+
+### POST /stores/:id/query
+
+Read rows from a durable store.
+
+**Request:**
+```json
+{
+  "sql": "SELECT id, name FROM users WHERE id > ?",
+  "params": [10]
+}
+```
+
+**Response (200):**
+```json
+{
+  "columns": ["id", "name"],
+  "rows": [
+    {"id": 11, "name": "alice"},
+    {"id": 12, "name": "bob"}
+  ],
+  "row_count": 2
+}
+```
+
+### POST /stores/:id/execute
+
+Execute a write statement.
+
+**Request:**
+```json
+{
+  "sql": "INSERT INTO users(name) VALUES (?)",
+  "params": ["alice"]
+}
+```
+
+**Response (200):**
+```json
+{
+  "rows_affected": 1,
+  "last_insert_rowid": 42
+}
+```
+
+### POST /stores/:id/command
+
+Execute command-oriented operations (Redis).
+
+**Request:**
+```json
+{
+  "command": ["SET", "session:123", "{\"ok\":true}"]
+}
+```
+
+**Response (200):**
+```json
+{
+  "result": "OK"
+}
+```
+
 ## Error Codes
 
 | HTTP Status | Error Code | Meaning |
 |---|---|---|
 | 404 | `orchestration_not_found` | Orchestration ID does not exist |
+| 404 | `store_not_found` | Store ID does not exist |
 | 404 | `object_not_found` | Object class/id does not exist |
 | 409 | `orchestration_already_completed` | Cannot signal/terminate a finished orchestration |
 | 409 | `non_determinism_error` | Replay detected non-deterministic orchestration code |
 | 422 | `invalid_orchestration_name` | Orchestration name not registered |
+| 422 | `invalid_store_kind` | Store kind is not sqlite/postgres/mysql/redis |
+| 422 | `invalid_store_command` | Invalid command payload for command endpoint |
 | 422 | `invalid_method` | Object method not found |
 | 503 | `sandbox_unavailable` | Cannot start sandbox for activity/object |
 | 504 | `activity_timeout` | Activity exceeded configured timeout |

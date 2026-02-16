@@ -335,6 +335,41 @@ public actor AgentKernel {
         try await requestObject(method: "GET", path: "/schedules/\(id)")
     }
 
+    /// List all durable stores.
+    public func listStores() async throws -> [DurableStore] {
+        try await requestObjectArray(method: "GET", path: "/stores")
+    }
+
+    /// Create a durable store.
+    public func createStore(_ payload: DurableStore) async throws -> DurableStore {
+        try await requestObject(method: "POST", path: "/stores", body: payload)
+    }
+
+    /// Get a durable store by identifier.
+    public func getStore(_ id: String) async throws -> DurableStore {
+        try await requestObject(method: "GET", path: "/stores/\(id)")
+    }
+
+    /// Delete a durable store by identifier.
+    public func deleteStore(_ id: String) async throws -> String {
+        try await request(method: "DELETE", path: "/stores/\(id)")
+    }
+
+    /// Run a read query against a durable store.
+    public func queryStore(_ id: String, payload: DurableStore) async throws -> DurableStoreQueryResult {
+        try await requestObject(method: "POST", path: "/stores/\(id)/query", body: payload)
+    }
+
+    /// Run a write statement against a durable store.
+    public func executeStore(_ id: String, payload: DurableStore) async throws -> DurableStoreExecuteResult {
+        try await requestObject(method: "POST", path: "/stores/\(id)/execute", body: payload)
+    }
+
+    /// Run a command against a durable store (Redis-style engines).
+    public func commandStore(_ id: String, payload: DurableStore) async throws -> DurableStoreCommandResult {
+        try await requestObject(method: "POST", path: "/stores/\(id)/command", body: payload)
+    }
+
     // MARK: - TTL Extension
 
     /// Extend a sandbox's time-to-live. Returns the new expiry time.

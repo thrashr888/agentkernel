@@ -347,6 +347,81 @@ final class AgentKernelTests: XCTestCase {
         XCTAssertEqual(result["id"] as? String, "sched-1")
     }
 
+    func testListStoresPath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/stores")
+            return jsonResponse(#"{"success":true,"data":[]}"#)
+        }
+        let result = try await client.listStores()
+        XCTAssertEqual(result.count, 0)
+    }
+
+    func testCreateStorePath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/stores")
+            XCTAssertEqual(request.httpMethod, "POST")
+            return jsonResponse(#"{"success":true,"data":{"id":"store-1"}}"#)
+        }
+        let result = try await client.createStore(["name": "store-1", "kind": "sqlite"])
+        XCTAssertEqual(result["id"] as? String, "store-1")
+    }
+
+    func testGetStorePath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/stores/store-1")
+            return jsonResponse(#"{"success":true,"data":{"id":"store-1"}}"#)
+        }
+        let result = try await client.getStore("store-1")
+        XCTAssertEqual(result["id"] as? String, "store-1")
+    }
+
+    func testDeleteStorePath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/stores/store-1")
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            return jsonResponse(#"{"success":true,"data":"deleted"}"#)
+        }
+        let result = try await client.deleteStore("store-1")
+        XCTAssertEqual(result, "deleted")
+    }
+
+    func testQueryStorePath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/stores/store-1/query")
+            XCTAssertEqual(request.httpMethod, "POST")
+            return jsonResponse(#"{"success":true,"data":{"row_count":1}}"#)
+        }
+        let result = try await client.queryStore("store-1", payload: ["sql": "select 1", "params": []])
+        XCTAssertEqual(result["row_count"] as? Int, 1)
+    }
+
+    func testExecuteStorePath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/stores/store-1/execute")
+            XCTAssertEqual(request.httpMethod, "POST")
+            return jsonResponse(#"{"success":true,"data":{"rows_affected":1}}"#)
+        }
+        let result = try await client.executeStore("store-1", payload: ["sql": "insert into t(v) values (?)", "params": ["x"]])
+        XCTAssertEqual(result["rows_affected"] as? Int, 1)
+    }
+
+    func testCommandStorePath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/stores/store-1/command")
+            XCTAssertEqual(request.httpMethod, "POST")
+            return jsonResponse(#"{"success":true,"data":{"result":"PONG"}}"#)
+        }
+        let result = try await client.commandStore("store-1", payload: ["command": ["PING"]])
+        XCTAssertEqual(result["result"] as? String, "PONG")
+    }
+
     // MARK: withSandbox
 
     func testWithSandboxCleansUp() async throws {

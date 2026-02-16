@@ -16,6 +16,10 @@ from .types import (
     DetachedCommand,
     DetachedLogsResponse,
     DurableObject,
+    DurableStore,
+    DurableStoreCommandResult,
+    DurableStoreExecuteResult,
+    DurableStoreQueryResult,
     ExecOptions,
     ExtendTtlResponse,
     FileReadResponse,
@@ -377,6 +381,40 @@ class AgentKernel:
     def get_schedule(self, schedule_id: str) -> Schedule:
         """Get a schedule by identifier."""
         return self._request("GET", f"/schedules/{schedule_id}")
+
+    def list_stores(self) -> list[DurableStore]:
+        """List durable stores."""
+        return self._request("GET", "/stores")
+
+    def create_store(self, store: DurableStore) -> DurableStore:
+        """Create a durable store."""
+        return self._request("POST", "/stores", json=store)
+
+    def get_store(self, store_id: str) -> DurableStore:
+        """Get a durable store by identifier."""
+        return self._request("GET", f"/stores/{store_id}")
+
+    def delete_store(self, store_id: str) -> str:
+        """Delete a durable store by identifier."""
+        return self._request("DELETE", f"/stores/{store_id}")
+
+    def query_store(
+        self, store_id: str, payload: dict[str, Any],
+    ) -> DurableStoreQueryResult:
+        """Run a read query against a durable store."""
+        return self._request("POST", f"/stores/{store_id}/query", json=payload)
+
+    def execute_store(
+        self, store_id: str, payload: dict[str, Any],
+    ) -> DurableStoreExecuteResult:
+        """Run a write statement against a durable store."""
+        return self._request("POST", f"/stores/{store_id}/execute", json=payload)
+
+    def command_store(
+        self, store_id: str, payload: dict[str, Any],
+    ) -> DurableStoreCommandResult:
+        """Run a command against a durable store (Redis-style engines)."""
+        return self._request("POST", f"/stores/{store_id}/command", json=payload)
 
     def extend_ttl(self, name: str, *, by: str) -> str | None:
         """Extend a sandbox's TTL. Returns the new expiry time."""

@@ -60,6 +60,13 @@ pub type DurableObjectCreateRequest = serde_json::Value;
 pub type Schedule = serde_json::Value;
 pub type ScheduleCreateRequest = serde_json::Value;
 
+/// Opaque durable store payload.
+pub type DurableStore = serde_json::Value;
+pub type DurableStoreCreateRequest = serde_json::Value;
+pub type DurableStoreQueryResult = serde_json::Value;
+pub type DurableStoreExecuteResult = serde_json::Value;
+pub type DurableStoreCommandResult = serde_json::Value;
+
 /// API response wrapper (internal).
 #[derive(Debug, Deserialize)]
 pub(crate) struct ApiResponse<T> {

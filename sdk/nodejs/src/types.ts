@@ -130,6 +130,13 @@ export type DurableObject = Record<string, unknown>;
 /** Opaque schedule payload/response body. */
 export type Schedule = Record<string, unknown>;
 
+/** Opaque durable store payload/response body. */
+export type DurableStore = Record<string, unknown>;
+export type CreateStoreRequest = Record<string, unknown>;
+export type DurableStoreQueryResponse = Record<string, unknown>;
+export type DurableStoreExecuteResponse = Record<string, unknown>;
+export type DurableStoreCommandResponse = Record<string, unknown>;
+
 /** Status of a detached command. */
 export type DetachedStatus = "running" | "completed" | "failed";
 

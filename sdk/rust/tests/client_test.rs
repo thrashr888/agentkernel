@@ -381,6 +381,140 @@ async fn get_schedule() {
 }
 
 #[tokio::test]
+async fn list_stores() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/stores"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": [{"id": "store-1"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let list = client.list_stores().await.unwrap();
+    assert_eq!(list.len(), 1);
+}
+
+#[tokio::test]
+async fn create_store() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/stores"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"id": "store-1"}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let store = client
+        .create_store(serde_json::json!({"name": "store-1", "kind": "sqlite"}))
+        .await
+        .unwrap();
+    assert_eq!(store["id"], "store-1");
+}
+
+#[tokio::test]
+async fn get_store() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/stores/store-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"id": "store-1"}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let store = client.get_store("store-1").await.unwrap();
+    assert_eq!(store["id"], "store-1");
+}
+
+#[tokio::test]
+async fn delete_store() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/stores/store-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": "deleted"
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let out = client.delete_store("store-1").await.unwrap();
+    assert_eq!(out, "deleted");
+}
+
+#[tokio::test]
+async fn query_store() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/stores/store-1/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"columns": ["id"], "rows": [{"id": 1}], "row_count": 1}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let out = client
+        .query_store("store-1", serde_json::json!({"sql": "select 1", "params": []}))
+        .await
+        .unwrap();
+    assert_eq!(out["row_count"], 1);
+}
+
+#[tokio::test]
+async fn execute_store() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/stores/store-1/execute"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"rows_affected": 1, "last_insert_rowid": 1}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let out = client
+        .execute_store(
+            "store-1",
+            serde_json::json!({"sql": "insert into t(v) values (?)", "params": ["x"]}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out["rows_affected"], 1);
+}
+
+#[tokio::test]
+async fn command_store() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/stores/store-1/command"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"result": "PONG"}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let out = client
+        .command_store("store-1", serde_json::json!({"command": ["PING"]}))
+        .await
+        .unwrap();
+    assert_eq!(out["result"], "PONG");
+}
+
+#[tokio::test]
 async fn remove_sandbox() {
     let server = MockServer::start().await;
     Mock::given(method("DELETE"))

@@ -172,6 +172,16 @@ agentkernel start error-app  # This will fail as expected
 
 **Purpose**: Validates that agentkernel handles invalid configurations gracefully
 
+### Durable Stores
+Create payload templates for durable store resources:
+
+- `examples/durable-stores/sqlite-store.json`
+- `examples/durable-stores/postgres-store.json`
+- `examples/durable-stores/mysql-store.json`
+- `examples/durable-stores/redis-store.json`
+
+See `examples/durable-stores/README.md` for `curl` examples.
+
 ## Configuration Schema
 
 Each `agentkernel.toml` defines:

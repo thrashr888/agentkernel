@@ -206,6 +206,65 @@ class TestDurableSchedules:
         assert request.url.path == "/schedules/sched-1"
 
 
+class TestDurableStores:
+    def test_list_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": []})
+        make_client().list_stores()
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/stores"
+
+    def test_create_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"id": "store-1"}})
+        make_client().create_store({"name": "store-1", "kind": "sqlite"})
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/stores"
+
+    def test_get_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"id": "store-1"}})
+        make_client().get_store("store-1")
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/stores/store-1"
+
+    def test_delete_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": "deleted"})
+        make_client().delete_store("store-1")
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/stores/store-1"
+
+    def test_query_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(
+            json={"success": True, "data": {"columns": ["id"], "rows": [{"id": 1}], "row_count": 1}},
+        )
+        make_client().query_store("store-1", {"sql": "select 1", "params": []})
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/stores/store-1/query"
+
+    def test_execute_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(
+            json={"success": True, "data": {"rows_affected": 1, "last_insert_rowid": 1}},
+        )
+        make_client().execute_store(
+            "store-1",
+            {"sql": "insert into t(v) values (?)", "params": ["x"]},
+        )
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/stores/store-1/execute"
+
+    def test_command_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"result": "PONG"}})
+        make_client().command_store("store-1", {"command": ["PING"]})
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/stores/store-1/command"
+
+
+
 class TestRemoveSandbox:
     def test_removes(self, httpx_mock: HTTPXMock) -> None:
         httpx_mock.add_response(json={"success": True, "data": "Sandbox removed"})

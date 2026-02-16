@@ -178,6 +178,71 @@ class TestAsyncDurableSchedules:
         assert request.url.path == "/schedules/sched-1"
 
 
+class TestAsyncDurableStores:
+    async def test_list_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": []})
+        async with make_client() as client:
+            await client.list_stores()
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/stores"
+
+    async def test_create_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"id": "store-1"}})
+        async with make_client() as client:
+            await client.create_store({"name": "store-1", "kind": "sqlite"})
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/stores"
+
+    async def test_get_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"id": "store-1"}})
+        async with make_client() as client:
+            await client.get_store("store-1")
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/stores/store-1"
+
+    async def test_delete_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": "deleted"})
+        async with make_client() as client:
+            await client.delete_store("store-1")
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/stores/store-1"
+
+    async def test_query_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(
+            json={"success": True, "data": {"columns": ["id"], "rows": [{"id": 1}], "row_count": 1}},
+        )
+        async with make_client() as client:
+            await client.query_store("store-1", {"sql": "select 1", "params": []})
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/stores/store-1/query"
+
+    async def test_execute_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(
+            json={"success": True, "data": {"rows_affected": 1, "last_insert_rowid": 1}},
+        )
+        async with make_client() as client:
+            await client.execute_store(
+                "store-1",
+                {"sql": "insert into t(v) values (?)", "params": ["x"]},
+            )
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/stores/store-1/execute"
+
+    async def test_command_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"result": "PONG"}})
+        async with make_client() as client:
+            await client.command_store("store-1", {"command": ["PING"]})
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/stores/store-1/command"
+
+
 class TestAsyncSandboxSession:
     async def test_auto_removes(self, httpx_mock: HTTPXMock) -> None:
         httpx_mock.add_response(
