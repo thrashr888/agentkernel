@@ -6,6 +6,30 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## [v0.14.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.14.0) — LLM Gateway, Secret Bindings & App Redesign
+
+_February 15, 2026_
+
+### Added
+
+- **LLM intercept layer** — HTTP proxy detects and intercepts LLM API calls (OpenAI, Anthropic, Google AI, Cohere, Mistral, Together AI, Groq, Fireworks AI) to track usage per sandbox; provider, model, and token counts recorded automatically
+- **LLM usage API** — `GET /llm/usage` returns aggregate usage across all sandboxes; `GET /llm/usage/{sandbox}` returns per-sandbox breakdown with provider, model, request count, streaming count, and token totals
+- **LLM usage in desktop app** — Dashboard shows compact usage bar (total requests, tokens, provider count); SandboxDetail Info tab displays per-model breakdown table
+- **Secret mappings in API responses** — `GET /sandboxes` and `GET /sandboxes/{name}` include `secret_mappings` (env var to target host) with actual values stripped
+- **Template secret mappings** — templates define `[secrets]` section mapping env vars to target API hosts; `init_script` support for post-creation setup
+- **Terraform quickstart template** — 10 secret bindings for cloud providers (AWS, Azure, GCP, HCP, TFE) plus init script installing Terraform CLI
+- **Secrets tab on SandboxDetail** — dedicated tab showing all secret bindings in a table
+- **Secrets count on Inspect tab** — shows "N bindings" linking to Secrets tab
+
+### Changed
+
+- **Dashboard redesign** — two-column layout with recent sandboxes (sorted by creation date) on the left, quick actions and agent quickstart on the right
+- **SandboxDetail redesign** — Docker Desktop-inspired layout with breadcrumb navigation, compact header, icon-only action buttons, flat table-based Inspect view, tabbed interface (Inspect, Secrets, Exec, Files, Logs)
+- **Sidebar connection status** — moved from page headers to sidebar footer with Wifi/WifiOff icon and app version display
+- **Removed redundant page headers** — sidebar navigation provides context
+
+---
+
 ## [v0.13.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.13.0) — CLI Restructure, Tray & Metrics
 
 _February 12, 2026_
