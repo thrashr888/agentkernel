@@ -6,6 +6,34 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## [v0.14.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.14.0) — LLM Gateway, Secret Bindings & App Redesign
+
+_February 15, 2026_
+
+### Added
+
+- **LLM intercept layer** — HTTP proxy now detects and intercepts LLM API calls (OpenAI, Anthropic, Google AI, Cohere, Mistral, Together AI, Groq, Fireworks AI) to track usage per sandbox; provider/model/token counts recorded automatically
+- **LLM usage API** — `GET /llm/usage` returns aggregate usage across all sandboxes; `GET /llm/usage/{sandbox}` returns per-sandbox breakdown with provider, model, request count, streaming count, and token totals
+- **LLM usage in desktop app** — Dashboard shows compact usage bar (total requests, tokens, provider count); SandboxDetail Info tab displays per-model breakdown table with token details
+- **Secret mappings in API responses** — `GET /sandboxes` and `GET /sandboxes/{name}` now include `secret_mappings` (env var → target host) with actual secret values stripped for security
+- **Template secret mappings** — templates can define `[secrets]` section mapping environment variables to target API hosts; `init_script` support for post-creation setup commands
+- **Terraform template** — new quickstart template with 10 secret bindings for cloud providers (AWS, Azure, GCP, HCP, TFE) plus init script that installs Terraform CLI
+- **Secrets tab on SandboxDetail** — dedicated tab showing all secret bindings with environment variable names and target hosts in a table view
+- **Secrets count on Inspect tab** — Inspect table shows "N bindings" count linking to the Secrets tab
+
+### Changed
+
+- **Dashboard redesign** — two-column layout with recent sandboxes (sorted by creation date) on the left, quick actions and agent quickstart on the right; compact LLM usage bar replaces old connection status block
+- **SandboxDetail redesign** — Docker Desktop-inspired layout with breadcrumb navigation, compact header with inline metadata, icon-only action buttons, flat table-based Inspect view, and tabbed interface (Inspect, Secrets, Exec, Files, Logs)
+- **Sidebar connection status** — moved from per-page header to sidebar footer with Wifi/WifiOff icon and app version display
+- **Removed page headers** — removed redundant title headers from Dashboard and other pages since sidebar navigation provides context
+
+### Fixed
+
+- **Secret mappings not loading** — fixed data flow from state files through `extract_secret_mappings()` to API responses; requires server rebuild to pick up new fields
+
+---
+
 ## [v0.13.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.13.0) — CLI Restructure, Tray & Metrics
 
 _February 12, 2026_

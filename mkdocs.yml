@@ -52,6 +52,9 @@ nav:
     - Secrets: features/secrets.md
     - Browser Automation: features/browser-automation.md
     - Desktop App: features/desktop-app.md
+    - Durable Protocol: features/durable-protocol.md
+    - Durable Functions: features/durable-functions.md
+    - Durable Objects: features/durable-objects.md
     - Compliance Mapping: features/compliance-mapping.md
   - Commands:
     - Overview: commands/index.md

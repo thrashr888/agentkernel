@@ -5,7 +5,7 @@
 
 - **Linux**: KVM-enabled host (most cloud VMs, bare metal)
 - **macOS**: Docker Desktop or Apple Containers (macOS 26+)
-- **Windows**: WSL2 with Docker (untested)
+- **Windows**: Not officially supported yet. Best-effort support is via WSL2 + Docker (container backends only). Native Windows hypervisor paths (for Firecracker/Hyperlight) are not yet validated.
 
 ## Quick Install
 
