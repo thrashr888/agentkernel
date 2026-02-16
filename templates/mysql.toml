@@ -1,0 +1,23 @@
+# MySQL sandbox template
+# MySQL server image for local development and testing.
+
+[sandbox]
+name = "mysql"
+base_image = "mysql:8.4"
+
+[resources]
+vcpus = 2
+memory_mb = 1024
+
+[security]
+profile = "moderate"
+network = true
+
+[ports]
+3306 = 3306
+
+[environment]
+MYSQL_DATABASE = "app"
+MYSQL_USER = "app"
+MYSQL_PASSWORD = "app"
+MYSQL_ROOT_PASSWORD = "root"

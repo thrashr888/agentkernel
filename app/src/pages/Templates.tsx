@@ -79,7 +79,14 @@ export function Templates() {
     {}
   );
 
-  const categoryOrder = ["Agent Sandboxes", "Infrastructure", "Languages", "Browser Automation", "Specialized"];
+  const categoryOrder = [
+    "Agent Sandboxes",
+    "Languages",
+    "Browser Automation",
+    "Infrastructure",
+    "Datastores",
+    "Specialized",
+  ];
   const sortedCategories = [
     ...categoryOrder.filter((c) => grouped[c]),
     ...Object.keys(grouped).filter((c) => !categoryOrder.includes(c)),

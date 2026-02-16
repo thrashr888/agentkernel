@@ -1,0 +1,17 @@
+# Redis sandbox template
+# Redis server image for local development and caching workloads.
+
+[sandbox]
+name = "redis"
+base_image = "redis:7-alpine"
+
+[resources]
+vcpus = 1
+memory_mb = 512
+
+[security]
+profile = "moderate"
+network = true
+
+[ports]
+6379 = 6379

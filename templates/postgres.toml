@@ -1,0 +1,22 @@
+# Postgres sandbox template
+# Postgres server image for local development and testing.
+
+[sandbox]
+name = "postgres"
+base_image = "postgres:17-alpine"
+
+[resources]
+vcpus = 2
+memory_mb = 1024
+
+[security]
+profile = "moderate"
+network = true
+
+[ports]
+5432 = 5432
+
+[environment]
+POSTGRES_DB = "app"
+POSTGRES_USER = "app"
+POSTGRES_PASSWORD = "app"
