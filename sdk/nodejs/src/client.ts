@@ -307,6 +307,30 @@ export class AgentKernel {
     );
   }
 
+  /** Raise an external event for an orchestration. */
+  async signalOrchestration(
+    id: string,
+    payload: Record<string, unknown>,
+  ): Promise<Orchestration> {
+    return this.request<Orchestration>(
+      "POST",
+      `/orchestrations/${encodeURIComponent(id)}/events`,
+      payload,
+    );
+  }
+
+  /** Terminate an orchestration. */
+  async terminateOrchestration(
+    id: string,
+    payload?: Record<string, unknown>,
+  ): Promise<Orchestration> {
+    return this.request<Orchestration>(
+      "POST",
+      `/orchestrations/${encodeURIComponent(id)}/terminate`,
+      payload ?? {},
+    );
+  }
+
   /** List all objects. */
   async listObjects(): Promise<DurableObject[]> {
     return this.request<DurableObject[]>("GET", "/objects");

@@ -156,6 +156,46 @@ async fn get_orchestration() {
 }
 
 #[tokio::test]
+async fn signal_orchestration() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/orchestrations/orch-1/events"))
+        .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"accepted": true}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let out = client
+        .signal_orchestration("orch-1", serde_json::json!({"name": "approval"}))
+        .await
+        .unwrap();
+    assert_eq!(out["accepted"], true);
+}
+
+#[tokio::test]
+async fn terminate_orchestration() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/orchestrations/orch-1/terminate"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"id": "orch-1", "status": "terminated"}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let out = client
+        .terminate_orchestration("orch-1", Some(serde_json::json!({"reason": "manual"})))
+        .await
+        .unwrap();
+    assert_eq!(out["status"], "terminated");
+}
+
+#[tokio::test]
 async fn list_objects() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

@@ -317,6 +317,24 @@ class AgentKernel:
         """Get an orchestration by identifier."""
         return self._request("GET", f"/orchestrations/{orchestration_id}")
 
+    def signal_orchestration(
+        self, orchestration_id: str, event: dict[str, Any],
+    ) -> Orchestration:
+        """Raise an external event for an orchestration."""
+        return self._request(
+            "POST", f"/orchestrations/{orchestration_id}/events", json=event,
+        )
+
+    def terminate_orchestration(
+        self, orchestration_id: str, payload: dict[str, Any] | None = None,
+    ) -> Orchestration:
+        """Terminate an orchestration."""
+        return self._request(
+            "POST",
+            f"/orchestrations/{orchestration_id}/terminate",
+            json=payload or {},
+        )
+
     def list_objects(self) -> list[DurableObject]:
         """List objects."""
         return self._request("GET", "/objects")

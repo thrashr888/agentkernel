@@ -182,6 +182,30 @@ describe("AgentKernel", () => {
     });
   });
 
+  describe("signalOrchestration", () => {
+    it("uses /orchestrations/{id}/events path", async () => {
+      server.use(
+        http.post(`${BASE_URL}/orchestrations/orch-1/events`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/orchestrations/orch-1/events");
+          return HttpResponse.json({ success: true, data: { accepted: true } });
+        }),
+      );
+      await client().signalOrchestration("orch-1", { name: "approval" });
+    });
+  });
+
+  describe("terminateOrchestration", () => {
+    it("uses /orchestrations/{id}/terminate path", async () => {
+      server.use(
+        http.post(`${BASE_URL}/orchestrations/orch-1/terminate`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/orchestrations/orch-1/terminate");
+          return HttpResponse.json({ success: true, data: { id: "orch-1", status: "terminated" } });
+        }),
+      );
+      await client().terminateOrchestration("orch-1", { reason: "manual" });
+    });
+  });
+
   describe("listObjects", () => {
     it("uses /objects path", async () => {
       server.use(

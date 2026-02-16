@@ -356,6 +356,26 @@ func (c *Client) GetOrchestration(ctx context.Context, id string) (*Orchestratio
 	return &result, nil
 }
 
+// SignalOrchestration raises an external event for an orchestration.
+func (c *Client) SignalOrchestration(ctx context.Context, id string, body map[string]interface{}) (*Orchestration, error) {
+	var result Orchestration
+	err := c.request(ctx, http.MethodPost, "/orchestrations/"+id+"/events", body, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// TerminateOrchestration terminates an orchestration.
+func (c *Client) TerminateOrchestration(ctx context.Context, id string, body map[string]interface{}) (*Orchestration, error) {
+	var result Orchestration
+	err := c.request(ctx, http.MethodPost, "/orchestrations/"+id+"/terminate", body, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // ListObjects returns all durable objects.
 func (c *Client) ListObjects(ctx context.Context) ([]DurableObject, error) {
 	var result []DurableObject

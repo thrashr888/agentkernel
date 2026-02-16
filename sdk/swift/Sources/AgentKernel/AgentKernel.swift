@@ -275,6 +275,16 @@ public actor AgentKernel {
         try await requestObject(method: "GET", path: "/orchestrations/\(id)")
     }
 
+    /// Raise an external event for an orchestration.
+    public func signalOrchestration(_ id: String, payload: Orchestration) async throws -> Orchestration {
+        try await requestObject(method: "POST", path: "/orchestrations/\(id)/events", body: payload)
+    }
+
+    /// Terminate an orchestration.
+    public func terminateOrchestration(_ id: String, payload: Orchestration = [:]) async throws -> Orchestration {
+        try await requestObject(method: "POST", path: "/orchestrations/\(id)/terminate", body: payload)
+    }
+
     /// List all objects.
     public func listObjects() async throws -> [DurableObject] {
         try await requestObjectArray(method: "GET", path: "/objects")

@@ -327,6 +327,24 @@ class AsyncAgentKernel:
         """Get an orchestration by identifier."""
         return await self._request("GET", f"/orchestrations/{orchestration_id}")
 
+    async def signal_orchestration(
+        self, orchestration_id: str, event: dict[str, Any],
+    ) -> Orchestration:
+        """Raise an external event for an orchestration."""
+        return await self._request(
+            "POST", f"/orchestrations/{orchestration_id}/events", json=event,
+        )
+
+    async def terminate_orchestration(
+        self, orchestration_id: str, payload: dict[str, Any] | None = None,
+    ) -> Orchestration:
+        """Terminate an orchestration."""
+        return await self._request(
+            "POST",
+            f"/orchestrations/{orchestration_id}/terminate",
+            json=payload or {},
+        )
+
     async def list_objects(self) -> list[DurableObject]:
         """List objects."""
         return await self._request("GET", "/objects")
