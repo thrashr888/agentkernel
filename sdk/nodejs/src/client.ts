@@ -289,6 +289,60 @@ export class AgentKernel {
     );
   }
 
+  /** List all orchestrations. */
+  async listOrchestrations(): Promise<Orchestration[]> {
+    return this.request<Orchestration[]>("GET", "/orchestrations");
+  }
+
+  /** Create a new orchestration. */
+  async createOrchestration(payload: CreateOrchestrationRequest): Promise<Orchestration> {
+    return this.request<Orchestration>("POST", "/orchestrations", payload);
+  }
+
+  /** Get info about an orchestration by identifier. */
+  async getOrchestration(id: string): Promise<Orchestration> {
+    return this.request<Orchestration>(
+      "GET",
+      `/orchestrations/${encodeURIComponent(id)}`,
+    );
+  }
+
+  /** List all objects. */
+  async listObjects(): Promise<DurableObject[]> {
+    return this.request<DurableObject[]>("GET", "/objects");
+  }
+
+  /** Create a new object. */
+  async createObject(payload: CreateObjectRequest): Promise<DurableObject> {
+    return this.request<DurableObject>("POST", "/objects", payload);
+  }
+
+  /** Get an object by identifier. */
+  async getObject(id: string): Promise<DurableObject> {
+    return this.request<DurableObject>(
+      "GET",
+      `/objects/${encodeURIComponent(id)}`,
+    );
+  }
+
+  /** List all schedules. */
+  async listSchedules(): Promise<Schedule[]> {
+    return this.request<Schedule[]>("GET", "/schedules");
+  }
+
+  /** Create a new schedule. */
+  async createSchedule(payload: CreateScheduleRequest): Promise<Schedule> {
+    return this.request<Schedule>("POST", "/schedules", payload);
+  }
+
+  /** Get a schedule by identifier. */
+  async getSchedule(id: string): Promise<Schedule> {
+    return this.request<Schedule>(
+      "GET",
+      `/schedules/${encodeURIComponent(id)}`,
+    );
+  }
+
   /**
    * Create a sandbox session with automatic cleanup.
    *

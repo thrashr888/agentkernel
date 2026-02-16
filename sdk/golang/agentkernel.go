@@ -329,6 +329,87 @@ func (c *Client) BatchRun(ctx context.Context, commands []BatchCommand) (*BatchR
 	return &result, nil
 }
 
+// ListOrchestrations returns all orchestrations.
+func (c *Client) ListOrchestrations(ctx context.Context) ([]Orchestration, error) {
+	var result []Orchestration
+	err := c.request(ctx, http.MethodGet, "/orchestrations", nil, &result)
+	return result, err
+}
+
+// CreateOrchestration creates a new orchestration.
+func (c *Client) CreateOrchestration(ctx context.Context, body CreateOrchestrationRequest) (*Orchestration, error) {
+	var result Orchestration
+	err := c.request(ctx, http.MethodPost, "/orchestrations", body, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// GetOrchestration returns an orchestration by id.
+func (c *Client) GetOrchestration(ctx context.Context, id string) (*Orchestration, error) {
+	var result Orchestration
+	err := c.request(ctx, http.MethodGet, "/orchestrations/"+id, nil, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// ListObjects returns all durable objects.
+func (c *Client) ListObjects(ctx context.Context) ([]DurableObject, error) {
+	var result []DurableObject
+	err := c.request(ctx, http.MethodGet, "/objects", nil, &result)
+	return result, err
+}
+
+// CreateObject creates a new durable object.
+func (c *Client) CreateObject(ctx context.Context, body CreateObjectRequest) (*DurableObject, error) {
+	var result DurableObject
+	err := c.request(ctx, http.MethodPost, "/objects", body, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// GetObject returns a durable object by id.
+func (c *Client) GetObject(ctx context.Context, id string) (*DurableObject, error) {
+	var result DurableObject
+	err := c.request(ctx, http.MethodGet, "/objects/"+id, nil, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// ListSchedules returns all schedules.
+func (c *Client) ListSchedules(ctx context.Context) ([]Schedule, error) {
+	var result []Schedule
+	err := c.request(ctx, http.MethodGet, "/schedules", nil, &result)
+	return result, err
+}
+
+// CreateSchedule creates a new schedule.
+func (c *Client) CreateSchedule(ctx context.Context, body CreateScheduleRequest) (*Schedule, error) {
+	var result Schedule
+	err := c.request(ctx, http.MethodPost, "/schedules", body, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// GetSchedule returns a schedule by id.
+func (c *Client) GetSchedule(ctx context.Context, id string) (*Schedule, error) {
+	var result Schedule
+	err := c.request(ctx, http.MethodGet, "/schedules/"+id, nil, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // ExtendTTL extends a sandbox's time-to-live. Returns the new expiry time.
 func (c *Client) ExtendTTL(ctx context.Context, name string, by string) (*ExtendTtlResponse, error) {
 	body := extendTtlRequest{By: by}

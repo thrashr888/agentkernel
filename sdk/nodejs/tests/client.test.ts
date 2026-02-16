@@ -146,6 +146,114 @@ describe("AgentKernel", () => {
     });
   });
 
+  describe("listOrchestrations", () => {
+    it("uses /orchestrations path", async () => {
+      server.use(
+        http.get(`${BASE_URL}/orchestrations`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/orchestrations");
+          return HttpResponse.json({ success: true, data: [] });
+        }),
+      );
+      await client().listOrchestrations();
+    });
+  });
+
+  describe("createOrchestration", () => {
+    it("uses /orchestrations path", async () => {
+      server.use(
+        http.post(`${BASE_URL}/orchestrations`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/orchestrations");
+          return HttpResponse.json({ success: true, data: { id: "orch-1" } });
+        }),
+      );
+      await client().createOrchestration({ foo: "bar" });
+    });
+  });
+
+  describe("getOrchestration", () => {
+    it("uses /orchestrations/{id} path", async () => {
+      server.use(
+        http.get(`${BASE_URL}/orchestrations/orch-1`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/orchestrations/orch-1");
+          return HttpResponse.json({ success: true, data: { id: "orch-1" } });
+        }),
+      );
+      await client().getOrchestration("orch-1");
+    });
+  });
+
+  describe("listObjects", () => {
+    it("uses /objects path", async () => {
+      server.use(
+        http.get(`${BASE_URL}/objects`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/objects");
+          return HttpResponse.json({ success: true, data: [] });
+        }),
+      );
+      await client().listObjects();
+    });
+  });
+
+  describe("createObject", () => {
+    it("uses /objects path", async () => {
+      server.use(
+        http.post(`${BASE_URL}/objects`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/objects");
+          return HttpResponse.json({ success: true, data: { id: "obj-1" } });
+        }),
+      );
+      await client().createObject({ foo: "bar" });
+    });
+  });
+
+  describe("getObject", () => {
+    it("uses /objects/{id} path", async () => {
+      server.use(
+        http.get(`${BASE_URL}/objects/obj-1`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/objects/obj-1");
+          return HttpResponse.json({ success: true, data: { id: "obj-1" } });
+        }),
+      );
+      await client().getObject("obj-1");
+    });
+  });
+
+  describe("listSchedules", () => {
+    it("uses /schedules path", async () => {
+      server.use(
+        http.get(`${BASE_URL}/schedules`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/schedules");
+          return HttpResponse.json({ success: true, data: [] });
+        }),
+      );
+      await client().listSchedules();
+    });
+  });
+
+  describe("createSchedule", () => {
+    it("uses /schedules path", async () => {
+      server.use(
+        http.post(`${BASE_URL}/schedules`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/schedules");
+          return HttpResponse.json({ success: true, data: { id: "sched-1" } });
+        }),
+      );
+      await client().createSchedule({ foo: "bar" });
+    });
+  });
+
+  describe("getSchedule", () => {
+    it("uses /schedules/{id} path", async () => {
+      server.use(
+        http.get(`${BASE_URL}/schedules/sched-1`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/schedules/sched-1");
+          return HttpResponse.json({ success: true, data: { id: "sched-1" } });
+        }),
+      );
+      await client().getSchedule("sched-1");
+    });
+  });
+
   describe("removeSandbox", () => {
     it("removes a sandbox", async () => {
       await expect(client().removeSandbox("my-sandbox")).resolves.toBeUndefined();

@@ -190,6 +190,99 @@ final class AgentKernelTests: XCTestCase {
         XCTAssertEqual(output.output, "total 0\n")
     }
 
+    func testListOrchestrationsPath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/orchestrations")
+            return jsonResponse(#"{"success":true,"data":[]}"#)
+        }
+        let result = try await client.listOrchestrations()
+        XCTAssertEqual(result.count, 0)
+    }
+
+    func testCreateOrchestrationPath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/orchestrations")
+            XCTAssertEqual(request.httpMethod, "POST")
+            return jsonResponse(#"{"success":true,"data":{"id":"orch-1"}}"#)
+        }
+        let result = try await client.createOrchestration(["id": "orch-1"])
+        XCTAssertEqual(result["id"] as? String, "orch-1")
+    }
+
+    func testGetOrchestrationPath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/orchestrations/orch-1")
+            return jsonResponse(#"{"success":true,"data":{"id":"orch-1"}}"#)
+        }
+        let result = try await client.getOrchestration("orch-1")
+        XCTAssertEqual(result["id"] as? String, "orch-1")
+    }
+
+    func testListObjectsPath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/objects")
+            return jsonResponse(#"{"success":true,"data":[]}"#)
+        }
+        let result = try await client.listObjects()
+        XCTAssertEqual(result.count, 0)
+    }
+
+    func testCreateObjectPath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/objects")
+            XCTAssertEqual(request.httpMethod, "POST")
+            return jsonResponse(#"{"success":true,"data":{"id":"obj-1"}}"#)
+        }
+        let result = try await client.createObject(["id": "obj-1"])
+        XCTAssertEqual(result["id"] as? String, "obj-1")
+    }
+
+    func testGetObjectPath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/objects/obj-1")
+            return jsonResponse(#"{"success":true,"data":{"id":"obj-1"}}"#)
+        }
+        let result = try await client.getObject("obj-1")
+        XCTAssertEqual(result["id"] as? String, "obj-1")
+    }
+
+    func testListSchedulesPath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/schedules")
+            return jsonResponse(#"{"success":true,"data":[]}"#)
+        }
+        let result = try await client.listSchedules()
+        XCTAssertEqual(result.count, 0)
+    }
+
+    func testCreateSchedulePath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/schedules")
+            XCTAssertEqual(request.httpMethod, "POST")
+            return jsonResponse(#"{"success":true,"data":{"id":"sched-1"}}"#)
+        }
+        let result = try await client.createSchedule(["id": "sched-1"])
+        XCTAssertEqual(result["id"] as? String, "sched-1")
+    }
+
+    func testGetSchedulePath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/schedules/sched-1")
+            return jsonResponse(#"{"success":true,"data":{"id":"sched-1"}}"#)
+        }
+        let result = try await client.getSchedule("sched-1")
+        XCTAssertEqual(result["id"] as? String, "sched-1")
+    }
+
     // MARK: withSandbox
 
     func testWithSandboxCleansUp() async throws {

@@ -8,3 +8,6 @@ Key capabilities beyond basic sandbox management.
 - [Desktop App](desktop-app.md) — Native macOS GUI for sandbox management
 - [Prometheus Metrics](metrics.md) — `/metrics` endpoint for Prometheus scraping
 - [Compliance Mapping](compliance-mapping.md) — SOC 2, HIPAA, and PCI DSS control mapping
+- [Durable Functions](durable-functions.md) — Checkpoint-based orchestration with deterministic replay
+- [Durable Objects](durable-objects.md) — Stateful sandbox actors with hibernation and alarms
+- [Durable Protocol](durable-protocol.md) — Wire protocol, SQLite schema, and event log format

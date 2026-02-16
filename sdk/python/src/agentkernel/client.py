@@ -15,12 +15,15 @@ from .types import (
     CreateSandboxOptions,
     DetachedCommand,
     DetachedLogsResponse,
+    DurableObject,
     ExecOptions,
     ExtendTtlResponse,
     FileReadResponse,
+    Orchestration,
     RunOptions,
     RunOutput,
     SandboxInfo,
+    Schedule,
     SecurityProfile,
     SnapshotMeta,
     StreamEvent,
@@ -301,6 +304,42 @@ class AgentKernel:
         """List detached commands in a sandbox."""
         data = self._request("GET", f"/sandboxes/{name}/exec/detached")
         return [DetachedCommand(**d) for d in data]
+
+    def list_orchestrations(self) -> list[Orchestration]:
+        """List orchestrations."""
+        return self._request("GET", "/orchestrations")
+
+    def create_orchestration(self, orchestration: Orchestration) -> Orchestration:
+        """Create a new orchestration."""
+        return self._request("POST", "/orchestrations", json=orchestration)
+
+    def get_orchestration(self, orchestration_id: str) -> Orchestration:
+        """Get an orchestration by identifier."""
+        return self._request("GET", f"/orchestrations/{orchestration_id}")
+
+    def list_objects(self) -> list[DurableObject]:
+        """List objects."""
+        return self._request("GET", "/objects")
+
+    def create_object(self, obj: DurableObject) -> DurableObject:
+        """Create a new object."""
+        return self._request("POST", "/objects", json=obj)
+
+    def get_object(self, object_id: str) -> DurableObject:
+        """Get an object by identifier."""
+        return self._request("GET", f"/objects/{object_id}")
+
+    def list_schedules(self) -> list[Schedule]:
+        """List schedules."""
+        return self._request("GET", "/schedules")
+
+    def create_schedule(self, schedule: Schedule) -> Schedule:
+        """Create a new schedule."""
+        return self._request("POST", "/schedules", json=schedule)
+
+    def get_schedule(self, schedule_id: str) -> Schedule:
+        """Get a schedule by identifier."""
+        return self._request("GET", f"/schedules/{schedule_id}")
 
     def extend_ttl(self, name: str, *, by: str) -> str | None:
         """Extend a sandbox's TTL. Returns the new expiry time."""

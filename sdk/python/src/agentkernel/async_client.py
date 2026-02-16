@@ -17,13 +17,16 @@ from .types import (
     DetachedCommand,
     DetachedLogsResponse,
     ExecOptions,
+    DurableObject,
     ExtendTtlResponse,
     FileReadResponse,
     RunOptions,
     RunOutput,
     SandboxInfo,
     SecurityProfile,
+    Orchestration,
     SnapshotMeta,
+    Schedule,
     StreamEvent,
 )
 
@@ -311,6 +314,42 @@ class AsyncAgentKernel:
         """List detached commands in a sandbox."""
         data = await self._request("GET", f"/sandboxes/{name}/exec/detached")
         return [DetachedCommand(**d) for d in data]
+
+    async def list_orchestrations(self) -> list[Orchestration]:
+        """List orchestrations."""
+        return await self._request("GET", "/orchestrations")
+
+    async def create_orchestration(self, orchestration: Orchestration) -> Orchestration:
+        """Create a new orchestration."""
+        return await self._request("POST", "/orchestrations", json=orchestration)
+
+    async def get_orchestration(self, orchestration_id: str) -> Orchestration:
+        """Get an orchestration by identifier."""
+        return await self._request("GET", f"/orchestrations/{orchestration_id}")
+
+    async def list_objects(self) -> list[DurableObject]:
+        """List objects."""
+        return await self._request("GET", "/objects")
+
+    async def create_object(self, obj: DurableObject) -> DurableObject:
+        """Create a new object."""
+        return await self._request("POST", "/objects", json=obj)
+
+    async def get_object(self, object_id: str) -> DurableObject:
+        """Get an object by identifier."""
+        return await self._request("GET", f"/objects/{object_id}")
+
+    async def list_schedules(self) -> list[Schedule]:
+        """List schedules."""
+        return await self._request("GET", "/schedules")
+
+    async def create_schedule(self, schedule: Schedule) -> Schedule:
+        """Create a new schedule."""
+        return await self._request("POST", "/schedules", json=schedule)
+
+    async def get_schedule(self, schedule_id: str) -> Schedule:
+        """Get a schedule by identifier."""
+        return await self._request("GET", f"/schedules/{schedule_id}")
 
     async def extend_ttl(self, name: str, *, by: str) -> str | None:
         """Extend a sandbox's TTL. Returns the new expiry time."""

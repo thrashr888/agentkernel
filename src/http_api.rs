@@ -27,6 +27,9 @@ use tokio::net::TcpListener;
 
 use crate::languages;
 use crate::opencode::OpenCodeState;
+use crate::orchestration_store::{
+    CreateOrchestration, OrchestrationStatus, OrchestrationStore, UpdateOrchestration,
+};
 use crate::permissions::SecurityProfile;
 use crate::secrets::{SecretBackend, SecretVault};
 use crate::validation;
@@ -148,6 +151,25 @@ struct ExecRequest {
     sudo: Option<bool>,
 }
 
+/// Request to create an orchestration.
+#[derive(Debug, Deserialize)]
+struct CreateOrchestrationRequest {
+    name: String,
+    #[serde(default)]
+    input: Option<serde_json::Value>,
+}
+
+/// Request to update orchestration state.
+#[derive(Debug, Deserialize)]
+struct UpdateOrchestrationRequest {
+    #[serde(default)]
+    status: Option<OrchestrationStatus>,
+    #[serde(default)]
+    output: Option<serde_json::Value>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
 /// Response for detached command logs
 #[derive(Debug, Serialize)]
 struct DetachedLogsResponse {
@@ -237,6 +259,8 @@ struct AppState {
     api_key: Option<String>,
     /// OpenCode API state
     opencode: Arc<OpenCodeState>,
+    /// Durable orchestration persistence store
+    orchestration_store: Option<Arc<OrchestrationStore>>,
     /// Enterprise configuration (when enterprise feature is enabled)
     #[cfg(feature = "enterprise")]
     enterprise_config: Option<crate::config::EnterpriseConfig>,
@@ -259,6 +283,7 @@ impl AppState {
         Self {
             api_key,
             opencode: Arc::new(OpenCodeState::new()),
+            orchestration_store: Self::init_orchestration_store(),
             #[cfg(feature = "enterprise")]
             enterprise_config,
             #[cfg(feature = "enterprise")]
@@ -275,6 +300,7 @@ impl AppState {
         Self {
             api_key,
             opencode: Arc::new(OpenCodeState::new()),
+            orchestration_store: Self::init_orchestration_store(),
             #[cfg(feature = "enterprise")]
             enterprise_config: None,
             #[cfg(feature = "enterprise")]
@@ -318,6 +344,26 @@ impl AppState {
 
     async fn get_manager(&self) -> Result<VmManager> {
         VmManager::new()
+    }
+
+    fn init_orchestration_store() -> Option<Arc<OrchestrationStore>> {
+        match OrchestrationStore::default() {
+            Ok(store) => Some(Arc::new(store)),
+            Err(e) => {
+                eprintln!("[durable] Failed to initialize orchestration store: {}", e);
+                None
+            }
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn orchestration_store(&self) -> Result<&Arc<OrchestrationStore>, Response<BoxBody>> {
+        self.orchestration_store.as_ref().ok_or_else(|| {
+            json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error("Durable orchestration storage unavailable"),
+            )
+        })
     }
 
     /// Check if a request is authenticated
@@ -494,6 +540,19 @@ async fn handle_request(
 
         // Batch run commands in parallel
         (Method::POST, ["batch", "run"]) => handle_batch_run(req, state).await,
+
+        // Durable orchestration scaffolding
+        (Method::POST, ["orchestrations"]) => handle_create_orchestration(req, state).await,
+        (Method::GET, ["orchestrations"]) => handle_list_orchestrations(state).await,
+        (Method::GET, ["orchestrations", orchestration_id]) => {
+            handle_get_orchestration(orchestration_id, state).await
+        }
+        (Method::PATCH, ["orchestrations", orchestration_id]) => {
+            handle_update_orchestration(req, orchestration_id, state).await
+        }
+        (Method::DELETE, ["orchestrations", orchestration_id]) => {
+            handle_delete_orchestration(orchestration_id, state).await
+        }
 
         // List sandboxes
         (Method::GET, ["sandboxes"]) => handle_list_sandboxes(state).await,
@@ -1035,6 +1094,146 @@ async fn handle_run_stream(req: Request<Incoming>, state: Arc<AppState>) -> Resp
     }
 
     sse_response(events)
+}
+
+async fn handle_create_orchestration(
+    req: Request<Incoming>,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let body: CreateOrchestrationRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    if body.name.trim().is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("name is required"),
+        );
+    }
+
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.create(CreateOrchestration {
+        name: body.name,
+        input: body.input,
+    }) {
+        Ok(record) => json_response(StatusCode::CREATED, &ApiResponse::success(record)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_list_orchestrations(state: Arc<AppState>) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.list(100, 0) {
+        Ok(records) => json_response(StatusCode::OK, &ApiResponse::success(records)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_get_orchestration(
+    orchestration_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.get(orchestration_id) {
+        Ok(Some(record)) => json_response(StatusCode::OK, &ApiResponse::success(record)),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Orchestration not found"),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_update_orchestration(
+    req: Request<Incoming>,
+    orchestration_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let body: UpdateOrchestrationRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    if body.status.is_none() && body.output.is_none() && body.error.is_none() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("at least one field must be provided"),
+        );
+    }
+
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.update(
+        orchestration_id,
+        UpdateOrchestration {
+            status: body.status,
+            output: body.output,
+            error: body.error,
+        },
+    ) {
+        Ok(Some(record)) => json_response(StatusCode::OK, &ApiResponse::success(record)),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Orchestration not found"),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_delete_orchestration(
+    orchestration_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.delete(orchestration_id) {
+        Ok(true) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success(serde_json::json!({
+                "deleted": true,
+                "id": orchestration_id,
+            })),
+        ),
+        Ok(false) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Orchestration not found"),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
 }
 
 async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {

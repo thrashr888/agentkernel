@@ -260,6 +260,51 @@ public actor AgentKernel {
         try await request(method: "GET", path: "/sandboxes/\(name)/exec/detached")
     }
 
+    /// List all orchestrations.
+    public func listOrchestrations() async throws -> [Orchestration] {
+        try await requestObjectArray(method: "GET", path: "/orchestrations")
+    }
+
+    /// Create a new orchestration.
+    public func createOrchestration(_ payload: Orchestration) async throws -> Orchestration {
+        try await requestObject(method: "POST", path: "/orchestrations", body: payload)
+    }
+
+    /// Get an orchestration by identifier.
+    public func getOrchestration(_ id: String) async throws -> Orchestration {
+        try await requestObject(method: "GET", path: "/orchestrations/\(id)")
+    }
+
+    /// List all objects.
+    public func listObjects() async throws -> [DurableObject] {
+        try await requestObjectArray(method: "GET", path: "/objects")
+    }
+
+    /// Create a new object.
+    public func createObject(_ payload: DurableObject) async throws -> DurableObject {
+        try await requestObject(method: "POST", path: "/objects", body: payload)
+    }
+
+    /// Get an object by identifier.
+    public func getObject(_ id: String) async throws -> DurableObject {
+        try await requestObject(method: "GET", path: "/objects/\(id)")
+    }
+
+    /// List all schedules.
+    public func listSchedules() async throws -> [Schedule] {
+        try await requestObjectArray(method: "GET", path: "/schedules")
+    }
+
+    /// Create a new schedule.
+    public func createSchedule(_ payload: Schedule) async throws -> Schedule {
+        try await requestObject(method: "POST", path: "/schedules", body: payload)
+    }
+
+    /// Get a schedule by identifier.
+    public func getSchedule(_ id: String) async throws -> Schedule {
+        try await requestObject(method: "GET", path: "/schedules/\(id)")
+    }
+
     // MARK: - TTL Extension
 
     /// Extend a sandbox's time-to-live. Returns the new expiry time.
@@ -334,6 +379,72 @@ public actor AgentKernel {
         path: String
     ) async throws -> T {
         try await request(method: method, path: path, body: nil as AnyEncodable?)
+    }
+
+    private func requestObject(
+        method: String,
+        path: String,
+        body: [String: Any]? = nil
+    ) async throws -> [String: Any] {
+        let url = URL(string: "\(config.baseURL)\(path)")!
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        applyHeaders(&req)
+        if let body {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+
+        let (data, response) = try await performRequest(req)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AgentKernelError.network(URLError(.badServerResponse))
+        }
+        if httpResponse.statusCode >= 400 {
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            throw errorFromStatus(httpResponse.statusCode, body: bodyText)
+        }
+
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        guard json["success"] as? Bool == true else {
+            throw AgentKernelError.server(json["error"] as? String ?? "Unknown error")
+        }
+        guard let result = json["data"] as? [String: Any] else {
+            throw AgentKernelError.server("Missing data field")
+        }
+        return result
+    }
+
+    private func requestObjectArray(
+        method: String,
+        path: String,
+        body: [String: Any]? = nil
+    ) async throws -> [[String: Any]] {
+        let url = URL(string: "\(config.baseURL)\(path)")!
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        applyHeaders(&req)
+        if let body {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+
+        let (data, response) = try await performRequest(req)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AgentKernelError.network(URLError(.badServerResponse))
+        }
+        if httpResponse.statusCode >= 400 {
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            throw errorFromStatus(httpResponse.statusCode, body: bodyText)
+        }
+
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        guard json["success"] as? Bool == true else {
+            throw AgentKernelError.server(json["error"] as? String ?? "Unknown error")
+        }
+        guard let result = json["data"] as? [[String: Any]] else {
+            throw AgentKernelError.server("Missing data field")
+        }
+        return result
     }
 
     private func request<T: Decodable, B: Encodable>(

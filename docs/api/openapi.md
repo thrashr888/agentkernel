@@ -21,6 +21,15 @@ Download: [openapi.yaml](openapi.yaml)
 | GET | `/sandboxes/by-uuid/{uuid}` | Get sandbox info by UUID |
 | DELETE | `/sandboxes/{name}` | Remove a sandbox |
 | POST | `/sandboxes/{name}/exec` | Execute command in sandbox |
+| GET | `/orchestrations` | List orchestrations |
+| POST | `/orchestrations` | Create orchestration |
+| GET | `/orchestrations/{id}` | Get orchestration by id |
+| GET | `/objects` | List objects |
+| POST | `/objects` | Create object |
+| GET | `/objects/{id}` | Get object by id |
+| GET | `/schedules` | List schedules |
+| POST | `/schedules` | Create schedule |
+| GET | `/schedules/{id}` | Get schedule by id |
 
 ### Authentication
 
