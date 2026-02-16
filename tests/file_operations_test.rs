@@ -43,8 +43,8 @@ fn unique_sandbox_name() -> String {
 
 /// Cleanup helper - stops and removes a sandbox
 fn cleanup_sandbox(name: &str) {
-    let _ = run_cmd(&["stop", name]);
-    let _ = run_cmd(&["remove", name]);
+    let _ = run_cmd(&["sandbox", "stop", name]);
+    let _ = run_cmd(&["sandbox", "remove", name]);
     // Also try to remove Docker container directly in case of partial state
     let _ = Command::new("docker")
         .args(["rm", "-f", &format!("agentkernel-{}", name)])
@@ -65,14 +65,15 @@ fn test_file_write_simple() {
     cleanup_sandbox(&name);
 
     // Setup: create and start sandbox
-    let (exit_code, _, stderr) = run_cmd(&["create", &name, "--backend", "docker"]);
+    let (exit_code, _, stderr) = run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
     assert_eq!(exit_code, 0, "Create failed: {}", stderr);
 
-    let (exit_code, _, stderr) = run_cmd(&["start", &name]);
+    let (exit_code, _, stderr) = run_cmd(&["sandbox", "start", &name]);
     assert_eq!(exit_code, 0, "Start failed: {}", stderr);
 
     // Write a file
     let (exit_code, _stdout, stderr) = run_cmd(&[
+        "sandbox",
         "cp",
         "--to",
         &name,
@@ -111,8 +112,8 @@ fn test_file_write_with_exec() {
     cleanup_sandbox(&name);
 
     // Setup: create and start sandbox
-    run_cmd(&["create", &name, "--backend", "docker"]);
-    run_cmd(&["start", &name]);
+    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "start", &name]);
 
     // Write a file using exec + echo (works in any sandbox)
     let (exit_code, _, stderr) = run_cmd(&[
@@ -150,8 +151,8 @@ fn test_file_write_multiline() {
     cleanup_sandbox(&name);
 
     // Setup
-    run_cmd(&["create", &name, "--backend", "docker"]);
-    run_cmd(&["start", &name]);
+    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "start", &name]);
 
     // Write a multiline file using heredoc
     let content = r#"line1
@@ -196,8 +197,8 @@ fn test_file_read_simple() {
     cleanup_sandbox(&name);
 
     // Setup
-    run_cmd(&["create", &name, "--backend", "docker"]);
-    run_cmd(&["start", &name]);
+    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "start", &name]);
 
     // Create a test file first
     let (exit_code, _, _) = run_cmd(&[
@@ -211,7 +212,8 @@ fn test_file_read_simple() {
     assert_eq!(exit_code, 0);
 
     // Read using cp command (if implemented)
-    let (exit_code, stdout, stderr) = run_cmd(&["cp", "--from", &name, "/tmp/read_test.txt", "-"]);
+    let (exit_code, stdout, stderr) =
+        run_cmd(&["sandbox", "cp", "--from", &name, "/tmp/read_test.txt", "-"]);
 
     if exit_code == 0 {
         assert!(
@@ -240,8 +242,8 @@ fn test_file_read_nonexistent() {
     cleanup_sandbox(&name);
 
     // Setup
-    run_cmd(&["create", &name, "--backend", "docker"]);
-    run_cmd(&["start", &name]);
+    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "start", &name]);
 
     // Try to read a nonexistent file
     let (exit_code, _, stderr) =
@@ -270,8 +272,8 @@ fn test_file_read_binary() {
     cleanup_sandbox(&name);
 
     // Setup
-    run_cmd(&["create", &name, "--backend", "docker"]);
-    run_cmd(&["start", &name]);
+    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "start", &name]);
 
     // Create a binary file (random bytes)
     let (exit_code, _, _) = run_cmd(&[
@@ -307,8 +309,8 @@ fn test_directory_create() {
     cleanup_sandbox(&name);
 
     // Setup
-    run_cmd(&["create", &name, "--backend", "docker"]);
-    run_cmd(&["start", &name]);
+    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "start", &name]);
 
     // Create a directory
     let (exit_code, _, _) = run_cmd(&["exec", &name, "--", "mkdir", "-p", "/tmp/testdir/subdir"]);
@@ -345,8 +347,8 @@ fn test_file_permissions() {
     cleanup_sandbox(&name);
 
     // Setup
-    run_cmd(&["create", &name, "--backend", "docker"]);
-    run_cmd(&["start", &name]);
+    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "start", &name]);
 
     // Create a script file
     let (exit_code, _, _) = run_cmd(&[
@@ -386,8 +388,8 @@ fn test_many_files() {
     cleanup_sandbox(&name);
 
     // Setup
-    run_cmd(&["create", &name, "--backend", "docker"]);
-    run_cmd(&["start", &name]);
+    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "start", &name]);
 
     // Create 100 files
     let (exit_code, _, stderr) = run_cmd(&[
@@ -433,8 +435,8 @@ fn test_large_file() {
     cleanup_sandbox(&name);
 
     // Setup
-    run_cmd(&["create", &name, "--backend", "docker"]);
-    run_cmd(&["start", &name]);
+    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "start", &name]);
 
     // Create a 1MB file
     let (exit_code, _, stderr) = run_cmd(&[
