@@ -175,6 +175,8 @@ pub async fn quickstart_agent(
         secrets,
         init_script: None,
         secret_mappings: std::collections::BTreeMap::new(),
+        created_from_template: None,
+        template_help_text: None,
     };
 
     client

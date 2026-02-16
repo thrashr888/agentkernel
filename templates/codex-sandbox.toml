@@ -21,3 +21,11 @@ profile = "moderate"
 
 [security.domains]
 allow = ["api.openai.com"]
+
+[template]
+help_text = """
+Description: Template 'codex-sandbox' sandbox profile.
+How to use: Start the sandbox and run your workflow inside /workspace.
+Binaries available: node, npm, npx
+Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
+"""

@@ -11,3 +11,11 @@ memory_mb = 512
 
 [security]
 profile = "moderate"
+
+[template]
+help_text = """
+Description: Template 'c' sandbox profile.
+How to use: Start the sandbox and run your workflow inside /workspace.
+Binaries available: gcc, g++, make
+Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
+"""

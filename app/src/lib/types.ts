@@ -8,6 +8,8 @@ export interface SandboxInfo {
   vcpus?: number;
   memory_mb?: number;
   created_at?: string;
+  created_from_template?: string;
+  template_help_text?: string;
   ip?: string;
   ports?: string[];
   secret_mappings?: Record<string, string>;
@@ -100,6 +102,8 @@ export interface CreateSandboxRequest {
   secrets?: string[];
   init_script?: string;
   secret_mappings?: Record<string, string>;
+  created_from_template?: string;
+  template_help_text?: string;
 }
 
 export interface ExecRequest {
@@ -123,6 +127,7 @@ export interface TemplateInfo {
   vcpus: number;
   memory_mb: number;
   init_script?: string;
+  help_text?: string;
   secrets?: Record<string, string>;
 }
 

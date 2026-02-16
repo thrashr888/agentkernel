@@ -14,3 +14,11 @@ profile = "moderate"
 
 [security.domains]
 allow = ["api.nuget.org"]
+
+[template]
+help_text = """
+Description: Template 'dotnet' sandbox profile.
+How to use: Start the sandbox and run your workflow inside /workspace.
+Binaries available: dotnet
+Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
+"""

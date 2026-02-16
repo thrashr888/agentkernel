@@ -14,3 +14,11 @@ profile = "moderate"
 
 [security.domains]
 allow = ["repo1.maven.org", "repo.maven.apache.org"]
+
+[template]
+help_text = """
+Description: Template 'java' sandbox profile.
+How to use: Start the sandbox and run your workflow inside /workspace.
+Binaries available: java, javac
+Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
+"""

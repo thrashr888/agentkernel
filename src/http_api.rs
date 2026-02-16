@@ -91,6 +91,12 @@ struct CreateRequest {
     /// Shell script to run inside sandbox after start (e.g., install CLIs)
     #[serde(default)]
     init_script: Option<String>,
+    /// Template name used to create this sandbox (for UI provenance).
+    #[serde(default)]
+    created_from_template: Option<String>,
+    /// Human help text from the selected template.
+    #[serde(default)]
+    template_help_text: Option<String>,
 }
 
 /// Request to write a file
@@ -347,6 +353,10 @@ struct SandboxInfo {
     memory_mb: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created_from_template: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    template_help_text: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     ports: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1924,6 +1934,8 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
                 vcpus: state_info.map(|s| s.vcpus),
                 memory_mb: state_info.map(|s| s.memory_mb),
                 created_at: state_info.map(|s| s.created_at.clone()),
+                created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
+                template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
                 ports,
                 proxy_port: state_info.and_then(|s| s.proxy_port),
                 secret_mappings: state_info
@@ -2068,6 +2080,21 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         );
     }
 
+    // Store template provenance/help text when provided by caller.
+    if (body.created_from_template.is_some() || body.template_help_text.is_some())
+        && let Err(e) = manager.set_template_metadata(
+            &body.name,
+            body.created_from_template.as_deref(),
+            body.template_help_text.as_deref(),
+        )
+    {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to set template metadata: {}", e)),
+        );
+    }
+
     // Resolve profile for start_with_permissions
     let perms = if let Some(ref profile_str) = body.profile {
         match resolve_profile(profile_str) {
@@ -2154,6 +2181,8 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             vcpus: Some(vcpus),
             memory_mb: Some(memory_mb),
             created_at: state_info.map(|s| s.created_at.clone()),
+            created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
+            template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
             ports: port_strings,
             proxy_port: state_info.and_then(|s| s.proxy_port),
             secret_mappings: extract_secret_mappings(&body.secrets),
@@ -2208,6 +2237,8 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                     vcpus: state_info.map(|s| s.vcpus),
                     memory_mb: state_info.map(|s| s.memory_mb),
                     created_at: state_info.map(|s| s.created_at.clone()),
+                    created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
+                    template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
                     ports,
                     proxy_port: state_info.and_then(|s| s.proxy_port),
                     secret_mappings: state_info
@@ -2274,6 +2305,8 @@ async fn handle_get_sandbox_by_uuid(uuid: &str, state: Arc<AppState>) -> Respons
             vcpus: Some(state_info.vcpus),
             memory_mb: Some(state_info.memory_mb),
             created_at: Some(state_info.created_at.clone()),
+            created_from_template: state_info.created_from_template.clone(),
+            template_help_text: state_info.template_help_text.clone(),
             ports,
             proxy_port: state_info.proxy_port,
             secret_mappings: extract_secret_mappings(&state_info.secret_bindings),
@@ -2833,6 +2866,8 @@ async fn handle_resize_sandbox(
             vcpus: Some(new_vcpus),
             memory_mb: Some(new_memory),
             created_at: state_info.map(|s| s.created_at.clone()),
+            created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
+            template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
             ports: result_ports,
             proxy_port: state_info.and_then(|s| s.proxy_port),
             uuid: state_info
@@ -3066,6 +3101,8 @@ async fn handle_restore_snapshot(
                     vcpus: Some(meta.vcpus),
                     memory_mb: Some(meta.memory_mb),
                     created_at: state_info.map(|s| s.created_at.clone()),
+                    created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
+                    template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
                     ports,
                     proxy_port: state_info.and_then(|s| s.proxy_port),
                     secret_mappings: state_info
@@ -5108,6 +5145,8 @@ mod tests {
             vcpus: None,
             memory_mb: None,
             created_at: None,
+            created_from_template: None,
+            template_help_text: None,
             ports: vec![],
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
@@ -5183,6 +5222,8 @@ mod tests {
             vcpus: None,
             memory_mb: None,
             created_at: None,
+            created_from_template: None,
+            template_help_text: None,
             ports: vec![],
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
@@ -5512,6 +5553,8 @@ mod tests {
             vcpus: Some(4),
             memory_mb: Some(2048),
             created_at: Some("2026-01-30T12:00:00Z".to_string()),
+            created_from_template: None,
+            template_help_text: None,
             ports: vec![],
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
@@ -5535,6 +5578,8 @@ mod tests {
             vcpus: None,
             memory_mb: None,
             created_at: None,
+            created_from_template: None,
+            template_help_text: None,
             ports: vec![],
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),

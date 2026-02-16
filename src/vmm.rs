@@ -110,6 +110,12 @@ pub struct SandboxState {
     /// Shell script to run inside the sandbox after start (from template init_script)
     #[serde(default)]
     pub init_script: Option<String>,
+    /// Template name this sandbox was created from (if any).
+    #[serde(default)]
+    pub created_from_template: Option<String>,
+    /// Human guidance text associated with the source template.
+    #[serde(default)]
+    pub template_help_text: Option<String>,
 }
 
 /// Status of a detached command
@@ -618,6 +624,8 @@ impl VmManager {
             secret_files: Vec::new(),
             proxy_port: None,
             init_script: None,
+            created_from_template: None,
+            template_help_text: None,
         };
 
         self.save_sandbox(&state)?;
@@ -697,6 +705,35 @@ impl VmManager {
                 .get_mut(name)
                 .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
             state.init_script = Some(script.to_string());
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    /// Set optional template metadata for a sandbox.
+    pub fn set_template_metadata(
+        &mut self,
+        name: &str,
+        created_from_template: Option<&str>,
+        template_help_text: Option<&str>,
+    ) -> Result<()> {
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.created_from_template = created_from_template
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string);
+            state.template_help_text = template_help_text
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string);
         }
         let state = self
             .sandboxes
@@ -1929,6 +1966,8 @@ mod tests {
             secret_files: Vec::new(),
             proxy_port: None,
             init_script: None,
+            created_from_template: None,
+            template_help_text: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -1980,6 +2019,8 @@ mod tests {
             secret_files: Vec::new(),
             proxy_port: None,
             init_script: None,
+            created_from_template: None,
+            template_help_text: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -2041,6 +2082,8 @@ mod tests {
             secret_files: Vec::new(),
             proxy_port: None,
             init_script: None,
+            created_from_template: None,
+            template_help_text: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -2118,6 +2161,8 @@ mod tests {
                 secret_files: Vec::new(),
                 proxy_port: None,
                 init_script: None,
+                created_from_template: None,
+                template_help_text: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();
