@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -192,3 +192,9 @@ class BrowserEvent(BaseModel):
     """Page name."""
     ts: str
     """ISO 8601 timestamp."""
+
+
+# New durable workflow resource types (shape intentionally opaque to match server contract).
+Orchestration = dict[str, Any]
+DurableObject = dict[str, Any]
+Schedule = dict[str, Any]

@@ -102,6 +102,168 @@ async fn get_sandbox() {
 }
 
 #[tokio::test]
+async fn list_orchestrations() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/orchestrations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": [{"id": "orch-1"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let list = client.list_orchestrations().await.unwrap();
+    assert_eq!(list.len(), 1);
+}
+
+#[tokio::test]
+async fn create_orchestration() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/orchestrations"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"id": "orch-1"}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let orch = client
+        .create_orchestration(serde_json::json!({"name": "orch-1"}))
+        .await
+        .unwrap();
+    assert_eq!(orch["id"], "orch-1");
+}
+
+#[tokio::test]
+async fn get_orchestration() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/orchestrations/orch-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"id": "orch-1"}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let orch = client.get_orchestration("orch-1").await.unwrap();
+    assert_eq!(orch["id"], "orch-1");
+}
+
+#[tokio::test]
+async fn list_objects() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/objects"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": [{"id": "obj-1"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let list = client.list_objects().await.unwrap();
+    assert_eq!(list.len(), 1);
+}
+
+#[tokio::test]
+async fn create_object() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/objects"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"id": "obj-1"}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let obj = client
+        .create_object(serde_json::json!({"name": "obj-1"}))
+        .await
+        .unwrap();
+    assert_eq!(obj["id"], "obj-1");
+}
+
+#[tokio::test]
+async fn get_object() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/objects/obj-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"id": "obj-1"}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let obj = client.get_object("obj-1").await.unwrap();
+    assert_eq!(obj["id"], "obj-1");
+}
+
+#[tokio::test]
+async fn list_schedules() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/schedules"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": [{"id": "sched-1"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let list = client.list_schedules().await.unwrap();
+    assert_eq!(list.len(), 1);
+}
+
+#[tokio::test]
+async fn create_schedule() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/schedules"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"id": "sched-1"}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let sched = client
+        .create_schedule(serde_json::json!({"name": "sched-1"}))
+        .await
+        .unwrap();
+    assert_eq!(sched["id"], "sched-1");
+}
+
+#[tokio::test]
+async fn get_schedule() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/schedules/sched-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"id": "sched-1"}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let sched = client.get_schedule("sched-1").await.unwrap();
+    assert_eq!(sched["id"], "sched-1");
+}
+
+#[tokio::test]
 async fn remove_sandbox() {
     let server = MockServer::start().await;
     Mock::given(method("DELETE"))

@@ -47,6 +47,18 @@ pub struct StreamEvent {
     pub data: serde_json::Value,
 }
 
+/// Opaque orchestration payload.
+pub type Orchestration = serde_json::Value;
+pub type OrchestrationCreateRequest = serde_json::Value;
+
+/// Opaque durable object payload.
+pub type DurableObject = serde_json::Value;
+pub type DurableObjectCreateRequest = serde_json::Value;
+
+/// Opaque schedule payload.
+pub type Schedule = serde_json::Value;
+pub type ScheduleCreateRequest = serde_json::Value;
+
 /// API response wrapper (internal).
 #[derive(Debug, Deserialize)]
 pub(crate) struct ApiResponse<T> {

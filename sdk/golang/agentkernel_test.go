@@ -221,6 +221,153 @@ func TestExecInSandbox(t *testing.T) {
 	}
 }
 
+func TestListOrchestrations(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/orchestrations") {
+			t.Fatalf("expected /orchestrations, got %s", r.URL.Path)
+		}
+		jsonOK(w, []map[string]interface{}{})
+	})
+	defer srv.Close()
+
+	_, err := client.ListOrchestrations(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateOrchestration(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/orchestrations") {
+			t.Fatalf("expected /orchestrations, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{"id": "orch-1"})
+	})
+	defer srv.Close()
+
+	body := CreateOrchestrationRequest{"foo": "bar"}
+	_, err := client.CreateOrchestration(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetOrchestration(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/orchestrations/orch-1") {
+			t.Fatalf("expected /orchestrations/orch-1, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{"id": "orch-1"})
+	})
+	defer srv.Close()
+
+	_, err := client.GetOrchestration(context.Background(), "orch-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListObjects(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/objects") {
+			t.Fatalf("expected /objects, got %s", r.URL.Path)
+		}
+		jsonOK(w, []map[string]interface{}{})
+	})
+	defer srv.Close()
+
+	_, err := client.ListObjects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateObject(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/objects") {
+			t.Fatalf("expected /objects, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{"id": "obj-1"})
+	})
+	defer srv.Close()
+
+	body := CreateObjectRequest{"foo": "bar"}
+	_, err := client.CreateObject(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetObject(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/objects/obj-1") {
+			t.Fatalf("expected /objects/obj-1, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{"id": "obj-1"})
+	})
+	defer srv.Close()
+
+	_, err := client.GetObject(context.Background(), "obj-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListSchedules(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/schedules") {
+			t.Fatalf("expected /schedules, got %s", r.URL.Path)
+		}
+		jsonOK(w, []map[string]interface{}{})
+	})
+	defer srv.Close()
+
+	_, err := client.ListSchedules(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateSchedule(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/schedules") {
+			t.Fatalf("expected /schedules, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{"id": "sched-1"})
+	})
+	defer srv.Close()
+
+	body := CreateScheduleRequest{"foo": "bar"}
+	_, err := client.CreateSchedule(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetSchedule(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/schedules/sched-1") {
+			t.Fatalf("expected /schedules/sched-1, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{"id": "sched-1"})
+	})
+	defer srv.Close()
+
+	_, err := client.GetSchedule(context.Background(), "sched-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWithSandbox(t *testing.T) {
 	var paths []string
 	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {

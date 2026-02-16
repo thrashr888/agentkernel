@@ -391,6 +391,78 @@ impl AgentKernel {
             .await
     }
 
+    /// List all orchestrations.
+    pub async fn list_orchestrations(&self) -> Result<Vec<Orchestration>> {
+        self.request(reqwest::Method::GET, "/orchestrations", None::<&()>)
+            .await
+    }
+
+    /// Create a new orchestration.
+    pub async fn create_orchestration(
+        &self,
+        payload: OrchestrationCreateRequest,
+    ) -> Result<Orchestration> {
+        self.request(reqwest::Method::POST, "/orchestrations", Some(&payload))
+            .await
+    }
+
+    /// Get a single orchestration by id.
+    pub async fn get_orchestration(&self, id: &str) -> Result<Orchestration> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/orchestrations/{id}"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// List all objects.
+    pub async fn list_objects(&self) -> Result<Vec<DurableObject>> {
+        self.request(reqwest::Method::GET, "/objects", None::<&()>).await
+    }
+
+    /// Create a new object.
+    pub async fn create_object(
+        &self,
+        payload: DurableObjectCreateRequest,
+    ) -> Result<DurableObject> {
+        self.request(reqwest::Method::POST, "/objects", Some(&payload)).await
+    }
+
+    /// Get a single object by id.
+    pub async fn get_object(&self, id: &str) -> Result<DurableObject> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/objects/{id}"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// List all schedules.
+    pub async fn list_schedules(&self) -> Result<Vec<Schedule>> {
+        self.request(reqwest::Method::GET, "/schedules", None::<&()>).await
+    }
+
+    /// Create a new schedule.
+    pub async fn create_schedule(
+        &self,
+        payload: ScheduleCreateRequest,
+    ) -> Result<Schedule> {
+        self.request(reqwest::Method::POST, "/schedules", Some(&payload))
+            .await
+    }
+
+    /// Get a single schedule by id.
+    pub async fn get_schedule(&self, id: &str) -> Result<Schedule> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/schedules/{id}"),
+            None::<&()>,
+        )
+        .await
+    }
+
     /// Extend a sandbox's time-to-live.
     pub async fn extend_ttl(&self, name: &str, by: &str) -> Result<ExtendTtlResponse> {
         let body = ExtendTtlRequest { by: by.to_string() };

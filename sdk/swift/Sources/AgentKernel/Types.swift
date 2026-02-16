@@ -168,6 +168,15 @@ public struct FileReadResponse: Codable, Sendable {
     public let size: Int
 }
 
+/// Opaque orchestration representation.
+public typealias Orchestration = [String: Any]
+
+/// Opaque durable object representation.
+public typealias DurableObject = [String: Any]
+
+/// Opaque schedule representation.
+public typealias Schedule = [String: Any]
+
 /// A command for batch execution.
 public struct BatchCommand: Encodable, Sendable {
     public let command: [String]

@@ -27,6 +27,8 @@ pub use error::{Error, Result};
 pub use types::{
     AriaSnapshot, BatchCommand, BatchFileWriteResponse, BatchResult, BatchRunResponse,
     BrowserEvent, CreateSandboxOptions, DetachedCommand, DetachedLogsResponse, DetachedStatus,
-    ExecOptions, ExtendTtlResponse, FileReadResponse, PageLink, PageResult, RunOptions, RunOutput,
-    SandboxInfo, SecurityProfile, SnapshotMeta, StreamEvent, TakeSnapshotOptions,
+    DurableObject, DurableObjectCreateRequest, ExecOptions, ExtendTtlResponse, FileReadResponse,
+    Orchestration, OrchestrationCreateRequest, PageLink, PageResult, RunOptions, RunOutput,
+    Schedule, ScheduleCreateRequest, SandboxInfo, SecurityProfile, SnapshotMeta, StreamEvent,
+    TakeSnapshotOptions,
 };

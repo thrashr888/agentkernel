@@ -122,6 +122,24 @@ type batchRunRequest struct {
 	Commands []BatchCommand `json:"commands"`
 }
 
+// Orchestration is an opaque durable orchestration payload.
+type Orchestration map[string]interface{}
+
+// CreateOrchestrationRequest is the request body for POST /orchestrations.
+type CreateOrchestrationRequest map[string]interface{}
+
+// DurableObject is an opaque durable object payload.
+type DurableObject map[string]interface{}
+
+// CreateObjectRequest is the request body for POST /objects.
+type CreateObjectRequest map[string]interface{}
+
+// Schedule is an opaque durable schedule payload.
+type Schedule map[string]interface{}
+
+// CreateScheduleRequest is the request body for POST /schedules.
+type CreateScheduleRequest map[string]interface{}
+
 // ExtendTtlResponse is the response from extending a sandbox's TTL.
 type ExtendTtlResponse struct {
 	ExpiresAt string `json:"expires_at,omitempty"`

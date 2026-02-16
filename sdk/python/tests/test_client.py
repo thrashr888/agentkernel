@@ -93,6 +93,75 @@ class TestGetSandbox:
             make_client().get_sandbox("missing")
 
 
+class TestDurableOrchestrations:
+    def test_list_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": []})
+        make_client().list_orchestrations()
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/orchestrations"
+
+    def test_create_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"id": "orch"}})
+        make_client().create_orchestration({"foo": "bar"})
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/orchestrations"
+
+    def test_get_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"id": "orch"}})
+        make_client().get_orchestration("orch-1")
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/orchestrations/orch-1"
+
+
+class TestDurableObjects:
+    def test_list_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": []})
+        make_client().list_objects()
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/objects"
+
+    def test_create_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"id": "obj"}})
+        make_client().create_object({"foo": "bar"})
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/objects"
+
+    def test_get_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"id": "obj"}})
+        make_client().get_object("obj-1")
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/objects/obj-1"
+
+
+class TestDurableSchedules:
+    def test_list_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": []})
+        make_client().list_schedules()
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/schedules"
+
+    def test_create_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"id": "sched"}})
+        make_client().create_schedule({"foo": "bar"})
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/schedules"
+
+    def test_get_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"id": "sched"}})
+        make_client().get_schedule("sched-1")
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/schedules/sched-1"
+
+
 class TestRemoveSandbox:
     def test_removes(self, httpx_mock: HTTPXMock) -> None:
         httpx_mock.add_response(json={"success": True, "data": "Sandbox removed"})
