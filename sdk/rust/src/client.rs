@@ -445,6 +445,52 @@ impl AgentKernel {
         .await
     }
 
+    /// List orchestration definitions.
+    pub async fn list_orchestration_definitions(&self) -> Result<Vec<OrchestrationDefinition>> {
+        self.request(
+            reqwest::Method::GET,
+            "/orchestrations/definitions",
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Register or update an orchestration definition.
+    pub async fn upsert_orchestration_definition(
+        &self,
+        payload: OrchestrationDefinition,
+    ) -> Result<OrchestrationDefinition> {
+        self.request(
+            reqwest::Method::POST,
+            "/orchestrations/definitions",
+            Some(&payload),
+        )
+        .await
+    }
+
+    /// Get an orchestration definition by name.
+    pub async fn get_orchestration_definition(
+        &self,
+        name: &str,
+    ) -> Result<OrchestrationDefinition> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/orchestrations/definitions/{name}"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Delete an orchestration definition by name.
+    pub async fn delete_orchestration_definition(&self, name: &str) -> Result<String> {
+        self.request(
+            reqwest::Method::DELETE,
+            &format!("/orchestrations/definitions/{name}"),
+            None::<&()>,
+        )
+        .await
+    }
+
     /// List all objects.
     pub async fn list_objects(&self) -> Result<Vec<DurableObject>> {
         self.request(reqwest::Method::GET, "/objects", None::<&()>).await

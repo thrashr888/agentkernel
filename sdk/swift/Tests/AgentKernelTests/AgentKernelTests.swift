@@ -243,6 +243,48 @@ final class AgentKernelTests: XCTestCase {
         XCTAssertEqual(result["status"] as? String, "terminated")
     }
 
+    func testListOrchestrationDefinitionsPath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/orchestrations/definitions")
+            return jsonResponse(#"{"success":true,"data":[]}"#)
+        }
+        let result = try await client.listOrchestrationDefinitions()
+        XCTAssertEqual(result.count, 0)
+    }
+
+    func testUpsertOrchestrationDefinitionPath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/orchestrations/definitions")
+            XCTAssertEqual(request.httpMethod, "POST")
+            return jsonResponse(#"{"success":true,"data":{"name":"deploy-pipeline"}}"#)
+        }
+        let result = try await client.upsertOrchestrationDefinition(["name": "deploy-pipeline"])
+        XCTAssertEqual(result["name"] as? String, "deploy-pipeline")
+    }
+
+    func testGetOrchestrationDefinitionPath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/orchestrations/definitions/deploy-pipeline")
+            return jsonResponse(#"{"success":true,"data":{"name":"deploy-pipeline"}}"#)
+        }
+        let result = try await client.getOrchestrationDefinition("deploy-pipeline")
+        XCTAssertEqual(result["name"] as? String, "deploy-pipeline")
+    }
+
+    func testDeleteOrchestrationDefinitionPath() async throws {
+        let client = makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url!.path, "/orchestrations/definitions/deploy-pipeline")
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            return jsonResponse(#"{"success":true,"data":"deleted"}"#)
+        }
+        let result = try await client.deleteOrchestrationDefinition("deploy-pipeline")
+        XCTAssertEqual(result, "deleted")
+    }
+
     func testListObjectsPath() async throws {
         let client = makeClient()
         MockURLProtocol.requestHandler = { request in

@@ -19,6 +19,7 @@ from .types import (
     ExecOptions,
     ExtendTtlResponse,
     FileReadResponse,
+    OrchestrationDefinition,
     Orchestration,
     RunOptions,
     RunOutput,
@@ -334,6 +335,24 @@ class AgentKernel:
             f"/orchestrations/{orchestration_id}/terminate",
             json=payload or {},
         )
+
+    def list_orchestration_definitions(self) -> list[OrchestrationDefinition]:
+        """List orchestration definitions."""
+        return self._request("GET", "/orchestrations/definitions")
+
+    def upsert_orchestration_definition(
+        self, definition: OrchestrationDefinition,
+    ) -> OrchestrationDefinition:
+        """Register or update an orchestration definition."""
+        return self._request("POST", "/orchestrations/definitions", json=definition)
+
+    def get_orchestration_definition(self, name: str) -> OrchestrationDefinition:
+        """Get an orchestration definition by name."""
+        return self._request("GET", f"/orchestrations/definitions/{name}")
+
+    def delete_orchestration_definition(self, name: str) -> str:
+        """Delete an orchestration definition by name."""
+        return self._request("DELETE", f"/orchestrations/definitions/{name}")
 
     def list_objects(self) -> list[DurableObject]:
         """List objects."""

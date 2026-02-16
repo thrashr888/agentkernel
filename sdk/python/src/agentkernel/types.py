@@ -196,5 +196,6 @@ class BrowserEvent(BaseModel):
 
 # New durable workflow resource types (shape intentionally opaque to match server contract).
 Orchestration = dict[str, Any]
+OrchestrationDefinition = dict[str, Any]
 DurableObject = dict[str, Any]
 Schedule = dict[str, Any]

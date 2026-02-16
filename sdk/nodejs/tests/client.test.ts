@@ -206,6 +206,54 @@ describe("AgentKernel", () => {
     });
   });
 
+  describe("listOrchestrationDefinitions", () => {
+    it("uses /orchestrations/definitions path", async () => {
+      server.use(
+        http.get(`${BASE_URL}/orchestrations/definitions`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/orchestrations/definitions");
+          return HttpResponse.json({ success: true, data: [] });
+        }),
+      );
+      await client().listOrchestrationDefinitions();
+    });
+  });
+
+  describe("upsertOrchestrationDefinition", () => {
+    it("uses /orchestrations/definitions path", async () => {
+      server.use(
+        http.post(`${BASE_URL}/orchestrations/definitions`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/orchestrations/definitions");
+          return HttpResponse.json({ success: true, data: { name: "deploy-pipeline" } });
+        }),
+      );
+      await client().upsertOrchestrationDefinition({ name: "deploy-pipeline" });
+    });
+  });
+
+  describe("getOrchestrationDefinition", () => {
+    it("uses /orchestrations/definitions/{name} path", async () => {
+      server.use(
+        http.get(`${BASE_URL}/orchestrations/definitions/deploy-pipeline`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/orchestrations/definitions/deploy-pipeline");
+          return HttpResponse.json({ success: true, data: { name: "deploy-pipeline" } });
+        }),
+      );
+      await client().getOrchestrationDefinition("deploy-pipeline");
+    });
+  });
+
+  describe("deleteOrchestrationDefinition", () => {
+    it("uses /orchestrations/definitions/{name} path", async () => {
+      server.use(
+        http.delete(`${BASE_URL}/orchestrations/definitions/deploy-pipeline`, ({ request }) => {
+          expect(new URL(request.url).pathname).toBe("/orchestrations/definitions/deploy-pipeline");
+          return HttpResponse.json({ success: true, data: "deleted" });
+        }),
+      );
+      await client().deleteOrchestrationDefinition("deploy-pipeline");
+    });
+  });
+
   describe("listObjects", () => {
     it("uses /objects path", async () => {
       server.use(

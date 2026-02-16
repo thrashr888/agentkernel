@@ -122,6 +122,7 @@ export interface BatchFileWriteResponse {
 
 /** Opaque orchestration payload/response body. */
 export type Orchestration = Record<string, unknown>;
+export type OrchestrationDefinition = Record<string, unknown>;
 
 /** Opaque object payload/response body. */
 export type DurableObject = Record<string, unknown>;

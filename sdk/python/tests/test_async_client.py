@@ -93,6 +93,38 @@ class TestAsyncDurableOrchestrations:
         assert request is not None
         assert request.url.path == "/orchestrations/orch-1/terminate"
 
+    async def test_list_definitions_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": []})
+        async with make_client() as client:
+            await client.list_orchestration_definitions()
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/orchestrations/definitions"
+
+    async def test_upsert_definition_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"name": "deploy-pipeline"}})
+        async with make_client() as client:
+            await client.upsert_orchestration_definition({"name": "deploy-pipeline"})
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/orchestrations/definitions"
+
+    async def test_get_definition_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": {"name": "deploy-pipeline"}})
+        async with make_client() as client:
+            await client.get_orchestration_definition("deploy-pipeline")
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/orchestrations/definitions/deploy-pipeline"
+
+    async def test_delete_definition_path(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(json={"success": True, "data": "deleted"})
+        async with make_client() as client:
+            await client.delete_orchestration_definition("deploy-pipeline")
+        request = httpx_mock.get_request()
+        assert request is not None
+        assert request.url.path == "/orchestrations/definitions/deploy-pipeline"
+
 
 class TestAsyncDurableObjects:
     async def test_list_path(self, httpx_mock: HTTPXMock) -> None:

@@ -28,7 +28,7 @@ pub use types::{
     AriaSnapshot, BatchCommand, BatchFileWriteResponse, BatchResult, BatchRunResponse,
     BrowserEvent, CreateSandboxOptions, DetachedCommand, DetachedLogsResponse, DetachedStatus,
     DurableObject, DurableObjectCreateRequest, ExecOptions, ExtendTtlResponse, FileReadResponse,
-    Orchestration, OrchestrationCreateRequest, PageLink, PageResult, RunOptions, RunOutput,
-    Schedule, ScheduleCreateRequest, SandboxInfo, SecurityProfile, SnapshotMeta, StreamEvent,
-    TakeSnapshotOptions,
+    Orchestration, OrchestrationCreateRequest, OrchestrationDefinition, PageLink, PageResult,
+    RunOptions, RunOutput, Schedule, ScheduleCreateRequest, SandboxInfo, SecurityProfile,
+    SnapshotMeta, StreamEvent, TakeSnapshotOptions,
 };

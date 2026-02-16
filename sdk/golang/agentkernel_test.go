@@ -306,6 +306,72 @@ func TestTerminateOrchestration(t *testing.T) {
 	}
 }
 
+func TestListOrchestrationDefinitions(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/orchestrations/definitions") {
+			t.Fatalf("expected /orchestrations/definitions, got %s", r.URL.Path)
+		}
+		jsonOK(w, []map[string]interface{}{})
+	})
+	defer srv.Close()
+
+	_, err := client.ListOrchestrationDefinitions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUpsertOrchestrationDefinition(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/orchestrations/definitions") {
+			t.Fatalf("expected /orchestrations/definitions, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{"name": "deploy-pipeline"})
+	})
+	defer srv.Close()
+
+	_, err := client.UpsertOrchestrationDefinition(context.Background(), OrchestrationDefinition{"name": "deploy-pipeline"})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetOrchestrationDefinition(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/orchestrations/definitions/deploy-pipeline") {
+			t.Fatalf("expected /orchestrations/definitions/deploy-pipeline, got %s", r.URL.Path)
+		}
+		jsonOK(w, map[string]interface{}{"name": "deploy-pipeline"})
+	})
+	defer srv.Close()
+
+	_, err := client.GetOrchestrationDefinition(context.Background(), "deploy-pipeline")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeleteOrchestrationDefinition(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "DELETE" {
+			t.Fatalf("expected DELETE, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/orchestrations/definitions/deploy-pipeline") {
+			t.Fatalf("expected /orchestrations/definitions/deploy-pipeline, got %s", r.URL.Path)
+		}
+		jsonOK(w, "deleted")
+	})
+	defer srv.Close()
+
+	err := client.DeleteOrchestrationDefinition(context.Background(), "deploy-pipeline")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestListObjects(t *testing.T) {
 	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/objects") {
