@@ -114,7 +114,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
                 "| tar -xz -C /usr/local/bin hcptf\n",
                 "curl -fsSL \"https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip\" -o /tmp/awscli.zip ",
                 "&& unzip -qo /tmp/awscli.zip -d /tmp && /tmp/aws/install --update >/dev/null 2>&1 && rm -rf /tmp/aws /tmp/awscli.zip\n",
-                "pip install --quiet azure-cli\n",
+                "curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash >/dev/null 2>&1\n",
                 "curl -fsSL \"https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-${GCLOUD_ARCH}.tar.gz\" ",
                 "| tar -xz -C /opt && /opt/google-cloud-sdk/install.sh --quiet --path-update=true >/dev/null 2>&1 ",
                 "&& ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud ",
@@ -132,6 +132,54 @@ fn builtin_templates() -> Vec<TemplateInfo> {
                 ("AZURE_TENANT_ID", "login.microsoftonline.com"),
                 ("GOOGLE_APPLICATION_CREDENTIALS", "oauth2.googleapis.com"),
             ]),
+        },
+        // ----- Datastores -----
+        TemplateInfo {
+            name: "sqlite".into(),
+            description: "SQLite tooling for embedded durable state".into(),
+            category: "Datastores".into(),
+            base_image: "alpine:3.20".into(),
+            vcpus: 1,
+            memory_mb: 512,
+            init_script: Some(
+                concat!(
+                    "set -e\n",
+                    "apk add --no-cache sqlite\n",
+                    "mkdir -p /workspace/data\n",
+                )
+                .into(),
+            ),
+            secrets: BTreeMap::new(),
+        },
+        TemplateInfo {
+            name: "postgres".into(),
+            description: "Postgres server image for local development".into(),
+            category: "Datastores".into(),
+            base_image: "postgres:17-alpine".into(),
+            vcpus: 2,
+            memory_mb: 1024,
+            init_script: None,
+            secrets: BTreeMap::new(),
+        },
+        TemplateInfo {
+            name: "mysql".into(),
+            description: "MySQL server image for local development".into(),
+            category: "Datastores".into(),
+            base_image: "mysql:8.4".into(),
+            vcpus: 2,
+            memory_mb: 1024,
+            init_script: None,
+            secrets: BTreeMap::new(),
+        },
+        TemplateInfo {
+            name: "redis".into(),
+            description: "Redis server image for caching and queues".into(),
+            category: "Datastores".into(),
+            base_image: "redis:7-alpine".into(),
+            vcpus: 1,
+            memory_mb: 512,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         // ----- Languages -----
         TemplateInfo {

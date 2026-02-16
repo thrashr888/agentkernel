@@ -1,0 +1,18 @@
+# SQLite sandbox template
+# Lightweight sandbox with sqlite3 CLI available.
+
+[sandbox]
+name = "sqlite"
+base_image = "alpine:3.20"
+init_script = """
+set -e
+apk add --no-cache sqlite
+mkdir -p /workspace/data
+"""
+
+[resources]
+vcpus = 1
+memory_mb = 512
+
+[security]
+profile = "moderate"

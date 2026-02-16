@@ -128,9 +128,16 @@ cross-language schema drift.
 
 ## Templates
 
-Starter payload templates are included at:
+Sandbox templates are included at:
 
-- `templates/store-sqlite.json`
-- `templates/store-postgres.json`
-- `templates/store-mysql.json`
-- `templates/store-redis.json`
+- `templates/sqlite.toml`
+- `templates/postgres.toml`
+- `templates/mysql.toml`
+- `templates/redis.toml`
+
+API payload examples for `POST /stores` are included at:
+
+- `examples/durable-stores/sqlite-store.json`
+- `examples/durable-stores/postgres-store.json`
+- `examples/durable-stores/mysql-store.json`
+- `examples/durable-stores/redis-store.json`

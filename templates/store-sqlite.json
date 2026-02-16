@@ -1,8 +1,0 @@
-{
-  "name": "sqlite-local",
-  "kind": "sqlite",
-  "sandbox": "default",
-  "config": {
-    "path": ".agentkernel/stores/sqlite-local.db"
-  }
-}

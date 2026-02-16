@@ -31,8 +31,8 @@ curl -fsSL "https://github.com/thrashr888/hcptf-cli/releases/download/v0.3.1/hcp
 curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip" -o /tmp/awscli.zip \
   && unzip -qo /tmp/awscli.zip -d /tmp && /tmp/aws/install --update >/dev/null 2>&1 && rm -rf /tmp/aws /tmp/awscli.zip
 
-# Install Azure CLI
-pip install --quiet azure-cli
+# Install Azure CLI (via Microsoft install script — much faster than pip)
+curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash >/dev/null 2>&1
 
 # Install Google Cloud SDK
 curl -fsSL "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-${GCLOUD_ARCH}.tar.gz" \
