@@ -4,9 +4,10 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::{Path, PathBuf};
 
-const MIGRATIONS: &[(i64, &str)] = &[(
-    1,
-    r#"
+const MIGRATIONS: &[(i64, &str)] = &[
+    (
+        1,
+        r#"
 CREATE TABLE IF NOT EXISTS orchestrations (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -23,7 +24,25 @@ CREATE INDEX IF NOT EXISTS idx_orchestrations_status
 CREATE INDEX IF NOT EXISTS idx_orchestrations_created_at
     ON orchestrations(created_at DESC);
 "#,
-)];
+    ),
+    (
+        2,
+        r#"
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    orchestration_id TEXT NOT NULL REFERENCES orchestrations(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    event_data TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    UNIQUE(orchestration_id, sequence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_orchestration_sequence
+    ON events(orchestration_id, sequence);
+"#,
+    ),
+];
 
 /// SQLite durable storage wrapper with schema bootstrap.
 #[derive(Debug, Clone)]
@@ -60,8 +79,23 @@ impl DurableStorage {
 
     /// Open a new SQLite connection.
     pub fn open_connection(&self) -> Result<Connection> {
-        Connection::open(&self.db_path)
-            .with_context(|| format!("failed to open sqlite db at {}", self.db_path.display()))
+        let conn = Connection::open(&self.db_path)
+            .with_context(|| format!("failed to open sqlite db at {}", self.db_path.display()))?;
+        Self::apply_pragmas(&conn)?;
+        Ok(conn)
+    }
+
+    fn apply_pragmas(conn: &Connection) -> Result<()> {
+        conn.execute_batch(
+            r#"
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA wal_autocheckpoint = 1000;
+PRAGMA busy_timeout = 5000;
+PRAGMA foreign_keys = ON;
+"#,
+        )
+        .context("failed to apply durable sqlite pragmas")
     }
 
     fn bootstrap(&self) -> Result<()> {
@@ -74,8 +108,6 @@ impl DurableStorage {
         let mut conn = self.open_connection()?;
         conn.execute_batch(
             r#"
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL
@@ -138,11 +170,20 @@ mod tests {
             .unwrap();
         assert_eq!(table_exists, 1);
 
+        let events_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'events'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(events_exists, 1);
+
         let migration_count: i64 = conn
             .query_row("SELECT COUNT(1) FROM schema_migrations", [], |row| {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(migration_count, 1);
+        assert_eq!(migration_count, 2);
     }
 }
