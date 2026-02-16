@@ -14,6 +14,12 @@ orchestration state without re-executing completed activities.
 The protocol is internal to the server. SDKs interact via the HTTP API; they
 never read or write the event log directly.
 
+Current implementation note: the executable server-side orchestration runtime
+currently supports a narrow directive contract (`activity`, `wait_for_event`,
+or no runtime directive). Richer orchestration definitions described in this
+document are planned protocol surface and may not all be active in the current
+runtime path.
+
 ## SQLite Schema
 
 Database location: `~/.local/share/agentkernel/durable.db`

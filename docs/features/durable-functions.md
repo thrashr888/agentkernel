@@ -19,28 +19,83 @@ after "clone" completes, it skips clone and resumes from "run tests."
 ```
 SDK                           Server                        Sandbox
  |                              |                              |
- |-- start(name, input) ------>|                              |
+ |-- start(name, input) ------->|                              |
  |                              |-- write OrchestratorStarted  |
  |                              |-- call orchestration fn      |
  |                              |   fn yields Activity("clone")|
  |                              |-- write ActivityScheduled    |
  |                              |-- create sandbox + exec ---->|
  |                              |                              |-- git clone
- |                              |<---- result --------------------|
+ |                              |<---- result -----------------|
  |                              |-- write ActivityCompleted    |
  |                              |   fn yields Activity("test") |
  |                              |-- write ActivityScheduled    |
  |                              |-- exec in sandbox ---------->|
  |                              |                              |-- cargo test
- |                              |<---- result --------------------|
+ |                              |<---- result -----------------|
  |                              |-- write ActivityCompleted    |
  |                              |-- write OrchestratorCompleted|
- |<-- 200 { status: Completed }|                              |
+ |<-- 200 { status: Completed } |                              |
 ```
 
 **Key point:** The orchestration function runs **server-side**, not in a
 sandbox. Only activities (the actual work) run in sandboxes. This keeps the
 orchestration lightweight and replayable.
+
+## Current Executable Runtime Contract
+
+This is the currently implemented server-side orchestration runtime contract.
+
+- A server-side processing loop continuously polls orchestration instances in
+  `Pending` and `Running` state and advances them.
+- Runtime behavior is selected from the orchestration `input` payload.
+
+### Supported Input Contracts (Current)
+
+1. Activity directive:
+```json
+{
+  "activity": {
+    "name": "optional-name",
+    "command": ["cmd", "arg1"],
+    "image": "optional-image",
+    "fast": true
+  }
+}
+```
+`name`, `image`, and `fast` are optional. `command` is required.
+
+2. Wait-for-event directive:
+```json
+{
+  "wait_for_event": "event-name"
+}
+```
+
+3. No runtime directives:
+- If neither `activity` nor `wait_for_event` is present, the orchestration
+  completes and returns its input unchanged as output.
+
+### Expected Event Transitions
+
+Lifecycle labels below map to durable protocol events:
+`Started`=`OrchestratorStarted`, `Scheduled`=`ActivityScheduled`,
+`Completed`=`OrchestratorCompleted`/`ActivityCompleted`,
+`Failed`=`OrchestratorFailed`/`ActivityFailed`,
+`Terminated`=`OrchestratorTerminated`.
+
+1. Activity path:
+- `Started` -> `Scheduled` -> `Completed` (success)
+- `Started` -> `Scheduled` -> `Failed` (activity failure)
+- `Terminated` can occur from `Pending` or `Running`
+
+2. Wait-for-event path:
+- `Started` -> `EventRaised` -> `EventConsumed` -> `Completed`
+- `Terminated` can occur while waiting
+
+3. No-directive path:
+- `Started` -> `Completed`
+- `Terminated` can occur before completion
 
 ## SDK API
 
