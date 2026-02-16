@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::time::{Duration, sleep};
 
 use crate::languages;
 use crate::opencode::OpenCodeState;
@@ -193,6 +194,30 @@ struct OrchestrationDetails {
     orchestration: OrchestrationRecord,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     history: Vec<OrchestrationEvent>,
+}
+
+/// Runtime input contract for a server-side orchestration.
+#[derive(Debug, Deserialize)]
+struct RuntimeOrchestrationInput {
+    #[serde(default)]
+    wait_for_event: Option<String>,
+    #[serde(default)]
+    activity: Option<RuntimeActivity>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeActivity {
+    #[serde(default = "default_activity_name")]
+    name: String,
+    command: Vec<String>,
+    #[serde(default)]
+    image: Option<String>,
+    #[serde(default = "default_fast")]
+    fast: bool,
+}
+
+fn default_activity_name() -> String {
+    "activity".to_string()
 }
 
 /// Response for detached command logs
@@ -3205,10 +3230,411 @@ async fn handle_policy_audit(req: Request<Incoming>, state: Arc<AppState>) -> Re
     }
 }
 
+fn spawn_orchestration_worker(state: Arc<AppState>) {
+    let Some(store) = state.orchestration_store.clone() else {
+        return;
+    };
+
+    tokio::spawn(async move {
+        eprintln!("[durable] orchestration worker started");
+        loop {
+            if let Err(e) = process_orchestrations_tick(store.clone()).await {
+                eprintln!("[durable] worker tick failed: {e}");
+            }
+            sleep(Duration::from_millis(750)).await;
+        }
+    });
+}
+
+async fn process_orchestrations_tick(store: Arc<OrchestrationStore>) -> Result<()> {
+    let records = store.list(200, 0)?;
+
+    for record in records {
+        if matches!(
+            record.status,
+            OrchestrationStatus::Pending | OrchestrationStatus::Running
+        ) && let Err(e) = process_orchestration_record(store.clone(), record).await
+        {
+            eprintln!("[durable] orchestration processing error: {e}");
+        }
+    }
+
+    Ok(())
+}
+
+async fn process_orchestration_record(
+    store: Arc<OrchestrationStore>,
+    record: OrchestrationRecord,
+) -> Result<()> {
+    let orchestration_id = record.id.clone();
+    let history = store.list_events(&orchestration_id, 5000, 0)?;
+
+    if let Some(output) = history.iter().rev().find_map(|event| {
+        if event.event_type != "OrchestratorCompleted" {
+            return None;
+        }
+        event
+            .data
+            .as_ref()
+            .and_then(|d| d.get("output"))
+            .cloned()
+            .or(Some(serde_json::Value::Null))
+    }) {
+        if record.status != OrchestrationStatus::Completed {
+            let _ = store.update(
+                &orchestration_id,
+                UpdateOrchestration {
+                    status: Some(OrchestrationStatus::Completed),
+                    output: Some(output),
+                    error: None,
+                },
+            )?;
+        }
+        return Ok(());
+    }
+
+    if let Some(error) = history.iter().rev().find_map(|event| {
+        if event.event_type != "OrchestratorFailed" {
+            return None;
+        }
+        event
+            .data
+            .as_ref()
+            .and_then(|d| d.get("error"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    }) {
+        if record.status != OrchestrationStatus::Failed {
+            let _ = store.update(
+                &orchestration_id,
+                UpdateOrchestration {
+                    status: Some(OrchestrationStatus::Failed),
+                    output: None,
+                    error: Some(error),
+                },
+            )?;
+        }
+        return Ok(());
+    }
+
+    let runtime_input = match parse_runtime_input(record.input.clone()) {
+        Ok(input) => input,
+        Err(parse_error) => {
+            let error = format!("invalid orchestration input: {parse_error}");
+            store.append_event(
+                &orchestration_id,
+                "OrchestratorFailed",
+                serde_json::json!({ "error": error }),
+            )?;
+            let _ = store.update(
+                &orchestration_id,
+                UpdateOrchestration {
+                    status: Some(OrchestrationStatus::Failed),
+                    output: None,
+                    error: Some(error),
+                },
+            )?;
+            return Ok(());
+        }
+    };
+
+    if let Some(wait_name) = runtime_input.wait_for_event.clone() {
+        if record.status == OrchestrationStatus::Pending {
+            let _ = store.update(
+                &orchestration_id,
+                UpdateOrchestration {
+                    status: Some(OrchestrationStatus::Running),
+                    output: None,
+                    error: None,
+                },
+            )?;
+        }
+
+        if !history.iter().any(|event| {
+            event.event_type == "EventConsumed"
+                && event
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(wait_name.as_str())
+        }) && let Some(signal_data) = history.iter().rev().find_map(|event| {
+            if event.event_type != "EventRaised" {
+                return None;
+            }
+            let payload = event.data.as_ref()?;
+            let name = payload.get("name")?.as_str()?;
+            if name == wait_name {
+                Some(
+                    payload
+                        .get("data")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            } else {
+                None
+            }
+        }) {
+            store.append_event(
+                &orchestration_id,
+                "EventConsumed",
+                serde_json::json!({ "name": wait_name }),
+            )?;
+            store.append_event(
+                &orchestration_id,
+                "OrchestratorCompleted",
+                serde_json::json!({ "output": signal_data }),
+            )?;
+            let _ = store.update(
+                &orchestration_id,
+                UpdateOrchestration {
+                    status: Some(OrchestrationStatus::Completed),
+                    output: Some(signal_data),
+                    error: None,
+                },
+            )?;
+        }
+
+        return Ok(());
+    }
+
+    if let Some(activity) = runtime_input.activity {
+        if activity.command.is_empty() {
+            let error = "activity.command must not be empty".to_string();
+            store.append_event(
+                &orchestration_id,
+                "OrchestratorFailed",
+                serde_json::json!({ "error": error }),
+            )?;
+            let _ = store.update(
+                &orchestration_id,
+                UpdateOrchestration {
+                    status: Some(OrchestrationStatus::Failed),
+                    output: None,
+                    error: Some(error),
+                },
+            )?;
+            return Ok(());
+        }
+
+        if record.status == OrchestrationStatus::Pending {
+            let _ = store.update(
+                &orchestration_id,
+                UpdateOrchestration {
+                    status: Some(OrchestrationStatus::Running),
+                    output: None,
+                    error: None,
+                },
+            )?;
+        }
+
+        if let Some(output) = history.iter().rev().find_map(|event| {
+            if event.event_type != "ActivityCompleted" {
+                return None;
+            }
+            event
+                .data
+                .as_ref()
+                .and_then(|d| d.get("output"))
+                .cloned()
+                .or(Some(serde_json::Value::Null))
+        }) {
+            if !history
+                .iter()
+                .any(|event| event.event_type == "OrchestratorCompleted")
+            {
+                store.append_event(
+                    &orchestration_id,
+                    "OrchestratorCompleted",
+                    serde_json::json!({ "output": output }),
+                )?;
+            }
+            let _ = store.update(
+                &orchestration_id,
+                UpdateOrchestration {
+                    status: Some(OrchestrationStatus::Completed),
+                    output: Some(output),
+                    error: None,
+                },
+            )?;
+            return Ok(());
+        }
+
+        if let Some(error) = history.iter().rev().find_map(|event| {
+            if event.event_type != "ActivityFailed" {
+                return None;
+            }
+            event
+                .data
+                .as_ref()
+                .and_then(|d| d.get("error"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        }) {
+            if !history
+                .iter()
+                .any(|event| event.event_type == "OrchestratorFailed")
+            {
+                store.append_event(
+                    &orchestration_id,
+                    "OrchestratorFailed",
+                    serde_json::json!({ "error": error }),
+                )?;
+            }
+            let _ = store.update(
+                &orchestration_id,
+                UpdateOrchestration {
+                    status: Some(OrchestrationStatus::Failed),
+                    output: None,
+                    error: Some(error),
+                },
+            )?;
+            return Ok(());
+        }
+
+        if !history
+            .iter()
+            .any(|event| event.event_type == "ActivityScheduled")
+        {
+            let sequence = history.last().map(|event| event.sequence + 1).unwrap_or(1);
+            let idempotency_key = format!(
+                "{}:{}:{}",
+                orchestration_id,
+                activity.name.clone(),
+                sequence
+            );
+            store.append_event(
+                &orchestration_id,
+                "ActivityScheduled",
+                serde_json::json!({
+                    "name": activity.name.clone(),
+                    "input": {
+                        "command": activity.command.clone(),
+                        "image": activity.image.clone(),
+                        "fast": activity.fast
+                    },
+                    "idempotency_key": idempotency_key
+                }),
+            )?;
+        }
+
+        match execute_runtime_activity(&activity).await {
+            Ok(output) => {
+                let output_json = serde_json::Value::String(output);
+                store.append_event(
+                    &orchestration_id,
+                    "ActivityCompleted",
+                    serde_json::json!({ "output": output_json }),
+                )?;
+                store.append_event(
+                    &orchestration_id,
+                    "OrchestratorCompleted",
+                    serde_json::json!({ "output": output_json }),
+                )?;
+                let _ = store.update(
+                    &orchestration_id,
+                    UpdateOrchestration {
+                        status: Some(OrchestrationStatus::Completed),
+                        output: Some(output_json),
+                        error: None,
+                    },
+                )?;
+            }
+            Err(e) => {
+                let error = e.to_string();
+                store.append_event(
+                    &orchestration_id,
+                    "ActivityFailed",
+                    serde_json::json!({
+                        "error": error,
+                        "attempt": 1,
+                        "retryable": false
+                    }),
+                )?;
+                store.append_event(
+                    &orchestration_id,
+                    "OrchestratorFailed",
+                    serde_json::json!({ "error": error }),
+                )?;
+                let _ = store.update(
+                    &orchestration_id,
+                    UpdateOrchestration {
+                        status: Some(OrchestrationStatus::Failed),
+                        output: None,
+                        error: Some(error),
+                    },
+                )?;
+            }
+        }
+
+        return Ok(());
+    }
+
+    let output = record.input.clone().unwrap_or(serde_json::Value::Null);
+    if !history
+        .iter()
+        .any(|event| event.event_type == "OrchestratorCompleted")
+    {
+        store.append_event(
+            &orchestration_id,
+            "OrchestratorCompleted",
+            serde_json::json!({ "output": output }),
+        )?;
+    }
+    let _ = store.update(
+        &orchestration_id,
+        UpdateOrchestration {
+            status: Some(OrchestrationStatus::Completed),
+            output: Some(output),
+            error: None,
+        },
+    )?;
+
+    Ok(())
+}
+
+fn parse_runtime_input(
+    input: Option<serde_json::Value>,
+) -> std::result::Result<RuntimeOrchestrationInput, serde_json::Error> {
+    match input {
+        Some(value) => serde_json::from_value(value),
+        None => serde_json::from_value(serde_json::json!({})),
+    }
+}
+
+async fn execute_runtime_activity(activity: &RuntimeActivity) -> Result<String> {
+    if activity.fast {
+        return VmManager::run_pooled(&activity.command).await;
+    }
+
+    let image = activity
+        .image
+        .clone()
+        .unwrap_or_else(|| languages::detect_image(&activity.command));
+    let mut manager = VmManager::new()?;
+    let sandbox_name = format!("orch-activity-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+    let perms = SecurityProfile::Moderate.permissions();
+
+    manager
+        .create(&sandbox_name, &image, 1, 512)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to create activity sandbox: {e}"))?;
+
+    if let Err(e) = manager.start_with_permissions(&sandbox_name, &perms).await {
+        let _ = manager.remove(&sandbox_name).await;
+        return Err(anyhow::anyhow!("failed to start activity sandbox: {e}"));
+    }
+
+    let result = manager.exec_cmd(&sandbox_name, &activity.command).await;
+    let _ = manager.remove(&sandbox_name).await;
+    result.map_err(|e| anyhow::anyhow!("activity execution failed: {e}"))
+}
+
 /// Run the HTTP API server (plain HTTP)
 #[allow(dead_code)]
 pub async fn run_server(addr: SocketAddr) -> Result<()> {
     let state = Arc::new(AppState::new());
+    spawn_orchestration_worker(state.clone());
     let listener = TcpListener::bind(addr).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
             anyhow::anyhow!(
@@ -3261,6 +3687,7 @@ pub async fn run_server_with_tls(
     };
 
     let state = Arc::new(AppState::new());
+    spawn_orchestration_worker(state.clone());
     let listener = TcpListener::bind(addr).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
             anyhow::anyhow!(
@@ -4012,6 +4439,8 @@ async fn handle_browser_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::durable_storage::DurableStorage;
+    use std::sync::Arc;
 
     // === ApiResponse tests ===
 
@@ -4260,6 +4689,80 @@ mod tests {
         let path = "/orchestrations/orch-1/terminate";
         let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         assert_eq!(segments, vec!["orchestrations", "orch-1", "terminate"]);
+    }
+
+    #[tokio::test]
+    async fn test_runtime_tick_auto_completes_orchestration() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(OrchestrationStore::new(
+            DurableStorage::new(temp.path().join("durable.db")).unwrap(),
+        ));
+
+        let created = store
+            .create(CreateOrchestration {
+                name: "auto-complete".to_string(),
+                input: Some(serde_json::json!({"hello": "world"})),
+            })
+            .unwrap();
+
+        process_orchestrations_tick(store.clone()).await.unwrap();
+
+        let updated = store.get(&created.id).unwrap().unwrap();
+        assert_eq!(updated.status, OrchestrationStatus::Completed);
+        assert_eq!(updated.output, Some(serde_json::json!({"hello": "world"})));
+
+        let history = store.list_events(&created.id, 50, 0).unwrap();
+        assert!(
+            history
+                .iter()
+                .any(|event| event.event_type == "OrchestratorCompleted")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_runtime_tick_wait_for_event() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(OrchestrationStore::new(
+            DurableStorage::new(temp.path().join("durable.db")).unwrap(),
+        ));
+
+        let created = store
+            .create(CreateOrchestration {
+                name: "wait-for-event".to_string(),
+                input: Some(serde_json::json!({"wait_for_event": "approval"})),
+            })
+            .unwrap();
+
+        process_orchestrations_tick(store.clone()).await.unwrap();
+        let running = store.get(&created.id).unwrap().unwrap();
+        assert_eq!(running.status, OrchestrationStatus::Running);
+
+        store
+            .append_event(
+                &created.id,
+                "EventRaised",
+                serde_json::json!({
+                    "name": "approval",
+                    "data": {"approved": true}
+                }),
+            )
+            .unwrap();
+
+        process_orchestrations_tick(store.clone()).await.unwrap();
+
+        let completed = store.get(&created.id).unwrap().unwrap();
+        assert_eq!(completed.status, OrchestrationStatus::Completed);
+        assert_eq!(
+            completed.output,
+            Some(serde_json::json!({"approved": true}))
+        );
+
+        let history = store.list_events(&created.id, 100, 0).unwrap();
+        assert!(
+            history
+                .iter()
+                .any(|event| event.event_type == "EventConsumed")
+        );
     }
 
     // === Extended CreateRequest tests ===
