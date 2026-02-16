@@ -13,17 +13,23 @@ import type {
   BatchCommand,
   BatchFileWriteResponse,
   BatchRunResponse,
+  CreateObjectRequest,
+  CreateOrchestrationRequest,
+  CreateScheduleRequest,
   CreateSandboxOptions,
   DetachedCommand,
   DetachedLogsResponse,
   ExecOptions,
   ExtendTtlOptions,
   ExtendTtlResponse,
+  DurableObject,
   FileReadResponse,
   FileWriteOptions,
   RunOptions,
   RunOutput,
+  Orchestration,
   SandboxInfo,
+  Schedule,
   SnapshotMeta,
   StreamEvent,
   TakeSnapshotOptions,
@@ -137,6 +143,14 @@ export class AgentKernel {
   /** Get info about a sandbox. */
   async getSandbox(name: string): Promise<SandboxInfo> {
     return this.request<SandboxInfo>("GET", `/sandboxes/${encodeURIComponent(name)}`);
+  }
+
+  /** Get info about a sandbox by UUID. */
+  async getSandboxByUuid(uuid: string): Promise<SandboxInfo> {
+    return this.request<SandboxInfo>(
+      "GET",
+      `/sandboxes/by-uuid/${encodeURIComponent(uuid)}`,
+    );
   }
 
   /** Remove a sandbox. */

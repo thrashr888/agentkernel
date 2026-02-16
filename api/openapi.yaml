@@ -175,6 +175,29 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /sandboxes/by-uuid/{uuid}:
+    parameters:
+      - $ref: '#/components/parameters/SandboxUUID'
+
+    get:
+      tags: [Sandboxes]
+      summary: Get sandbox details by UUID
+      description: Returns details about a specific sandbox by UUIDv7.
+      operationId: getSandboxByUuid
+      responses:
+        '200':
+          description: Sandbox details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
     delete:
       tags: [Sandboxes]
       summary: Delete a sandbox
@@ -630,10 +653,16 @@ components:
 
     SandboxInfo:
       type: object
+      required: [name, uuid, status, backend]
       properties:
         name:
           type: string
           example: "my-sandbox"
+        uuid:
+          type: string
+          format: uuid
+          description: Globally unique sandbox identifier (UUIDv7)
+          example: "019abc12-1234-7def-89ab-0123456789ab"
         status:
           type: string
           enum: [running, stopped]
@@ -897,6 +926,14 @@ components:
       schema:
         type: string
         pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]*$'
+    SandboxUUID:
+      name: uuid
+      in: path
+      required: true
+      description: Sandbox UUID (UUIDv7)
+      schema:
+        type: string
+        format: uuid
 
   responses:
     BadRequest:

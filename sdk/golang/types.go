@@ -41,6 +41,7 @@ type RunOutput struct {
 // SandboxInfo describes a sandbox.
 type SandboxInfo struct {
 	Name      string `json:"name"`
+	UUID      string `json:"uuid,omitempty"`
 	Status    string `json:"status"`
 	Backend   string `json:"backend,omitempty"`
 	Image     string `json:"image,omitempty"`

@@ -30,6 +30,8 @@ pub enum DetachedStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxInfo {
     pub name: String,
+    #[serde(default)]
+    pub uuid: Option<String>,
     pub status: String,
     pub backend: String,
     #[serde(default)]

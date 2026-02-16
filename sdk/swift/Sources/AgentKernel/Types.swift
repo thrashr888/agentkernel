@@ -93,6 +93,7 @@ public struct RunOutput: Codable, Sendable {
 /// Information about a sandbox.
 public struct SandboxInfo: Codable, Sendable {
     public let name: String
+    public let uuid: String?
     public let status: String
     public let backend: String
     public let image: String?

@@ -18,6 +18,7 @@ Download: [openapi.yaml](openapi.yaml)
 | GET | `/sandboxes` | List all sandboxes |
 | POST | `/sandboxes` | Create a sandbox |
 | GET | `/sandboxes/{name}` | Get sandbox info |
+| GET | `/sandboxes/by-uuid/{uuid}` | Get sandbox info by UUID |
 | DELETE | `/sandboxes/{name}` | Remove a sandbox |
 | POST | `/sandboxes/{name}/exec` | Execute command in sandbox |
 

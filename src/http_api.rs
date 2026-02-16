@@ -189,6 +189,7 @@ impl<T: Serialize> ApiResponse<T> {
 #[derive(Debug, Serialize)]
 struct SandboxInfo {
     name: String,
+    uuid: String,
     status: String,
     backend: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -499,6 +500,11 @@ async fn handle_request(
 
         // Create a sandbox
         (Method::POST, ["sandboxes"]) => handle_create_sandbox(req, state).await,
+
+        // Get sandbox info by UUID
+        (Method::GET, ["sandboxes", "by-uuid", uuid]) => {
+            handle_get_sandbox_by_uuid(uuid, state).await
+        }
 
         // Get sandbox info
         (Method::GET, ["sandboxes", name]) => handle_get_sandbox(name, state).await,
@@ -815,10 +821,24 @@ async fn handle_run(req: Request<Incoming>, state: Arc<AppState>) -> Response<Bo
             StatusCode::OK,
             &ApiResponse::success(RunResponse { output }),
         ),
-        Err(e) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &ApiResponse::<()>::error(e.to_string()),
-        ),
+        Err(e) => {
+            if let Some(cmd_err) = e.downcast_ref::<crate::vmm::CommandFailed>() {
+                json_response(
+                    StatusCode::CONFLICT,
+                    &serde_json::json!({
+                        "success": false,
+                        "error": cmd_err.to_string(),
+                        "exit_code": cmd_err.exit_code,
+                        "output": cmd_err.output,
+                    }),
+                )
+            } else {
+                json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(e.to_string()),
+                )
+            }
+        }
     }
 }
 
@@ -899,12 +919,23 @@ async fn handle_run_stream(req: Request<Incoming>, state: Arc<AppState>) -> Resp
                 ));
             }
             Err(e) => {
-                events.push((
-                    "error",
-                    serde_json::json!({
-                        "message": e.to_string()
-                    }),
-                ));
+                if let Some(cmd_err) = e.downcast_ref::<crate::vmm::CommandFailed>() {
+                    events.push((
+                        "done",
+                        serde_json::json!({
+                            "exit_code": cmd_err.exit_code,
+                            "success": false,
+                            "output": cmd_err.output
+                        }),
+                    ));
+                } else {
+                    events.push((
+                        "error",
+                        serde_json::json!({
+                            "message": e.to_string()
+                        }),
+                    ));
+                }
             }
         }
         return sse_response(events);
@@ -983,12 +1014,23 @@ async fn handle_run_stream(req: Request<Incoming>, state: Arc<AppState>) -> Resp
             ));
         }
         Err(e) => {
-            events.push((
-                "error",
-                serde_json::json!({
-                    "message": e.to_string()
-                }),
-            ));
+            if let Some(cmd_err) = e.downcast_ref::<crate::vmm::CommandFailed>() {
+                events.push((
+                    "done",
+                    serde_json::json!({
+                        "exit_code": cmd_err.exit_code,
+                        "success": false,
+                        "output": cmd_err.output
+                    }),
+                ));
+            } else {
+                events.push((
+                    "error",
+                    serde_json::json!({
+                        "message": e.to_string()
+                    }),
+                ));
+            }
         }
     }
 
@@ -1021,6 +1063,9 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
             };
             SandboxInfo {
                 name: name.to_string(),
+                uuid: state_info
+                    .map(|s| s.uuid.clone())
+                    .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
                 status: if running { "running" } else { "stopped" }.to_string(),
                 backend: backend
                     .map(|b| format!("{}", b))
@@ -1245,19 +1290,23 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
 
     let port_strings: Vec<String> = ports.iter().map(|p| p.to_string()).collect();
     let ip = manager.get_container_ip(&body.name);
+    let state_info = manager.get_state(&body.name);
     json_response(
         StatusCode::CREATED,
         &ApiResponse::success(SandboxInfo {
             name: body.name,
+            uuid: state_info
+                .map(|s| s.uuid.clone())
+                .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
             status: "running".to_string(),
             backend: format!("{}", manager.backend()),
             ip,
             image: Some(image.to_string()),
             vcpus: Some(vcpus),
             memory_mb: Some(memory_mb),
-            created_at: None,
+            created_at: state_info.map(|s| s.created_at.clone()),
             ports: port_strings,
-            proxy_port: None,
+            proxy_port: state_info.and_then(|s| s.proxy_port),
             secret_mappings: extract_secret_mappings(&body.secrets),
         }),
     )
@@ -1298,6 +1347,9 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                 StatusCode::OK,
                 &ApiResponse::success(SandboxInfo {
                     name: sandbox_name.to_string(),
+                    uuid: state_info
+                        .map(|s| s.uuid.clone())
+                        .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
                     status: if *running { "running" } else { "stopped" }.to_string(),
                     backend: backend
                         .map(|b| format!("{}", b))
@@ -1320,6 +1372,63 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
     json_response(
         StatusCode::NOT_FOUND,
         &ApiResponse::<()>::error("Sandbox not found"),
+    )
+}
+
+async fn handle_get_sandbox_by_uuid(uuid: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    if uuid::Uuid::parse_str(uuid).is_err() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("Invalid sandbox UUID"),
+        );
+    }
+
+    let manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let Some(state_info) = manager.get_state_by_uuid(uuid) else {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Sandbox not found"),
+        );
+    };
+
+    let running = manager.is_running(&state_info.name);
+    let ip = if running {
+        manager.get_container_ip(&state_info.name)
+    } else {
+        None
+    };
+    let ports = state_info
+        .ports
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
+    let backend = state_info.backend.unwrap_or_else(|| manager.backend());
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(SandboxInfo {
+            name: state_info.name.clone(),
+            uuid: state_info.uuid.clone(),
+            status: if running { "running" } else { "stopped" }.to_string(),
+            backend: format!("{}", backend),
+            ip,
+            image: Some(state_info.image.clone()),
+            vcpus: Some(state_info.vcpus),
+            memory_mb: Some(state_info.memory_mb),
+            created_at: Some(state_info.created_at.clone()),
+            ports,
+            proxy_port: state_info.proxy_port,
+            secret_mappings: extract_secret_mappings(&state_info.secret_bindings),
+        }),
     )
 }
 
@@ -1383,10 +1492,24 @@ async fn handle_exec_sandbox(
             StatusCode::OK,
             &ApiResponse::success(RunResponse { output }),
         ),
-        Err(e) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &ApiResponse::<()>::error(e.to_string()),
-        ),
+        Err(e) => {
+            if let Some(cmd_err) = e.downcast_ref::<crate::vmm::CommandFailed>() {
+                json_response(
+                    StatusCode::CONFLICT,
+                    &serde_json::json!({
+                        "success": false,
+                        "error": cmd_err.to_string(),
+                        "exit_code": cmd_err.exit_code,
+                        "output": cmd_err.output,
+                    }),
+                )
+            } else {
+                json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(e.to_string()),
+                )
+            }
+        }
     }
 }
 
@@ -1863,6 +1986,9 @@ async fn handle_resize_sandbox(
             created_at: state_info.map(|s| s.created_at.clone()),
             ports: result_ports,
             proxy_port: state_info.and_then(|s| s.proxy_port),
+            uuid: state_info
+                .map(|s| s.uuid.clone())
+                .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
             secret_mappings: state_info
                 .map(|s| extract_secret_mappings(&s.secret_bindings))
                 .unwrap_or_default(),
@@ -2081,6 +2207,9 @@ async fn handle_restore_snapshot(
                 StatusCode::OK,
                 &ApiResponse::success(SandboxInfo {
                     name: restore_name,
+                    uuid: state_info
+                        .map(|s| s.uuid.clone())
+                        .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
                     status: if running { "running" } else { "stopped" }.to_string(),
                     backend: meta.backend.clone(),
                     ip,
@@ -3585,6 +3714,7 @@ mod tests {
     fn test_sandbox_info_serialize() {
         let info = SandboxInfo {
             name: "test-sandbox".to_string(),
+            uuid: uuid::Uuid::now_v7().to_string(),
             status: "running".to_string(),
             backend: "docker".to_string(),
             ip: None,
@@ -3598,6 +3728,7 @@ mod tests {
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"name\":\"test-sandbox\""));
+        assert!(json.contains("\"uuid\":"));
         assert!(json.contains("\"status\":\"running\""));
     }
 
@@ -3658,6 +3789,7 @@ mod tests {
     fn test_json_response_created() {
         let info = SandboxInfo {
             name: "test".to_string(),
+            uuid: uuid::Uuid::now_v7().to_string(),
             status: "running".to_string(),
             backend: "docker".to_string(),
             ip: None,
@@ -3710,6 +3842,20 @@ mod tests {
         assert_eq!(segments, vec!["sandboxes", "test-123"]);
     }
 
+    #[test]
+    fn test_path_segments_sandbox_by_uuid() {
+        let path = "/sandboxes/by-uuid/019abc12-1234-7def-89ab-0123456789ab";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(
+            segments,
+            vec![
+                "sandboxes",
+                "by-uuid",
+                "019abc12-1234-7def-89ab-0123456789ab"
+            ]
+        );
+    }
+
     // === Extended CreateRequest tests ===
 
     #[test]
@@ -3756,6 +3902,7 @@ mod tests {
     fn test_sandbox_info_with_resources() {
         let info = SandboxInfo {
             name: "big".to_string(),
+            uuid: uuid::Uuid::now_v7().to_string(),
             status: "running".to_string(),
             backend: "docker".to_string(),
             ip: None,
@@ -3778,6 +3925,7 @@ mod tests {
     fn test_sandbox_info_skips_none_fields() {
         let info = SandboxInfo {
             name: "test".to_string(),
+            uuid: uuid::Uuid::now_v7().to_string(),
             status: "stopped".to_string(),
             backend: "docker".to_string(),
             ip: None,
