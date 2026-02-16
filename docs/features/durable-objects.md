@@ -19,7 +19,7 @@ persists between CI runs.
 ```
 SDK                          Server                        Sandbox (port 9333)
  |                             |                              |
- |-- call("counter","a",inc)->|                              |
+ |-- call("counter","a",inc)-> |                              |
  |                             |-- lookup (class=counter,id=a)|
  |                             |   status = Hibernating       |
  |                             |-- start sandbox ------------>|
@@ -33,7 +33,7 @@ SDK                          Server                        Sandbox (port 9333)
  |   (idle timeout elapses)    |                              |
  |                             |-- persist storage            |
  |                             |-- stop sandbox (hibernate)-->|
- |                             |   status = Hibernating        |
+ |                             |   status = Hibernating       |
 ```
 
 **Server-owned lifecycle:** The server decides when to start, hibernate,
@@ -45,7 +45,7 @@ handles method dispatch — the server forwards calls to it.
 ```
                           ┌──────────────┐
            call()         │              │     idle timeout
-  ┌────────────────────> Active  ────────────────────────┐
+  ┌────────────────────> Active  ─────────────────────────┐
   │                       │              │                │
   │                       └──────┬───────┘                v
   │                              │              ┌─────────────────┐
