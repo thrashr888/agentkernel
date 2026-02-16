@@ -1,0 +1,85 @@
+# Terraform sandbox template
+# Pre-configured for Terraform / OpenTofu with cloud provider CLIs
+# Includes: terraform, hcptf-cli, aws, az, gcloud
+
+[sandbox]
+name = "terraform"
+base_image = "python:3.12-slim"
+init_script = """
+set -e
+
+# Install system deps
+apt-get update -qq && apt-get install -y -qq curl unzip gnupg lsb-release >/dev/null 2>&1
+
+# Install Terraform
+curl -fsSL https://releases.hashicorp.com/terraform/1.14.5/terraform_1.14.5_linux_amd64.zip -o /tmp/tf.zip \
+  && unzip -qo /tmp/tf.zip -d /usr/local/bin && rm /tmp/tf.zip
+
+# Install hcptf-cli (HCP Terraform CLI)
+curl -fsSL https://github.com/thrashr888/hcptf-cli/releases/download/v0.3.1/hcptf-cli_0.3.1_linux_amd64.tar.gz \
+  | tar -xz -C /usr/local/bin hcptf-cli
+
+# Install AWS CLI v2
+curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscli.zip \
+  && unzip -qo /tmp/awscli.zip -d /tmp && /tmp/aws/install --update >/dev/null 2>&1 && rm -rf /tmp/aws /tmp/awscli.zip
+
+# Install Azure CLI
+pip install --quiet azure-cli
+
+# Install Google Cloud SDK
+curl -fsSL https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz \
+  | tar -xz -C /opt && /opt/google-cloud-sdk/install.sh --quiet --path-update=true >/dev/null 2>&1 \
+  && ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud \
+  && ln -sf /opt/google-cloud-sdk/bin/gsutil /usr/local/bin/gsutil
+"""
+
+[secrets]
+TFE_TOKEN = "app.terraform.io"
+HCP_CLIENT_ID = "api.hashicorp.cloud"
+HCP_CLIENT_SECRET = "api.hashicorp.cloud"
+AWS_ACCESS_KEY_ID = "sts.amazonaws.com"
+AWS_SECRET_ACCESS_KEY = "sts.amazonaws.com"
+AWS_SESSION_TOKEN = "sts.amazonaws.com"
+AZURE_CLIENT_ID = "login.microsoftonline.com"
+AZURE_CLIENT_SECRET = "login.microsoftonline.com"
+AZURE_TENANT_ID = "login.microsoftonline.com"
+GOOGLE_APPLICATION_CREDENTIALS = "oauth2.googleapis.com"
+
+[resources]
+vcpus = 2
+memory_mb = 2048
+
+[security]
+profile = "moderate"
+
+[security.domains]
+allow = [
+  # Terraform / HCP
+  "app.terraform.io",
+  "*.terraform.io",
+  "api.hashicorp.cloud",
+  "*.hashicorp.cloud",
+  "registry.terraform.io",
+  "releases.hashicorp.com",
+  "checkpoint-api.hashicorp.com",
+  # AWS
+  "*.amazonaws.com",
+  "*.aws.amazon.com",
+  # Azure
+  "management.azure.com",
+  "login.microsoftonline.com",
+  "*.azure.com",
+  "*.microsoft.com",
+  # GCP
+  "*.googleapis.com",
+  "accounts.google.com",
+  "oauth2.googleapis.com",
+  # Package repos (for pip, apt)
+  "pypi.org",
+  "files.pythonhosted.org",
+  "deb.debian.org",
+  "security.debian.org",
+  # GitHub (for hcptf-cli download)
+  "github.com",
+  "objects.githubusercontent.com",
+]

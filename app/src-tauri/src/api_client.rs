@@ -423,6 +423,31 @@ impl ApiClient {
     }
 
     // -----------------------------------------------------------------
+    // LLM Usage
+    // -----------------------------------------------------------------
+
+    /// Get LLM usage across all sandboxes.
+    pub async fn get_llm_usage(
+        &self,
+    ) -> anyhow::Result<std::collections::HashMap<String, Vec<crate::types::LlmUsageEntry>>> {
+        self.request(reqwest::Method::GET, "/llm/usage", None::<&()>)
+            .await
+    }
+
+    /// Get LLM usage for a specific sandbox.
+    pub async fn get_llm_usage_by_sandbox(
+        &self,
+        sandbox: &str,
+    ) -> anyhow::Result<Vec<crate::types::LlmUsageEntry>> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/llm/usage/{sandbox}"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // -----------------------------------------------------------------
     // Policy (Enterprise)
     // -----------------------------------------------------------------
 

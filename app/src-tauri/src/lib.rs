@@ -443,6 +443,9 @@ pub fn run() {
             // agents/plugins
             commands::agents::list_agents,
             commands::agents::install_agent,
+            // llm usage
+            commands::llm_usage::get_llm_usage,
+            commands::llm_usage::get_llm_usage_by_sandbox,
             // policy
             commands::policy::get_policy_status,
             commands::policy::check_policy,

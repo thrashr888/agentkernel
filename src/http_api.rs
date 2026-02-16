@@ -81,6 +81,9 @@ struct CreateRequest {
     /// Secret keys to inject as files (e.g., ["MY_SECRET"])
     #[serde(default)]
     secret_files: Vec<String>,
+    /// Shell script to run inside sandbox after start (e.g., install CLIs)
+    #[serde(default)]
+    init_script: Option<String>,
 }
 
 /// Request to write a file
@@ -202,6 +205,23 @@ struct SandboxInfo {
     ports: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     proxy_port: Option<u16>,
+    /// Secret mappings: env_var → target_host (values are stripped for security).
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    secret_mappings: std::collections::HashMap<String, String>,
+}
+
+/// Extract env_var → host from secret binding strings.
+/// Input format: "KEY=value:host" → ("KEY", "host")
+/// Strips secret values so they're never exposed in API responses.
+fn extract_secret_mappings(bindings: &[String]) -> std::collections::HashMap<String, String> {
+    bindings
+        .iter()
+        .filter_map(|raw| {
+            let (key, rest) = raw.split_once('=')?;
+            let host = rest.rsplit_once(':')?.1;
+            Some((key.to_string(), host.to_string()))
+        })
+        .collect()
 }
 
 /// Run command response
@@ -581,6 +601,10 @@ async fn handle_request(
         (Method::GET, ["proxy", "hooks"]) => handle_list_proxy_hooks(state).await,
         (Method::POST, ["proxy", "hooks"]) => handle_register_proxy_hook(req, state).await,
         (Method::DELETE, ["proxy", "hooks", name]) => handle_remove_proxy_hook(name, state).await,
+
+        // LLM usage
+        (Method::GET, ["llm", "usage"]) => handle_llm_usage_all().await,
+        (Method::GET, ["llm", "usage", sandbox]) => handle_llm_usage_sandbox(sandbox).await,
 
         // Garbage collection
         (Method::POST, ["gc"]) => handle_gc(state).await,
@@ -1008,6 +1032,9 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
                 created_at: state_info.map(|s| s.created_at.clone()),
                 ports,
                 proxy_port: state_info.and_then(|s| s.proxy_port),
+                secret_mappings: state_info
+                    .map(|s| extract_secret_mappings(&s.secret_bindings))
+                    .unwrap_or_default(),
             }
         })
         .collect();
@@ -1136,6 +1163,17 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         );
     }
 
+    // Set init script if provided
+    if let Some(ref script) = body.init_script
+        && let Err(e) = manager.set_init_script(&body.name, script)
+    {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to set init script: {}", e)),
+        );
+    }
+
     // Resolve profile for start_with_permissions
     let perms = if let Some(ref profile_str) = body.profile {
         match resolve_profile(profile_str) {
@@ -1220,6 +1258,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             created_at: None,
             ports: port_strings,
             proxy_port: None,
+            secret_mappings: extract_secret_mappings(&body.secrets),
         }),
     )
 }
@@ -1270,6 +1309,9 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                     created_at: state_info.map(|s| s.created_at.clone()),
                     ports,
                     proxy_port: state_info.and_then(|s| s.proxy_port),
+                    secret_mappings: state_info
+                        .map(|s| extract_secret_mappings(&s.secret_bindings))
+                        .unwrap_or_default(),
                 }),
             );
         }
@@ -1821,6 +1863,9 @@ async fn handle_resize_sandbox(
             created_at: state_info.map(|s| s.created_at.clone()),
             ports: result_ports,
             proxy_port: state_info.and_then(|s| s.proxy_port),
+            secret_mappings: state_info
+                .map(|s| extract_secret_mappings(&s.secret_bindings))
+                .unwrap_or_default(),
         }),
     )
 }
@@ -2045,6 +2090,9 @@ async fn handle_restore_snapshot(
                     created_at: state_info.map(|s| s.created_at.clone()),
                     ports,
                     proxy_port: state_info.and_then(|s| s.proxy_port),
+                    secret_mappings: state_info
+                        .map(|s| extract_secret_mappings(&s.secret_bindings))
+                        .unwrap_or_default(),
                 }),
             )
         }
@@ -2995,6 +3043,21 @@ async fn handle_delete_secret(name: &str) -> Response<BoxBody> {
 }
 
 // ---------------------------------------------------------------------------
+// LLM usage
+// ---------------------------------------------------------------------------
+
+async fn handle_llm_usage_all() -> Response<BoxBody> {
+    let store = crate::llm_intercept::LLM_USAGE.read().await;
+    json_response(StatusCode::OK, &ApiResponse::success(store.all_usage()))
+}
+
+async fn handle_llm_usage_sandbox(sandbox: &str) -> Response<BoxBody> {
+    let store = crate::llm_intercept::LLM_USAGE.read().await;
+    let usage = store.usage_for_sandbox(sandbox);
+    json_response(StatusCode::OK, &ApiResponse::success(usage))
+}
+
+// ---------------------------------------------------------------------------
 // Proxy hooks management
 // ---------------------------------------------------------------------------
 
@@ -3531,6 +3594,7 @@ mod tests {
             created_at: None,
             ports: vec![],
             proxy_port: None,
+            secret_mappings: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"name\":\"test-sandbox\""));
@@ -3603,6 +3667,7 @@ mod tests {
             created_at: None,
             ports: vec![],
             proxy_port: None,
+            secret_mappings: std::collections::HashMap::new(),
         };
         let response = json_response(StatusCode::CREATED, &ApiResponse::success(info));
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -3700,6 +3765,7 @@ mod tests {
             created_at: Some("2026-01-30T12:00:00Z".to_string()),
             ports: vec![],
             proxy_port: None,
+            secret_mappings: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"image\":\"python:3.12\""));
@@ -3721,6 +3787,7 @@ mod tests {
             created_at: None,
             ports: vec![],
             proxy_port: None,
+            secret_mappings: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(!json.contains("image"));

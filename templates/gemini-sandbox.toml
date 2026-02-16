@@ -13,6 +13,10 @@ compatibility_mode = "gemini"
 vcpus = 2
 memory_mb = 1024
 
+[secrets]
+GOOGLE_API_KEY = "generativelanguage.googleapis.com"
+GEMINI_API_KEY = "generativelanguage.googleapis.com"
+
 [security]
 profile = "moderate"
 

@@ -4,6 +4,7 @@ pub mod diagnostics;
 pub mod exec;
 pub mod files;
 pub mod health;
+pub mod llm_usage;
 pub mod policy;
 pub mod sandboxes;
 pub mod secrets;

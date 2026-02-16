@@ -40,6 +40,9 @@ pub struct SandboxInfo {
     pub created_at: Option<String>,
     #[serde(default)]
     pub ports: Vec<String>,
+    /// Secret mappings: env_var → target_host (values stripped for security).
+    #[serde(default)]
+    pub secret_mappings: std::collections::HashMap<String, String>,
 }
 
 /// Output from a command execution.
@@ -119,6 +122,16 @@ pub struct CreateSandboxRequest {
     /// Agent CLI to auto-install on start (e.g., "claude", "gemini", "codex")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// Secret bindings for the proxy (e.g., "OPENAI_API_KEY=sk-...:api.openai.com")
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<String>,
+    /// Template secret mappings: env_var → target_host.
+    /// Resolved from host env vars at sandbox creation time.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub secret_mappings: std::collections::BTreeMap<String, String>,
+    /// Shell script to run inside sandbox after start (e.g., install CLIs)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub init_script: Option<String>,
 }
 
 /// Request body for executing a command in a sandbox.
@@ -295,6 +308,23 @@ pub struct PolicyAuditEntry {
 }
 
 // ---------------------------------------------------------------------------
+// LLM Usage
+// ---------------------------------------------------------------------------
+
+/// Accumulated LLM usage for a single provider+model combination within a sandbox.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmUsageEntry {
+    pub provider: String,
+    pub model: String,
+    pub request_count: u64,
+    pub streaming_count: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_tokens: u64,
+    pub last_request: String,
+}
+
+// ---------------------------------------------------------------------------
 // API response wrapper (internal)
 // ---------------------------------------------------------------------------
 
@@ -319,4 +349,10 @@ pub struct TemplateInfo {
     pub base_image: String,
     pub vcpus: u32,
     pub memory_mb: u64,
+    #[serde(default)]
+    pub init_script: Option<String>,
+    /// Secret bindings: maps env var name → target host.
+    /// Used to auto-configure proxy secret bindings on sandbox creation.
+    #[serde(default)]
+    pub secrets: std::collections::BTreeMap<String, String>,
 }

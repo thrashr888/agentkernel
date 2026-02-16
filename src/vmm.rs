@@ -95,6 +95,9 @@ pub struct SandboxState {
     /// Host port of the running proxy (if any)
     #[serde(default)]
     pub proxy_port: Option<u16>,
+    /// Shell script to run inside the sandbox after start (from template init_script)
+    #[serde(default)]
+    pub init_script: Option<String>,
 }
 
 /// Status of a detached command
@@ -595,6 +598,7 @@ impl VmManager {
             secret_bindings: Vec::new(),
             secret_files: Vec::new(),
             proxy_port: None,
+            init_script: None,
         };
 
         self.save_sandbox(&state)?;
@@ -657,6 +661,23 @@ impl VmManager {
                 .get_mut(name)
                 .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
             state.secret_files = keys.to_vec();
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    /// Set an init script to run inside the sandbox after start.
+    pub fn set_init_script(&mut self, name: &str, script: &str) -> Result<()> {
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.init_script = Some(script.to_string());
         }
         let state = self
             .sandboxes
@@ -837,6 +858,8 @@ impl VmManager {
                     allowlist_only: false,
                     sandbox_name: name.to_string(),
                     hooks: Vec::new(),
+                    llm_intercept: true,
+                    llm_domains: Vec::new(),
                 };
 
                 match crate::proxy::start_proxy(proxy_config, resolved_secrets).await {
@@ -1155,6 +1178,26 @@ impl VmManager {
                     Err(e) => {
                         eprintln!("Warning: Failed to install {} agent CLI: {}", agent, e);
                     }
+                }
+            }
+        }
+
+        // Run init_script if specified (from template config)
+        if let Some(ref script) = state.init_script {
+            eprintln!("Running init script...");
+            match sandbox.exec(&["sh", "-c", script]).await {
+                Ok(result) if result.exit_code == 0 => {
+                    eprintln!("Init script completed successfully");
+                }
+                Ok(result) => {
+                    eprintln!(
+                        "Warning: init script exited with code {}: {}",
+                        result.exit_code,
+                        result.stderr.trim()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to run init script: {}", e);
                 }
             }
         }
@@ -1534,6 +1577,10 @@ impl VmManager {
             remove_start.elapsed().as_secs_f64(),
         );
         crate::metrics::dec_active_sandboxes();
+        crate::llm_intercept::LLM_USAGE
+            .write()
+            .await
+            .clear_sandbox(name);
 
         Ok(())
     }
@@ -1856,6 +1903,7 @@ mod tests {
             secret_bindings: Vec::new(),
             secret_files: Vec::new(),
             proxy_port: None,
+            init_script: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -1905,6 +1953,7 @@ mod tests {
             secret_bindings: Vec::new(),
             secret_files: Vec::new(),
             proxy_port: None,
+            init_script: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -1963,6 +2012,7 @@ mod tests {
             secret_bindings: Vec::new(),
             secret_files: Vec::new(),
             proxy_port: None,
+            init_script: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -2014,6 +2064,7 @@ mod tests {
                 secret_bindings: Vec::new(),
                 secret_files: Vec::new(),
                 proxy_port: None,
+                init_script: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();

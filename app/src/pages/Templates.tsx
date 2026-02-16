@@ -64,6 +64,8 @@ export function Templates() {
       vcpus: selectedTemplate.vcpus,
       memory_mb: selectedTemplate.memory_mb,
       profile: profile,
+      init_script: selectedTemplate.init_script,
+      secret_mappings: selectedTemplate.secrets,
     });
   }
 
@@ -77,7 +79,7 @@ export function Templates() {
     {}
   );
 
-  const categoryOrder = ["Agent Sandboxes", "Languages", "Browser Automation", "Specialized"];
+  const categoryOrder = ["Agent Sandboxes", "Infrastructure", "Languages", "Browser Automation", "Specialized"];
   const sortedCategories = [
     ...categoryOrder.filter((c) => grouped[c]),
     ...Object.keys(grouped).filter((c) => !categoryOrder.includes(c)),
@@ -205,6 +207,22 @@ export function Templates() {
                 {profile === "restrictive" && "No network, no mounts, read-only filesystem"}
               </p>
             </div>
+            {selectedTemplate?.secrets && Object.keys(selectedTemplate.secrets).length > 0 && (
+              <div className="grid gap-2">
+                <Label>Secrets (from host environment)</Label>
+                <div className="rounded-md border p-3 space-y-1">
+                  {Object.entries(selectedTemplate.secrets).map(([envVar, host]) => (
+                    <div key={envVar} className="flex items-center justify-between text-xs">
+                      <code className="font-mono">{envVar}</code>
+                      <span className="text-muted-foreground">{host}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  These environment variables will be read from your host and injected via the secure proxy.
+                </p>
+              </div>
+            )}
           </div>
           {!!createMutation.error && (
             <p className="text-sm text-destructive">

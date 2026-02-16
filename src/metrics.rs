@@ -121,6 +121,35 @@ static COMMAND_DURATION_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
     h
 });
 
+// ---- LLM request metrics ----
+
+static LLM_REQUESTS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let c = IntCounterVec::new(
+        prometheus::opts!(
+            "agentkernel_llm_requests_total",
+            "Total LLM API requests intercepted"
+        ),
+        &["provider", "model"],
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(c.clone()))
+        .expect("metric can be registered");
+    c
+});
+
+static LLM_TOKENS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let c = IntCounterVec::new(
+        prometheus::opts!("agentkernel_llm_tokens_total", "Total LLM tokens consumed"),
+        &["provider", "direction"],
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(c.clone()))
+        .expect("metric can be registered");
+    c
+});
+
 // ---- Build info ----
 
 static BUILD_INFO: LazyLock<IntGaugeVec> = LazyLock::new(|| {
@@ -172,6 +201,23 @@ pub fn set_active_sandboxes(count: i64) {
     SANDBOXES_ACTIVE.set(count);
 }
 
+/// Record an LLM API request (counter + token counters).
+pub fn record_llm_request(provider: &str, model: &str, input_tokens: u64, output_tokens: u64) {
+    LLM_REQUESTS_TOTAL
+        .with_label_values(&[provider, model])
+        .inc();
+    if input_tokens > 0 {
+        LLM_TOKENS_TOTAL
+            .with_label_values(&[provider, "input"])
+            .inc_by(input_tokens);
+    }
+    if output_tokens > 0 {
+        LLM_TOKENS_TOTAL
+            .with_label_values(&[provider, "output"])
+            .inc_by(output_tokens);
+    }
+}
+
 /// Record a command execution (counter + histogram).
 pub fn record_command(backend: &str, duration_secs: f64) {
     COMMANDS_TOTAL.with_label_values(&[backend]).inc();
@@ -201,7 +247,7 @@ fn normalize_path(path: &str) -> String {
             let prev = segments[i - 1];
             if matches!(
                 prev,
-                "sandboxes" | "snapshots" | "secrets" | "detached" | "hooks"
+                "sandboxes" | "snapshots" | "secrets" | "detached" | "hooks" | "usage"
             ) {
                 result.push(":name");
                 continue;

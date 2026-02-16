@@ -305,6 +305,11 @@ pub struct Config {
     /// Proxy hooks configuration
     #[serde(default)]
     pub proxy: ProxyHooksConfig,
+    /// Secret bindings: maps env var name → target host.
+    /// On sandbox creation the host env var is read and a proxy secret binding
+    /// is created automatically (format: `KEY=value:host`).
+    #[serde(default)]
+    pub secrets: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -427,6 +432,9 @@ pub struct SandboxConfig {
     /// Custom Docker image (overrides runtime if specified)
     #[serde(default)]
     pub base_image: Option<String>,
+    /// Shell script to run inside the sandbox after start (e.g., install CLIs)
+    #[serde(default)]
+    pub init_script: Option<String>,
 }
 
 fn default_runtime() -> String {
@@ -558,6 +566,7 @@ impl Config {
                 name: name.to_string(),
                 runtime: default_runtime(),
                 base_image: None,
+                init_script: None,
             },
             agent: AgentConfig {
                 preferred: agent.to_string(),
@@ -572,6 +581,7 @@ impl Config {
             enterprise: EnterpriseConfig::default(),
             api: ApiConfig::default(),
             proxy: ProxyHooksConfig::default(),
+            secrets: std::collections::BTreeMap::new(),
         }
     }
 

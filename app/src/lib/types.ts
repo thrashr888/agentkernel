@@ -9,6 +9,7 @@ export interface SandboxInfo {
   created_at?: string;
   ip?: string;
   ports?: string[];
+  secret_mappings?: Record<string, string>;
 }
 
 export interface RunOutput {
@@ -95,6 +96,9 @@ export interface CreateSandboxRequest {
   source_ref?: string;
   volumes?: string[];
   agent?: string;
+  secrets?: string[];
+  init_script?: string;
+  secret_mappings?: Record<string, string>;
 }
 
 export interface ExecRequest {
@@ -117,6 +121,8 @@ export interface TemplateInfo {
   base_image: string;
   vcpus: number;
   memory_mb: number;
+  init_script?: string;
+  secrets?: Record<string, string>;
 }
 
 // Secrets
@@ -131,6 +137,18 @@ export interface AgentInfo {
   display_name: string;
   enabled: boolean;
   description: string;
+}
+
+// LLM Usage
+export interface LlmUsageEntry {
+  provider: string;
+  model: string;
+  request_count: number;
+  streaming_count: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_tokens: number;
+  last_request: string;
 }
 
 // Settings

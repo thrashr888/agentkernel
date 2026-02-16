@@ -13,6 +13,9 @@ compatibility_mode = "native"
 vcpus = 2
 memory_mb = 1024
 
+[secrets]
+GITHUB_TOKEN = "api.github.com"
+
 [security]
 profile = "moderate"
 

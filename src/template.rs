@@ -60,6 +60,8 @@ const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
     ),
     ("rust-ci", include_str!("../templates/rust-ci.toml")),
     ("secure", include_str!("../templates/secure.toml")),
+    // Infrastructure / Cloud
+    ("terraform", include_str!("../templates/terraform.toml")),
     // Dev tools
     ("vscode", include_str!("../templates/vscode.toml")),
     ("coder", include_str!("../templates/coder.toml")),
@@ -382,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_builtin_template_count() {
-        assert_eq!(BUILTIN_TEMPLATES.len(), 25);
+        assert_eq!(BUILTIN_TEMPLATES.len(), 26);
     }
 
     #[test]

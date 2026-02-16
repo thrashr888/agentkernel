@@ -166,6 +166,60 @@ pub async fn dispatch_hooks(event: &HookEvent, payload: &ProxyEvent, registry: &
     }
 }
 
+/// Dispatch an LLM event to all matching hooks.
+///
+/// LLM events piggyback on `OnResponse` hooks. Consumers can distinguish them
+/// from regular `ProxyEvent` payloads by the presence of the `provider` field.
+pub async fn dispatch_llm_hooks(event: &crate::llm_intercept::LlmEvent, registry: &HookRegistry) {
+    eprintln!(
+        "[proxy:llm] {} {} {} model={:?} tokens=({:?}/{:?}/{:?})",
+        event.sandbox,
+        event.provider,
+        event.path,
+        event.model,
+        event.input_tokens,
+        event.output_tokens,
+        event.total_tokens,
+    );
+
+    let hooks = {
+        let r = registry.read().await;
+        r.hooks_for_event(&HookEvent::OnResponse)
+    };
+
+    for hook in hooks {
+        match &hook.target {
+            HookTarget::Audit => {
+                // Already logged above
+            }
+            HookTarget::File { path } => {
+                if let Ok(json) = serde_json::to_string(event) {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                    {
+                        let _ = writeln!(f, "{}", json);
+                    } else {
+                        eprintln!("[proxy:hook] Failed to open file: {}", path);
+                    }
+                }
+            }
+            HookTarget::Webhook { url } => {
+                let url = url.clone();
+                let json = match serde_json::to_string(event) {
+                    Ok(j) => j,
+                    Err(_) => continue,
+                };
+                tokio::spawn(async move {
+                    deliver_webhook(&url, &json).await;
+                });
+            }
+        }
+    }
+}
+
 /// Log a proxy event to stderr (audit trail).
 pub fn log_proxy_event(event: &ProxyEvent) {
     eprintln!(

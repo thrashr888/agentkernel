@@ -20,6 +20,7 @@ import type {
   PolicyCheckResult,
   PolicyReloadResult,
   PolicyAuditEntry,
+  LlmUsageEntry,
 } from "./types";
 
 export const api = {
@@ -102,6 +103,12 @@ export const api = {
   // Audit
   getAuditLog: (last?: number) =>
     invoke<AuditLogEntry[]>("get_audit_log", { last }),
+
+  // LLM Usage
+  getLlmUsage: () =>
+    invoke<Record<string, LlmUsageEntry[]>>("get_llm_usage"),
+  getLlmUsageBySandbox: (sandbox: string) =>
+    invoke<LlmUsageEntry[]>("get_llm_usage_by_sandbox", { sandbox }),
 
   // Policy (enterprise)
   getPolicyStatus: () => invoke<PolicyStatus>("get_policy_status"),

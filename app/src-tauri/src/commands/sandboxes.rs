@@ -18,11 +18,35 @@ pub async fn get_sandbox(name: String, state: State<'_, AppState>) -> Result<San
 }
 
 /// Create a new sandbox.
+///
+/// Resolves `secret_mappings` (env_var → host) from host environment variables
+/// and merges them into the `secrets` vec before forwarding to the API.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn create_sandbox(
-    req: CreateSandboxRequest,
+    mut req: CreateSandboxRequest,
     state: State<'_, AppState>,
 ) -> Result<SandboxInfo, String> {
+    // Resolve template secret_mappings from host env vars
+    if !req.secret_mappings.is_empty() {
+        let existing_keys: std::collections::HashSet<String> = req
+            .secrets
+            .iter()
+            .filter_map(|s| s.split('=').next().map(String::from))
+            .collect();
+        for (env_var, target_host) in &req.secret_mappings {
+            // Skip if already provided as an explicit secret binding
+            if existing_keys.contains(env_var.as_str()) {
+                continue;
+            }
+            if let Ok(val) = std::env::var(env_var) {
+                req.secrets
+                    .push(format!("{}={}:{}", env_var, val, target_host));
+            }
+        }
+        // Clear mappings so they aren't sent to the API (it doesn't know about them)
+        req.secret_mappings.clear();
+    }
+
     let client = state.client.lock().map_err(|e| e.to_string())?.clone();
     client.create_sandbox(&req).await.map_err(|e| e.to_string())
 }
@@ -97,7 +121,38 @@ pub async fn quickstart_agent(
 
     let client = state.client.lock().map_err(|e| e.to_string())?.clone();
 
-    // Create sandbox with agent field — the backend auto-installs the CLI on start
+    // Map agent → CLI command and secret bindings (env_var, host)
+    // The proxy intercepts HTTPS to these hosts and injects the real API key,
+    // which also enables LLM usage tracking via the intercept layer.
+    let (agent_cmd, secret_defs): (&str, &[(&str, &str)]) = match agent.as_str() {
+        "claude" => ("claude", &[("ANTHROPIC_API_KEY", "api.anthropic.com")]),
+        "gemini" => ("gemini", &[
+            ("GOOGLE_API_KEY", "generativelanguage.googleapis.com"),
+            ("GEMINI_API_KEY", "generativelanguage.googleapis.com"),
+        ]),
+        "codex" => ("codex", &[("OPENAI_API_KEY", "api.openai.com")]),
+        "opencode" => ("opencode", &[
+            ("ANTHROPIC_API_KEY", "api.anthropic.com"),
+            ("OPENAI_API_KEY", "api.openai.com"),
+        ]),
+        "amp" => ("amp", &[("ANTHROPIC_API_KEY", "api.anthropic.com")]),
+        "pi" => ("pi", &[
+            ("ANTHROPIC_API_KEY", "api.anthropic.com"),
+            ("OPENAI_API_KEY", "api.openai.com"),
+        ]),
+        "copilot" => ("github-copilot", &[("GITHUB_TOKEN", "api.github.com")]),
+        _ => return Err(format!("Unknown agent: {}", agent)),
+    };
+
+    // Build secret bindings from host env vars (format: KEY=value:host)
+    let mut secrets = Vec::new();
+    for &(var, host) in secret_defs {
+        if let Ok(val) = std::env::var(var) {
+            secrets.push(format!("{}={}:{}", var, val, host));
+        }
+    }
+
+    // Create sandbox with agent field + secret bindings for LLM proxy
     let req = CreateSandboxRequest {
         name: sandbox_name.clone(),
         image: Some("node:22-alpine".to_string()),
@@ -108,6 +163,9 @@ pub async fn quickstart_agent(
         source_ref: None,
         volumes: None,
         agent: Some(agent.clone()),
+        secrets,
+        init_script: None,
+        secret_mappings: std::collections::BTreeMap::new(),
     };
 
     client
@@ -115,31 +173,10 @@ pub async fn quickstart_agent(
         .await
         .map_err(|e| format!("Failed to create sandbox: {}", e))?;
 
-    // Determine the agent CLI command and required env vars
-    let (agent_cmd, env_vars): (&str, &[&str]) = match agent.as_str() {
-        "claude" => ("claude", &["ANTHROPIC_API_KEY"]),
-        "gemini" => ("gemini", &["GOOGLE_API_KEY", "GEMINI_API_KEY"]),
-        "codex" => ("codex", &["OPENAI_API_KEY"]),
-        "opencode" => ("opencode", &["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]),
-        "amp" => ("amp", &["ANTHROPIC_API_KEY"]),
-        "pi" => ("pi", &["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]),
-        "copilot" => ("github-copilot", &["GITHUB_TOKEN"]),
-        _ => return Err(format!("Unknown agent: {}", agent)),
-    };
-
-    // Build -e flags for API keys from host environment
-    let mut env_flags = String::new();
-    for &var in env_vars {
-        if let Ok(val) = std::env::var(var) {
-            // Values are passed directly, no shell interpolation risk in the osascript context
-            env_flags.push_str(&format!(" -e {}={}", var, val));
-        }
-    }
-
     let container_name = format!("agentkernel-{}", sandbox_name);
     let exec_cmd = format!(
-        "container exec -it{} {} {}",
-        env_flags, container_name, agent_cmd
+        "container exec -it {} {}",
+        container_name, agent_cmd
     );
 
     // Open Terminal.app with the agent command

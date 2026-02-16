@@ -22,7 +22,13 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{RwLock, oneshot};
 
-use crate::proxy_hooks::{HookEvent, HookRegistry, ProxyEvent, dispatch_hooks, new_registry};
+use crate::llm_intercept::{
+    self, LlmDomainRegistry, LlmEvent, TokenUsage, extract_model_from_request,
+    extract_streaming_from_request, extract_token_usage,
+};
+use crate::proxy_hooks::{
+    HookEvent, HookRegistry, ProxyEvent, dispatch_hooks, dispatch_llm_hooks, new_registry,
+};
 
 /// A secret binding: maps a secret key to a target host and HTTP header.
 #[derive(Debug, Clone)]
@@ -152,6 +158,10 @@ pub struct ProxyConfig {
     pub sandbox_name: String,
     /// Hooks to dispatch on proxy events
     pub hooks: Vec<crate::proxy_hooks::ProxyHook>,
+    /// Enable LLM traffic interception (default: true)
+    pub llm_intercept: bool,
+    /// Additional LLM domains beyond the built-in list
+    pub llm_domains: Vec<String>,
 }
 
 /// Handle to a running proxy instance.
@@ -177,6 +187,8 @@ struct ProxyState {
     cert_cache: HashMap<String, Arc<rustls::ServerConfig>>,
     /// Hook registry for dispatching proxy events
     hook_registry: HookRegistry,
+    /// LLM domain registry for traffic interception
+    llm_registry: LlmDomainRegistry,
 }
 
 /// Holds the CA cert and key pair for signing per-host certs.
@@ -303,6 +315,12 @@ pub async fn start_proxy(
 
     let hook_registry = new_registry(config.hooks.clone());
 
+    let llm_registry = if config.llm_intercept {
+        LlmDomainRegistry::default_registry().with_custom_domains(&config.llm_domains)
+    } else {
+        LlmDomainRegistry::empty()
+    };
+
     let listener = TcpListener::bind(&config.listen_addr)
         .await
         .context("Failed to bind proxy listener")?;
@@ -314,6 +332,7 @@ pub async fn start_proxy(
         ca_signer: Arc::new(ca_signer),
         cert_cache: HashMap::new(),
         hook_registry: hook_registry.clone(),
+        llm_registry,
     }));
 
     // Spawn the proxy accept loop
@@ -434,6 +453,8 @@ async fn handle_connect(
 
     let has_secret = s.resolved_secrets.contains_key(&host_only);
     let secret_info = s.resolved_secrets.get(&host_only).cloned();
+    let is_llm_host = s.config.llm_intercept && s.llm_registry.lookup(&host_only).is_some();
+    let llm_provider = s.llm_registry.lookup(&host_only).cloned();
     let ca_signer = s.ca_signer.clone();
     let sandbox_name = s.config.sandbox_name.clone();
     let registry = s.hook_registry.clone();
@@ -462,8 +483,11 @@ async fn handle_connect(
         format!("{}:443", host)
     };
 
-    // If no secret for this host, use plain tunnel (no MITM overhead)
-    if secret_info.is_none() {
+    // MITM if we have a secret binding OR this is a known LLM host
+    let needs_mitm = secret_info.is_some() || is_llm_host;
+
+    if !needs_mitm {
+        // Plain tunnel (passthrough) — no MITM overhead
         tokio::task::spawn(async move {
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
@@ -483,9 +507,10 @@ async fn handle_connect(
     }
 
     // MITM path: terminate TLS from client, inject headers, forward to upstream
+    // For LLM-only MITM (no secret), use empty header injection
     let state_for_mitm = state.clone();
     tokio::task::spawn(async move {
-        let (header_name, header_value) = secret_info.unwrap();
+        let (header_name, header_value) = secret_info.unwrap_or_default();
 
         let upgraded = match hyper::upgrade::on(req).await {
             Ok(u) => u,
@@ -535,6 +560,8 @@ async fn handle_connect(
             &header_name,
             &header_value,
             &sandbox_name,
+            llm_provider.as_ref(),
+            &registry,
         )
         .await
         {
@@ -546,6 +573,8 @@ async fn handle_connect(
 }
 
 /// Bridge between client (TLS-terminated) and upstream (TLS), injecting secret headers.
+/// When `llm_provider` is Some, also captures LLM request/response metadata.
+#[allow(clippy::too_many_arguments)]
 async fn mitm_bridge(
     client_tls: tokio_rustls::server::TlsStream<TokioIo<hyper::upgrade::Upgraded>>,
     upstream_addr: &str,
@@ -553,6 +582,8 @@ async fn mitm_bridge(
     header_name: &str,
     header_value: &str,
     sandbox_name: &str,
+    llm_provider: Option<&llm_intercept::LlmProvider>,
+    hook_registry: &HookRegistry,
 ) -> Result<()> {
     // Connect to upstream with real TLS
     let upstream_tcp = TcpStream::connect(upstream_addr)
@@ -582,6 +613,10 @@ async fn mitm_bridge(
     let header_name = header_name.to_string();
     let header_value = header_value.to_string();
     let sandbox_name = sandbox_name.to_string();
+    let host = host.to_string();
+    let llm_provider_name = llm_provider.map(|p| p.name.to_string());
+    let llm_token_format = llm_provider.map(|p| p.token_format);
+    let hook_registry = hook_registry.clone();
 
     // Use hyper to serve the client side and forward to upstream
     let (upstream_sender, upstream_conn) = hyper::client::conn::http1::handshake(upstream_io)
@@ -601,30 +636,147 @@ async fn mitm_bridge(
         .title_case_headers(true)
         .serve_connection(
             client_io,
-            service_fn(move |mut req: Request<Incoming>| {
+            service_fn(move |req: Request<Incoming>| {
                 let hn = header_name.clone();
                 let hv = header_value.clone();
                 let sn = sandbox_name.clone();
+                let host = host.clone();
                 let sender = sender.clone();
+                let llm_provider_name = llm_provider_name.clone();
+                let llm_token_format = llm_token_format;
+                let hook_registry = hook_registry.clone();
                 async move {
-                    // Inject the secret header
-                    if let Ok(val) = hyper::header::HeaderValue::from_str(&hv)
-                        && let Ok(name) = hyper::header::HeaderName::from_bytes(hn.as_bytes())
-                    {
-                        req.headers_mut().insert(name, val);
-                    }
+                    let method_str = req.method().to_string();
+                    let uri_path = req.uri().path().to_string();
+                    let has_secret = !hn.is_empty();
+
                     eprintln!(
-                        "[proxy] MITM {} {} (sandbox: {}, secret: true)",
-                        req.method(),
-                        req.uri(),
-                        sn
+                        "[proxy] MITM {} {} (sandbox: {}, secret: {})",
+                        method_str, uri_path, sn, has_secret
                     );
 
-                    let mut sender = sender.lock().await;
-                    match sender.send_request(req).await {
+                    // For LLM requests, buffer the request body for metadata extraction
+                    let mut model_name = None;
+                    let req = if llm_provider_name.is_some() {
+                        let (parts, body) = req.into_parts();
+                        let body_bytes = body
+                            .collect()
+                            .await
+                            .map(|c| c.to_bytes())
+                            .unwrap_or_default();
+                        model_name = extract_model_from_request(&body_bytes);
+                        let is_str = extract_streaming_from_request(&body_bytes);
+                        let mut new_req = Request::from_parts(
+                            parts,
+                            http_body_util::Full::new(body_bytes)
+                                .map_err(|never| match never {})
+                                .boxed(),
+                        );
+                        if has_secret
+                            && let Ok(val) = hyper::header::HeaderValue::from_str(&hv)
+                            && let Ok(name) = hyper::header::HeaderName::from_bytes(hn.as_bytes())
+                        {
+                            new_req.headers_mut().insert(name, val);
+                        }
+                        (new_req, is_str)
+                    } else {
+                        // Non-LLM: inject header directly
+                        let (parts, body) = req.into_parts();
+                        let mut new_req = Request::from_parts(parts, body.boxed());
+                        if has_secret
+                            && let Ok(val) = hyper::header::HeaderValue::from_str(&hv)
+                            && let Ok(name) = hyper::header::HeaderName::from_bytes(hn.as_bytes())
+                        {
+                            new_req.headers_mut().insert(name, val);
+                        }
+                        (new_req, false)
+                    };
+                    let (req, is_streaming) = req;
+
+                    let start = std::time::Instant::now();
+                    let mut upstream_sender = sender.lock().await;
+                    match upstream_sender.send_request(req).await {
                         Ok(resp) => {
-                            let (parts, body) = resp.into_parts();
-                            Ok::<_, hyper::Error>(Response::from_parts(parts, body.boxed()))
+                            let status = resp.status().as_u16();
+                            let latency = start.elapsed().as_millis() as u64;
+
+                            if let Some(ref provider) = llm_provider_name {
+                                if is_streaming {
+                                    // Streaming: pass through, emit event without token counts
+                                    let llm_event = LlmEvent {
+                                        timestamp: chrono::Utc::now().to_rfc3339(),
+                                        sandbox: sn,
+                                        provider: provider.clone(),
+                                        host: host.clone(),
+                                        method: method_str,
+                                        path: uri_path,
+                                        model: model_name,
+                                        status: Some(status),
+                                        latency_ms: Some(latency),
+                                        input_tokens: None,
+                                        output_tokens: None,
+                                        total_tokens: None,
+                                        streaming: true,
+                                        secret_injected: has_secret,
+                                    };
+                                    llm_intercept::record_llm_event(&llm_event).await;
+                                    crate::metrics::record_llm_request(
+                                        &llm_event.provider,
+                                        llm_event.model.as_deref().unwrap_or("unknown"),
+                                        0,
+                                        0,
+                                    );
+                                    dispatch_llm_hooks(&llm_event, &hook_registry).await;
+
+                                    let (parts, body) = resp.into_parts();
+                                    Ok::<_, hyper::Error>(Response::from_parts(parts, body.boxed()))
+                                } else {
+                                    // Non-streaming: buffer response, extract token usage
+                                    let (parts, body) = resp.into_parts();
+                                    let resp_bytes = body
+                                        .collect()
+                                        .await
+                                        .map(|c| c.to_bytes())
+                                        .unwrap_or_default();
+
+                                    let usage = if let Some(fmt) = llm_token_format {
+                                        extract_token_usage(&resp_bytes, &fmt)
+                                    } else {
+                                        TokenUsage::default()
+                                    };
+
+                                    let llm_event = LlmEvent {
+                                        timestamp: chrono::Utc::now().to_rfc3339(),
+                                        sandbox: sn,
+                                        provider: provider.clone(),
+                                        host: host.clone(),
+                                        method: method_str,
+                                        path: uri_path,
+                                        model: model_name,
+                                        status: Some(status),
+                                        latency_ms: Some(latency),
+                                        input_tokens: usage.input_tokens,
+                                        output_tokens: usage.output_tokens,
+                                        total_tokens: usage.total_tokens,
+                                        streaming: false,
+                                        secret_injected: has_secret,
+                                    };
+                                    llm_intercept::record_llm_event(&llm_event).await;
+                                    crate::metrics::record_llm_request(
+                                        &llm_event.provider,
+                                        llm_event.model.as_deref().unwrap_or("unknown"),
+                                        llm_event.input_tokens.unwrap_or(0),
+                                        llm_event.output_tokens.unwrap_or(0),
+                                    );
+                                    dispatch_llm_hooks(&llm_event, &hook_registry).await;
+
+                                    Ok(Response::from_parts(parts, full_body(resp_bytes)))
+                                }
+                            } else {
+                                // Non-LLM: pass through
+                                let (parts, body) = resp.into_parts();
+                                Ok(Response::from_parts(parts, body.boxed()))
+                            }
                         }
                         Err(e) => {
                             eprintln!("[proxy] MITM upstream error: {}", e);
@@ -688,7 +840,13 @@ async fn handle_plain_http(
     let sandbox_name = s.config.sandbox_name.clone();
     let method_str = req.method().to_string();
     let url_str = req.uri().to_string();
+    let uri_path = req.uri().path().to_string();
     let registry = s.hook_registry.clone();
+    let llm_provider = if s.config.llm_intercept {
+        s.llm_registry.lookup(&host).cloned()
+    } else {
+        None
+    };
     drop(s);
 
     // Dispatch OnRequest hook
@@ -718,10 +876,10 @@ async fn handle_plain_http(
                 &HookEvent::OnResponse,
                 &ProxyEvent {
                     timestamp: chrono::Utc::now().to_rfc3339(),
-                    sandbox: sandbox_name,
-                    method: method_str,
+                    sandbox: sandbox_name.clone(),
+                    method: method_str.clone(),
                     url: url_str,
-                    host,
+                    host: host.clone(),
                     status: Some(status),
                     secret_injected,
                     latency_ms: Some(latency),
@@ -729,7 +887,44 @@ async fn handle_plain_http(
                 &registry,
             )
             .await;
-            Ok(resp)
+
+            // LLM interception for plain HTTP (rare but handles testing)
+            if let Some(provider) = llm_provider {
+                let (parts, body) = resp.into_parts();
+                let resp_bytes = body
+                    .collect()
+                    .await
+                    .map(|c| c.to_bytes())
+                    .unwrap_or_default();
+                let usage = extract_token_usage(&resp_bytes, &provider.token_format);
+                let llm_event = LlmEvent {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    sandbox: sandbox_name,
+                    provider: provider.name.to_string(),
+                    host,
+                    method: method_str,
+                    path: uri_path,
+                    model: None,
+                    status: Some(status),
+                    latency_ms: Some(latency),
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    total_tokens: usage.total_tokens,
+                    streaming: false,
+                    secret_injected,
+                };
+                llm_intercept::record_llm_event(&llm_event).await;
+                crate::metrics::record_llm_request(
+                    &llm_event.provider,
+                    llm_event.model.as_deref().unwrap_or("unknown"),
+                    llm_event.input_tokens.unwrap_or(0),
+                    llm_event.output_tokens.unwrap_or(0),
+                );
+                dispatch_llm_hooks(&llm_event, &registry).await;
+                Ok(Response::from_parts(parts, full_body(resp_bytes)))
+            } else {
+                Ok(resp)
+            }
         }
         Err(e) => {
             eprintln!("[proxy] Forward error: {}", e);
@@ -837,6 +1032,8 @@ mod tests {
             allowlist_only: false,
             sandbox_name: "test".to_string(),
             hooks: vec![],
+            llm_intercept: false,
+            llm_domains: vec![],
         };
 
         assert!(is_host_allowed("api.openai.com", &config));
@@ -854,6 +1051,8 @@ mod tests {
             allowlist_only: true,
             sandbox_name: "test".to_string(),
             hooks: vec![],
+            llm_intercept: false,
+            llm_domains: vec![],
         };
 
         assert!(is_host_allowed("api.openai.com", &config));
@@ -872,6 +1071,8 @@ mod tests {
             allowlist_only: true,
             sandbox_name: "test".to_string(),
             hooks: vec![],
+            llm_intercept: false,
+            llm_domains: vec![],
         };
 
         assert!(is_host_allowed("api.openai.com", &config));
@@ -890,6 +1091,8 @@ mod tests {
             allowlist_only: true,
             sandbox_name: "test".to_string(),
             hooks: vec![],
+            llm_intercept: false,
+            llm_domains: vec![],
         };
 
         assert!(is_host_allowed("api.openai.com:443", &config));

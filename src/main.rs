@@ -18,6 +18,7 @@ mod hyperlight_backend;
 mod image_builder;
 mod images;
 mod languages;
+mod llm_intercept;
 mod mcp;
 mod metrics;
 mod opencode;
@@ -1096,10 +1097,29 @@ memory_mb = 512
                     )
                     .await?;
 
+                // Build secret bindings from template config [secrets] section
+                let mut template_bindings = Vec::new();
+                for (env_var, target_host) in &cfg.secrets {
+                    if let Ok(val) = std::env::var(env_var) {
+                        template_bindings.push(format!("{}={}:{}", env_var, val, target_host));
+                    }
+                }
+
+                // Merge CLI-provided and template secret bindings (CLI takes precedence)
+                let mut all_bindings: Vec<String> = secret_bindings_raw;
+                all_bindings.extend(template_bindings);
+
                 // Store secret bindings in sandbox state
-                if !parsed_bindings.is_empty() {
-                    let binding_strs: Vec<String> = secret_bindings_raw;
-                    manager.set_secret_bindings(&name, &binding_strs)?;
+                if !all_bindings.is_empty() {
+                    // Deduplicate by env var name (first occurrence wins → CLI over template)
+                    let mut seen = std::collections::HashSet::new();
+                    all_bindings.retain(|b| {
+                        let key = b.split('=').next().unwrap_or(b);
+                        seen.insert(key.to_string())
+                    });
+                    if !parsed_bindings.is_empty() || !all_bindings.is_empty() {
+                        manager.set_secret_bindings(&name, &all_bindings)?;
+                    }
                 }
 
                 // Store secret file keys in sandbox state
@@ -1118,6 +1138,11 @@ memory_mb = 512
                 // If SSH enabled, update the sandbox state
                 if enable_ssh {
                     manager.set_ssh_enabled(&name, true)?;
+                }
+
+                // Store init script from template config
+                if let Some(ref script) = cfg.sandbox.init_script {
+                    manager.set_init_script(&name, script)?;
                 }
 
                 println!("\nSandbox '{}' created.", name);

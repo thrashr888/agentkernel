@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::types::TemplateInfo;
 
 /// Return the hardcoded list of built-in templates.
@@ -7,6 +9,14 @@ use crate::types::TemplateInfo;
 #[tauri::command(rename_all = "snake_case")]
 pub async fn list_templates() -> Result<Vec<TemplateInfo>, String> {
     Ok(builtin_templates())
+}
+
+/// Helper: build a BTreeMap from pairs.
+fn secrets(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 fn builtin_templates() -> Vec<TemplateInfo> {
@@ -19,6 +29,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
+            init_script: None,
+            secrets: secrets(&[("ANTHROPIC_API_KEY", "api.anthropic.com")]),
         },
         TemplateInfo {
             name: "codex-sandbox".into(),
@@ -27,6 +39,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
+            init_script: None,
+            secrets: secrets(&[("OPENAI_API_KEY", "api.openai.com")]),
         },
         TemplateInfo {
             name: "gemini-sandbox".into(),
@@ -35,6 +49,11 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
+            init_script: None,
+            secrets: secrets(&[
+                ("GOOGLE_API_KEY", "generativelanguage.googleapis.com"),
+                ("GEMINI_API_KEY", "generativelanguage.googleapis.com"),
+            ]),
         },
         TemplateInfo {
             name: "opencode-sandbox".into(),
@@ -43,6 +62,11 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
+            init_script: None,
+            secrets: secrets(&[
+                ("ANTHROPIC_API_KEY", "api.anthropic.com"),
+                ("OPENAI_API_KEY", "api.openai.com"),
+            ]),
         },
         TemplateInfo {
             name: "amp-sandbox".into(),
@@ -51,6 +75,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
+            init_script: None,
+            secrets: secrets(&[("ANTHROPIC_API_KEY", "api.anthropic.com")]),
         },
         TemplateInfo {
             name: "pi-sandbox".into(),
@@ -59,6 +85,47 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
+            init_script: None,
+            secrets: secrets(&[
+                ("ANTHROPIC_API_KEY", "api.anthropic.com"),
+                ("OPENAI_API_KEY", "api.openai.com"),
+            ]),
+        },
+        // ----- Infrastructure / Cloud -----
+        TemplateInfo {
+            name: "terraform".into(),
+            description: "Terraform with AWS, Azure, GCP CLIs and hcptf-cli".into(),
+            category: "Infrastructure".into(),
+            base_image: "python:3.12-slim".into(),
+            vcpus: 2,
+            memory_mb: 2048,
+            init_script: Some(concat!(
+                "set -e\n",
+                "apt-get update -qq && apt-get install -y -qq curl unzip gnupg lsb-release >/dev/null 2>&1\n",
+                "curl -fsSL https://releases.hashicorp.com/terraform/1.14.5/terraform_1.14.5_linux_amd64.zip -o /tmp/tf.zip ",
+                "&& unzip -qo /tmp/tf.zip -d /usr/local/bin && rm /tmp/tf.zip\n",
+                "curl -fsSL https://github.com/thrashr888/hcptf-cli/releases/download/v0.3.1/hcptf-cli_0.3.1_linux_amd64.tar.gz ",
+                "| tar -xz -C /usr/local/bin hcptf-cli\n",
+                "curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscli.zip ",
+                "&& unzip -qo /tmp/awscli.zip -d /tmp && /tmp/aws/install --update >/dev/null 2>&1 && rm -rf /tmp/aws /tmp/awscli.zip\n",
+                "pip install --quiet azure-cli\n",
+                "curl -fsSL https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz ",
+                "| tar -xz -C /opt && /opt/google-cloud-sdk/install.sh --quiet --path-update=true >/dev/null 2>&1 ",
+                "&& ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud ",
+                "&& ln -sf /opt/google-cloud-sdk/bin/gsutil /usr/local/bin/gsutil\n",
+            ).into()),
+            secrets: secrets(&[
+                ("TFE_TOKEN", "app.terraform.io"),
+                ("HCP_CLIENT_ID", "api.hashicorp.cloud"),
+                ("HCP_CLIENT_SECRET", "api.hashicorp.cloud"),
+                ("AWS_ACCESS_KEY_ID", "sts.amazonaws.com"),
+                ("AWS_SECRET_ACCESS_KEY", "sts.amazonaws.com"),
+                ("AWS_SESSION_TOKEN", "sts.amazonaws.com"),
+                ("AZURE_CLIENT_ID", "login.microsoftonline.com"),
+                ("AZURE_CLIENT_SECRET", "login.microsoftonline.com"),
+                ("AZURE_TENANT_ID", "login.microsoftonline.com"),
+                ("GOOGLE_APPLICATION_CREDENTIALS", "oauth2.googleapis.com"),
+            ]),
         },
         // ----- Languages -----
         TemplateInfo {
@@ -68,6 +135,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "alpine:3.20".into(),
             vcpus: 1,
             memory_mb: 256,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "c".into(),
@@ -76,6 +145,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "gcc:14-bookworm".into(),
             vcpus: 2,
             memory_mb: 512,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "dotnet".into(),
@@ -84,6 +155,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "mcr.microsoft.com/dotnet/sdk:8.0".into(),
             vcpus: 2,
             memory_mb: 1024,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "go".into(),
@@ -92,6 +165,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "golang:1.23-alpine".into(),
             vcpus: 2,
             memory_mb: 512,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "java".into(),
@@ -100,6 +175,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "eclipse-temurin:21-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "node".into(),
@@ -108,6 +185,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 1,
             memory_mb: 512,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "python".into(),
@@ -116,6 +195,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "python:3.12-alpine".into(),
             vcpus: 1,
             memory_mb: 512,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "ruby".into(),
@@ -124,6 +205,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "ruby:3.3-alpine".into(),
             vcpus: 1,
             memory_mb: 512,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "rust".into(),
@@ -132,6 +215,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "rust:1.85-alpine".into(),
             vcpus: 2,
             memory_mb: 512,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "typescript".into(),
@@ -140,6 +225,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 1,
             memory_mb: 512,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         // ----- Browser Automation -----
         TemplateInfo {
@@ -149,6 +236,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "python:3.12-slim".into(),
             vcpus: 2,
             memory_mb: 2048,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "playwright-stealth".into(),
@@ -157,6 +246,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "python:3.12-slim".into(),
             vcpus: 2,
             memory_mb: 2048,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         // ----- Specialized -----
         TemplateInfo {
@@ -166,6 +257,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "python:3.12".into(),
             vcpus: 4,
             memory_mb: 4096,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "node-fullstack".into(),
@@ -174,6 +267,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "rust-ci".into(),
@@ -182,6 +277,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "rust:1.85-alpine".into(),
             vcpus: 4,
             memory_mb: 2048,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "secure".into(),
@@ -190,6 +287,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "alpine:3.20".into(),
             vcpus: 1,
             memory_mb: 256,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "vscode".into(),
@@ -198,6 +297,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "gitpod/openvscode-server:latest".into(),
             vcpus: 2,
             memory_mb: 2048,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "coder".into(),
@@ -206,6 +307,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "codercom/code-server:latest".into(),
             vcpus: 2,
             memory_mb: 2048,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
         TemplateInfo {
             name: "gitea".into(),
@@ -214,6 +317,8 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "gitea/gitea:latest".into(),
             vcpus: 1,
             memory_mb: 512,
+            init_script: None,
+            secrets: BTreeMap::new(),
         },
     ]
 }

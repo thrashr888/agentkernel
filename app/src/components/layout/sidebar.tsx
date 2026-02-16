@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -11,8 +12,12 @@ import {
   Puzzle,
   KeyRound,
   Settings,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
 import { cn } from "@/lib/utils";
+import { useHealth } from "@/lib/hooks/use-health";
 import { Separator } from "@/components/ui/separator";
 
 function AKLogo({ className }: { className?: string }) {
@@ -66,6 +71,13 @@ const navSections = [
 ];
 
 export function Sidebar() {
+  const { isConnected } = useHealth();
+  const [appVersion, setAppVersion] = useState<string>("");
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => {});
+  }, []);
+
   return (
     <aside className="flex h-full w-[240px] flex-col border-r bg-muted/40">
       <div className="flex h-12 items-center gap-2 px-4">
@@ -106,6 +118,26 @@ export function Sidebar() {
           </div>
         ))}
       </nav>
+      <Separator />
+      <div className="px-4 py-3 space-y-1">
+        <div className="flex items-center gap-2">
+          {isConnected ? (
+            <Wifi className="h-3.5 w-3.5 text-green-500" />
+          ) : (
+            <WifiOff className="h-3.5 w-3.5 text-destructive" />
+          )}
+          <span className="text-xs">
+            {isConnected ? (
+              <span className="text-green-600 dark:text-green-400">Connected</span>
+            ) : (
+              <span className="text-destructive">Disconnected</span>
+            )}
+          </span>
+        </div>
+        {appVersion && (
+          <p className="text-xs text-muted-foreground font-mono">v{appVersion}</p>
+        )}
+      </div>
     </aside>
   );
 }

@@ -6,21 +6,20 @@ import {
   Play,
   Square,
   Clock,
-  Cpu,
-  HardDrive,
-  Image,
-  Server,
-  Calendar,
   Copy,
   Check,
   Terminal,
   Loader2,
   X,
   Download,
+  Brain,
+  Shield,
+  ExternalLink,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSandbox } from "@/lib/hooks/use-sandbox";
 import { useExec } from "@/lib/hooks/use-exec";
+import { useLlmUsageBySandbox } from "@/lib/hooks/use-llm-usage";
 import { api } from "@/lib/api";
 import { SandboxStatusBadge } from "@/components/sandbox/sandbox-status-badge";
 import { FileBrowser } from "@/components/sandbox/file-browser";
@@ -28,8 +27,6 @@ import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
-  CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -47,7 +44,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/components/ui/use-toast";
 import { formatDate } from "@/lib/utils";
-import type { RunOutput, DetachedCommand, AuditLogEntry } from "@/lib/types";
+import type { RunOutput, DetachedCommand, AuditLogEntry, LlmUsageEntry } from "@/lib/types";
 
 interface CommandEntry {
   command: string;
@@ -61,6 +58,7 @@ export function SandboxDetail() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: sandbox, isLoading, error } = useSandbox(name ?? "");
+  const { data: llmUsage } = useLlmUsageBySandbox(name ?? "");
   const execMutation = useExec();
 
   const [commandInput, setCommandInput] = useState("");
@@ -361,420 +359,471 @@ export function SandboxDetail() {
     );
   }
 
+  const isRunning = sandbox.status.toLowerCase() === "running";
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
+    <div className="space-y-0">
+      {/* Breadcrumb */}
+      <div className="mb-2">
+        <Link
+          to="/sandboxes"
+          className="text-sm text-blue-500 hover:underline"
+        >
+          Sandboxes
+        </Link>
+        <span className="text-sm text-muted-foreground"> / {sandbox.name}</span>
+      </div>
+
+      {/* Header — Docker Desktop style */}
+      <div className="flex items-start justify-between pb-4">
+        <div className="flex items-start gap-3">
           <Link
             to="/sandboxes"
-            className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+            className="mt-1.5 text-muted-foreground hover:text-foreground"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft className="h-5 w-5" />
           </Link>
           <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-3xl font-bold tracking-tight">
-                {sandbox.name}
-              </h1>
-              <button
-                onClick={() => copyToClipboard(sandbox.name, "name")}
-                className="text-muted-foreground hover:text-foreground"
-                title="Copy sandbox name"
-              >
-                {copiedField === "name" ? (
-                  <Check className="h-4 w-4 text-green-500" />
-                ) : (
-                  <Copy className="h-4 w-4" />
-                )}
-              </button>
-              <SandboxStatusBadge status={sandbox.status} />
+            <h1 className="text-2xl font-semibold leading-tight">
+              {sandbox.name}
+            </h1>
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+              <span className="font-mono">{sandbox.backend}</span>
+              {sandbox.image && (
+                <>
+                  <span className="text-border">|</span>
+                  <button
+                    type="button"
+                    className="group inline-flex items-center gap-1 font-mono text-blue-500 hover:underline"
+                    onClick={() => copyToClipboard(sandbox.image!, "image")}
+                    title="Copy image name"
+                  >
+                    {sandbox.image}
+                    {copiedField === "image" ? (
+                      <Check className="h-3 w-3 text-green-500" />
+                    ) : (
+                      <Copy className="h-3 w-3 opacity-0 group-hover:opacity-70" />
+                    )}
+                  </button>
+                </>
+              )}
+              {sandbox.ip && (
+                <>
+                  <span className="text-border">|</span>
+                  <button
+                    type="button"
+                    className="group inline-flex items-center gap-1 font-mono hover:text-foreground"
+                    onClick={() => copyToClipboard(sandbox.ip!, "ip")}
+                    title="Copy IP"
+                  >
+                    {sandbox.ip}
+                    {copiedField === "ip" ? (
+                      <Check className="h-3 w-3 text-green-500" />
+                    ) : (
+                      <Copy className="h-3 w-3 opacity-0 group-hover:opacity-70" />
+                    )}
+                  </button>
+                </>
+              )}
+              {sandbox.ports && sandbox.ports.length > 0 && (
+                <>
+                  <span className="text-border">|</span>
+                  <span className="font-mono">{sandbox.ports.join(", ")}</span>
+                </>
+              )}
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {sandbox.status.toLowerCase() === "running" && (
+
+        {/* Status + action icon buttons */}
+        <div className="flex items-center gap-3 shrink-0">
+          <div className="text-right mr-1">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Status</p>
+            <SandboxStatusBadge status={sandbox.status} />
+          </div>
+          {isRunning ? (
             <Button
               variant="outline"
-              onClick={() => openTerminalMutation.mutate()}
-              disabled={openTerminalMutation.isPending}
-            >
-              <Terminal className="mr-2 h-4 w-4" />
-              {openTerminalMutation.isPending ? "Opening..." : "Open Terminal"}
-            </Button>
-          )}
-          {sandbox.status.toLowerCase() === "running" && (
-            <Button
-              variant="outline"
-              onClick={() => exportMutation.mutate()}
-              disabled={exportMutation.isPending}
-            >
-              <Download className="mr-2 h-4 w-4" />
-              {exportMutation.isPending ? "Exporting..." : "Export"}
-            </Button>
-          )}
-          {sandbox.status.toLowerCase() === "running" ? (
-            <Button
-              variant="outline"
+              size="icon"
               onClick={() => stopMutation.mutate()}
               disabled={stopMutation.isPending}
+              title="Stop"
             >
-              <Square className="mr-2 h-4 w-4" />
-              {stopMutation.isPending ? "Stopping..." : "Stop"}
+              <Square className="h-4 w-4" />
             </Button>
           ) : (
             <Button
               variant="outline"
+              size="icon"
               onClick={() => startMutation.mutate()}
               disabled={startMutation.isPending}
+              title="Start"
             >
-              <Play className="mr-2 h-4 w-4" />
-              {startMutation.isPending ? "Starting..." : "Start"}
+              <Play className="h-4 w-4" />
+            </Button>
+          )}
+          {isRunning && (
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => openTerminalMutation.mutate()}
+              disabled={openTerminalMutation.isPending}
+              title="Open terminal"
+            >
+              <Terminal className="h-4 w-4" />
+            </Button>
+          )}
+          {isRunning && (
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => exportMutation.mutate()}
+              disabled={exportMutation.isPending}
+              title="Export"
+            >
+              <Download className="h-4 w-4" />
             </Button>
           )}
           <Button
-            variant="destructive"
+            variant="outline"
+            size="icon"
+            className="text-destructive hover:bg-destructive hover:text-destructive-foreground"
             onClick={() => removeMutation.mutate(sandbox.name)}
             disabled={removeMutation.isPending}
+            title="Remove"
           >
-            <Trash2 className="mr-2 h-4 w-4" />
-            {removeMutation.isPending ? "Removing..." : "Remove"}
+            <Trash2 className="h-4 w-4" />
           </Button>
         </div>
       </div>
 
-      <Tabs defaultValue="info">
+      {/* Open in external terminal link */}
+      <div className="flex items-center gap-4 pb-2 text-sm">
+        <button
+          type="button"
+          className="group inline-flex items-center gap-1 font-mono text-xs text-muted-foreground hover:text-foreground"
+          onClick={() =>
+            copyToClipboard(`agentkernel attach ${sandbox.name}`, "connect")
+          }
+          title="Copy connect command"
+        >
+          <Terminal className="h-3 w-3" />
+          agentkernel attach {sandbox.name}
+          {copiedField === "connect" ? (
+            <Check className="h-3 w-3 text-green-500" />
+          ) : (
+            <Copy className="h-3 w-3 opacity-0 group-hover:opacity-70" />
+          )}
+        </button>
+        {isRunning && (
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 text-xs text-blue-500 hover:underline"
+            onClick={() => openTerminalMutation.mutate()}
+          >
+            Open in external terminal
+            <ExternalLink className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+
+      <Tabs defaultValue="inspect">
         <TabsList>
-          <TabsTrigger value="info">Info</TabsTrigger>
+          <TabsTrigger value="inspect">Inspect</TabsTrigger>
+          <TabsTrigger value="secrets">Secrets</TabsTrigger>
           <TabsTrigger value="exec">Exec</TabsTrigger>
           <TabsTrigger value="files">Files</TabsTrigger>
           <TabsTrigger value="logs">Logs</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="info" className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Status</CardTitle>
-                <Server className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <SandboxStatusBadge status={sandbox.status} />
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Backend</CardTitle>
-                <Server className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm font-mono">{sandbox.backend}</p>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Image</CardTitle>
-                <Image className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                {sandbox.image ? (
-                  <button
-                    type="button"
-                    className="group flex items-center gap-1.5 text-sm font-mono hover:text-foreground"
-                    onClick={() => copyToClipboard(sandbox.image!, "image")}
-                    title="Copy to clipboard"
-                  >
-                    <span className="truncate">{sandbox.image}</span>
-                    {copiedField === "image" ? (
-                      <Check className="h-3 w-3 shrink-0 text-green-500" />
-                    ) : (
-                      <Copy className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50" />
-                    )}
-                  </button>
-                ) : (
-                  <p className="text-sm font-mono">—</p>
+        <TabsContent value="inspect" className="pt-2">
+          {/* Flat inspect-style key-value table */}
+          <div className="rounded-md border">
+            <table className="w-full text-sm">
+              <tbody>
+                <tr className="border-b">
+                  <td className="px-4 py-2.5 text-muted-foreground w-40">Status</td>
+                  <td className="px-4 py-2.5"><SandboxStatusBadge status={sandbox.status} /></td>
+                </tr>
+                <tr className="border-b">
+                  <td className="px-4 py-2.5 text-muted-foreground">Backend</td>
+                  <td className="px-4 py-2.5 font-mono">{sandbox.backend}</td>
+                </tr>
+                <tr className="border-b">
+                  <td className="px-4 py-2.5 text-muted-foreground">Image</td>
+                  <td className="px-4 py-2.5 font-mono">{sandbox.image ?? "—"}</td>
+                </tr>
+                <tr className="border-b">
+                  <td className="px-4 py-2.5 text-muted-foreground">vCPUs</td>
+                  <td className="px-4 py-2.5 font-mono">{sandbox.vcpus ?? "—"}</td>
+                </tr>
+                <tr className="border-b">
+                  <td className="px-4 py-2.5 text-muted-foreground">Memory</td>
+                  <td className="px-4 py-2.5 font-mono">{sandbox.memory_mb ? `${sandbox.memory_mb} MB` : "—"}</td>
+                </tr>
+                {sandbox.ip && (
+                  <tr className="border-b">
+                    <td className="px-4 py-2.5 text-muted-foreground">IP Address</td>
+                    <td className="px-4 py-2.5">
+                      <button
+                        type="button"
+                        className="group inline-flex items-center gap-1.5 font-mono hover:text-foreground"
+                        onClick={() => copyToClipboard(sandbox.ip!, "ip-inspect")}
+                        title="Copy"
+                      >
+                        {sandbox.ip}
+                        {copiedField === "ip-inspect" ? (
+                          <Check className="h-3 w-3 text-green-500" />
+                        ) : (
+                          <Copy className="h-3 w-3 opacity-0 group-hover:opacity-70" />
+                        )}
+                      </button>
+                    </td>
+                  </tr>
                 )}
-              </CardContent>
-            </Card>
-
-            {sandbox.vcpus != null && (
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">vCPUs</CardTitle>
-                  <Cpu className="h-4 w-4 text-muted-foreground" />
-                </CardHeader>
-                <CardContent>
-                  <p className="text-2xl font-bold">{sandbox.vcpus}</p>
-                </CardContent>
-              </Card>
-            )}
-
-            {sandbox.memory_mb != null && (
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">Memory</CardTitle>
-                  <HardDrive className="h-4 w-4 text-muted-foreground" />
-                </CardHeader>
-                <CardContent>
-                  <p className="text-2xl font-bold">{sandbox.memory_mb} MB</p>
-                </CardContent>
-              </Card>
-            )}
-
-            {sandbox.created_at && (
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">
-                    Created At
-                  </CardTitle>
-                  <Calendar className="h-4 w-4 text-muted-foreground" />
-                </CardHeader>
-                <CardContent>
-                  <p className="text-sm">{formatDate(sandbox.created_at)}</p>
-                </CardContent>
-              </Card>
-            )}
-
-            {sandbox.ip && (
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">
-                    IP Address
-                  </CardTitle>
-                  <Server className="h-4 w-4 text-muted-foreground" />
-                </CardHeader>
-                <CardContent>
-                  <button
-                    type="button"
-                    className="group flex items-center gap-1.5 text-sm font-mono hover:text-foreground"
-                    onClick={() => copyToClipboard(sandbox.ip!, "ip")}
-                    title="Copy to clipboard"
-                  >
-                    <span>{sandbox.ip}</span>
-                    {copiedField === "ip" ? (
-                      <Check className="h-3 w-3 shrink-0 text-green-500" />
+                {sandbox.ports && sandbox.ports.length > 0 && (
+                  <tr className="border-b">
+                    <td className="px-4 py-2.5 text-muted-foreground">Ports</td>
+                    <td className="px-4 py-2.5 font-mono">{sandbox.ports.join(", ")}</td>
+                  </tr>
+                )}
+                {sandbox.created_at && (
+                  <tr className="border-b">
+                    <td className="px-4 py-2.5 text-muted-foreground">Created</td>
+                    <td className="px-4 py-2.5">{formatDate(sandbox.created_at)}</td>
+                  </tr>
+                )}
+                <tr className="border-b">
+                  <td className="px-4 py-2.5 text-muted-foreground">Secrets</td>
+                  <td className="px-4 py-2.5">
+                    {sandbox.secret_mappings && Object.keys(sandbox.secret_mappings).length > 0 ? (
+                      <span className="font-mono">{Object.keys(sandbox.secret_mappings).length} bindings</span>
                     ) : (
-                      <Copy className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50" />
+                      <span className="text-muted-foreground">None</span>
                     )}
-                  </button>
-                </CardContent>
-              </Card>
-            )}
-
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Connect</CardTitle>
-                <Terminal className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <button
-                  type="button"
-                  className="group flex items-center gap-1.5 text-sm font-mono hover:text-foreground min-w-0"
-                  onClick={() =>
-                    copyToClipboard(
-                      `agentkernel attach ${sandbox.name}`,
-                      "connect",
-                    )
-                  }
-                  title="Copy to clipboard"
-                >
-                  <span className="break-all">
-                    agentkernel attach {sandbox.name}
-                  </span>
-                  {copiedField === "connect" ? (
-                    <Check className="h-3 w-3 shrink-0 text-green-500" />
-                  ) : (
-                    <Copy className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50" />
-                  )}
-                </button>
-              </CardContent>
-            </Card>
-
-            {sandbox.ports && sandbox.ports.length > 0 && (
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">Ports</CardTitle>
-                  <Server className="h-4 w-4 text-muted-foreground" />
-                </CardHeader>
-                <CardContent>
-                  <p className="text-sm font-mono">
-                    {sandbox.ports.join(", ")}
-                  </p>
-                </CardContent>
-              </Card>
-            )}
-
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">
-                  Extend TTL
-                </CardTitle>
-                <Clock className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <Dialog
-                  open={extendDialogOpen}
-                  onOpenChange={setExtendDialogOpen}
-                >
-                  <DialogTrigger asChild>
-                    <Button variant="outline" size="sm">
-                      <Clock className="mr-2 h-4 w-4" />
-                      Extend
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Extend TTL</DialogTitle>
-                      <DialogDescription>
-                        Add more time before this sandbox expires.
-                      </DialogDescription>
-                    </DialogHeader>
-                    <div className="grid gap-2 py-4">
-                      <Label htmlFor="extend-seconds">Seconds to add</Label>
-                      <Input
-                        id="extend-seconds"
-                        type="number"
-                        inputMode="numeric"
-                        min={60}
-                        step={60}
-                        value={extendSeconds}
-                        onChange={(e) =>
-                          setExtendSeconds(Number(e.target.value))
-                        }
-                      />
-                    </div>
-                    {!!extendMutation.error && (
-                      <p className="text-sm text-destructive">
-                        {extendMutation.error instanceof Error
-                          ? extendMutation.error.message
-                          : String(extendMutation.error)}
-                      </p>
-                    )}
-                    <DialogFooter>
-                      <Button
-                        variant="outline"
-                        onClick={() => setExtendDialogOpen(false)}
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        onClick={() =>
-                          extendMutation.mutate({
-                            sandboxName: sandbox.name,
-                            seconds: extendSeconds,
-                          })
-                        }
-                        disabled={extendMutation.isPending}
-                      >
-                        {extendMutation.isPending ? "Extending..." : "Extend"}
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Resize</CardTitle>
-                <Cpu className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="text-xs text-muted-foreground">
-                    {sandbox.vcpus ?? "?"} vCPU
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {sandbox.memory_mb ?? "?"} MB
-                  </span>
-                </div>
-                <Dialog
-                  open={resizeDialogOpen}
-                  onOpenChange={(open) => {
-                    setResizeDialogOpen(open);
-                    if (open) {
-                      setResizeVcpus(sandbox.vcpus ?? 2);
-                      setResizeMemory(sandbox.memory_mb ?? 512);
-                    }
-                  }}
-                >
-                  <DialogTrigger asChild>
-                    <Button variant="outline" size="sm">
-                      <Cpu className="mr-2 h-4 w-4" />
-                      Resize
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Resize Sandbox</DialogTitle>
-                      <DialogDescription>
-                        Change CPU and memory allocation. The sandbox will be
-                        stopped and recreated with the new resources.
-                      </DialogDescription>
-                    </DialogHeader>
-                    <div className="grid gap-4 py-4">
-                      <div className="grid gap-2">
-                        <Label htmlFor="resize-vcpus">vCPUs</Label>
-                        <Input
-                          id="resize-vcpus"
-                          type="number"
-                          inputMode="numeric"
-                          min={1}
-                          max={16}
-                          value={resizeVcpus}
-                          onChange={(e) =>
-                            setResizeVcpus(Number(e.target.value))
+                  </td>
+                </tr>
+                <tr>
+                  <td className="px-4 py-2.5 text-muted-foreground">Actions</td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <Dialog
+                        open={resizeDialogOpen}
+                        onOpenChange={(open) => {
+                          setResizeDialogOpen(open);
+                          if (open) {
+                            setResizeVcpus(sandbox.vcpus ?? 2);
+                            setResizeMemory(sandbox.memory_mb ?? 512);
                           }
-                        />
-                      </div>
-                      <div className="grid gap-2">
-                        <Label htmlFor="resize-memory">Memory (MB)</Label>
-                        <Input
-                          id="resize-memory"
-                          type="number"
-                          inputMode="numeric"
-                          min={128}
-                          step={128}
-                          value={resizeMemory}
-                          onChange={(e) =>
-                            setResizeMemory(Number(e.target.value))
-                          }
-                        />
-                      </div>
+                        }}
+                      >
+                        <DialogTrigger asChild>
+                          <Button variant="outline" size="sm" className="h-7 text-xs">
+                            Resize
+                          </Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                          <DialogHeader>
+                            <DialogTitle>Resize Sandbox</DialogTitle>
+                            <DialogDescription>
+                              Change CPU and memory allocation. The sandbox will be
+                              stopped and recreated with the new resources.
+                            </DialogDescription>
+                          </DialogHeader>
+                          <div className="grid gap-4 py-4">
+                            <div className="grid gap-2">
+                              <Label htmlFor="resize-vcpus">vCPUs</Label>
+                              <Input
+                                id="resize-vcpus"
+                                type="number"
+                                inputMode="numeric"
+                                min={1}
+                                max={16}
+                                value={resizeVcpus}
+                                onChange={(e) =>
+                                  setResizeVcpus(Number(e.target.value))
+                                }
+                              />
+                            </div>
+                            <div className="grid gap-2">
+                              <Label htmlFor="resize-memory">Memory (MB)</Label>
+                              <Input
+                                id="resize-memory"
+                                type="number"
+                                inputMode="numeric"
+                                min={128}
+                                step={128}
+                                value={resizeMemory}
+                                onChange={(e) =>
+                                  setResizeMemory(Number(e.target.value))
+                                }
+                              />
+                            </div>
+                          </div>
+                          {!!resizeMutation.error && (
+                            <p className="text-sm text-destructive">
+                              {resizeMutation.error instanceof Error
+                                ? resizeMutation.error.message
+                                : String(resizeMutation.error)}
+                            </p>
+                          )}
+                          <DialogFooter>
+                            <Button
+                              variant="outline"
+                              onClick={() => setResizeDialogOpen(false)}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              onClick={() =>
+                                resizeMutation.mutate({
+                                  sandboxName: sandbox.name,
+                                  vcpus: resizeVcpus,
+                                  memoryMb: resizeMemory,
+                                })
+                              }
+                              disabled={resizeMutation.isPending}
+                            >
+                              {resizeMutation.isPending ? "Resizing..." : "Resize"}
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
+
+                      <Dialog
+                        open={extendDialogOpen}
+                        onOpenChange={setExtendDialogOpen}
+                      >
+                        <DialogTrigger asChild>
+                          <Button variant="outline" size="sm" className="h-7 text-xs">
+                            <Clock className="mr-1 h-3 w-3" />
+                            Extend TTL
+                          </Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                          <DialogHeader>
+                            <DialogTitle>Extend TTL</DialogTitle>
+                            <DialogDescription>
+                              Add more time before this sandbox expires.
+                            </DialogDescription>
+                          </DialogHeader>
+                          <div className="grid gap-2 py-4">
+                            <Label htmlFor="extend-seconds">Seconds to add</Label>
+                            <Input
+                              id="extend-seconds"
+                              type="number"
+                              inputMode="numeric"
+                              min={60}
+                              step={60}
+                              value={extendSeconds}
+                              onChange={(e) =>
+                                setExtendSeconds(Number(e.target.value))
+                              }
+                            />
+                          </div>
+                          {!!extendMutation.error && (
+                            <p className="text-sm text-destructive">
+                              {extendMutation.error instanceof Error
+                                ? extendMutation.error.message
+                                : String(extendMutation.error)}
+                            </p>
+                          )}
+                          <DialogFooter>
+                            <Button
+                              variant="outline"
+                              onClick={() => setExtendDialogOpen(false)}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              onClick={() =>
+                                extendMutation.mutate({
+                                  sandboxName: sandbox.name,
+                                  seconds: extendSeconds,
+                                })
+                              }
+                              disabled={extendMutation.isPending}
+                            >
+                              {extendMutation.isPending ? "Extending..." : "Extend"}
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
                     </div>
-                    {!!resizeMutation.error && (
-                      <p className="text-sm text-destructive">
-                        {resizeMutation.error instanceof Error
-                          ? resizeMutation.error.message
-                          : String(resizeMutation.error)}
-                      </p>
-                    )}
-                    <DialogFooter>
-                      <Button
-                        variant="outline"
-                        onClick={() => setResizeDialogOpen(false)}
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        onClick={() =>
-                          resizeMutation.mutate({
-                            sandboxName: sandbox.name,
-                            vcpus: resizeVcpus,
-                            memoryMb: resizeMemory,
-                          })
-                        }
-                        disabled={resizeMutation.isPending}
-                      >
-                        {resizeMutation.isPending ? "Resizing..." : "Resize"}
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-              </CardContent>
-            </Card>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
+
+          {/* LLM Usage */}
+          {llmUsage && llmUsage.length > 0 && (
+            <div className="mt-4">
+              <h3 className="text-sm font-medium mb-2 flex items-center gap-2">
+                <Brain className="h-4 w-4 text-violet-500" />
+                LLM Usage
+              </h3>
+              <div className="rounded-md border">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-muted/50">
+                      <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">Model</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-muted-foreground">Requests</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-muted-foreground">Input</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-muted-foreground">Output</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-muted-foreground">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {llmUsage.map((entry: LlmUsageEntry, i: number) => (
+                      <tr key={`${entry.provider}-${entry.model}`} className={i < llmUsage.length - 1 ? "border-b" : ""}>
+                        <td className="px-4 py-2">
+                          <span className="font-medium">{entry.model}</span>
+                          <span className="ml-2 text-xs text-muted-foreground">{entry.provider}</span>
+                        </td>
+                        <td className="px-4 py-2 text-right font-mono">{entry.request_count.toLocaleString()}</td>
+                        <td className="px-4 py-2 text-right font-mono">{entry.total_input_tokens.toLocaleString()}</td>
+                        <td className="px-4 py-2 text-right font-mono">{entry.total_output_tokens.toLocaleString()}</td>
+                        <td className="px-4 py-2 text-right font-mono">{entry.total_tokens.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="secrets" className="pt-2">
+          {sandbox.secret_mappings && Object.keys(sandbox.secret_mappings).length > 0 ? (
+            <div className="rounded-md border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/50">
+                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">Environment Variable</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">Proxy Target Host</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(sandbox.secret_mappings).map(([envVar, host], i) => (
+                    <tr key={envVar} className={i < Object.keys(sandbox.secret_mappings!).length - 1 ? "border-b" : ""}>
+                      <td className="px-4 py-2">
+                        <div className="flex items-center gap-2">
+                          <Shield className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                          <code className="font-mono text-xs">{envVar}</code>
+                        </div>
+                      </td>
+                      <td className="px-4 py-2 font-mono text-xs text-muted-foreground">{host}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground py-4">
+              No secret bindings configured. Create a sandbox with <code className="font-mono text-xs">--secret</code> flags or use a quickstart template to add proxy secret bindings.
+            </p>
+          )}
         </TabsContent>
 
         <TabsContent value="exec" className="space-y-4">
