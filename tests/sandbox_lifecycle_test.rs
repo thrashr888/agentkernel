@@ -47,8 +47,8 @@ fn unique_sandbox_name() -> String {
 
 /// Cleanup helper - stops and removes a sandbox
 fn cleanup_sandbox(name: &str) {
-    let _ = run_cmd(&["stop", name]);
-    let _ = run_cmd(&["remove", name]);
+    let _ = run_cmd(&["sandbox", "stop", name]);
+    let _ = run_cmd(&["sandbox", "remove", name]);
     // Also try to remove Docker container directly in case of partial state
     let _ = Command::new("docker")
         .args(["rm", "-f", &format!("agentkernel-{}", name)])
@@ -71,22 +71,23 @@ fn test_full_lifecycle_docker() {
     cleanup_sandbox(&name);
 
     // Create
-    let (exit_code, _stdout, stderr) = run_cmd(&["create", &name, "--backend", "docker"]);
+    let (exit_code, _stdout, stderr) =
+        run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
     assert_eq!(exit_code, 0, "Create failed: {}", stderr);
 
     // Verify it appears in list
-    let (exit_code, stdout, _stderr) = run_cmd(&["list"]);
+    let (exit_code, stdout, _stderr) = run_cmd(&["sandbox", "list"]);
     assert_eq!(exit_code, 0);
     assert!(stdout.contains(&name), "Sandbox not in list");
 
     // Start
-    let (exit_code, _stdout, stderr) = run_cmd(&["start", &name]);
+    let (exit_code, _stdout, stderr) = run_cmd(&["sandbox", "start", &name]);
     assert_eq!(exit_code, 0, "Start failed: {}", stderr);
 
     // Verify running status - on main branch without Docker persistence,
     // the container might show as "stopped" because Docker cleans up on CLI exit.
     // The real test is whether exec works.
-    let (exit_code, stdout, _stderr) = run_cmd(&["list"]);
+    let (exit_code, stdout, _stderr) = run_cmd(&["sandbox", "list"]);
     assert_eq!(exit_code, 0);
     let shows_running = stdout.contains("running");
 
@@ -110,15 +111,15 @@ fn test_full_lifecycle_docker() {
     }
 
     // Stop
-    let (exit_code, _stdout, stderr) = run_cmd(&["stop", &name]);
+    let (exit_code, _stdout, stderr) = run_cmd(&["sandbox", "stop", &name]);
     assert_eq!(exit_code, 0, "Stop failed: {}", stderr);
 
     // Remove
-    let (exit_code, _stdout, stderr) = run_cmd(&["remove", &name]);
+    let (exit_code, _stdout, stderr) = run_cmd(&["sandbox", "remove", &name]);
     assert_eq!(exit_code, 0, "Remove failed: {}", stderr);
 
     // Verify removed from list
-    let (exit_code, stdout, _stderr) = run_cmd(&["list"]);
+    let (exit_code, stdout, _stderr) = run_cmd(&["sandbox", "list"]);
     assert_eq!(exit_code, 0);
     assert!(
         !stdout.contains(&name),
@@ -138,8 +139,8 @@ fn test_exec_multiple_commands() {
     cleanup_sandbox(&name);
 
     // Setup
-    run_cmd(&["create", &name, "--backend", "docker"]);
-    run_cmd(&["start", &name]);
+    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "start", &name]);
 
     // Run multiple exec commands
     let (exit_code, stdout, _) = run_cmd(&["exec", &name, "--", "uname", "-a"]);
@@ -170,8 +171,8 @@ fn test_exec_with_shell_command() {
     cleanup_sandbox(&name);
 
     // Setup
-    run_cmd(&["create", &name, "--backend", "docker"]);
-    run_cmd(&["start", &name]);
+    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "start", &name]);
 
     // Run shell command with pipe
     let (exit_code, stdout, _) = run_cmd(&["exec", &name, "--", "sh", "-c", "echo hello | cat"]);
@@ -194,11 +195,11 @@ fn test_create_duplicate_fails() {
     cleanup_sandbox(&name);
 
     // Create first time
-    let (exit_code, _, _) = run_cmd(&["create", &name, "--backend", "docker"]);
+    let (exit_code, _, _) = run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
     assert_eq!(exit_code, 0);
 
     // Create again should fail
-    let (exit_code, _, stderr) = run_cmd(&["create", &name, "--backend", "docker"]);
+    let (exit_code, _, stderr) = run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
     assert_ne!(exit_code, 0);
     assert!(stderr.contains("already exists") || stderr.contains("Error"));
 
@@ -218,11 +219,11 @@ fn test_start_already_running() {
     cleanup_sandbox(&name);
 
     // Setup
-    run_cmd(&["create", &name, "--backend", "docker"]);
-    run_cmd(&["start", &name]);
+    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "start", &name]);
 
     // Start again should fail or be idempotent
-    let (exit_code, _, stderr) = run_cmd(&["start", &name]);
+    let (exit_code, _, stderr) = run_cmd(&["sandbox", "start", &name]);
     // Either fails with "already running" or succeeds (idempotent)
     if exit_code != 0 {
         assert!(stderr.contains("already running") || stderr.contains("Error"));
@@ -244,7 +245,7 @@ fn test_exec_on_stopped_sandbox() {
     cleanup_sandbox(&name);
 
     // Create but don't start
-    run_cmd(&["create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
 
     // Exec should fail
     let (exit_code, _, stderr) = run_cmd(&["exec", &name, "--", "echo", "hello"]);
@@ -271,12 +272,12 @@ fn test_stop_idempotent() {
     cleanup_sandbox(&name);
 
     // Setup and start
-    run_cmd(&["create", &name, "--backend", "docker"]);
-    run_cmd(&["start", &name]);
-    run_cmd(&["stop", &name]);
+    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "start", &name]);
+    run_cmd(&["sandbox", "stop", &name]);
 
     // Stop again should succeed (idempotent)
-    let (exit_code, _, _) = run_cmd(&["stop", &name]);
+    let (exit_code, _, _) = run_cmd(&["sandbox", "stop", &name]);
     assert_eq!(exit_code, 0);
 
     // Cleanup

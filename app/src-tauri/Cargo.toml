@@ -1,6 +1,6 @@
 [package]
 name = "agentkernel-desktop"
-version = "0.14.1"
+version = "0.14.2"
 description = "Desktop control plane for agentkernel"
 authors = ["Paul Thrasher <thrashr888@gmail.com>"]
 license = "MIT"
