@@ -204,9 +204,11 @@ struct RuntimeOrchestrationInput {
     wait_for_event: Option<String>,
     #[serde(default)]
     activity: Option<RuntimeActivity>,
+    #[serde(default)]
+    activities: Option<Vec<RuntimeActivity>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RuntimeActivity {
     #[serde(default = "default_activity_name")]
     name: String,
@@ -639,6 +641,18 @@ async fn handle_request(
         // Durable orchestration scaffolding
         (Method::POST, ["orchestrations"]) => handle_create_orchestration(req, state).await,
         (Method::GET, ["orchestrations"]) => handle_list_orchestrations(state).await,
+        (Method::POST, ["orchestrations", "definitions"]) => {
+            handle_put_orchestration_definition(req, state).await
+        }
+        (Method::GET, ["orchestrations", "definitions"]) => {
+            handle_list_orchestration_definitions(state).await
+        }
+        (Method::GET, ["orchestrations", "definitions", definition_name]) => {
+            handle_get_orchestration_definition(definition_name, state).await
+        }
+        (Method::DELETE, ["orchestrations", "definitions", definition_name]) => {
+            handle_delete_orchestration_definition(definition_name, state).await
+        }
         (Method::GET, ["orchestrations", orchestration_id]) => {
             handle_get_orchestration(orchestration_id, state).await
         }
@@ -1238,6 +1252,107 @@ async fn handle_list_orchestrations(state: Arc<AppState>) -> Response<BoxBody> {
 
     match store.list(100, 0) {
         Ok(records) => json_response(StatusCode::OK, &ApiResponse::success(records)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_put_orchestration_definition(
+    req: Request<Incoming>,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let body: serde_json::Value = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    let Some(name) = body
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+    else {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("name is required"),
+        );
+    };
+
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.upsert_definition(&name, body) {
+        Ok(definition) => json_response(StatusCode::OK, &ApiResponse::success(definition)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_list_orchestration_definitions(state: Arc<AppState>) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.list_definitions(200, 0) {
+        Ok(definitions) => json_response(StatusCode::OK, &ApiResponse::success(definitions)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_get_orchestration_definition(
+    definition_name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.get_definition(definition_name) {
+        Ok(Some(definition)) => json_response(StatusCode::OK, &ApiResponse::success(definition)),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Definition not found"),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_delete_orchestration_definition(
+    definition_name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    match store.delete_definition(definition_name) {
+        Ok(true) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success(serde_json::json!({
+                "deleted": true,
+                "name": definition_name,
+            })),
+        ),
+        Ok(false) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Definition not found"),
+        ),
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
@@ -3383,7 +3498,45 @@ async fn process_orchestration_record(
         }
     };
 
-    if let Some(wait_name) = runtime_input.wait_for_event.clone() {
+    let mut wait_name = runtime_input.wait_for_event.clone();
+    let mut single_activity = runtime_input.activity.clone();
+    let mut activity_sequence = runtime_input.activities.clone().unwrap_or_default();
+
+    if wait_name.is_none() && single_activity.is_none() && activity_sequence.is_empty() {
+        if let Some(definition) = store.get_definition(&record.name)? {
+            let parsed = match parse_runtime_input(Some(definition.definition)) {
+                Ok(value) => value,
+                Err(parse_error) => {
+                    let error = format!("invalid orchestration definition: {parse_error}");
+                    store.append_event(
+                        &orchestration_id,
+                        "OrchestratorFailed",
+                        serde_json::json!({ "error": error }),
+                    )?;
+                    let _ = store.update(
+                        &orchestration_id,
+                        UpdateOrchestration {
+                            status: Some(OrchestrationStatus::Failed),
+                            output: None,
+                            error: Some(error),
+                        },
+                    )?;
+                    return Ok(());
+                }
+            };
+            wait_name = parsed.wait_for_event;
+            single_activity = parsed.activity;
+            activity_sequence = parsed.activities.unwrap_or_default();
+        }
+    }
+
+    if activity_sequence.is_empty()
+        && let Some(activity) = single_activity
+    {
+        activity_sequence.push(activity);
+    }
+
+    if let Some(wait_name) = wait_name {
         if record.status == OrchestrationStatus::Pending {
             let _ = store.update(
                 &orchestration_id,
@@ -3443,8 +3596,11 @@ async fn process_orchestration_record(
         return Ok(());
     }
 
-    if let Some(activity) = runtime_input.activity {
-        if activity.command.is_empty() {
+    if !activity_sequence.is_empty() {
+        if activity_sequence
+            .iter()
+            .any(|activity| activity.command.is_empty())
+        {
             let error = "activity.command must not be empty".to_string();
             store.append_event(
                 &orchestration_id,
@@ -3462,13 +3618,6 @@ async fn process_orchestration_record(
             return Ok(());
         }
 
-        let retry_policy = activity.retry_policy.clone().unwrap_or_default();
-        let failure_events: Vec<&OrchestrationEvent> = history
-            .iter()
-            .filter(|event| event.event_type == "ActivityFailed")
-            .collect();
-        let failure_attempts = failure_events.len() as u32;
-
         if record.status == OrchestrationStatus::Pending {
             let _ = store.update(
                 &orchestration_id,
@@ -3480,17 +3629,27 @@ async fn process_orchestration_record(
             )?;
         }
 
-        if let Some(output) = history.iter().rev().find_map(|event| {
-            if event.event_type != "ActivityCompleted" {
-                return None;
-            }
-            event
-                .data
-                .as_ref()
-                .and_then(|d| d.get("output"))
-                .cloned()
-                .or(Some(serde_json::Value::Null))
-        }) {
+        let completed_steps = history
+            .iter()
+            .filter(|event| event.event_type == "ActivityCompleted")
+            .count();
+
+        if completed_steps >= activity_sequence.len() {
+            let output = history
+                .iter()
+                .rev()
+                .find_map(|event| {
+                    if event.event_type != "ActivityCompleted" {
+                        return None;
+                    }
+                    event
+                        .data
+                        .as_ref()
+                        .and_then(|d| d.get("output"))
+                        .cloned()
+                        .or(Some(serde_json::Value::Null))
+                })
+                .unwrap_or(serde_json::Value::Null);
             if !history
                 .iter()
                 .any(|event| event.event_type == "OrchestratorCompleted")
@@ -3512,9 +3671,21 @@ async fn process_orchestration_record(
             return Ok(());
         }
 
+        let current_step = completed_steps;
+        let activity = activity_sequence[current_step].clone();
+        let retry_policy = activity.retry_policy.clone().unwrap_or_default();
+
+        let failure_events: Vec<&OrchestrationEvent> = history
+            .iter()
+            .rev()
+            .take_while(|event| event.event_type != "ActivityCompleted")
+            .filter(|event| event.event_type == "ActivityFailed")
+            .collect();
+        let failure_attempts = failure_events.len() as u32;
+
         if failure_attempts > 0 {
             let last_error = failure_events
-                .last()
+                .first()
                 .and_then(|event| event.data.as_ref())
                 .and_then(|data| data.get("error"))
                 .and_then(serde_json::Value::as_str)
@@ -3543,7 +3714,7 @@ async fn process_orchestration_record(
                 return Ok(());
             }
 
-            if let Some(last_failure) = failure_events.last()
+            if let Some(last_failure) = failure_events.first()
                 && let Ok(last_failure_at) =
                     chrono::DateTime::parse_from_rfc3339(&last_failure.timestamp)
             {
@@ -3557,18 +3728,26 @@ async fn process_orchestration_record(
             }
         }
 
-        if !history
-            .iter()
-            .any(|event| event.event_type == "ActivityScheduled")
-        {
-            let sequence = history.last().map(|event| event.sequence + 1).unwrap_or(1);
-            let idempotency_key =
-                compute_idempotency_key(&orchestration_id, &activity.name, sequence);
+        if !history.iter().any(|event| {
+            event.event_type == "ActivityScheduled"
+                && event
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("step"))
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(current_step as u64)
+        }) {
+            let idempotency_key = compute_idempotency_key(
+                &orchestration_id,
+                &activity.name,
+                (current_step + 1) as i64,
+            );
             store.append_event(
                 &orchestration_id,
                 "ActivityScheduled",
                 serde_json::json!({
                     "name": activity.name.clone(),
+                    "step": current_step,
                     "input": {
                         "command": activity.command.clone(),
                         "image": activity.image.clone(),
@@ -3590,7 +3769,10 @@ async fn process_orchestration_record(
         store.append_event(
             &orchestration_id,
             "ActivityStarted",
-            serde_json::json!({ "attempt": attempt }),
+            serde_json::json!({
+                "step": current_step,
+                "attempt": attempt
+            }),
         )?;
 
         match execute_runtime_activity(&activity).await {
@@ -3599,18 +3781,17 @@ async fn process_orchestration_record(
                 store.append_event(
                     &orchestration_id,
                     "ActivityCompleted",
-                    serde_json::json!({ "output": output_json }),
-                )?;
-                store.append_event(
-                    &orchestration_id,
-                    "OrchestratorCompleted",
-                    serde_json::json!({ "output": output_json }),
+                    serde_json::json!({
+                        "step": current_step,
+                        "name": activity.name,
+                        "output": output_json
+                    }),
                 )?;
                 let _ = store.update(
                     &orchestration_id,
                     UpdateOrchestration {
-                        status: Some(OrchestrationStatus::Completed),
-                        output: Some(output_json),
+                        status: Some(OrchestrationStatus::Running),
+                        output: None,
                         error: None,
                     },
                 )?;
@@ -3623,6 +3804,8 @@ async fn process_orchestration_record(
                     &orchestration_id,
                     "ActivityFailed",
                     serde_json::json!({
+                        "step": current_step,
+                        "name": activity.name,
                         "error": error,
                         "attempt": attempt,
                         "retryable": retryable
@@ -4801,6 +4984,23 @@ mod tests {
         assert_eq!(segments, vec!["orchestrations", "orch-1", "terminate"]);
     }
 
+    #[test]
+    fn test_path_segments_orchestration_definitions() {
+        let path = "/orchestrations/definitions";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["orchestrations", "definitions"]);
+    }
+
+    #[test]
+    fn test_path_segments_orchestration_definition_by_name() {
+        let path = "/orchestrations/definitions/deploy-pipeline";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(
+            segments,
+            vec!["orchestrations", "definitions", "deploy-pipeline"]
+        );
+    }
+
     #[tokio::test]
     async fn test_runtime_tick_auto_completes_orchestration() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -4872,6 +5072,54 @@ mod tests {
             history
                 .iter()
                 .any(|event| event.event_type == "EventConsumed")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_runtime_tick_uses_definition_wait_for_event() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(OrchestrationStore::new(
+            DurableStorage::new(temp.path().join("durable.db")).unwrap(),
+        ));
+
+        store
+            .upsert_definition(
+                "approval-flow",
+                serde_json::json!({
+                    "name": "approval-flow",
+                    "wait_for_event": "approval"
+                }),
+            )
+            .unwrap();
+
+        let created = store
+            .create(CreateOrchestration {
+                name: "approval-flow".to_string(),
+                input: None,
+            })
+            .unwrap();
+
+        process_orchestrations_tick(store.clone()).await.unwrap();
+        let running = store.get(&created.id).unwrap().unwrap();
+        assert_eq!(running.status, OrchestrationStatus::Running);
+
+        store
+            .append_event(
+                &created.id,
+                "EventRaised",
+                serde_json::json!({
+                    "name": "approval",
+                    "data": {"approved": true}
+                }),
+            )
+            .unwrap();
+
+        process_orchestrations_tick(store.clone()).await.unwrap();
+        let completed = store.get(&created.id).unwrap().unwrap();
+        assert_eq!(completed.status, OrchestrationStatus::Completed);
+        assert_eq!(
+            completed.output,
+            Some(serde_json::json!({"approved": true}))
         );
     }
 

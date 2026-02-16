@@ -70,6 +70,15 @@ pub struct OrchestrationEvent {
     pub timestamp: String,
 }
 
+/// Persisted orchestration definition payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestrationDefinition {
+    pub name: String,
+    pub definition: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// Create request for orchestration persistence.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateOrchestration {
@@ -266,6 +275,87 @@ LIMIT ?2 OFFSET ?3
         Ok(out)
     }
 
+    pub fn upsert_definition(
+        &self,
+        name: &str,
+        definition: serde_json::Value,
+    ) -> Result<OrchestrationDefinition> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let definition_json = serde_json::to_string(&definition)?;
+        let conn = self.storage.open_connection()?;
+        conn.execute(
+            r#"
+INSERT INTO orchestration_definitions(name, definition_json, created_at, updated_at)
+VALUES (?1, ?2, ?3, ?4)
+ON CONFLICT(name) DO UPDATE SET
+    definition_json = excluded.definition_json,
+    updated_at = excluded.updated_at
+"#,
+            params![name, definition_json, now, now],
+        )
+        .context("failed to upsert orchestration definition")?;
+
+        self.get_definition(name)?
+            .context("definition missing after upsert")
+    }
+
+    pub fn get_definition(&self, name: &str) -> Result<Option<OrchestrationDefinition>> {
+        let conn = self.storage.open_connection()?;
+        conn.query_row(
+            r#"
+SELECT name, definition_json, created_at, updated_at
+FROM orchestration_definitions
+WHERE name = ?1
+"#,
+            [name],
+            Self::row_to_definition,
+        )
+        .optional()
+        .context("failed to get orchestration definition")
+    }
+
+    pub fn list_definitions(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<OrchestrationDefinition>> {
+        let conn = self.storage.open_connection()?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+SELECT name, definition_json, created_at, updated_at
+FROM orchestration_definitions
+ORDER BY name ASC
+LIMIT ?1 OFFSET ?2
+"#,
+            )
+            .context("failed to prepare list definitions query")?;
+
+        let rows = stmt
+            .query_map(
+                params![limit as i64, offset as i64],
+                Self::row_to_definition,
+            )
+            .context("failed to execute list definitions query")?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.context("failed to parse definition row")?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_definition(&self, name: &str) -> Result<bool> {
+        let conn = self.storage.open_connection()?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM orchestration_definitions WHERE name = ?1",
+                [name],
+            )
+            .context("failed to delete orchestration definition")?;
+        Ok(deleted > 0)
+    }
+
     pub fn update(
         &self,
         id: &str,
@@ -362,6 +452,20 @@ WHERE id = ?1
             timestamp: row.get(3)?,
         })
     }
+
+    fn row_to_definition(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrchestrationDefinition> {
+        let definition_raw: String = row.get(1)?;
+        let definition = serde_json::from_str(&definition_raw).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+
+        Ok(OrchestrationDefinition {
+            name: row.get(0)?,
+            definition,
+            created_at: row.get(2)?,
+            updated_at: row.get(3)?,
+        })
+    }
 }
 
 fn parse_json_field(
@@ -439,5 +543,56 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].event_type, "OrchestratorStarted");
         assert_eq!(history[1].event_type, "EventRaised");
+    }
+
+    #[test]
+    fn test_upsert_and_list_definitions() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let storage = DurableStorage::new(temp.path().join("orchestrations.db")).unwrap();
+        let store = OrchestrationStore::new(storage);
+
+        let first = store
+            .upsert_definition(
+                "deploy-pipeline",
+                serde_json::json!({
+                    "name": "deploy-pipeline",
+                    "activities": [
+                        {"name": "run-tests", "command": ["cargo", "test"]}
+                    ]
+                }),
+            )
+            .unwrap();
+        assert_eq!(first.name, "deploy-pipeline");
+
+        let second = store
+            .upsert_definition(
+                "deploy-pipeline",
+                serde_json::json!({
+                    "name": "deploy-pipeline",
+                    "activities": [
+                        {"name": "lint", "command": ["cargo", "clippy"]}
+                    ]
+                }),
+            )
+            .unwrap();
+        assert_eq!(second.name, "deploy-pipeline");
+
+        let fetched = store.get_definition("deploy-pipeline").unwrap().unwrap();
+        assert_eq!(fetched.name, "deploy-pipeline");
+        assert_eq!(
+            fetched
+                .definition
+                .get("activities")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+
+        let listed = store.list_definitions(10, 0).unwrap();
+        assert_eq!(listed.len(), 1);
+
+        let deleted = store.delete_definition("deploy-pipeline").unwrap();
+        assert!(deleted);
+        assert!(store.get_definition("deploy-pipeline").unwrap().is_none());
     }
 }
