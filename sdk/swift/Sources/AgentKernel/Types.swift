@@ -170,6 +170,8 @@ public struct FileReadResponse: Codable, Sendable {
 
 /// Opaque orchestration representation.
 public typealias Orchestration = [String: Any]
+/// Opaque orchestration definition representation.
+public typealias OrchestrationDefinition = [String: Any]
 
 /// Opaque durable object representation.
 public typealias DurableObject = [String: Any]

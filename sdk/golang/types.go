@@ -128,6 +128,9 @@ type Orchestration map[string]interface{}
 // CreateOrchestrationRequest is the request body for POST /orchestrations.
 type CreateOrchestrationRequest map[string]interface{}
 
+// OrchestrationDefinition is an opaque orchestration definition payload.
+type OrchestrationDefinition map[string]interface{}
+
 // DurableObject is an opaque durable object payload.
 type DurableObject map[string]interface{}
 

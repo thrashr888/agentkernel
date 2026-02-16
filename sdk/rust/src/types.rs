@@ -50,6 +50,7 @@ pub struct StreamEvent {
 /// Opaque orchestration payload.
 pub type Orchestration = serde_json::Value;
 pub type OrchestrationCreateRequest = serde_json::Value;
+pub type OrchestrationDefinition = serde_json::Value;
 
 /// Opaque durable object payload.
 pub type DurableObject = serde_json::Value;

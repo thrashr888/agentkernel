@@ -25,6 +25,7 @@ import type {
   DurableObject,
   FileReadResponse,
   FileWriteOptions,
+  OrchestrationDefinition,
   RunOptions,
   RunOutput,
   Orchestration,
@@ -328,6 +329,43 @@ export class AgentKernel {
       "POST",
       `/orchestrations/${encodeURIComponent(id)}/terminate`,
       payload ?? {},
+    );
+  }
+
+  /** List orchestration definitions. */
+  async listOrchestrationDefinitions(): Promise<OrchestrationDefinition[]> {
+    return this.request<OrchestrationDefinition[]>(
+      "GET",
+      "/orchestrations/definitions",
+    );
+  }
+
+  /** Register or update an orchestration definition. */
+  async upsertOrchestrationDefinition(
+    payload: OrchestrationDefinition,
+  ): Promise<OrchestrationDefinition> {
+    return this.request<OrchestrationDefinition>(
+      "POST",
+      "/orchestrations/definitions",
+      payload,
+    );
+  }
+
+  /** Get an orchestration definition by name. */
+  async getOrchestrationDefinition(
+    name: string,
+  ): Promise<OrchestrationDefinition> {
+    return this.request<OrchestrationDefinition>(
+      "GET",
+      `/orchestrations/definitions/${encodeURIComponent(name)}`,
+    );
+  }
+
+  /** Delete an orchestration definition by name. */
+  async deleteOrchestrationDefinition(name: string): Promise<string> {
+    return this.request<string>(
+      "DELETE",
+      `/orchestrations/definitions/${encodeURIComponent(name)}`,
     );
   }
 

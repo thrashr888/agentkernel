@@ -285,6 +285,26 @@ public actor AgentKernel {
         try await requestObject(method: "POST", path: "/orchestrations/\(id)/terminate", body: payload)
     }
 
+    /// List orchestration definitions.
+    public func listOrchestrationDefinitions() async throws -> [OrchestrationDefinition] {
+        try await requestObjectArray(method: "GET", path: "/orchestrations/definitions")
+    }
+
+    /// Register or update an orchestration definition.
+    public func upsertOrchestrationDefinition(_ payload: OrchestrationDefinition) async throws -> OrchestrationDefinition {
+        try await requestObject(method: "POST", path: "/orchestrations/definitions", body: payload)
+    }
+
+    /// Get an orchestration definition by name.
+    public func getOrchestrationDefinition(_ name: String) async throws -> OrchestrationDefinition {
+        try await requestObject(method: "GET", path: "/orchestrations/definitions/\(name)")
+    }
+
+    /// Delete an orchestration definition by name.
+    public func deleteOrchestrationDefinition(_ name: String) async throws -> String {
+        try await request(method: "DELETE", path: "/orchestrations/definitions/\(name)")
+    }
+
     /// List all objects.
     public func listObjects() async throws -> [DurableObject] {
         try await requestObjectArray(method: "GET", path: "/objects")

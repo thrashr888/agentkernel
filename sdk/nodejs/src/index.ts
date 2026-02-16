@@ -31,6 +31,7 @@ export type {
   RunOptions,
   RunOutput,
   Orchestration,
+  OrchestrationDefinition,
   SandboxInfo,
   SnapshotMeta,
   StreamEvent,

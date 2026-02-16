@@ -376,6 +376,39 @@ func (c *Client) TerminateOrchestration(ctx context.Context, id string, body map
 	return &result, nil
 }
 
+// ListOrchestrationDefinitions returns all orchestration definitions.
+func (c *Client) ListOrchestrationDefinitions(ctx context.Context) ([]OrchestrationDefinition, error) {
+	var result []OrchestrationDefinition
+	err := c.request(ctx, http.MethodGet, "/orchestrations/definitions", nil, &result)
+	return result, err
+}
+
+// UpsertOrchestrationDefinition creates or updates an orchestration definition.
+func (c *Client) UpsertOrchestrationDefinition(ctx context.Context, body OrchestrationDefinition) (*OrchestrationDefinition, error) {
+	var result OrchestrationDefinition
+	err := c.request(ctx, http.MethodPost, "/orchestrations/definitions", body, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// GetOrchestrationDefinition returns an orchestration definition by name.
+func (c *Client) GetOrchestrationDefinition(ctx context.Context, name string) (*OrchestrationDefinition, error) {
+	var result OrchestrationDefinition
+	err := c.request(ctx, http.MethodGet, "/orchestrations/definitions/"+name, nil, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// DeleteOrchestrationDefinition deletes an orchestration definition by name.
+func (c *Client) DeleteOrchestrationDefinition(ctx context.Context, name string) error {
+	var result string
+	return c.request(ctx, http.MethodDelete, "/orchestrations/definitions/"+name, nil, &result)
+}
+
 // ListObjects returns all durable objects.
 func (c *Client) ListObjects(ctx context.Context) ([]DurableObject, error) {
 	var result []DurableObject

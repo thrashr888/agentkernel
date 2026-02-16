@@ -23,6 +23,10 @@ Download: [openapi.yaml](openapi.yaml)
 | POST | `/sandboxes/{name}/exec` | Execute command in sandbox |
 | GET | `/orchestrations` | List orchestrations |
 | POST | `/orchestrations` | Create orchestration |
+| GET | `/orchestrations/definitions` | List orchestration definitions |
+| POST | `/orchestrations/definitions` | Create/update orchestration definition |
+| GET | `/orchestrations/definitions/{name}` | Get orchestration definition by name |
+| DELETE | `/orchestrations/definitions/{name}` | Delete orchestration definition by name |
 | GET | `/orchestrations/{id}` | Get orchestration by id |
 | POST | `/orchestrations/{id}/events` | Raise external event |
 | POST | `/orchestrations/{id}/terminate` | Terminate orchestration |

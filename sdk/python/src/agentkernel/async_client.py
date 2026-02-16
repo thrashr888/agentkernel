@@ -20,6 +20,7 @@ from .types import (
     DurableObject,
     ExtendTtlResponse,
     FileReadResponse,
+    OrchestrationDefinition,
     RunOptions,
     RunOutput,
     SandboxInfo,
@@ -344,6 +345,24 @@ class AsyncAgentKernel:
             f"/orchestrations/{orchestration_id}/terminate",
             json=payload or {},
         )
+
+    async def list_orchestration_definitions(self) -> list[OrchestrationDefinition]:
+        """List orchestration definitions."""
+        return await self._request("GET", "/orchestrations/definitions")
+
+    async def upsert_orchestration_definition(
+        self, definition: OrchestrationDefinition,
+    ) -> OrchestrationDefinition:
+        """Register or update an orchestration definition."""
+        return await self._request("POST", "/orchestrations/definitions", json=definition)
+
+    async def get_orchestration_definition(self, name: str) -> OrchestrationDefinition:
+        """Get an orchestration definition by name."""
+        return await self._request("GET", f"/orchestrations/definitions/{name}")
+
+    async def delete_orchestration_definition(self, name: str) -> str:
+        """Delete an orchestration definition by name."""
+        return await self._request("DELETE", f"/orchestrations/definitions/{name}")
 
     async def list_objects(self) -> list[DurableObject]:
         """List objects."""

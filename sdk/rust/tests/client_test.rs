@@ -196,6 +196,83 @@ async fn terminate_orchestration() {
 }
 
 #[tokio::test]
+async fn list_orchestration_definitions() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/orchestrations/definitions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": [{"name": "deploy-pipeline"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let out = client.list_orchestration_definitions().await.unwrap();
+    assert_eq!(out.len(), 1);
+}
+
+#[tokio::test]
+async fn upsert_orchestration_definition() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/orchestrations/definitions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"name": "deploy-pipeline"}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let out = client
+        .upsert_orchestration_definition(serde_json::json!({"name": "deploy-pipeline"}))
+        .await
+        .unwrap();
+    assert_eq!(out["name"], "deploy-pipeline");
+}
+
+#[tokio::test]
+async fn get_orchestration_definition() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/orchestrations/definitions/deploy-pipeline"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": {"name": "deploy-pipeline"}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let out = client
+        .get_orchestration_definition("deploy-pipeline")
+        .await
+        .unwrap();
+    assert_eq!(out["name"], "deploy-pipeline");
+}
+
+#[tokio::test]
+async fn delete_orchestration_definition() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/orchestrations/definitions/deploy-pipeline"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "data": "deleted"
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let out = client
+        .delete_orchestration_definition("deploy-pipeline")
+        .await
+        .unwrap();
+    assert_eq!(out, "deleted");
+}
+
+#[tokio::test]
 async fn list_objects() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
