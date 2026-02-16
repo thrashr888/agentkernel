@@ -200,6 +200,11 @@ class AsyncAgentKernel:
         data = await self._request("GET", f"/sandboxes/{name}")
         return SandboxInfo(**data)
 
+    async def get_sandbox_by_uuid(self, uuid: str) -> SandboxInfo:
+        """Get info about a sandbox by UUID."""
+        data = await self._request("GET", f"/sandboxes/by-uuid/{uuid}")
+        return SandboxInfo(**data)
+
     async def remove_sandbox(self, name: str) -> None:
         """Remove a sandbox."""
         await self._request("DELETE", f"/sandboxes/{name}")

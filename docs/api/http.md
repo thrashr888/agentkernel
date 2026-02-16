@@ -143,8 +143,8 @@ curl http://localhost:18888/sandboxes
 {
   "success": true,
   "data": [
-    {"name": "my-sandbox", "status": "running", "backend": "docker", "ip": "172.17.0.3"},
-    {"name": "test", "status": "stopped", "backend": "docker"}
+    {"name": "my-sandbox", "uuid": "019abc12-1234-7def-89ab-0123456789ab", "status": "running", "backend": "docker", "ip": "172.17.0.3"},
+    {"name": "test", "uuid": "019abc12-2345-7def-89ab-0123456789ab", "status": "stopped", "backend": "docker"}
   ]
 }
 ```
@@ -166,7 +166,7 @@ curl -X POST http://localhost:18888/sandboxes \
 ```json
 {
   "success": true,
-  "data": {"name": "my-sandbox", "status": "running", "backend": "docker"}
+  "data": {"name": "my-sandbox", "uuid": "019abc12-1234-7def-89ab-0123456789ab", "status": "running", "backend": "docker"}
 }
 ```
 
@@ -203,6 +203,7 @@ curl http://localhost:18888/sandboxes/my-sandbox
   "success": true,
   "data": {
     "name": "my-sandbox",
+    "uuid": "019abc12-1234-7def-89ab-0123456789ab",
     "status": "running",
     "backend": "docker",
     "ip": "172.17.0.3",
@@ -215,6 +216,16 @@ curl http://localhost:18888/sandboxes/my-sandbox
 ```
 
 The response includes resource limits and metadata when available. The `ip` field is only present for running sandboxes. Fields that are unknown are omitted.
+
+### Get Sandbox by UUID
+
+```
+GET /sandboxes/by-uuid/{uuid}
+```
+
+```bash
+curl http://localhost:18888/sandboxes/by-uuid/019abc12-1234-7def-89ab-0123456789ab
+```
 
 ### Execute in Sandbox
 

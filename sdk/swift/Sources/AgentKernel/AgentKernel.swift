@@ -122,6 +122,11 @@ public actor AgentKernel {
         try await request(method: "GET", path: "/sandboxes/\(name)")
     }
 
+    /// Get info about a sandbox by UUID.
+    public func getSandboxByUUID(_ uuid: String) async throws -> SandboxInfo {
+        try await request(method: "GET", path: "/sandboxes/by-uuid/\(uuid)")
+    }
+
     /// Remove a sandbox.
     public func removeSandbox(_ name: String) async throws {
         let _: String = try await request(method: "DELETE", path: "/sandboxes/\(name)")

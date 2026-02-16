@@ -208,6 +208,16 @@ func (c *Client) GetSandbox(ctx context.Context, name string) (*SandboxInfo, err
 	return &result, nil
 }
 
+// GetSandboxByUUID returns info about a sandbox by UUID.
+func (c *Client) GetSandboxByUUID(ctx context.Context, uuid string) (*SandboxInfo, error) {
+	var result SandboxInfo
+	err := c.request(ctx, http.MethodGet, "/sandboxes/by-uuid/"+uuid, nil, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // RemoveSandbox removes a sandbox.
 func (c *Client) RemoveSandbox(ctx context.Context, name string) error {
 	var result string

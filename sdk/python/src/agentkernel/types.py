@@ -22,6 +22,7 @@ class SandboxInfo(BaseModel):
     """Information about a sandbox."""
 
     name: str
+    uuid: str | None = None
     status: SandboxStatus
     backend: str
     image: str | None = None

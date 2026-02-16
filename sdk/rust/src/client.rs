@@ -148,6 +148,16 @@ impl AgentKernel {
         .await
     }
 
+    /// Get info about a sandbox by UUID.
+    pub async fn get_sandbox_by_uuid(&self, uuid: &str) -> Result<SandboxInfo> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/sandboxes/by-uuid/{uuid}"),
+            None::<&()>,
+        )
+        .await
+    }
+
     /// Remove a sandbox.
     pub async fn remove_sandbox(&self, name: &str) -> Result<()> {
         let _: String = self

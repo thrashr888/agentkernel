@@ -30,6 +30,8 @@ pub struct RunOutput {
 #[derive(Debug, Deserialize)]
 pub struct SandboxInfo {
     pub name: String,
+    #[serde(default)]
+    pub uuid: Option<String>,
     pub status: String,
     pub backend: String,
     pub image: Option<String>,

@@ -1,6 +1,7 @@
 // Sandbox types matching Rust backend / agentkernel HTTP API
 export interface SandboxInfo {
   name: string;
+  uuid?: string;
   status: string;
   backend: string;
   image?: string;

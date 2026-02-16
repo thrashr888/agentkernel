@@ -18,6 +18,16 @@ use crate::secrets::{SecretBackend, SecretVault};
 use crate::validation;
 use crate::volume::{VolumeManager, VolumeMount};
 use anyhow::{Result, bail};
+
+/// Error returned when a command exits with a non-zero exit code.
+/// Distinguished from infrastructure errors so HTTP handlers can return
+/// an appropriate status code (e.g. 409 instead of 500).
+#[derive(Debug, thiserror::Error)]
+#[error("Command exited with code {exit_code}: {output}")]
+pub struct CommandFailed {
+    pub exit_code: i32,
+    pub output: String,
+}
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -50,6 +60,8 @@ async fn get_pool() -> Result<Arc<ContainerPool>> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxState {
     pub name: String,
+    #[serde(default)]
+    pub uuid: String,
     /// Docker image to use (e.g., "python:3.12-alpine")
     pub image: String,
     pub vcpus: u32,
@@ -382,8 +394,14 @@ impl VmManager {
                 let path = entry.path();
                 if path.extension().is_some_and(|e| e == "json")
                     && let Ok(content) = std::fs::read_to_string(&path)
-                    && let Ok(state) = serde_json::from_str::<SandboxState>(&content)
+                    && let Ok(mut state) = serde_json::from_str::<SandboxState>(&content)
                 {
+                    // Backfill UUIDs for pre-UUID sandbox state files.
+                    if state.uuid.is_empty() {
+                        state.uuid = uuid::Uuid::now_v7().to_string();
+                        let updated = serde_json::to_string_pretty(&state)?;
+                        std::fs::write(&path, updated)?;
+                    }
                     sandboxes.insert(state.name.clone(), state);
                 }
             }
@@ -580,6 +598,7 @@ impl VmManager {
 
         let state = SandboxState {
             name: name.to_string(),
+            uuid: uuid::Uuid::now_v7().to_string(),
             image: effective_image.clone(),
             vcpus,
             memory_mb,
@@ -1305,11 +1324,11 @@ impl VmManager {
         });
 
         if result.exit_code != 0 {
-            bail!(
-                "Command exited with code {}: {}",
-                result.exit_code,
-                result.output()
-            );
+            return Err(CommandFailed {
+                exit_code: result.exit_code,
+                output: result.output(),
+            }
+            .into());
         }
 
         Ok(result.output())
@@ -1821,6 +1840,11 @@ impl VmManager {
         self.sandboxes.get(name)
     }
 
+    /// Get the stored state for a sandbox by UUID.
+    pub fn get_state_by_uuid(&self, uuid: &str) -> Option<&SandboxState> {
+        self.sandboxes.values().find(|state| state.uuid == uuid)
+    }
+
     /// Get a reference to the sandbox state (alias for get_state).
     ///
     /// Used by the SSH command to read ssh_enabled and ssh_host_port.
@@ -1885,6 +1909,7 @@ mod tests {
     fn test_sandbox_state_serialize() {
         let state = SandboxState {
             name: "test-sandbox".to_string(),
+            uuid: uuid::Uuid::now_v7().to_string(),
             image: "alpine:3.20".to_string(),
             vcpus: 2,
             memory_mb: 1024,
@@ -1935,6 +1960,7 @@ mod tests {
     fn test_sandbox_state_roundtrip() {
         let original = SandboxState {
             name: "roundtrip-test".to_string(),
+            uuid: uuid::Uuid::now_v7().to_string(),
             image: "node:20-alpine".to_string(),
             vcpus: 1,
             memory_mb: 512,
@@ -1960,6 +1986,7 @@ mod tests {
         let restored: SandboxState = serde_json::from_str(&json).unwrap();
 
         assert_eq!(original.name, restored.name);
+        assert_eq!(original.uuid, restored.uuid);
         assert_eq!(original.image, restored.image);
         assert_eq!(original.vcpus, restored.vcpus);
         assert_eq!(original.memory_mb, restored.memory_mb);
@@ -1994,6 +2021,7 @@ mod tests {
         // Create a valid sandbox JSON file
         let state = SandboxState {
             name: "loaded-sandbox".to_string(),
+            uuid: uuid::Uuid::now_v7().to_string(),
             image: "alpine:3.20".to_string(),
             vcpus: 1,
             memory_mb: 256,
@@ -2039,6 +2067,30 @@ mod tests {
     }
 
     #[test]
+    fn test_load_sandboxes_backfills_uuid() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Legacy state without UUID should be backfilled on load.
+        let legacy = r#"{
+            "name": "legacy-box",
+            "image": "alpine:3.20",
+            "vcpus": 1,
+            "memory_mb": 256,
+            "vsock_cid": 4,
+            "created_at": "2026-02-16T00:00:00Z"
+        }"#;
+        let file = temp_dir.path().join("legacy-box.json");
+        std::fs::write(&file, legacy).unwrap();
+
+        let sandboxes = VmManager::load_sandboxes(temp_dir.path()).unwrap();
+        let loaded = sandboxes.get("legacy-box").unwrap();
+        assert!(!loaded.uuid.is_empty());
+
+        let file_state = std::fs::read_to_string(&file).unwrap();
+        assert!(file_state.contains("\"uuid\""));
+    }
+
+    #[test]
     fn test_next_cid_calculation() {
         let temp_dir = TempDir::new().unwrap();
 
@@ -2046,6 +2098,7 @@ mod tests {
         for (name, cid) in [("sb1", 5), ("sb2", 10), ("sb3", 3)] {
             let state = SandboxState {
                 name: name.to_string(),
+                uuid: uuid::Uuid::now_v7().to_string(),
                 image: "alpine".to_string(),
                 vcpus: 1,
                 memory_mb: 256,

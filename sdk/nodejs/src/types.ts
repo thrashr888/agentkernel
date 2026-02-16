@@ -71,6 +71,7 @@ export interface RunOutput {
 /** Information about a sandbox. */
 export interface SandboxInfo {
   name: string;
+  uuid?: string;
   status: SandboxStatus;
   backend: string;
   image?: string;
@@ -119,6 +120,15 @@ export interface BatchFileWriteResponse {
   written: number;
 }
 
+/** Opaque orchestration payload/response body. */
+export type Orchestration = Record<string, unknown>;
+
+/** Opaque object payload/response body. */
+export type DurableObject = Record<string, unknown>;
+
+/** Opaque schedule payload/response body. */
+export type Schedule = Record<string, unknown>;
+
 /** Status of a detached command. */
 export type DetachedStatus = "running" | "completed" | "failed";
 
@@ -138,6 +148,15 @@ export interface DetachedLogsResponse {
   stdout?: string;
   stderr?: string;
 }
+
+/** Opaque payload used when creating orchestrations. */
+export type CreateOrchestrationRequest = Record<string, unknown>;
+
+/** Opaque payload used when creating objects. */
+export type CreateObjectRequest = Record<string, unknown>;
+
+/** Opaque payload used when creating schedules. */
+export type CreateScheduleRequest = Record<string, unknown>;
 
 /** API response wrapper. */
 export interface ApiResponse<T> {

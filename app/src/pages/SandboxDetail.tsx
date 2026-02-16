@@ -389,6 +389,24 @@ export function SandboxDetail() {
             </h1>
             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
               <span className="font-mono">{sandbox.backend}</span>
+              {sandbox.uuid && (
+                <>
+                  <span className="text-border">|</span>
+                  <button
+                    type="button"
+                    className="group inline-flex items-center gap-1 font-mono hover:text-foreground"
+                    onClick={() => copyToClipboard(sandbox.uuid!, "uuid")}
+                    title="Copy sandbox UUID"
+                  >
+                    {sandbox.uuid}
+                    {copiedField === "uuid" ? (
+                      <Check className="h-3 w-3 text-green-500" />
+                    ) : (
+                      <Copy className="h-3 w-3 opacity-0 group-hover:opacity-70" />
+                    )}
+                  </button>
+                </>
+              )}
               {sandbox.image && (
                 <>
                   <span className="text-border">|</span>
@@ -548,6 +566,28 @@ export function SandboxDetail() {
                 <tr className="border-b">
                   <td className="px-4 py-2.5 text-muted-foreground">Backend</td>
                   <td className="px-4 py-2.5 font-mono">{sandbox.backend}</td>
+                </tr>
+                <tr className="border-b">
+                  <td className="px-4 py-2.5 text-muted-foreground">UUID</td>
+                  <td className="px-4 py-2.5">
+                    {sandbox.uuid ? (
+                      <button
+                        type="button"
+                        className="group inline-flex items-center gap-1.5 font-mono hover:text-foreground"
+                        onClick={() => copyToClipboard(sandbox.uuid!, "uuid-inspect")}
+                        title="Copy UUID"
+                      >
+                        {sandbox.uuid}
+                        {copiedField === "uuid-inspect" ? (
+                          <Check className="h-3 w-3 text-green-500" />
+                        ) : (
+                          <Copy className="h-3 w-3 opacity-0 group-hover:opacity-70" />
+                        )}
+                      </button>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </td>
                 </tr>
                 <tr className="border-b">
                   <td className="px-4 py-2.5 text-muted-foreground">Image</td>
