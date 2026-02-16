@@ -87,31 +87,24 @@ fn rebuild_tray_menu(
             }
             if !stats_parts.is_empty() {
                 let stats_text = stats_parts.join(" \u{2014} ");
-                sb_sub = sb_sub.item(
-                    &MenuItem::with_id(
-                        handle,
-                        format!("stats:{}", sb.name),
-                        &stats_text,
-                        false,
-                        None::<&str>,
-                    )?,
-                );
+                sb_sub = sb_sub.item(&MenuItem::with_id(
+                    handle,
+                    format!("stats:{}", sb.name),
+                    &stats_text,
+                    false,
+                    None::<&str>,
+                )?);
             }
 
             // Backend + image info
-            let image_text = sb
-                .image
-                .as_deref()
-                .unwrap_or("unknown");
-            sb_sub = sb_sub.item(
-                &MenuItem::with_id(
-                    handle,
-                    format!("info:{}", sb.name),
-                    format!("{} \u{2014} {image_text}", sb.backend),
-                    false,
-                    None::<&str>,
-                )?,
-            );
+            let image_text = sb.image.as_deref().unwrap_or("unknown");
+            sb_sub = sb_sub.item(&MenuItem::with_id(
+                handle,
+                format!("info:{}", sb.name),
+                format!("{} \u{2014} {image_text}", sb.backend),
+                false,
+                None::<&str>,
+            )?);
 
             sb_sub = sb_sub.separator();
 
@@ -138,19 +131,17 @@ fn rebuild_tray_menu(
             total_mem
         ))
     };
-    let resource_item = resource_text.as_ref().map(|text| {
-        MenuItem::with_id(handle, "resources", text.as_str(), false, None::<&str>)
-    }).transpose()?;
+    let resource_item = resource_text
+        .as_ref()
+        .map(|text| MenuItem::with_id(handle, "resources", text.as_str(), false, None::<&str>))
+        .transpose()?;
 
     let sep1 = PredefinedMenuItem::separator(handle)?;
     let sep2 = PredefinedMenuItem::separator(handle)?;
     let sep3 = PredefinedMenuItem::separator(handle)?;
 
     // Build menu — conditionally include resource summary
-    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![
-        status_item,
-        sandbox_count,
-    ];
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![status_item, sandbox_count];
     if let Some(ref ri) = resource_item {
         items.push(ri);
     }

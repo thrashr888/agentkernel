@@ -126,20 +126,29 @@ pub async fn quickstart_agent(
     // which also enables LLM usage tracking via the intercept layer.
     let (agent_cmd, secret_defs): (&str, &[(&str, &str)]) = match agent.as_str() {
         "claude" => ("claude", &[("ANTHROPIC_API_KEY", "api.anthropic.com")]),
-        "gemini" => ("gemini", &[
-            ("GOOGLE_API_KEY", "generativelanguage.googleapis.com"),
-            ("GEMINI_API_KEY", "generativelanguage.googleapis.com"),
-        ]),
+        "gemini" => (
+            "gemini",
+            &[
+                ("GOOGLE_API_KEY", "generativelanguage.googleapis.com"),
+                ("GEMINI_API_KEY", "generativelanguage.googleapis.com"),
+            ],
+        ),
         "codex" => ("codex", &[("OPENAI_API_KEY", "api.openai.com")]),
-        "opencode" => ("opencode", &[
-            ("ANTHROPIC_API_KEY", "api.anthropic.com"),
-            ("OPENAI_API_KEY", "api.openai.com"),
-        ]),
+        "opencode" => (
+            "opencode",
+            &[
+                ("ANTHROPIC_API_KEY", "api.anthropic.com"),
+                ("OPENAI_API_KEY", "api.openai.com"),
+            ],
+        ),
         "amp" => ("amp", &[("ANTHROPIC_API_KEY", "api.anthropic.com")]),
-        "pi" => ("pi", &[
-            ("ANTHROPIC_API_KEY", "api.anthropic.com"),
-            ("OPENAI_API_KEY", "api.openai.com"),
-        ]),
+        "pi" => (
+            "pi",
+            &[
+                ("ANTHROPIC_API_KEY", "api.anthropic.com"),
+                ("OPENAI_API_KEY", "api.openai.com"),
+            ],
+        ),
         "copilot" => ("github-copilot", &[("GITHUB_TOKEN", "api.github.com")]),
         _ => return Err(format!("Unknown agent: {}", agent)),
     };
@@ -174,10 +183,7 @@ pub async fn quickstart_agent(
         .map_err(|e| format!("Failed to create sandbox: {}", e))?;
 
     let container_name = format!("agentkernel-{}", sandbox_name);
-    let exec_cmd = format!(
-        "container exec -it {} {}",
-        container_name, agent_cmd
-    );
+    let exec_cmd = format!("container exec -it {} {}", container_name, agent_cmd);
 
     // Open Terminal.app with the agent command
     std::process::Command::new("osascript")
