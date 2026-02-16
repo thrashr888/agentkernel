@@ -59,6 +59,17 @@ pub struct OrchestrationRecord {
     pub updated_at: String,
 }
 
+/// Append-only orchestration history event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestrationEvent {
+    pub sequence: i64,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    pub timestamp: String,
+}
+
 /// Create request for orchestration persistence.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateOrchestration {
@@ -96,8 +107,11 @@ impl OrchestrationStore {
     pub fn create(&self, req: CreateOrchestration) -> Result<OrchestrationRecord> {
         let now = chrono::Utc::now().to_rfc3339();
         let id = uuid::Uuid::now_v7().to_string();
-        let input_json = req.input.as_ref().map(serde_json::to_string).transpose()?;
+        let name = req.name;
+        let input = req.input;
+        let input_json = input.as_ref().map(serde_json::to_string).transpose()?;
         let status = OrchestrationStatus::Pending;
+        let start_event = serde_json::json!({ "input": input.clone() });
 
         let conn = self.storage.open_connection()?;
         conn.execute(
@@ -106,15 +120,18 @@ INSERT INTO orchestrations (
     id, name, status, input_json, output_json, error, created_at, updated_at
 ) VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6)
 "#,
-            params![id, req.name, status.to_string(), input_json, now, now],
+            params![id, name, status.to_string(), input_json, now, now],
         )
         .context("failed to create orchestration record")?;
 
+        self.append_event(&id, "OrchestratorStarted", start_event)
+            .context("failed to append orchestrator started event")?;
+
         Ok(OrchestrationRecord {
             id,
-            name: req.name,
+            name,
             status,
-            input: req.input,
+            input,
             output: None,
             error: None,
             created_at: now.clone(),
@@ -160,6 +177,91 @@ LIMIT ?1 OFFSET ?2
         let mut out = Vec::new();
         for row in rows {
             out.push(row.context("failed to parse orchestration row")?);
+        }
+        Ok(out)
+    }
+
+    pub fn append_event(
+        &self,
+        orchestration_id: &str,
+        event_type: &str,
+        event_data: serde_json::Value,
+    ) -> Result<OrchestrationEvent> {
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let mut conn = self.storage.open_connection()?;
+        let tx = conn
+            .transaction()
+            .context("failed to start event append transaction")?;
+
+        let sequence: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE orchestration_id = ?1",
+                [orchestration_id],
+                |row| row.get(0),
+            )
+            .context("failed to compute next event sequence")?;
+
+        tx.execute(
+            r#"
+INSERT INTO events(orchestration_id, sequence, event_type, event_data, timestamp)
+VALUES (?1, ?2, ?3, ?4, ?5)
+"#,
+            params![
+                orchestration_id,
+                sequence,
+                event_type,
+                serde_json::to_string(&event_data)?,
+                timestamp,
+            ],
+        )
+        .context("failed to append orchestration event")?;
+
+        tx.execute(
+            "UPDATE orchestrations SET updated_at = ?2 WHERE id = ?1",
+            params![orchestration_id, timestamp],
+        )
+        .context("failed to update orchestration timestamp after event append")?;
+
+        tx.commit()
+            .context("failed to commit event append transaction")?;
+
+        Ok(OrchestrationEvent {
+            sequence,
+            event_type: event_type.to_string(),
+            data: Some(event_data),
+            timestamp,
+        })
+    }
+
+    pub fn list_events(
+        &self,
+        orchestration_id: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<OrchestrationEvent>> {
+        let conn = self.storage.open_connection()?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+SELECT sequence, event_type, event_data, timestamp
+FROM events
+WHERE orchestration_id = ?1
+ORDER BY sequence ASC
+LIMIT ?2 OFFSET ?3
+"#,
+            )
+            .context("failed to prepare list events query")?;
+
+        let rows = stmt
+            .query_map(
+                params![orchestration_id, limit as i64, offset as i64],
+                Self::row_to_event,
+            )
+            .context("failed to execute list events query")?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.context("failed to parse event row")?);
         }
         Ok(out)
     }
@@ -246,6 +348,20 @@ WHERE id = ?1
             updated_at: row.get(7)?,
         })
     }
+
+    fn row_to_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrchestrationEvent> {
+        let data_raw: String = row.get(2)?;
+        let data = serde_json::from_str(&data_raw).map(Some).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+
+        Ok(OrchestrationEvent {
+            sequence: row.get(0)?,
+            event_type: row.get(1)?,
+            data,
+            timestamp: row.get(3)?,
+        })
+    }
 }
 
 fn parse_json_field(
@@ -286,5 +402,42 @@ mod tests {
         let listed = store.list(10, 0).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, created.id);
+
+        let history = store.list_events(&created.id, 10, 0).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].sequence, 1);
+        assert_eq!(history[0].event_type, "OrchestratorStarted");
+    }
+
+    #[test]
+    fn test_append_and_list_events() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let storage = DurableStorage::new(temp.path().join("orchestrations.db")).unwrap();
+        let store = OrchestrationStore::new(storage);
+
+        let created = store
+            .create(CreateOrchestration {
+                name: "signal-test".to_string(),
+                input: None,
+            })
+            .unwrap();
+
+        let event = store
+            .append_event(
+                &created.id,
+                "EventRaised",
+                serde_json::json!({
+                    "name": "approval",
+                    "data": { "approved": true }
+                }),
+            )
+            .unwrap();
+        assert_eq!(event.sequence, 2);
+        assert_eq!(event.event_type, "EventRaised");
+
+        let history = store.list_events(&created.id, 10, 0).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].event_type, "OrchestratorStarted");
+        assert_eq!(history[1].event_type, "EventRaised");
     }
 }

@@ -24,6 +24,8 @@ Download: [openapi.yaml](openapi.yaml)
 | GET | `/orchestrations` | List orchestrations |
 | POST | `/orchestrations` | Create orchestration |
 | GET | `/orchestrations/{id}` | Get orchestration by id |
+| POST | `/orchestrations/{id}/events` | Raise external event |
+| POST | `/orchestrations/{id}/terminate` | Terminate orchestration |
 | GET | `/objects` | List objects |
 | POST | `/objects` | Create object |
 | GET | `/objects/{id}` | Get object by id |

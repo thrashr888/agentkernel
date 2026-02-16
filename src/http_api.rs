@@ -28,7 +28,8 @@ use tokio::net::TcpListener;
 use crate::languages;
 use crate::opencode::OpenCodeState;
 use crate::orchestration_store::{
-    CreateOrchestration, OrchestrationStatus, OrchestrationStore, UpdateOrchestration,
+    CreateOrchestration, OrchestrationEvent, OrchestrationRecord, OrchestrationStatus,
+    OrchestrationStore, UpdateOrchestration,
 };
 use crate::permissions::SecurityProfile;
 use crate::secrets::{SecretBackend, SecretVault};
@@ -168,6 +169,30 @@ struct UpdateOrchestrationRequest {
     output: Option<serde_json::Value>,
     #[serde(default)]
     error: Option<String>,
+}
+
+/// Request to raise an external event for an orchestration.
+#[derive(Debug, Deserialize)]
+struct RaiseOrchestrationEventRequest {
+    name: String,
+    #[serde(default)]
+    data: Option<serde_json::Value>,
+}
+
+/// Request to terminate an orchestration.
+#[derive(Debug, Deserialize)]
+struct TerminateOrchestrationRequest {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// Detailed orchestration payload including append-only history.
+#[derive(Debug, Serialize)]
+struct OrchestrationDetails {
+    #[serde(flatten)]
+    orchestration: OrchestrationRecord,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    history: Vec<OrchestrationEvent>,
 }
 
 /// Response for detached command logs
@@ -546,6 +571,12 @@ async fn handle_request(
         (Method::GET, ["orchestrations"]) => handle_list_orchestrations(state).await,
         (Method::GET, ["orchestrations", orchestration_id]) => {
             handle_get_orchestration(orchestration_id, state).await
+        }
+        (Method::POST, ["orchestrations", orchestration_id, "events"]) => {
+            handle_raise_orchestration_event(req, orchestration_id, state).await
+        }
+        (Method::POST, ["orchestrations", orchestration_id, "terminate"]) => {
+            handle_terminate_orchestration(req, orchestration_id, state).await
         }
         (Method::PATCH, ["orchestrations", orchestration_id]) => {
             handle_update_orchestration(req, orchestration_id, state).await
@@ -1121,7 +1152,7 @@ async fn handle_create_orchestration(
         name: body.name,
         input: body.input,
     }) {
-        Ok(record) => json_response(StatusCode::CREATED, &ApiResponse::success(record)),
+        Ok(record) => json_response(StatusCode::ACCEPTED, &ApiResponse::success(record)),
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
@@ -1154,6 +1185,168 @@ async fn handle_get_orchestration(
     };
 
     match store.get(orchestration_id) {
+        Ok(Some(record)) => match store.list_events(orchestration_id, 1000, 0) {
+            Ok(history) => json_response(
+                StatusCode::OK,
+                &ApiResponse::success(OrchestrationDetails {
+                    orchestration: record,
+                    history,
+                }),
+            ),
+            Err(e) => json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            ),
+        },
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Orchestration not found"),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_raise_orchestration_event(
+    req: Request<Incoming>,
+    orchestration_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let body: RaiseOrchestrationEventRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    if body.name.trim().is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("name is required"),
+        );
+    }
+
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    let current = match store.get(orchestration_id) {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error("Orchestration not found"),
+            );
+        }
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    if matches!(
+        current.status,
+        OrchestrationStatus::Completed
+            | OrchestrationStatus::Failed
+            | OrchestrationStatus::Terminated
+    ) {
+        return json_response(
+            StatusCode::CONFLICT,
+            &ApiResponse::<()>::error("Orchestration already completed"),
+        );
+    }
+
+    let payload = serde_json::json!({
+        "name": body.name,
+        "data": body.data
+    });
+
+    match store.append_event(orchestration_id, "EventRaised", payload) {
+        Ok(event) => json_response(
+            StatusCode::ACCEPTED,
+            &ApiResponse::success(serde_json::json!({
+                "accepted": true,
+                "id": orchestration_id,
+                "event": event
+            })),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_terminate_orchestration(
+    req: Request<Incoming>,
+    orchestration_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let body: TerminateOrchestrationRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    let current = match store.get(orchestration_id) {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error("Orchestration not found"),
+            );
+        }
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    if matches!(
+        current.status,
+        OrchestrationStatus::Completed
+            | OrchestrationStatus::Failed
+            | OrchestrationStatus::Terminated
+    ) {
+        return json_response(
+            StatusCode::CONFLICT,
+            &ApiResponse::<()>::error("Orchestration already completed"),
+        );
+    }
+
+    let reason = body
+        .reason
+        .filter(|r| !r.trim().is_empty())
+        .unwrap_or_else(|| "Manual termination".to_string());
+
+    if let Err(e) = store.append_event(
+        orchestration_id,
+        "OrchestratorTerminated",
+        serde_json::json!({ "reason": reason.clone() }),
+    ) {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    match store.update(
+        orchestration_id,
+        UpdateOrchestration {
+            status: Some(OrchestrationStatus::Terminated),
+            output: None,
+            error: Some(reason),
+        },
+    ) {
         Ok(Some(record)) => json_response(StatusCode::OK, &ApiResponse::success(record)),
         Ok(None) => json_response(
             StatusCode::NOT_FOUND,
@@ -4053,6 +4246,20 @@ mod tests {
                 "019abc12-1234-7def-89ab-0123456789ab"
             ]
         );
+    }
+
+    #[test]
+    fn test_path_segments_orchestration_events() {
+        let path = "/orchestrations/orch-1/events";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["orchestrations", "orch-1", "events"]);
+    }
+
+    #[test]
+    fn test_path_segments_orchestration_terminate() {
+        let path = "/orchestrations/orch-1/terminate";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["orchestrations", "orch-1", "terminate"]);
     }
 
     // === Extended CreateRequest tests ===
