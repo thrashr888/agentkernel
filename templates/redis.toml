@@ -15,3 +15,11 @@ network = true
 
 [ports]
 6379 = 6379
+
+[template]
+help_text = """
+Description: Template 'redis' sandbox profile.
+How to use: Start the sandbox, then run: redis-cli -h 127.0.0.1 -p 6379 ping
+Binaries available: redis-server, redis-cli
+Services and ports: Redis listens on 6379/tcp.
+"""

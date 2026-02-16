@@ -20,3 +20,11 @@ network = true
 POSTGRES_DB = "app"
 POSTGRES_USER = "app"
 POSTGRES_PASSWORD = "app"
+
+[template]
+help_text = """
+Description: Template 'postgres' sandbox profile.
+How to use: Start the sandbox, then connect with: psql -h 127.0.0.1 -U app -d app (use psql, not pgsql).
+Binaries available: postgres, psql, pg_isready
+Services and ports: PostgreSQL listens on 5432/tcp.
+"""

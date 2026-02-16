@@ -41,6 +41,10 @@ pub struct SandboxInfo {
     pub memory_mb: Option<u64>,
     pub created_at: Option<String>,
     #[serde(default)]
+    pub created_from_template: Option<String>,
+    #[serde(default)]
+    pub template_help_text: Option<String>,
+    #[serde(default)]
     pub ports: Vec<String>,
     /// Secret mappings: env_var → target_host (values stripped for security).
     #[serde(default)]
@@ -134,6 +138,12 @@ pub struct CreateSandboxRequest {
     /// Shell script to run inside sandbox after start (e.g., install CLIs)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub init_script: Option<String>,
+    /// Template name used to create this sandbox.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_from_template: Option<String>,
+    /// Plain-text guidance associated with the selected template.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_help_text: Option<String>,
 }
 
 /// Request body for executing a command in a sandbox.
@@ -353,6 +363,9 @@ pub struct TemplateInfo {
     pub memory_mb: u64,
     #[serde(default)]
     pub init_script: Option<String>,
+    /// Plain-text help shown in UI and attached to created sandboxes.
+    #[serde(default)]
+    pub help_text: Option<String>,
     /// Secret bindings: maps env var name → target host.
     /// Used to auto-configure proxy secret bindings on sandbox creation.
     #[serde(default)]

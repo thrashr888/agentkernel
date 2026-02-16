@@ -23,3 +23,11 @@ profile = "moderate"
 [security.domains]
 # Pi supports multiple LLM providers
 allow = ["api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com"]
+
+[template]
+help_text = """
+Description: Template 'pi-sandbox' sandbox profile.
+How to use: Start the sandbox and run your workflow inside /workspace.
+Binaries available: node, npm, npx
+Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
+"""

@@ -66,6 +66,8 @@ export function Templates() {
       profile: profile,
       init_script: selectedTemplate.init_script,
       secret_mappings: selectedTemplate.secrets,
+      created_from_template: selectedTemplate.name,
+      template_help_text: selectedTemplate.help_text,
     });
   }
 
@@ -196,6 +198,16 @@ export function Templates() {
                 {selectedTemplate?.memory_mb} MB
               </div>
             </div>
+            {selectedTemplate?.help_text && (
+              <div className="grid gap-2">
+                <Label>Template Notes</Label>
+                <div className="rounded-md border bg-muted/30 p-3">
+                  <pre className="whitespace-pre-wrap text-xs text-muted-foreground">
+                    {selectedTemplate.help_text}
+                  </pre>
+                </div>
+              </div>
+            )}
             <div className="grid gap-2">
               <Label>Security Profile</Label>
               <Select value={profile} onValueChange={setProfile}>

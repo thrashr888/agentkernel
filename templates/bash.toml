@@ -11,3 +11,11 @@ memory_mb = 256
 
 [security]
 profile = "moderate"
+
+[template]
+help_text = """
+Description: Template 'bash' sandbox profile.
+How to use: Start the sandbox and run your workflow inside /workspace.
+Binaries available: sh, ash, busybox
+Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
+"""

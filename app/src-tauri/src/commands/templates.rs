@@ -20,7 +20,7 @@ fn secrets(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 }
 
 fn builtin_templates() -> Vec<TemplateInfo> {
-    vec![
+    let mut templates = vec![
         // ----- Agent Sandboxes -----
         TemplateInfo {
             name: "claude-sandbox".into(),
@@ -30,6 +30,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 1024,
             init_script: None,
+            help_text: None,
             secrets: secrets(&[("ANTHROPIC_API_KEY", "api.anthropic.com")]),
         },
         TemplateInfo {
@@ -40,6 +41,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 1024,
             init_script: None,
+            help_text: None,
             secrets: secrets(&[("OPENAI_API_KEY", "api.openai.com")]),
         },
         TemplateInfo {
@@ -50,6 +52,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 1024,
             init_script: None,
+            help_text: None,
             secrets: secrets(&[
                 ("GOOGLE_API_KEY", "generativelanguage.googleapis.com"),
                 ("GEMINI_API_KEY", "generativelanguage.googleapis.com"),
@@ -63,6 +66,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 1024,
             init_script: None,
+            help_text: None,
             secrets: secrets(&[
                 ("ANTHROPIC_API_KEY", "api.anthropic.com"),
                 ("OPENAI_API_KEY", "api.openai.com"),
@@ -76,6 +80,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 1024,
             init_script: None,
+            help_text: None,
             secrets: secrets(&[("ANTHROPIC_API_KEY", "api.anthropic.com")]),
         },
         TemplateInfo {
@@ -86,6 +91,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 1024,
             init_script: None,
+            help_text: None,
             secrets: secrets(&[
                 ("ANTHROPIC_API_KEY", "api.anthropic.com"),
                 ("OPENAI_API_KEY", "api.openai.com"),
@@ -120,6 +126,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
                 "&& ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud ",
                 "&& ln -sf /opt/google-cloud-sdk/bin/gsutil /usr/local/bin/gsutil\n",
             ).into()),
+            help_text: None,
             secrets: secrets(&[
                 ("TFE_TOKEN", "app.terraform.io"),
                 ("HCP_CLIENT_ID", "api.hashicorp.cloud"),
@@ -149,6 +156,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
                 )
                 .into(),
             ),
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -159,6 +167,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 1024,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -169,6 +178,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 1024,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -179,6 +189,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 1,
             memory_mb: 512,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         // ----- Languages -----
@@ -190,6 +201,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 1,
             memory_mb: 256,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -200,6 +212,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 512,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -210,6 +223,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 1024,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -220,6 +234,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 512,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -230,6 +245,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 1024,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -240,6 +256,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 1,
             memory_mb: 512,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -250,6 +267,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 1,
             memory_mb: 512,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -260,6 +278,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 1,
             memory_mb: 512,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -270,6 +289,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 512,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -280,6 +300,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 1,
             memory_mb: 512,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         // ----- Browser Automation -----
@@ -291,6 +312,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 2048,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -301,6 +323,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 2048,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         // ----- Specialized -----
@@ -312,6 +335,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 4,
             memory_mb: 4096,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -322,6 +346,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 1024,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -332,6 +357,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 4,
             memory_mb: 2048,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -342,6 +368,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 1,
             memory_mb: 256,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -352,6 +379,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 2048,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -362,6 +390,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 2,
             memory_mb: 2048,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
         TemplateInfo {
@@ -372,7 +401,90 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             vcpus: 1,
             memory_mb: 512,
             init_script: None,
+            help_text: None,
             secrets: BTreeMap::new(),
         },
-    ]
+    ];
+
+    for template in &mut templates {
+        template.help_text = Some(default_help_text(template));
+    }
+
+    templates
+}
+
+fn default_help_text(template: &TemplateInfo) -> String {
+    let usage = usage_for_template(&template.name);
+    let binaries = binaries_for_template(&template.name);
+    let services_ports = services_ports_for_template(&template.name);
+    format!(
+        "Description: {}\n\nHow to use: {}\n\nBinaries available: {}\n\nServices and ports: {}",
+        template.description, usage, binaries, services_ports
+    )
+}
+
+fn usage_for_template(name: &str) -> &'static str {
+    match name {
+        "sqlite" => {
+            "Start the sandbox, then run `sqlite /workspace/data/app.db` to create/query a local database."
+        }
+        "postgres" => {
+            "Start the sandbox, then run `psql -h 127.0.0.1 -U app -d app` from inside the sandbox. Note: use `psql`, not `pgsql`."
+        }
+        "mysql" => {
+            "Start the sandbox, then run `mysql -h 127.0.0.1 -u app -p app` from inside the sandbox."
+        }
+        "redis" => {
+            "Start the sandbox, then run `redis-cli -h 127.0.0.1 -p 6379 ping` from inside the sandbox."
+        }
+        "playwright" | "playwright-stealth" => {
+            "Install Python deps in your project, then run Playwright scripts from /workspace."
+        }
+        "vscode" | "coder" => {
+            "Start the sandbox and open the mapped web port in your browser to use the IDE."
+        }
+        "gitea" => {
+            "Start the sandbox and open the mapped web port in your browser to access the Git UI."
+        }
+        _ => "Start the sandbox, attach with `agentkernel attach <name>`, and run commands in /workspace.",
+    }
+}
+
+fn binaries_for_template(name: &str) -> &'static str {
+    match name {
+        "bash" => "sh, ash, busybox",
+        "c" => "gcc, g++, make",
+        "dotnet" => "dotnet",
+        "go" => "go",
+        "java" => "java, javac",
+        "node" | "node-fullstack" | "typescript" => "node, npm, npx",
+        "python" | "python-ml" | "playwright" | "playwright-stealth" | "terraform" => {
+            "python, pip"
+        }
+        "ruby" => "ruby, gem, bundle",
+        "rust" | "rust-ci" => "rustc, cargo",
+        "sqlite" => "sqlite",
+        "postgres" => "postgres, psql, pg_isready",
+        "mysql" => "mysql, mysqld",
+        "redis" => "redis-server, redis-cli",
+        "vscode" => "openvscode-server",
+        "coder" => "code-server",
+        "gitea" => "gitea",
+        "claude-sandbox" | "codex-sandbox" | "gemini-sandbox" | "opencode-sandbox"
+        | "amp-sandbox" | "pi-sandbox" => "node, npm, npx",
+        "secure" => "sh, busybox",
+        _ => "standard binaries from the base image",
+    }
+}
+
+fn services_ports_for_template(name: &str) -> &'static str {
+    match name {
+        "postgres" => "PostgreSQL server on 5432/tcp.",
+        "mysql" => "MySQL server on 3306/tcp.",
+        "redis" => "Redis server on 6379/tcp.",
+        "vscode" => "OpenVSCode web UI on 3000/tcp.",
+        "coder" => "code-server web UI on 8080/tcp (unless changed by image defaults).",
+        "gitea" => "Gitea web UI and SSH are image-configurable; map ports as needed.",
+        _ => "No long-running service is configured by default. Only explicitly mapped ports are exposed.",
+    }
 }

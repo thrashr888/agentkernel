@@ -53,6 +53,30 @@ interface CommandEntry {
   detachedJobId?: string;
 }
 
+interface ParsedPort {
+  hostPort: string;
+  containerPort: string;
+  protocol: string;
+}
+
+function parsePortBinding(binding: string): ParsedPort {
+  const [portsPart, protoPart] = binding.split("/");
+  const protocol = (protoPart || "tcp").toLowerCase();
+  const pieces = portsPart.split(":");
+  if (pieces.length >= 2) {
+    return {
+      hostPort: pieces[0] || "auto",
+      containerPort: pieces[1] || "unknown",
+      protocol,
+    };
+  }
+  return {
+    hostPort: "auto",
+    containerPort: pieces[0] || "unknown",
+    protocol,
+  };
+}
+
 export function SandboxDetail() {
   const { name } = useParams<{ name: string }>();
   const navigate = useNavigate();
@@ -549,6 +573,7 @@ export function SandboxDetail() {
         <TabsList>
           <TabsTrigger value="inspect">Inspect</TabsTrigger>
           <TabsTrigger value="secrets">Secrets</TabsTrigger>
+          <TabsTrigger value="ports">Ports</TabsTrigger>
           <TabsTrigger value="exec">Exec</TabsTrigger>
           <TabsTrigger value="files">Files</TabsTrigger>
           <TabsTrigger value="logs">Logs</TabsTrigger>
@@ -633,6 +658,28 @@ export function SandboxDetail() {
                     <td className="px-4 py-2.5">{formatDate(sandbox.created_at)}</td>
                   </tr>
                 )}
+                <tr className="border-b">
+                  <td className="px-4 py-2.5 text-muted-foreground">Template</td>
+                  <td className="px-4 py-2.5">
+                    {sandbox.created_from_template ? (
+                      <span className="font-mono">{sandbox.created_from_template}</span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </td>
+                </tr>
+                <tr className="border-b">
+                  <td className="px-4 py-2.5 text-muted-foreground">Template Notes</td>
+                  <td className="px-4 py-2.5">
+                    {sandbox.template_help_text ? (
+                      <pre className="whitespace-pre-wrap text-xs text-muted-foreground">
+                        {sandbox.template_help_text}
+                      </pre>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </td>
+                </tr>
                 <tr className="border-b">
                   <td className="px-4 py-2.5 text-muted-foreground">Secrets</td>
                   <td className="px-4 py-2.5">
@@ -862,6 +909,40 @@ export function SandboxDetail() {
           ) : (
             <p className="text-sm text-muted-foreground py-4">
               No secret bindings configured. Create a sandbox with <code className="font-mono text-xs">--secret</code> flags or use a quickstart template to add proxy secret bindings.
+            </p>
+          )}
+        </TabsContent>
+
+        <TabsContent value="ports" className="pt-2">
+          {sandbox.ports && sandbox.ports.length > 0 ? (
+            <div className="rounded-md border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/50">
+                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">Host Port</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">Container Port</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">Protocol</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">Binding</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sandbox.ports.map((binding, i) => {
+                    const parsed = parsePortBinding(binding);
+                    return (
+                      <tr key={`${binding}-${i}`} className={i < sandbox.ports!.length - 1 ? "border-b" : ""}>
+                        <td className="px-4 py-2 font-mono text-xs">{parsed.hostPort}</td>
+                        <td className="px-4 py-2 font-mono text-xs">{parsed.containerPort}</td>
+                        <td className="px-4 py-2 font-mono text-xs uppercase text-muted-foreground">{parsed.protocol}</td>
+                        <td className="px-4 py-2 font-mono text-xs text-muted-foreground">{binding}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground py-4">
+              No mapped ports. Add mappings when creating the sandbox (for example <code className="font-mono text-xs">8080:80</code>).
             </p>
           )}
         </TabsContent>

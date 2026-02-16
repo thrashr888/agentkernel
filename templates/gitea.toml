@@ -25,3 +25,11 @@ network = true
 GITEA__security__INSTALL_LOCK = "true"
 # Use SQLite for simplicity
 GITEA__database__DB_TYPE = "sqlite3"
+
+[template]
+help_text = """
+Description: Template 'gitea' sandbox profile.
+How to use: Start the sandbox and open the mapped web port in your browser to access the UI.
+Binaries available: gitea
+Services and ports: Gitea web and SSH services are image-configurable; map the ports you need.
+"""

@@ -22,3 +22,11 @@ mount_cwd = true
 [environment]
 # Disable connection token for local dev (use --connection-token in production)
 OPENVSCODE_SERVER_OPTIONS = "--without-connection-token --host 0.0.0.0"
+
+[template]
+help_text = """
+Description: Template 'vscode' sandbox profile.
+How to use: Start the sandbox and open the mapped web port in your browser.
+Binaries available: openvscode-server
+Services and ports: OpenVSCode web UI listens on 3000/tcp.
+"""

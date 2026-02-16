@@ -14,3 +14,11 @@ profile = "moderate"
 
 [security.domains]
 allow = ["crates.io", "static.crates.io", "index.crates.io"]
+
+[template]
+help_text = """
+Description: Template 'rust' sandbox profile.
+How to use: Start the sandbox and run your workflow inside /workspace.
+Binaries available: rustc, cargo
+Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
+"""

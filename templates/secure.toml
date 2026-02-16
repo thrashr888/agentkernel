@@ -12,3 +12,11 @@ memory_mb = 256
 [security]
 profile = "restrictive"
 network = false
+
+[template]
+help_text = """
+Description: Template 'secure' sandbox profile.
+How to use: Start the sandbox and run your workflow inside /workspace.
+Binaries available: sh, busybox
+Services and ports: No service ports; networking is disabled by profile.
+"""
