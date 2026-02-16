@@ -4,6 +4,20 @@
 [sandbox]
 name = "postgres"
 base_image = "postgres:17-alpine"
+init_script = """
+set -e
+
+if ! pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+  export POSTGRES_HOST_AUTH_METHOD=trust
+  nohup docker-entrypoint.sh postgres >/tmp/postgres.log 2>&1 &
+  for _ in $(seq 1 30); do
+    if pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+fi
+"""
 
 [resources]
 vcpus = 2
@@ -16,15 +30,11 @@ network = true
 [ports]
 5432 = 5432
 
-[environment]
-POSTGRES_DB = "app"
-POSTGRES_USER = "app"
-POSTGRES_PASSWORD = "app"
-
 [template]
 help_text = """
 Description: Template 'postgres' sandbox profile.
-How to use: Start the sandbox, then connect with: psql -h 127.0.0.1 -U app -d app (use psql, not pgsql).
+How to use: PostgreSQL is started by the init script when the sandbox boots. If needed, start manually with: docker-entrypoint.sh postgres &
+Example command: psql -h 127.0.0.1 -U postgres -d postgres -c "SELECT version();"
 Binaries available: postgres, psql, pg_isready
 Services and ports: PostgreSQL listens on 5432/tcp.
 """

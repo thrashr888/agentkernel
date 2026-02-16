@@ -19,6 +19,7 @@ allow = ["repo1.maven.org", "repo.maven.apache.org"]
 help_text = """
 Description: Template 'java' sandbox profile.
 How to use: Start the sandbox and run your workflow inside /workspace.
+Example command: java -version
 Binaries available: java, javac
 Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
 """
