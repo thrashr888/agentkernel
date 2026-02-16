@@ -42,6 +42,17 @@ CREATE INDEX IF NOT EXISTS idx_events_orchestration_sequence
     ON events(orchestration_id, sequence);
 "#,
     ),
+    (
+        3,
+        r#"
+CREATE TABLE IF NOT EXISTS orchestration_definitions (
+    name TEXT PRIMARY KEY,
+    definition_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"#,
+    ),
 ];
 
 /// SQLite durable storage wrapper with schema bootstrap.
@@ -184,6 +195,6 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(migration_count, 2);
+        assert_eq!(migration_count, 3);
     }
 }
