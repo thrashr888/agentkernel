@@ -962,6 +962,7 @@ memory_mb = 512
                 }
 
                 // Load config: --config > --template > minimal default
+                let mut template_metadata: Option<(String, Option<String>)> = None;
                 let (cfg, config_base_dir) = if let Some(ref config_path) = config {
                     let cfg = Config::from_file(config_path)?;
                     let base_dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -969,6 +970,10 @@ memory_mb = 512
                 } else if let Some(ref tmpl_name) = tmpl {
                     let resolved = template::resolve(tmpl_name)?;
                     println!("Using template '{}' ({})", resolved.name, resolved.source);
+                    template_metadata = Some((
+                        resolved.name.clone(),
+                        extract_template_help_text(&resolved.content),
+                    ));
                     let mut cfg = resolved.parse()?;
                     cfg.sandbox.name = name.clone();
                     (cfg, None)
@@ -1098,6 +1103,26 @@ memory_mb = 512
                         ports,
                     )
                     .await?;
+
+                if let Some((template_name, template_help_text)) = &template_metadata {
+                    manager.set_template_metadata(
+                        &name,
+                        Some(template_name.as_str()),
+                        template_help_text.as_deref(),
+                    )?;
+                }
+
+                // Persist template secret_mappings (env_var → host) so
+                // the UI can show which secrets the template expects,
+                // even when the env vars aren't set on this host.
+                if !cfg.secrets.is_empty() {
+                    let mappings: std::collections::HashMap<String, String> = cfg
+                        .secrets
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    manager.set_secret_mappings(&name, &mappings)?;
+                }
 
                 // Build secret bindings from template config [secrets] section
                 let mut template_bindings = Vec::new();
@@ -4034,6 +4059,15 @@ fn parse_ttl(s: &str) -> Result<u64> {
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid TTL: '{}'. Use e.g. 1h, 30m, 3d", s))?;
     Ok(value * multiplier)
+}
+
+fn extract_template_help_text(content: &str) -> Option<String> {
+    let value: toml::Value = toml::from_str(content).ok()?;
+    value
+        .get("template")
+        .and_then(|v| v.get("help_text"))
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)
 }
 
 /// Format seconds as a human-readable duration.

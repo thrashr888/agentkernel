@@ -46,6 +46,8 @@ pub struct SandboxInfo {
     pub template_help_text: Option<String>,
     #[serde(default)]
     pub ports: Vec<String>,
+    #[serde(default)]
+    pub secret_files: Vec<String>,
     /// Secret mappings: env_var → target_host (values stripped for security).
     #[serde(default)]
     pub secret_mappings: std::collections::HashMap<String, String>,
@@ -117,6 +119,10 @@ pub struct CreateSandboxRequest {
     pub vcpus: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_mb: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_files: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<SecurityProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -361,6 +367,10 @@ pub struct TemplateInfo {
     pub base_image: String,
     pub vcpus: u32,
     pub memory_mb: u64,
+    #[serde(default)]
+    pub ports: Vec<String>,
+    #[serde(default)]
+    pub secret_files: Vec<String>,
     #[serde(default)]
     pub init_script: Option<String>,
     /// Plain-text help shown in UI and attached to created sandboxes.

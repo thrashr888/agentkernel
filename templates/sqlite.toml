@@ -19,9 +19,8 @@ profile = "moderate"
 
 [template]
 help_text = """
-Description: Template 'sqlite' sandbox profile.
-How to use: Start the sandbox, then run sqlite commands like: sqlite /workspace/data/app.db
-Example command: sqlite /workspace/data/app.db "SELECT 1;"
-Binaries available: sqlite
+How to use: Start the sandbox, then run sqlite commands like: sqlite3 /workspace/data/app.db
+Example command: sqlite3 /workspace/data/app.db "SELECT 1;"
+Binaries available: sqlite3
 Services and ports: No background service required; SQLite uses a local file.
 """

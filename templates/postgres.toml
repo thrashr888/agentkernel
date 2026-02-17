@@ -6,16 +6,30 @@ name = "postgres"
 base_image = "postgres:17-alpine"
 init_script = """
 set -e
+secrets_path=${AGENTKERNEL_SECRETS_PATH:-/run/agentkernel/secrets}
+postgres_user=$(cat "$secrets_path/POSTGRES_USER" 2>/dev/null || echo postgres)
+postgres_password=$(cat "$secrets_path/POSTGRES_PASSWORD" 2>/dev/null || true)
+postgres_db=$(cat "$secrets_path/POSTGRES_DB" 2>/dev/null || echo postgres)
+export POSTGRES_USER="$postgres_user"
+export POSTGRES_DB="$postgres_db"
+if [ -n "$postgres_password" ]; then
+  export POSTGRES_PASSWORD="$postgres_password"
+else
+  export POSTGRES_HOST_AUTH_METHOD=trust
+fi
 
 if ! pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
-  export POSTGRES_HOST_AUTH_METHOD=trust
   nohup docker-entrypoint.sh postgres >/tmp/postgres.log 2>&1 &
-  for _ in $(seq 1 30); do
+  for _ in $(seq 1 90); do
     if pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
       break
     fi
     sleep 1
   done
+  pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1 || {
+    echo "postgres failed to start; check /tmp/postgres.log" >&2
+    exit 1
+  }
 fi
 """
 
@@ -32,9 +46,9 @@ network = true
 
 [template]
 help_text = """
-Description: Template 'postgres' sandbox profile.
-How to use: PostgreSQL is started by the init script when the sandbox boots. If needed, start manually with: docker-entrypoint.sh postgres &
-Example command: psql -h 127.0.0.1 -U postgres -d postgres -c "SELECT version();"
+How to use: PostgreSQL is started by the init script when the sandbox boots. Optional secret files POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB are read from /run/agentkernel/secrets.
+Example command: sh -lc 'PGPASSWORD="$(cat /run/agentkernel/secrets/POSTGRES_PASSWORD 2>/dev/null || true)" psql -h 127.0.0.1 -U "$(cat /run/agentkernel/secrets/POSTGRES_USER 2>/dev/null || echo postgres)" -d "$(cat /run/agentkernel/secrets/POSTGRES_DB 2>/dev/null || echo postgres)" -c "SELECT version();"'
 Binaries available: postgres, psql, pg_isready
 Services and ports: PostgreSQL listens on 5432/tcp.
+Secret file keys (optional): POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
 """

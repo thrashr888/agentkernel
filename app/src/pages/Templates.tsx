@@ -63,6 +63,8 @@ export function Templates() {
       image: selectedTemplate.base_image,
       vcpus: selectedTemplate.vcpus,
       memory_mb: selectedTemplate.memory_mb,
+      ports: selectedTemplate.ports,
+      secret_files: selectedTemplate.secret_files,
       profile: profile,
       init_script: selectedTemplate.init_script,
       secret_mappings: selectedTemplate.secrets,
@@ -136,7 +138,7 @@ export function Templates() {
                   className="cursor-pointer transition-colors hover:bg-accent/50"
                   onClick={() => {
                     setSelectedTemplate(template);
-                    setSandboxName("");
+                    setSandboxName(template.name);
                   }}
                 >
                   <CardHeader>
@@ -163,7 +165,7 @@ export function Templates() {
           }
         }}
       >
-        <DialogContent>
+        <DialogContent className="max-h-[85vh] flex flex-col">
           <DialogHeader>
             <DialogTitle>
               Create from Template: {selectedTemplate?.name}
@@ -172,7 +174,7 @@ export function Templates() {
               {selectedTemplate?.description}
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 py-4">
+          <div className="grid gap-4 py-4 overflow-y-auto min-h-0">
             <div className="grid gap-2">
               <Label htmlFor="template-sandbox-name">Sandbox Name</Label>
               <Input
@@ -198,6 +200,23 @@ export function Templates() {
                 {selectedTemplate?.memory_mb} MB
               </div>
             </div>
+            {selectedTemplate?.ports && selectedTemplate.ports.length > 0 && (
+              <div className="grid gap-2">
+                <Label>Ports to map</Label>
+                <div className="rounded-md border p-3">
+                  <div className="flex flex-wrap gap-2">
+                    {selectedTemplate.ports.map((port) => (
+                      <Badge key={port} variant="outline" className="font-mono">
+                        {port}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Format: host:container. These mappings are applied when the sandbox is created.
+                </p>
+              </div>
+            )}
             {selectedTemplate?.help_text && (
               <div className="grid gap-2">
                 <Label>Template Notes</Label>
@@ -208,6 +227,26 @@ export function Templates() {
                 </div>
               </div>
             )}
+            {selectedTemplate?.secret_files &&
+              selectedTemplate.secret_files.length > 0 && (
+                <div className="grid gap-2">
+                  <Label>Secret Files (optional)</Label>
+                  <div className="rounded-md border p-3 space-y-1">
+                    {selectedTemplate.secret_files.map((key) => (
+                      <div key={key} className="flex items-center justify-between text-xs">
+                        <code className="font-mono">{key}</code>
+                        <span className="text-muted-foreground">
+                          /run/agentkernel/secrets/{key}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Add these keys in Secrets first. They are mounted as files and can
+                    be read by the init script.
+                  </p>
+                </div>
+              )}
             <div className="grid gap-2">
               <Label>Security Profile</Label>
               <Select value={profile} onValueChange={setProfile}>

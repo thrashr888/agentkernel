@@ -267,15 +267,11 @@ export function Dashboard() {
           )}
         </div>
 
-        {/* Right column — Quick Actions + Quickstart */}
+        {/* Right column — Quickstart */}
         <div className="space-y-6">
           <div className="space-y-3">
-            <h2 className="text-lg font-semibold">Quick Actions</h2>
-            <QuickActions />
-          </div>
-
-          <div className="space-y-3">
             <h2 className="text-lg font-semibold">Quickstart</h2>
+            <QuickActions />
             <div className="rounded-md border divide-y">
               {AGENTS.map((agent) => (
                 <div

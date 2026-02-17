@@ -97,6 +97,10 @@ export function SandboxDetail() {
   const [runInBackground, setRunInBackground] = useState(false);
   const [activeDetachedJobId, setActiveDetachedJobId] = useState<string | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
+  const proxySecretCount = sandbox?.secret_mappings
+    ? Object.keys(sandbox.secret_mappings).length
+    : 0;
+  const secretFileCount = sandbox?.secret_files?.length ?? 0;
 
   function copyToClipboard(text: string, field: string) {
     navigator.clipboard.writeText(text);
@@ -389,10 +393,7 @@ export function SandboxDetail() {
     <div className="space-y-0">
       {/* Breadcrumb */}
       <div className="mb-2">
-        <Link
-          to="/sandboxes"
-          className="text-sm text-blue-500 hover:underline"
-        >
+        <Link to="/sandboxes" className="text-sm text-blue-500 hover:underline">
           Sandboxes
         </Link>
         <span className="text-sm text-muted-foreground"> / {sandbox.name}</span>
@@ -480,7 +481,6 @@ export function SandboxDetail() {
         {/* Status + action icon buttons */}
         <div className="flex items-center gap-3 shrink-0">
           <div className="text-right mr-1">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Status</p>
             <SandboxStatusBadge status={sandbox.status} />
           </div>
           {isRunning ? (
@@ -585,12 +585,32 @@ export function SandboxDetail() {
             <table className="w-full text-sm">
               <tbody>
                 <tr className="border-b">
-                  <td className="px-4 py-2.5 text-muted-foreground w-40">Status</td>
-                  <td className="px-4 py-2.5"><SandboxStatusBadge status={sandbox.status} /></td>
+                  <td className="px-4 py-2.5 text-muted-foreground w-40">
+                    Status
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <SandboxStatusBadge status={sandbox.status} />
+                  </td>
                 </tr>
                 <tr className="border-b">
                   <td className="px-4 py-2.5 text-muted-foreground">Backend</td>
-                  <td className="px-4 py-2.5 font-mono">{sandbox.backend}</td>
+                  <td className="px-4 py-2.5">
+                    <button
+                      type="button"
+                      className="group inline-flex items-center gap-1.5 font-mono hover:text-foreground"
+                      onClick={() =>
+                        copyToClipboard(sandbox.backend, "backend-inspect")
+                      }
+                      title="Copy"
+                    >
+                      {sandbox.backend}
+                      {copiedField === "backend-inspect" ? (
+                        <Check className="h-3 w-3 text-green-500" />
+                      ) : (
+                        <Copy className="h-3 w-3 opacity-0 group-hover:opacity-70" />
+                      )}
+                    </button>
+                  </td>
                 </tr>
                 <tr className="border-b">
                   <td className="px-4 py-2.5 text-muted-foreground">UUID</td>
@@ -599,7 +619,9 @@ export function SandboxDetail() {
                       <button
                         type="button"
                         className="group inline-flex items-center gap-1.5 font-mono hover:text-foreground"
-                        onClick={() => copyToClipboard(sandbox.uuid!, "uuid-inspect")}
+                        onClick={() =>
+                          copyToClipboard(sandbox.uuid!, "uuid-inspect")
+                        }
                         title="Copy UUID"
                       >
                         {sandbox.uuid}
@@ -616,24 +638,52 @@ export function SandboxDetail() {
                 </tr>
                 <tr className="border-b">
                   <td className="px-4 py-2.5 text-muted-foreground">Image</td>
-                  <td className="px-4 py-2.5 font-mono">{sandbox.image ?? "—"}</td>
+                  <td className="px-4 py-2.5">
+                    {sandbox.image ? (
+                      <button
+                        type="button"
+                        className="group inline-flex items-center gap-1.5 font-mono hover:text-foreground"
+                        onClick={() =>
+                          copyToClipboard(sandbox.image!, "image-inspect")
+                        }
+                        title="Copy"
+                      >
+                        {sandbox.image}
+                        {copiedField === "image-inspect" ? (
+                          <Check className="h-3 w-3 text-green-500" />
+                        ) : (
+                          <Copy className="h-3 w-3 opacity-0 group-hover:opacity-70" />
+                        )}
+                      </button>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </td>
                 </tr>
                 <tr className="border-b">
                   <td className="px-4 py-2.5 text-muted-foreground">vCPUs</td>
-                  <td className="px-4 py-2.5 font-mono">{sandbox.vcpus ?? "—"}</td>
+                  <td className="px-4 py-2.5 font-mono">
+                    {sandbox.vcpus ?? "—"}
+                  </td>
                 </tr>
                 <tr className="border-b">
                   <td className="px-4 py-2.5 text-muted-foreground">Memory</td>
-                  <td className="px-4 py-2.5 font-mono">{sandbox.memory_mb ? `${sandbox.memory_mb} MB` : "—"}</td>
+                  <td className="px-4 py-2.5 font-mono">
+                    {sandbox.memory_mb ? `${sandbox.memory_mb} MB` : "—"}
+                  </td>
                 </tr>
                 {sandbox.ip && (
                   <tr className="border-b">
-                    <td className="px-4 py-2.5 text-muted-foreground">IP Address</td>
+                    <td className="px-4 py-2.5 text-muted-foreground">
+                      IP Address
+                    </td>
                     <td className="px-4 py-2.5">
                       <button
                         type="button"
                         className="group inline-flex items-center gap-1.5 font-mono hover:text-foreground"
-                        onClick={() => copyToClipboard(sandbox.ip!, "ip-inspect")}
+                        onClick={() =>
+                          copyToClipboard(sandbox.ip!, "ip-inspect")
+                        }
                         title="Copy"
                       >
                         {sandbox.ip}
@@ -649,27 +699,39 @@ export function SandboxDetail() {
                 {sandbox.ports && sandbox.ports.length > 0 && (
                   <tr className="border-b">
                     <td className="px-4 py-2.5 text-muted-foreground">Ports</td>
-                    <td className="px-4 py-2.5 font-mono">{sandbox.ports.join(", ")}</td>
+                    <td className="px-4 py-2.5 font-mono">
+                      {sandbox.ports.join(", ")}
+                    </td>
                   </tr>
                 )}
                 {sandbox.created_at && (
                   <tr className="border-b">
-                    <td className="px-4 py-2.5 text-muted-foreground">Created</td>
-                    <td className="px-4 py-2.5">{formatDate(sandbox.created_at)}</td>
+                    <td className="px-4 py-2.5 text-muted-foreground">
+                      Created
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {formatDate(sandbox.created_at)}
+                    </td>
                   </tr>
                 )}
                 <tr className="border-b">
-                  <td className="px-4 py-2.5 text-muted-foreground">Template</td>
+                  <td className="px-4 py-2.5 text-muted-foreground">
+                    Template
+                  </td>
                   <td className="px-4 py-2.5">
                     {sandbox.created_from_template ? (
-                      <span className="font-mono">{sandbox.created_from_template}</span>
+                      <span className="font-mono">
+                        {sandbox.created_from_template}
+                      </span>
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}
                   </td>
                 </tr>
                 <tr className="border-b">
-                  <td className="px-4 py-2.5 text-muted-foreground">Template Notes</td>
+                  <td className="px-4 py-2.5 text-muted-foreground">
+                    Template Notes
+                  </td>
                   <td className="px-4 py-2.5">
                     {sandbox.template_help_text ? (
                       <pre className="whitespace-pre-wrap text-xs text-muted-foreground">
@@ -683,8 +745,10 @@ export function SandboxDetail() {
                 <tr className="border-b">
                   <td className="px-4 py-2.5 text-muted-foreground">Secrets</td>
                   <td className="px-4 py-2.5">
-                    {sandbox.secret_mappings && Object.keys(sandbox.secret_mappings).length > 0 ? (
-                      <span className="font-mono">{Object.keys(sandbox.secret_mappings).length} bindings</span>
+                    {proxySecretCount > 0 || secretFileCount > 0 ? (
+                      <span className="font-mono">
+                        {proxySecretCount} bindings, {secretFileCount} files
+                      </span>
                     ) : (
                       <span className="text-muted-foreground">None</span>
                     )}
@@ -705,7 +769,11 @@ export function SandboxDetail() {
                         }}
                       >
                         <DialogTrigger asChild>
-                          <Button variant="outline" size="sm" className="h-7 text-xs">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                          >
                             Resize
                           </Button>
                         </DialogTrigger>
@@ -713,8 +781,8 @@ export function SandboxDetail() {
                           <DialogHeader>
                             <DialogTitle>Resize Sandbox</DialogTitle>
                             <DialogDescription>
-                              Change CPU and memory allocation. The sandbox will be
-                              stopped and recreated with the new resources.
+                              Change CPU and memory allocation. The sandbox will
+                              be stopped and recreated with the new resources.
                             </DialogDescription>
                           </DialogHeader>
                           <div className="grid gap-4 py-4">
@@ -771,7 +839,9 @@ export function SandboxDetail() {
                               }
                               disabled={resizeMutation.isPending}
                             >
-                              {resizeMutation.isPending ? "Resizing..." : "Resize"}
+                              {resizeMutation.isPending
+                                ? "Resizing..."
+                                : "Resize"}
                             </Button>
                           </DialogFooter>
                         </DialogContent>
@@ -782,7 +852,11 @@ export function SandboxDetail() {
                         onOpenChange={setExtendDialogOpen}
                       >
                         <DialogTrigger asChild>
-                          <Button variant="outline" size="sm" className="h-7 text-xs">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                          >
                             <Clock className="mr-1 h-3 w-3" />
                             Extend TTL
                           </Button>
@@ -795,7 +869,9 @@ export function SandboxDetail() {
                             </DialogDescription>
                           </DialogHeader>
                           <div className="grid gap-2 py-4">
-                            <Label htmlFor="extend-seconds">Seconds to add</Label>
+                            <Label htmlFor="extend-seconds">
+                              Seconds to add
+                            </Label>
                             <Input
                               id="extend-seconds"
                               type="number"
@@ -831,7 +907,9 @@ export function SandboxDetail() {
                               }
                               disabled={extendMutation.isPending}
                             >
-                              {extendMutation.isPending ? "Extending..." : "Extend"}
+                              {extendMutation.isPending
+                                ? "Extending..."
+                                : "Extend"}
                             </Button>
                           </DialogFooter>
                         </DialogContent>
@@ -854,24 +932,47 @@ export function SandboxDetail() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b bg-muted/50">
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">Model</th>
-                      <th className="px-4 py-2 text-right text-xs font-medium text-muted-foreground">Requests</th>
-                      <th className="px-4 py-2 text-right text-xs font-medium text-muted-foreground">Input</th>
-                      <th className="px-4 py-2 text-right text-xs font-medium text-muted-foreground">Output</th>
-                      <th className="px-4 py-2 text-right text-xs font-medium text-muted-foreground">Total</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">
+                        Model
+                      </th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-muted-foreground">
+                        Requests
+                      </th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-muted-foreground">
+                        Input
+                      </th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-muted-foreground">
+                        Output
+                      </th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-muted-foreground">
+                        Total
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
                     {llmUsage.map((entry: LlmUsageEntry, i: number) => (
-                      <tr key={`${entry.provider}-${entry.model}`} className={i < llmUsage.length - 1 ? "border-b" : ""}>
+                      <tr
+                        key={`${entry.provider}-${entry.model}`}
+                        className={i < llmUsage.length - 1 ? "border-b" : ""}
+                      >
                         <td className="px-4 py-2">
                           <span className="font-medium">{entry.model}</span>
-                          <span className="ml-2 text-xs text-muted-foreground">{entry.provider}</span>
+                          <span className="ml-2 text-xs text-muted-foreground">
+                            {entry.provider}
+                          </span>
                         </td>
-                        <td className="px-4 py-2 text-right font-mono">{entry.request_count.toLocaleString()}</td>
-                        <td className="px-4 py-2 text-right font-mono">{entry.total_input_tokens.toLocaleString()}</td>
-                        <td className="px-4 py-2 text-right font-mono">{entry.total_output_tokens.toLocaleString()}</td>
-                        <td className="px-4 py-2 text-right font-mono">{entry.total_tokens.toLocaleString()}</td>
+                        <td className="px-4 py-2 text-right font-mono">
+                          {entry.request_count.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-2 text-right font-mono">
+                          {entry.total_input_tokens.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-2 text-right font-mono">
+                          {entry.total_output_tokens.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-2 text-right font-mono">
+                          {entry.total_tokens.toLocaleString()}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -882,35 +983,81 @@ export function SandboxDetail() {
         </TabsContent>
 
         <TabsContent value="secrets" className="pt-2">
-          {sandbox.secret_mappings && Object.keys(sandbox.secret_mappings).length > 0 ? (
-            <div className="rounded-md border">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b bg-muted/50">
-                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">Environment Variable</th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">Proxy Target Host</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(sandbox.secret_mappings).map(([envVar, host], i) => (
-                    <tr key={envVar} className={i < Object.keys(sandbox.secret_mappings!).length - 1 ? "border-b" : ""}>
-                      <td className="px-4 py-2">
-                        <div className="flex items-center gap-2">
-                          <Shield className="h-3.5 w-3.5 text-green-500 shrink-0" />
-                          <code className="font-mono text-xs">{envVar}</code>
-                        </div>
-                      </td>
-                      <td className="px-4 py-2 font-mono text-xs text-muted-foreground">{host}</td>
+          <div className="space-y-4">
+            {proxySecretCount > 0 ? (
+              <div className="rounded-md border">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-muted/50">
+                      <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">
+                        Environment Variable
+                      </th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">
+                        Proxy Target Host
+                      </th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground py-4">
-              No secret bindings configured. Create a sandbox with <code className="font-mono text-xs">--secret</code> flags or use a quickstart template to add proxy secret bindings.
-            </p>
-          )}
+                  </thead>
+                  <tbody>
+                    {Object.entries(sandbox.secret_mappings ?? {}).map(
+                      ([envVar, host], i) => (
+                        <tr
+                          key={envVar}
+                          className={i < proxySecretCount - 1 ? "border-b" : ""}
+                        >
+                          <td className="px-4 py-2">
+                            <div className="flex items-center gap-2">
+                              <Shield className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                              <code className="font-mono text-xs">{envVar}</code>
+                            </div>
+                          </td>
+                          <td className="px-4 py-2 font-mono text-xs text-muted-foreground">
+                            {host}
+                          </td>
+                        </tr>
+                      ),
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No proxy secret bindings configured.
+              </p>
+            )}
+
+            {secretFileCount > 0 ? (
+              <div className="rounded-md border">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-muted/50">
+                      <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">
+                        Secret File Key
+                      </th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">
+                        Mounted Path
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(sandbox.secret_files ?? []).map((key, i) => (
+                      <tr key={key} className={i < secretFileCount - 1 ? "border-b" : ""}>
+                        <td className="px-4 py-2">
+                          <code className="font-mono text-xs">{key}</code>
+                        </td>
+                        <td className="px-4 py-2 font-mono text-xs text-muted-foreground">
+                          /run/agentkernel/secrets/{key}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No secret files configured.
+              </p>
+            )}
+          </div>
         </TabsContent>
 
         <TabsContent value="ports" className="pt-2">
@@ -919,21 +1066,42 @@ export function SandboxDetail() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-muted/50">
-                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">Host Port</th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">Container Port</th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">Protocol</th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">Binding</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">
+                      Host Port
+                    </th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">
+                      Container Port
+                    </th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">
+                      Protocol
+                    </th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-muted-foreground">
+                      Binding
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {sandbox.ports.map((binding, i) => {
                     const parsed = parsePortBinding(binding);
                     return (
-                      <tr key={`${binding}-${i}`} className={i < sandbox.ports!.length - 1 ? "border-b" : ""}>
-                        <td className="px-4 py-2 font-mono text-xs">{parsed.hostPort}</td>
-                        <td className="px-4 py-2 font-mono text-xs">{parsed.containerPort}</td>
-                        <td className="px-4 py-2 font-mono text-xs uppercase text-muted-foreground">{parsed.protocol}</td>
-                        <td className="px-4 py-2 font-mono text-xs text-muted-foreground">{binding}</td>
+                      <tr
+                        key={`${binding}-${i}`}
+                        className={
+                          i < sandbox.ports!.length - 1 ? "border-b" : ""
+                        }
+                      >
+                        <td className="px-4 py-2 font-mono text-xs">
+                          {parsed.hostPort}
+                        </td>
+                        <td className="px-4 py-2 font-mono text-xs">
+                          {parsed.containerPort}
+                        </td>
+                        <td className="px-4 py-2 font-mono text-xs uppercase text-muted-foreground">
+                          {parsed.protocol}
+                        </td>
+                        <td className="px-4 py-2 font-mono text-xs text-muted-foreground">
+                          {binding}
+                        </td>
                       </tr>
                     );
                   })}
@@ -942,7 +1110,8 @@ export function SandboxDetail() {
             </div>
           ) : (
             <p className="text-sm text-muted-foreground py-4">
-              No mapped ports. Add mappings when creating the sandbox (for example <code className="font-mono text-xs">8080:80</code>).
+              No mapped ports. Add mappings when creating the sandbox (for
+              example <code className="font-mono text-xs">8080:80</code>).
             </p>
           )}
         </TabsContent>

@@ -17,7 +17,6 @@ allow = ["proxy.golang.org", "sum.golang.org"]
 
 [template]
 help_text = """
-Description: Template 'go' sandbox profile.
 How to use: Start the sandbox and run your workflow inside /workspace.
 Example command: go version
 Binaries available: go

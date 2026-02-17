@@ -25,7 +25,6 @@ PASSWORD = ""
 
 [template]
 help_text = """
-Description: Template 'coder' sandbox profile.
 How to use: Start the sandbox and open the mapped web port in your browser.
 Example command: ls -la /workspace
 Binaries available: code-server

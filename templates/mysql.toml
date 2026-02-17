@@ -6,15 +6,31 @@ name = "mysql"
 base_image = "mysql:8.4"
 init_script = """
 set -e
+secrets_path=${AGENTKERNEL_SECRETS_PATH:-/run/agentkernel/secrets}
+mysql_root_password=$(cat "$secrets_path/MYSQL_ROOT_PASSWORD" 2>/dev/null || true)
+mysql_database=$(cat "$secrets_path/MYSQL_DATABASE" 2>/dev/null || true)
+mysql_user=$(cat "$secrets_path/MYSQL_USER" 2>/dev/null || true)
+mysql_password=$(cat "$secrets_path/MYSQL_PASSWORD" 2>/dev/null || true)
 
 if ! mysqladmin ping -h 127.0.0.1 --silent >/dev/null 2>&1; then
-  MYSQL_ALLOW_EMPTY_PASSWORD=yes nohup docker-entrypoint.sh mysqld >/tmp/mysql.log 2>&1 &
-  for _ in $(seq 1 45); do
+  mkdir -p /var/run/mysqld
+  chown -R mysql:mysql /var/run/mysqld /var/lib/mysql
+  if [ ! -d /var/lib/mysql/mysql ]; then
+    mysqld --initialize-insecure --user=mysql --datadir=/var/lib/mysql >/tmp/mysql-init.log 2>&1
+  fi
+  rm -f /var/run/mysqld/mysqld.sock /var/run/mysqld/mysqld.pid /var/run/mysqld/mysqlx.sock /var/run/mysqld/mysqlx.sock.lock
+  nohup mysqld --user=mysql --daemonize --skip-networking=0 --bind-address=0.0.0.0 --port=3306 --mysqlx=OFF >/tmp/mysql.log 2>&1
+  for _ in $(seq 1 90); do
     if mysqladmin ping -h 127.0.0.1 --silent >/dev/null 2>&1; then
       break
     fi
     sleep 1
   done
+  mysqladmin ping -h 127.0.0.1 --silent >/dev/null 2>&1 || {
+    echo "mysql failed to start; check /tmp/mysql.log" >&2
+    exit 1
+  }
+  mysql -u root -e "CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY ''; GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;" >/dev/null 2>&1 || true
 fi
 """
 
@@ -31,9 +47,9 @@ network = true
 
 [template]
 help_text = """
-Description: Template 'mysql' sandbox profile.
-How to use: MySQL is started by the init script when the sandbox boots. If needed, start manually with: MYSQL_ALLOW_EMPTY_PASSWORD=yes docker-entrypoint.sh mysqld &
-Example command: mysql -h 127.0.0.1 -u root -e "SELECT VERSION();"
+How to use: MySQL is started by the init script when the sandbox boots. Optional secret files MYSQL_ROOT_PASSWORD, MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD are read from /run/agentkernel/secrets.
+Example command: sh -lc 'MYSQL_PWD="$(cat /run/agentkernel/secrets/MYSQL_ROOT_PASSWORD 2>/dev/null || true)" mysql -h 127.0.0.1 -u root -e "SELECT VERSION();"'
 Binaries available: mysql, mysqld
 Services and ports: MySQL listens on 3306/tcp.
+Secret file keys (optional): MYSQL_ROOT_PASSWORD, MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD
 """

@@ -25,7 +25,6 @@ OPENVSCODE_SERVER_OPTIONS = "--without-connection-token --host 0.0.0.0"
 
 [template]
 help_text = """
-Description: Template 'vscode' sandbox profile.
 How to use: Start the sandbox and open the mapped web port in your browser.
 Example command: ls -la /workspace
 Binaries available: openvscode-server
