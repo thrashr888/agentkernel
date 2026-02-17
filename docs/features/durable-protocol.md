@@ -22,7 +22,7 @@ runtime path.
 
 ## SQLite Schema
 
-Database location: `~/.local/share/agentkernel/durable.db`
+Database location: `~/.local/share/agentkernel/durable/orchestrations.db`
 
 ### Pragmas (applied on connection open)
 

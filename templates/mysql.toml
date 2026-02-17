@@ -4,13 +4,21 @@
 [sandbox]
 name = "mysql"
 base_image = "mysql:8.4"
-init_script = """
+init_script = '''
 set -e
 secrets_path=${AGENTKERNEL_SECRETS_PATH:-/run/agentkernel/secrets}
 mysql_root_password=$(cat "$secrets_path/MYSQL_ROOT_PASSWORD" 2>/dev/null || true)
 mysql_database=$(cat "$secrets_path/MYSQL_DATABASE" 2>/dev/null || true)
 mysql_user=$(cat "$secrets_path/MYSQL_USER" 2>/dev/null || true)
 mysql_password=$(cat "$secrets_path/MYSQL_PASSWORD" 2>/dev/null || true)
+
+# Require a root password when ports are exposed
+if [ -z "$mysql_root_password" ]; then
+  mysql_root_password="agentkernel-$(head -c 16 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
+  mkdir -p "$secrets_path"
+  printf '%s' "$mysql_root_password" > "$secrets_path/MYSQL_ROOT_PASSWORD"
+  echo "[mysql] Generated root password, saved to $secrets_path/MYSQL_ROOT_PASSWORD" >&2
+fi
 
 if ! mysqladmin ping -h 127.0.0.1 --silent >/dev/null 2>&1; then
   mkdir -p /var/run/mysqld
@@ -30,9 +38,19 @@ if ! mysqladmin ping -h 127.0.0.1 --silent >/dev/null 2>&1; then
     echo "mysql failed to start; check /tmp/mysql.log" >&2
     exit 1
   }
-  mysql -u root -e "CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY ''; GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;" >/dev/null 2>&1 || true
+  # Set root password and create remote access with authentication
+  mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$mysql_root_password'; CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '$mysql_root_password'; GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;" >/dev/null 2>&1
+
+  # Create optional application database and user
+  if [ -n "$mysql_database" ]; then
+    mysql -u root -p"$mysql_root_password" -e "CREATE DATABASE IF NOT EXISTS \`$mysql_database\`;" >/dev/null 2>&1
+  fi
+  if [ -n "$mysql_user" ] && [ -n "$mysql_password" ]; then
+    db_grant="${mysql_database:-*}"
+    mysql -u root -p"$mysql_root_password" -e "CREATE USER IF NOT EXISTS '$mysql_user'@'%' IDENTIFIED BY '$mysql_password'; GRANT ALL PRIVILEGES ON \`$db_grant\`.* TO '$mysql_user'@'%'; FLUSH PRIVILEGES;" >/dev/null 2>&1
+  fi
 fi
-"""
+'''
 
 [resources]
 vcpus = 2
@@ -47,7 +65,7 @@ network = true
 
 [template]
 help_text = """
-How to use: MySQL is started by the init script when the sandbox boots. Optional secret files MYSQL_ROOT_PASSWORD, MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD are read from /run/agentkernel/secrets.
+How to use: MySQL is started by the init script when the sandbox boots. A root password is auto-generated if MYSQL_ROOT_PASSWORD is not provided. Optional secret files MYSQL_ROOT_PASSWORD, MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD are read from /run/agentkernel/secrets.
 Example command: sh -lc 'MYSQL_PWD="$(cat /run/agentkernel/secrets/MYSQL_ROOT_PASSWORD 2>/dev/null || true)" mysql -h 127.0.0.1 -u root -e "SELECT VERSION();"'
 Binaries available: mysql, mysqld
 Services and ports: MySQL listens on 3306/tcp.
