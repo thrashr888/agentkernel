@@ -496,7 +496,7 @@ impl AppState {
     }
 
     fn init_orchestration_store() -> Option<Arc<OrchestrationStore>> {
-        match OrchestrationStore::default() {
+        match OrchestrationStore::open_default() {
             Ok(store) => Some(Arc::new(store)),
             Err(e) => {
                 eprintln!("[durable] Failed to initialize orchestration store: {}", e);
@@ -1957,9 +1957,7 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
                     .map(|s| s.secret_files.clone())
                     .unwrap_or_default(),
                 proxy_port: state_info.and_then(|s| s.proxy_port),
-                secret_mappings: state_info
-                    .map(|s| build_secret_mappings(s))
-                    .unwrap_or_default(),
+                secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
             }
         })
         .collect();
@@ -2279,9 +2277,7 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                         .map(|s| s.secret_files.clone())
                         .unwrap_or_default(),
                     proxy_port: state_info.and_then(|s| s.proxy_port),
-                    secret_mappings: state_info
-                        .map(|s| build_secret_mappings(s))
-                        .unwrap_or_default(),
+                    secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
                 }),
             );
         }
@@ -2915,9 +2911,7 @@ async fn handle_resize_sandbox(
             uuid: state_info
                 .map(|s| s.uuid.clone())
                 .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
-            secret_mappings: state_info
-                .map(|s| build_secret_mappings(s))
-                .unwrap_or_default(),
+            secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
         }),
     )
 }
@@ -3150,9 +3144,7 @@ async fn handle_restore_snapshot(
                         .map(|s| s.secret_files.clone())
                         .unwrap_or_default(),
                     proxy_port: state_info.and_then(|s| s.proxy_port),
-                    secret_mappings: state_info
-                        .map(|s| build_secret_mappings(s))
-                        .unwrap_or_default(),
+                    secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
                 }),
             )
         }
@@ -3856,32 +3848,34 @@ async fn process_orchestration_record(
     let mut single_activity = runtime_input.activity.clone();
     let mut activity_sequence = runtime_input.activities.clone().unwrap_or_default();
 
-    if wait_name.is_none() && single_activity.is_none() && activity_sequence.is_empty() {
-        if let Some(definition) = store.get_definition(&record.name)? {
-            let parsed = match parse_runtime_input(Some(definition.definition)) {
-                Ok(value) => value,
-                Err(parse_error) => {
-                    let error = format!("invalid orchestration definition: {parse_error}");
-                    store.append_event(
-                        &orchestration_id,
-                        "OrchestratorFailed",
-                        serde_json::json!({ "error": error }),
-                    )?;
-                    let _ = store.update(
-                        &orchestration_id,
-                        UpdateOrchestration {
-                            status: Some(OrchestrationStatus::Failed),
-                            output: None,
-                            error: Some(error),
-                        },
-                    )?;
-                    return Ok(());
-                }
-            };
-            wait_name = parsed.wait_for_event;
-            single_activity = parsed.activity;
-            activity_sequence = parsed.activities.unwrap_or_default();
-        }
+    if wait_name.is_none()
+        && single_activity.is_none()
+        && activity_sequence.is_empty()
+        && let Some(definition) = store.get_definition(&record.name)?
+    {
+        let parsed = match parse_runtime_input(Some(definition.definition)) {
+            Ok(value) => value,
+            Err(parse_error) => {
+                let error = format!("invalid orchestration definition: {parse_error}");
+                store.append_event(
+                    &orchestration_id,
+                    "OrchestratorFailed",
+                    serde_json::json!({ "error": error }),
+                )?;
+                let _ = store.update(
+                    &orchestration_id,
+                    UpdateOrchestration {
+                        status: Some(OrchestrationStatus::Failed),
+                        output: None,
+                        error: Some(error),
+                    },
+                )?;
+                return Ok(());
+            }
+        };
+        wait_name = parsed.wait_for_event;
+        single_activity = parsed.activity;
+        activity_sequence = parsed.activities.unwrap_or_default();
     }
 
     if activity_sequence.is_empty()
