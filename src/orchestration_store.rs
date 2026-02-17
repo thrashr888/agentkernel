@@ -190,8 +190,8 @@ impl OrchestrationStore {
         Self { storage }
     }
 
-    pub fn default() -> Result<Self> {
-        Ok(Self::new(DurableStorage::default()?))
+    pub fn open_default() -> Result<Self> {
+        Ok(Self::new(DurableStorage::open_default()?))
     }
 
     pub fn create(&self, req: CreateOrchestration) -> Result<OrchestrationRecord> {
@@ -445,7 +445,7 @@ LIMIT ?1 OFFSET ?2
         let sandbox = req.sandbox;
         let mut config = req.config.unwrap_or_else(|| serde_json::json!({}));
 
-        if kind == DurableStoreKind::Sqlite && !config.get("path").is_some() {
+        if kind == DurableStoreKind::Sqlite && config.get("path").is_none() {
             config = serde_json::json!({
                 "path": Self::default_sqlite_store_path(&id).to_string_lossy(),
             });
@@ -594,12 +594,66 @@ LIMIT ?1 OFFSET ?2
 
         match store.kind {
             DurableStoreKind::Redis => {
-                anyhow::bail!("redis durable stores are not executable in this runtime yet")
+                let result = Self::execute_redis_command(&store, command)?;
+                Ok(Some(result))
             }
             DurableStoreKind::Sqlite | DurableStoreKind::Postgres | DurableStoreKind::Mysql => {
-                anyhow::bail!("store kind does not support command endpoint")
+                anyhow::bail!(
+                    "store kind '{}' does not support the command endpoint; use query or execute",
+                    store.kind
+                )
             }
         }
+    }
+
+    fn execute_redis_command(
+        store: &DurableStoreRecord,
+        command: Vec<String>,
+    ) -> Result<DurableStoreCommandResult> {
+        let host = store
+            .config
+            .get("host")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("127.0.0.1");
+        let port = store
+            .config
+            .get("port")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(6379) as u16;
+        let db = store
+            .config
+            .get("db")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as i64;
+        let password = store
+            .config
+            .get("password")
+            .and_then(serde_json::Value::as_str);
+
+        let mut url = format!("redis://{host}:{port}/{db}");
+        if let Some(pw) = password {
+            url = format!("redis://:{pw}@{host}:{port}/{db}");
+        }
+
+        let client = redis::Client::open(url.as_str()).context("failed to create redis client")?;
+        let mut conn = client
+            .get_connection()
+            .context("failed to connect to redis")?;
+
+        let cmd_name = &command[0];
+        let args = &command[1..];
+        let mut cmd = redis::cmd(cmd_name);
+        for arg in args {
+            cmd.arg(arg);
+        }
+
+        let raw: redis::Value = cmd
+            .query(&mut conn)
+            .with_context(|| format!("redis command '{}' failed", cmd_name))?;
+
+        Ok(DurableStoreCommandResult {
+            result: redis_value_to_json(raw),
+        })
     }
 
     pub fn update(
@@ -828,6 +882,51 @@ PRAGMA foreign_keys = ON;
                 v,
             )),
         }
+    }
+}
+
+fn redis_value_to_json(value: redis::Value) -> serde_json::Value {
+    match value {
+        redis::Value::Nil => serde_json::Value::Null,
+        redis::Value::Int(v) => serde_json::Value::from(v),
+        redis::Value::BulkString(bytes) => match String::from_utf8(bytes.clone()) {
+            Ok(s) => serde_json::Value::String(s),
+            Err(_) => serde_json::Value::String(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                &bytes,
+            )),
+        },
+        redis::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(redis_value_to_json).collect())
+        }
+        redis::Value::SimpleString(s) => serde_json::Value::String(s),
+        redis::Value::Okay => serde_json::Value::String("OK".to_string()),
+        redis::Value::Map(pairs) => {
+            let mut map = serde_json::Map::new();
+            for (k, v) in pairs {
+                let key = match k {
+                    redis::Value::BulkString(b) => {
+                        String::from_utf8(b).unwrap_or_else(|_| "<binary>".to_string())
+                    }
+                    redis::Value::SimpleString(s) => s,
+                    other => format!("{other:?}"),
+                };
+                map.insert(key, redis_value_to_json(v));
+            }
+            serde_json::Value::Object(map)
+        }
+        redis::Value::Double(v) => serde_json::Value::from(v),
+        redis::Value::Boolean(v) => serde_json::Value::Bool(v),
+        redis::Value::VerbatimString { text, .. } => serde_json::Value::String(text),
+        redis::Value::BigNumber(v) => serde_json::Value::String(v.to_string()),
+        redis::Value::Set(items) => {
+            serde_json::Value::Array(items.into_iter().map(redis_value_to_json).collect())
+        }
+        redis::Value::Attribute { data, .. } => redis_value_to_json(*data),
+        redis::Value::Push { data, .. } => {
+            serde_json::Value::Array(data.into_iter().map(redis_value_to_json).collect())
+        }
+        redis::Value::ServerError(e) => serde_json::json!({ "error": format!("{e:?}") }),
     }
 }
 

@@ -87,7 +87,7 @@ impl DurableStorage {
     }
 
     /// Create and bootstrap storage in the default agentkernel data directory.
-    pub fn default() -> Result<Self> {
+    pub fn open_default() -> Result<Self> {
         Self::new(Self::default_db_path())
     }
 
