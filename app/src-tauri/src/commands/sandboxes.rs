@@ -21,6 +21,8 @@ pub async fn get_sandbox(name: String, state: State<'_, AppState>) -> Result<San
 ///
 /// Resolves `secret_mappings` (env_var → host) from host environment variables
 /// and merges them into the `secrets` vec before forwarding to the API.
+/// The original `secret_mappings` are also forwarded so the API can persist
+/// which secrets the template expects (even if they aren't configured yet).
 #[tauri::command(rename_all = "snake_case")]
 pub async fn create_sandbox(
     mut req: CreateSandboxRequest,
@@ -43,8 +45,7 @@ pub async fn create_sandbox(
                     .push(format!("{}={}:{}", env_var, val, target_host));
             }
         }
-        // Clear mappings so they aren't sent to the API (it doesn't know about them)
-        req.secret_mappings.clear();
+        // Keep secret_mappings — the API persists them for UI display
     }
 
     let client = state.client.lock().map_err(|e| e.to_string())?.clone();
@@ -167,6 +168,8 @@ pub async fn quickstart_agent(
         image: Some("node:22-alpine".to_string()),
         vcpus: Some(2),
         memory_mb: Some(1024),
+        ports: vec![],
+        secret_files: vec![],
         profile: Some(crate::types::SecurityProfile::Moderate),
         source_url: None,
         source_ref: None,

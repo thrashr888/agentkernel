@@ -6,9 +6,35 @@ name = "redis"
 base_image = "redis:7-alpine"
 init_script = """
 set -e
+secrets_path=${AGENTKERNEL_SECRETS_PATH:-/run/agentkernel/secrets}
+redis_password=$(cat "$secrets_path/REDIS_PASSWORD" 2>/dev/null || true)
 
 if ! redis-cli -h 127.0.0.1 -p 6379 ping >/dev/null 2>&1; then
-  redis-server --daemonize yes
+  if [ -n "$redis_password" ]; then
+    redis-server --daemonize yes --requirepass "$redis_password"
+    for _ in $(seq 1 30); do
+      if redis-cli -h 127.0.0.1 -p 6379 -a "$redis_password" ping >/dev/null 2>&1; then
+        break
+      fi
+      sleep 1
+    done
+    redis-cli -h 127.0.0.1 -p 6379 -a "$redis_password" ping >/dev/null 2>&1 || {
+      echo "redis failed to start" >&2
+      exit 1
+    }
+  else
+    redis-server --daemonize yes
+    for _ in $(seq 1 30); do
+      if redis-cli -h 127.0.0.1 -p 6379 ping >/dev/null 2>&1; then
+        break
+      fi
+      sleep 1
+    done
+    redis-cli -h 127.0.0.1 -p 6379 ping >/dev/null 2>&1 || {
+      echo "redis failed to start" >&2
+      exit 1
+    }
+  fi
 fi
 """
 
@@ -25,9 +51,9 @@ network = true
 
 [template]
 help_text = """
-Description: Template 'redis' sandbox profile.
-How to use: Redis is started by the init script when the sandbox boots. If needed, start manually with: redis-server --daemonize yes
-Example command: redis-cli -h 127.0.0.1 -p 6379 ping
+How to use: Redis is started by the init script when the sandbox boots. Optional secret file REDIS_PASSWORD is read from /run/agentkernel/secrets.
+Example command: sh -lc 'PW=$(cat /run/agentkernel/secrets/REDIS_PASSWORD 2>/dev/null || true); if [ -n "$PW" ]; then redis-cli -h 127.0.0.1 -p 6379 -a "$PW" ping; else redis-cli -h 127.0.0.1 -p 6379 ping; fi'
 Binaries available: redis-server, redis-cli
 Services and ports: Redis listens on 6379/tcp.
+Secret file keys (optional): REDIS_PASSWORD
 """

@@ -97,6 +97,10 @@ struct CreateRequest {
     /// Human help text from the selected template.
     #[serde(default)]
     template_help_text: Option<String>,
+    /// Template secret mappings: env_var → target_host.
+    /// Persisted so the UI can show expected secrets even when not yet bound.
+    #[serde(default)]
+    secret_mappings: std::collections::HashMap<String, String>,
 }
 
 /// Request to write a file
@@ -359,6 +363,8 @@ struct SandboxInfo {
     template_help_text: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     ports: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    secret_files: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     proxy_port: Option<u16>,
     /// Secret mappings: env_var → target_host (values are stripped for security).
@@ -378,6 +384,16 @@ fn extract_secret_mappings(bindings: &[String]) -> std::collections::HashMap<Str
             Some((key.to_string(), host.to_string()))
         })
         .collect()
+}
+
+/// Build the full secret_mappings for a sandbox by merging the persisted
+/// template mappings with any actually-bound secrets extracted from bindings.
+fn build_secret_mappings(
+    state: &crate::vmm::SandboxState,
+) -> std::collections::HashMap<String, String> {
+    let mut m = state.secret_mappings.clone();
+    m.extend(extract_secret_mappings(&state.secret_bindings));
+    m
 }
 
 /// Run command response
@@ -1937,9 +1953,12 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
                 created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
                 template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
                 ports,
+                secret_files: state_info
+                    .map(|s| s.secret_files.clone())
+                    .unwrap_or_default(),
                 proxy_port: state_info.and_then(|s| s.proxy_port),
                 secret_mappings: state_info
-                    .map(|s| extract_secret_mappings(&s.secret_bindings))
+                    .map(|s| build_secret_mappings(s))
                     .unwrap_or_default(),
             }
         })
@@ -2055,6 +2074,17 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         return json_response(
             StatusCode::BAD_REQUEST,
             &ApiResponse::<()>::error(format!("Invalid secret bindings: {}", e)),
+        );
+    }
+
+    // Persist template secret mappings (env_var → host) for UI display
+    if !body.secret_mappings.is_empty()
+        && let Err(e) = manager.set_secret_mappings(&body.name, &body.secret_mappings)
+    {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to set secret mappings: {}", e)),
         );
     }
 
@@ -2184,8 +2214,13 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
             template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
             ports: port_strings,
+            secret_files: body.secret_files.clone(),
             proxy_port: state_info.and_then(|s| s.proxy_port),
-            secret_mappings: extract_secret_mappings(&body.secrets),
+            secret_mappings: {
+                let mut m = body.secret_mappings.clone();
+                m.extend(extract_secret_mappings(&body.secrets));
+                m
+            },
         }),
     )
 }
@@ -2240,9 +2275,12 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                     created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
                     template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
                     ports,
+                    secret_files: state_info
+                        .map(|s| s.secret_files.clone())
+                        .unwrap_or_default(),
                     proxy_port: state_info.and_then(|s| s.proxy_port),
                     secret_mappings: state_info
-                        .map(|s| extract_secret_mappings(&s.secret_bindings))
+                        .map(|s| build_secret_mappings(s))
                         .unwrap_or_default(),
                 }),
             );
@@ -2308,8 +2346,9 @@ async fn handle_get_sandbox_by_uuid(uuid: &str, state: Arc<AppState>) -> Respons
             created_from_template: state_info.created_from_template.clone(),
             template_help_text: state_info.template_help_text.clone(),
             ports,
+            secret_files: state_info.secret_files.clone(),
             proxy_port: state_info.proxy_port,
-            secret_mappings: extract_secret_mappings(&state_info.secret_bindings),
+            secret_mappings: build_secret_mappings(state_info),
         }),
     )
 }
@@ -2869,12 +2908,15 @@ async fn handle_resize_sandbox(
             created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
             template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
             ports: result_ports,
+            secret_files: state_info
+                .map(|s| s.secret_files.clone())
+                .unwrap_or_default(),
             proxy_port: state_info.and_then(|s| s.proxy_port),
             uuid: state_info
                 .map(|s| s.uuid.clone())
                 .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
             secret_mappings: state_info
-                .map(|s| extract_secret_mappings(&s.secret_bindings))
+                .map(|s| build_secret_mappings(s))
                 .unwrap_or_default(),
         }),
     )
@@ -3104,9 +3146,12 @@ async fn handle_restore_snapshot(
                     created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
                     template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
                     ports,
+                    secret_files: state_info
+                        .map(|s| s.secret_files.clone())
+                        .unwrap_or_default(),
                     proxy_port: state_info.and_then(|s| s.proxy_port),
                     secret_mappings: state_info
-                        .map(|s| extract_secret_mappings(&s.secret_bindings))
+                        .map(|s| build_secret_mappings(s))
                         .unwrap_or_default(),
                 }),
             )
@@ -5148,6 +5193,7 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             ports: vec![],
+            secret_files: vec![],
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
         };
@@ -5225,6 +5271,7 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             ports: vec![],
+            secret_files: vec![],
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
         };
@@ -5556,6 +5603,7 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             ports: vec![],
+            secret_files: vec![],
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
         };
@@ -5581,6 +5629,7 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             ports: vec![],
+            secret_files: vec![],
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
         };

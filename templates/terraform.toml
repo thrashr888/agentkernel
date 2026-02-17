@@ -1,23 +1,23 @@
 # Terraform sandbox template
-# Pre-configured for Terraform / OpenTofu with cloud provider CLIs
-# Includes: terraform, hcptf-cli, aws, az, gcloud
+# Pre-configured for Terraform / OpenTofu with HCP Terraform CLI
+# Cloud provider CLIs (aws, az, gcloud) can be installed on demand
 
 [sandbox]
 name = "terraform"
-base_image = "python:3.12-slim"
+base_image = "debian:bookworm-slim"
 init_script = """
 set -e
 
 # Detect architecture
 ARCH=$(uname -m)
 case "$ARCH" in
-  x86_64)  TF_ARCH="amd64"; AWS_ARCH="x86_64"; GCLOUD_ARCH="x86_64" ;;
-  aarch64|arm64) TF_ARCH="arm64"; AWS_ARCH="aarch64"; GCLOUD_ARCH="arm" ;;
+  x86_64)  TF_ARCH="amd64" ;;
+  aarch64|arm64) TF_ARCH="arm64" ;;
   *) echo "Unsupported architecture: $ARCH" && exit 1 ;;
 esac
 
 # Install system deps
-apt-get update -qq && apt-get install -y -qq curl unzip gnupg lsb-release >/dev/null 2>&1
+apt-get update -qq && apt-get install -y -qq curl unzip >/dev/null 2>&1
 
 # Install Terraform
 curl -fsSL "https://releases.hashicorp.com/terraform/1.14.5/terraform_1.14.5_linux_${TF_ARCH}.zip" -o /tmp/tf.zip \
@@ -26,19 +26,6 @@ curl -fsSL "https://releases.hashicorp.com/terraform/1.14.5/terraform_1.14.5_lin
 # Install hcptf (HCP Terraform CLI)
 curl -fsSL "https://github.com/thrashr888/hcptf-cli/releases/download/v0.3.1/hcptf-cli_0.3.1_linux_${TF_ARCH}.tar.gz" \
   | tar -xz -C /usr/local/bin hcptf
-
-# Install AWS CLI v2
-curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip" -o /tmp/awscli.zip \
-  && unzip -qo /tmp/awscli.zip -d /tmp && /tmp/aws/install --update >/dev/null 2>&1 && rm -rf /tmp/aws /tmp/awscli.zip
-
-# Install Azure CLI (via Microsoft install script — much faster than pip)
-curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash >/dev/null 2>&1
-
-# Install Google Cloud SDK
-curl -fsSL "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-${GCLOUD_ARCH}.tar.gz" \
-  | tar -xz -C /opt && /opt/google-cloud-sdk/install.sh --quiet --path-update=true >/dev/null 2>&1 \
-  && ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud \
-  && ln -sf /opt/google-cloud-sdk/bin/gsutil /usr/local/bin/gsutil
 """
 
 [secrets]
@@ -82,9 +69,7 @@ allow = [
   "*.googleapis.com",
   "accounts.google.com",
   "oauth2.googleapis.com",
-  # Package repos (for pip, apt)
-  "pypi.org",
-  "files.pythonhosted.org",
+  # Package repos (for apt)
   "deb.debian.org",
   "security.debian.org",
   # GitHub (for hcptf-cli download)
@@ -94,9 +79,10 @@ allow = [
 
 [template]
 help_text = """
-Description: Template 'terraform' sandbox profile.
+Terraform sandbox with HCP Terraform CLI.
 How to use: Start the sandbox and run your workflow inside /workspace.
 Example command: terraform version
-Binaries available: terraform, hcptf, aws, az, gcloud, gsutil
-Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
+Binaries available: terraform, hcptf
+Cloud CLIs: Install on demand via exec (aws, az, gcloud not pre-installed to keep boot fast).
+Services and ports: No long-running service is configured by default. Only explicitly mapped ports are exposed.
 """

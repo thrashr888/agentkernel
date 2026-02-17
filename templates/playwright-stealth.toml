@@ -18,7 +18,6 @@ allow = ["pypi.org", "files.pythonhosted.org", "playwright.azureedge.net"]
 
 [template]
 help_text = """
-Description: Template 'playwright-stealth' sandbox profile.
 How to use: Start the sandbox and run your workflow inside /workspace.
 Example command: ls -la /workspace
 Binaries available: python, pip

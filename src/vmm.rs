@@ -107,6 +107,10 @@ pub struct SandboxState {
     /// Host port of the running proxy (if any)
     #[serde(default)]
     pub proxy_port: Option<u16>,
+    /// Template secret mappings: env_var → target_host.
+    /// Persisted so the UI can show expected secrets even when not yet configured.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub secret_mappings: HashMap<String, String>,
     /// Shell script to run inside the sandbox after start (from template init_script)
     #[serde(default)]
     pub init_script: Option<String>,
@@ -621,6 +625,7 @@ impl VmManager {
             volumes: Vec::new(),
             agent,
             secret_bindings: Vec::new(),
+            secret_mappings: HashMap::new(),
             secret_files: Vec::new(),
             proxy_port: None,
             init_script: None,
@@ -654,6 +659,28 @@ impl VmManager {
                 .get_mut(name)
                 .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
             state.ssh_enabled = enabled;
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    /// Persist template secret mappings (env_var → host) so the UI can show
+    /// which secrets a template expects, even before they are configured.
+    pub fn set_secret_mappings(
+        &mut self,
+        name: &str,
+        mappings: &HashMap<String, String>,
+    ) -> Result<()> {
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.secret_mappings = mappings.clone();
         }
         let state = self
             .sandboxes
@@ -1963,6 +1990,7 @@ mod tests {
             volumes: Vec::new(),
             agent: None,
             secret_bindings: Vec::new(),
+            secret_mappings: HashMap::new(),
             secret_files: Vec::new(),
             proxy_port: None,
             init_script: None,
@@ -2016,6 +2044,7 @@ mod tests {
             volumes: Vec::new(),
             agent: None,
             secret_bindings: Vec::new(),
+            secret_mappings: HashMap::new(),
             secret_files: Vec::new(),
             proxy_port: None,
             init_script: None,
@@ -2079,6 +2108,7 @@ mod tests {
             volumes: Vec::new(),
             agent: None,
             secret_bindings: Vec::new(),
+            secret_mappings: HashMap::new(),
             secret_files: Vec::new(),
             proxy_port: None,
             init_script: None,
@@ -2158,6 +2188,7 @@ mod tests {
                 volumes: Vec::new(),
                 agent: None,
                 secret_bindings: Vec::new(),
+                secret_mappings: HashMap::new(),
                 secret_files: Vec::new(),
                 proxy_port: None,
                 init_script: None,

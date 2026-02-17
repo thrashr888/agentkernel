@@ -17,7 +17,6 @@ allow = ["crates.io", "static.crates.io", "index.crates.io"]
 
 [template]
 help_text = """
-Description: Template 'rust-ci' sandbox profile.
 How to use: Start the sandbox and run your workflow inside /workspace.
 Example command: cargo --version
 Binaries available: rustc, cargo

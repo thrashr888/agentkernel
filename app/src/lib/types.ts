@@ -12,6 +12,7 @@ export interface SandboxInfo {
   template_help_text?: string;
   ip?: string;
   ports?: string[];
+  secret_files?: string[];
   secret_mappings?: Record<string, string>;
 }
 
@@ -94,6 +95,8 @@ export interface CreateSandboxRequest {
   image?: string;
   vcpus?: number;
   memory_mb?: number;
+  ports?: string[];
+  secret_files?: string[];
   profile?: string;
   source_url?: string;
   source_ref?: string;
@@ -126,6 +129,8 @@ export interface TemplateInfo {
   base_image: string;
   vcpus: number;
   memory_mb: number;
+  ports?: string[];
+  secret_files?: string[];
   init_script?: string;
   help_text?: string;
   secrets?: Record<string, string>;
