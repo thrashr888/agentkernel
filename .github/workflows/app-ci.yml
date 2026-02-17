@@ -69,8 +69,9 @@ jobs:
         run: cargo test
         working-directory: app/src-tauri
 
-  # ─── Job 3: Full macOS build (produces .app bundles) ───
+  # ─── Job 3: Full macOS build (produces .app bundles, main only) ───
   build:
+    if: github.event_name == 'push'
     name: Build (${{ matrix.arch }})
     needs: [frontend, tauri-check]
     runs-on: macos-latest
