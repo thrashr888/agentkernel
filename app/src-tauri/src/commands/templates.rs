@@ -579,9 +579,7 @@ fn default_help_text(template: &TemplateInfo) -> String {
 
 fn usage_for_template(name: &str) -> &'static str {
     match name {
-        "sqlite" => {
-            "Start the sandbox, then run SQLite commands against a local database file."
-        }
+        "sqlite" => "Start the sandbox, then run SQLite commands against a local database file.",
         "postgres" => {
             "PostgreSQL is started by the init script when the sandbox boots. Optional secret files POSTGRES_USER, POSTGRES_PASSWORD, and POSTGRES_DB configure auth and default database."
         }
@@ -600,16 +598,26 @@ fn usage_for_template(name: &str) -> &'static str {
         "gitea" => {
             "Start the sandbox and open the mapped web port in your browser to access the Git UI."
         }
-        _ => "Start the sandbox, attach with `agentkernel attach <name>`, and run commands in /workspace.",
+        _ => {
+            "Start the sandbox, attach with `agentkernel attach <name>`, and run commands in /workspace."
+        }
     }
 }
 
 fn example_for_template(name: &str) -> &'static str {
     match name {
-        "sqlite" => r#"sqlite3 /workspace/data/app.db "CREATE TABLE IF NOT EXISTS t(id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t(v) VALUES ('hello'); SELECT * FROM t;""#,
-        "postgres" => r#"sh -lc 'PGPASSWORD="$(cat /run/agentkernel/secrets/POSTGRES_PASSWORD 2>/dev/null || true)" psql -h 127.0.0.1 -U "$(cat /run/agentkernel/secrets/POSTGRES_USER 2>/dev/null || echo postgres)" -d "$(cat /run/agentkernel/secrets/POSTGRES_DB 2>/dev/null || echo postgres)" -c "SELECT version();"' "#,
-        "mysql" => r#"sh -lc 'MYSQL_PWD="$(cat /run/agentkernel/secrets/MYSQL_ROOT_PASSWORD 2>/dev/null || true)" mysql -h 127.0.0.1 -u root -e "SELECT VERSION();"' "#,
-        "redis" => r#"sh -lc 'PW=$(cat /run/agentkernel/secrets/REDIS_PASSWORD 2>/dev/null || true); if [ -n "$PW" ]; then redis-cli -h 127.0.0.1 -p 6379 -a "$PW" ping; else redis-cli -h 127.0.0.1 -p 6379 ping; fi'"#,
+        "sqlite" => {
+            r#"sqlite3 /workspace/data/app.db "CREATE TABLE IF NOT EXISTS t(id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t(v) VALUES ('hello'); SELECT * FROM t;""#
+        }
+        "postgres" => {
+            r#"sh -lc 'PGPASSWORD="$(cat /run/agentkernel/secrets/POSTGRES_PASSWORD 2>/dev/null || true)" psql -h 127.0.0.1 -U "$(cat /run/agentkernel/secrets/POSTGRES_USER 2>/dev/null || echo postgres)" -d "$(cat /run/agentkernel/secrets/POSTGRES_DB 2>/dev/null || echo postgres)" -c "SELECT version();"' "#
+        }
+        "mysql" => {
+            r#"sh -lc 'MYSQL_PWD="$(cat /run/agentkernel/secrets/MYSQL_ROOT_PASSWORD 2>/dev/null || true)" mysql -h 127.0.0.1 -u root -e "SELECT VERSION();"' "#
+        }
+        "redis" => {
+            r#"sh -lc 'PW=$(cat /run/agentkernel/secrets/REDIS_PASSWORD 2>/dev/null || true); if [ -n "$PW" ]; then redis-cli -h 127.0.0.1 -p 6379 -a "$PW" ping; else redis-cli -h 127.0.0.1 -p 6379 ping; fi'"#
+        }
         "node" | "node-fullstack" | "typescript" => "node -v",
         "python" | "python-ml" => "python --version",
         "go" => "go version",
@@ -630,9 +638,7 @@ fn binaries_for_template(name: &str) -> &'static str {
         "go" => "go",
         "java" => "java, javac",
         "node" | "node-fullstack" | "typescript" => "node, npm, npx",
-        "python" | "python-ml" | "playwright" | "playwright-stealth" | "terraform" => {
-            "python, pip"
-        }
+        "python" | "python-ml" | "playwright" | "playwright-stealth" | "terraform" => "python, pip",
         "ruby" => "ruby, gem, bundle",
         "rust" | "rust-ci" => "rustc, cargo",
         "sqlite" => "sqlite3",
@@ -657,7 +663,9 @@ fn services_ports_for_template(name: &str) -> &'static str {
         "vscode" => "OpenVSCode web UI on 3000/tcp.",
         "coder" => "code-server web UI on 8080/tcp (unless changed by image defaults).",
         "gitea" => "Gitea web UI and SSH are image-configurable; map ports as needed.",
-        _ => "No long-running service is configured by default. Only explicitly mapped ports are exposed.",
+        _ => {
+            "No long-running service is configured by default. Only explicitly mapped ports are exposed."
+        }
     }
 }
 
