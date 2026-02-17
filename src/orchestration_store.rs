@@ -160,6 +160,149 @@ pub struct DurableStoreCommandResult {
     pub result: serde_json::Value,
 }
 
+// --- Durable Object types ---
+
+/// Lifecycle state for a durable object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DurableObjectStatus {
+    Active,
+    Hibernating,
+    Deleted,
+}
+
+impl std::fmt::Display for DurableObjectStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Active => write!(f, "active"),
+            Self::Hibernating => write!(f, "hibernating"),
+            Self::Deleted => write!(f, "deleted"),
+        }
+    }
+}
+
+impl std::str::FromStr for DurableObjectStatus {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "active" => Ok(Self::Active),
+            "hibernating" => Ok(Self::Hibernating),
+            "deleted" => Ok(Self::Deleted),
+            other => Err(format!("invalid object status '{other}'")),
+        }
+    }
+}
+
+/// Persisted durable object record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DurableObjectRecord {
+    pub id: String,
+    pub class: String,
+    pub object_id: String,
+    pub status: DurableObjectStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+    #[serde(default)]
+    pub storage: serde_json::Value,
+    pub idle_timeout_seconds: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Create request for a durable object.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateDurableObject {
+    pub class: String,
+    pub object_id: String,
+    #[serde(default)]
+    pub sandbox: Option<String>,
+    #[serde(default)]
+    pub storage: Option<serde_json::Value>,
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_seconds: i64,
+}
+
+fn default_idle_timeout() -> i64 {
+    300
+}
+
+// --- Schedule types ---
+
+/// Lifecycle state for a schedule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleStatus {
+    Active,
+    Paused,
+    Completed,
+}
+
+impl std::fmt::Display for ScheduleStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Active => write!(f, "active"),
+            Self::Paused => write!(f, "paused"),
+            Self::Completed => write!(f, "completed"),
+        }
+    }
+}
+
+impl std::str::FromStr for ScheduleStatus {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "active" => Ok(Self::Active),
+            "paused" => Ok(Self::Paused),
+            "completed" => Ok(Self::Completed),
+            other => Err(format!("invalid schedule status '{other}'")),
+        }
+    }
+}
+
+/// Persisted schedule record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleRecord {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cron: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fire_at: Option<String>,
+    pub method: String,
+    #[serde(default)]
+    pub args: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_object_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_orchestration: Option<String>,
+    pub status: ScheduleStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_fired_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Create request for a schedule.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateSchedule {
+    pub name: String,
+    #[serde(default)]
+    pub cron: Option<String>,
+    #[serde(default)]
+    pub fire_at: Option<String>,
+    pub method: String,
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
+    #[serde(default)]
+    pub target_class: Option<String>,
+    #[serde(default)]
+    pub target_object_id: Option<String>,
+    #[serde(default)]
+    pub target_orchestration: Option<String>,
+}
+
 /// Create request for orchestration persistence.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateOrchestration {
@@ -606,6 +749,194 @@ LIMIT ?1 OFFSET ?2
         }
     }
 
+    // --- Durable Object CRUD ---
+
+    pub fn create_object(&self, req: CreateDurableObject) -> Result<DurableObjectRecord> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let id = uuid::Uuid::now_v7().to_string();
+        let storage = req.storage.unwrap_or_else(|| serde_json::json!({}));
+        let storage_json = serde_json::to_string(&storage)?;
+        let status = DurableObjectStatus::Hibernating;
+
+        let conn = self.storage.open_connection()?;
+        conn.execute(
+            r#"
+INSERT INTO objects(id, class, object_id, status, sandbox, storage_json, idle_timeout_seconds, created_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+"#,
+            params![
+                id,
+                req.class,
+                req.object_id,
+                status.to_string(),
+                req.sandbox,
+                storage_json,
+                req.idle_timeout_seconds,
+                now,
+                now,
+            ],
+        )
+        .context("failed to create durable object")?;
+
+        Ok(DurableObjectRecord {
+            id,
+            class: req.class,
+            object_id: req.object_id,
+            status,
+            sandbox: req.sandbox,
+            storage,
+            idle_timeout_seconds: req.idle_timeout_seconds,
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub fn get_object(&self, id: &str) -> Result<Option<DurableObjectRecord>> {
+        let conn = self.storage.open_connection()?;
+        conn.query_row(
+            r#"
+SELECT id, class, object_id, status, sandbox, storage_json, idle_timeout_seconds, created_at, updated_at
+FROM objects WHERE id = ?1
+"#,
+            [id],
+            Self::row_to_object,
+        )
+        .optional()
+        .context("failed to get durable object")
+    }
+
+    pub fn list_objects(&self, limit: usize, offset: usize) -> Result<Vec<DurableObjectRecord>> {
+        let conn = self.storage.open_connection()?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+SELECT id, class, object_id, status, sandbox, storage_json, idle_timeout_seconds, created_at, updated_at
+FROM objects
+WHERE status != 'deleted'
+ORDER BY created_at DESC
+LIMIT ?1 OFFSET ?2
+"#,
+            )
+            .context("failed to prepare list objects query")?;
+
+        let rows = stmt
+            .query_map(params![limit as i64, offset as i64], Self::row_to_object)
+            .context("failed to execute list objects query")?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.context("failed to parse object row")?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_object(&self, id: &str) -> Result<bool> {
+        let conn = self.storage.open_connection()?;
+        let deleted = conn
+            .execute("DELETE FROM objects WHERE id = ?1", [id])
+            .context("failed to delete durable object")?;
+        Ok(deleted > 0)
+    }
+
+    // --- Schedule CRUD ---
+
+    pub fn create_schedule(&self, req: CreateSchedule) -> Result<ScheduleRecord> {
+        if req.cron.is_none() && req.fire_at.is_none() {
+            anyhow::bail!("schedule must have either 'cron' or 'fire_at'");
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let id = uuid::Uuid::now_v7().to_string();
+        let args = req.args.unwrap_or_else(|| serde_json::json!({}));
+        let args_json = serde_json::to_string(&args)?;
+        let status = ScheduleStatus::Active;
+
+        let conn = self.storage.open_connection()?;
+        conn.execute(
+            r#"
+INSERT INTO schedules(id, name, cron, fire_at, method, args_json, target_class, target_object_id, target_orchestration, status, created_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+"#,
+            params![
+                id,
+                req.name,
+                req.cron,
+                req.fire_at,
+                req.method,
+                args_json,
+                req.target_class,
+                req.target_object_id,
+                req.target_orchestration,
+                status.to_string(),
+                now,
+                now,
+            ],
+        )
+        .context("failed to create schedule")?;
+
+        Ok(ScheduleRecord {
+            id,
+            name: req.name,
+            cron: req.cron,
+            fire_at: req.fire_at,
+            method: req.method,
+            args,
+            target_class: req.target_class,
+            target_object_id: req.target_object_id,
+            target_orchestration: req.target_orchestration,
+            status,
+            last_fired_at: None,
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub fn get_schedule(&self, id: &str) -> Result<Option<ScheduleRecord>> {
+        let conn = self.storage.open_connection()?;
+        conn.query_row(
+            r#"
+SELECT id, name, cron, fire_at, method, args_json, target_class, target_object_id, target_orchestration, status, last_fired_at, created_at, updated_at
+FROM schedules WHERE id = ?1
+"#,
+            [id],
+            Self::row_to_schedule,
+        )
+        .optional()
+        .context("failed to get schedule")
+    }
+
+    pub fn list_schedules(&self, limit: usize, offset: usize) -> Result<Vec<ScheduleRecord>> {
+        let conn = self.storage.open_connection()?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+SELECT id, name, cron, fire_at, method, args_json, target_class, target_object_id, target_orchestration, status, last_fired_at, created_at, updated_at
+FROM schedules
+ORDER BY created_at DESC
+LIMIT ?1 OFFSET ?2
+"#,
+            )
+            .context("failed to prepare list schedules query")?;
+
+        let rows = stmt
+            .query_map(params![limit as i64, offset as i64], Self::row_to_schedule)
+            .context("failed to execute list schedules query")?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.context("failed to parse schedule row")?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_schedule(&self, id: &str) -> Result<bool> {
+        let conn = self.storage.open_connection()?;
+        let deleted = conn
+            .execute("DELETE FROM schedules WHERE id = ?1", [id])
+            .context("failed to delete schedule")?;
+        Ok(deleted > 0)
+    }
+
     fn execute_redis_command(
         store: &DurableStoreRecord,
         command: Vec<String>,
@@ -789,6 +1120,64 @@ WHERE id = ?1
             config,
             created_at: row.get(5)?,
             updated_at: row.get(6)?,
+        })
+    }
+
+    fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<DurableObjectRecord> {
+        let status_raw: String = row.get(3)?;
+        let status = status_raw.parse::<DurableObjectStatus>().map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                3,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+            )
+        })?;
+        let storage_raw: String = row.get(5)?;
+        let storage = serde_json::from_str(&storage_raw).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+
+        Ok(DurableObjectRecord {
+            id: row.get(0)?,
+            class: row.get(1)?,
+            object_id: row.get(2)?,
+            status,
+            sandbox: row.get(4)?,
+            storage,
+            idle_timeout_seconds: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+        })
+    }
+
+    fn row_to_schedule(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduleRecord> {
+        let status_raw: String = row.get(9)?;
+        let status = status_raw.parse::<ScheduleStatus>().map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                9,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+            )
+        })?;
+        let args_raw: String = row.get(5)?;
+        let args = serde_json::from_str(&args_raw).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+
+        Ok(ScheduleRecord {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            cron: row.get(2)?,
+            fire_at: row.get(3)?,
+            method: row.get(4)?,
+            args,
+            target_class: row.get(6)?,
+            target_object_id: row.get(7)?,
+            target_orchestration: row.get(8)?,
+            status,
+            last_fired_at: row.get(10)?,
+            created_at: row.get(11)?,
+            updated_at: row.get(12)?,
         })
     }
 

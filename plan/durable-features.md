@@ -89,7 +89,7 @@ RetryPolicy {
 Single-node durability via SQLite in WAL mode. No distributed consensus.
 
 ```
-~/.local/share/agentkernel/durable.db
+~/.local/share/agentkernel/durable/orchestrations.db
 ```
 
 **WAL configuration:**
@@ -125,7 +125,7 @@ database grows unbounded.
 ```toml
 [durable]
 enabled = true
-db_path = "~/.local/share/agentkernel/durable.db"
+db_path = "~/.local/share/agentkernel/durable/orchestrations.db"
 
 [durable.retention]
 completed_days = 7

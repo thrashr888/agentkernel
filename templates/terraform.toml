@@ -19,13 +19,23 @@ esac
 # Install system deps
 apt-get update -qq && apt-get install -y -qq curl unzip >/dev/null 2>&1
 
-# Install Terraform
-curl -fsSL "https://releases.hashicorp.com/terraform/1.14.5/terraform_1.14.5_linux_${TF_ARCH}.zip" -o /tmp/tf.zip \
-  && unzip -qo /tmp/tf.zip -d /usr/local/bin && rm /tmp/tf.zip
+# Install Terraform with integrity verification
+TF_VERSION="1.14.5"
+curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_${TF_ARCH}.zip" -o /tmp/tf.zip
+curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_SHA256SUMS" -o /tmp/tf-shasums
+grep "terraform_${TF_VERSION}_linux_${TF_ARCH}.zip" /tmp/tf-shasums | (cd /tmp && sha256sum -c -) || {
+  echo "Terraform checksum verification failed" >&2; exit 1
+}
+unzip -qo /tmp/tf.zip -d /usr/local/bin && rm /tmp/tf.zip /tmp/tf-shasums
 
-# Install hcptf (HCP Terraform CLI)
-curl -fsSL "https://github.com/thrashr888/hcptf-cli/releases/download/v0.3.1/hcptf-cli_0.3.1_linux_${TF_ARCH}.tar.gz" \
-  | tar -xz -C /usr/local/bin hcptf
+# Install hcptf (HCP Terraform CLI) with integrity verification
+HCPTF_VERSION="0.3.1"
+curl -fsSL "https://github.com/thrashr888/hcptf-cli/releases/download/v${HCPTF_VERSION}/hcptf-cli_${HCPTF_VERSION}_linux_${TF_ARCH}.tar.gz" -o /tmp/hcptf.tar.gz
+curl -fsSL "https://github.com/thrashr888/hcptf-cli/releases/download/v${HCPTF_VERSION}/checksums.txt" -o /tmp/hcptf-checksums
+grep "hcptf-cli_${HCPTF_VERSION}_linux_${TF_ARCH}.tar.gz" /tmp/hcptf-checksums | (cd /tmp && sha256sum -c -) || {
+  echo "hcptf checksum verification failed" >&2; exit 1
+}
+tar -xzf /tmp/hcptf.tar.gz -C /usr/local/bin hcptf && rm /tmp/hcptf.tar.gz /tmp/hcptf-checksums
 """
 
 [secrets]

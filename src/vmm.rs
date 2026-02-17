@@ -409,8 +409,20 @@ impl VmManager {
                     // Backfill UUIDs for pre-UUID sandbox state files.
                     if state.uuid.is_empty() {
                         state.uuid = uuid::Uuid::now_v7().to_string();
-                        let updated = serde_json::to_string_pretty(&state)?;
-                        std::fs::write(&path, updated)?;
+                        match serde_json::to_string_pretty(&state)
+                            .map_err(anyhow::Error::from)
+                            .and_then(|updated| {
+                                std::fs::write(&path, updated).map_err(anyhow::Error::from)
+                            }) {
+                            Ok(()) => {}
+                            Err(e) => {
+                                eprintln!(
+                                    "[vmm] warning: failed to backfill UUID for {}: {}",
+                                    path.display(),
+                                    e
+                                );
+                            }
+                        }
                     }
                     sandboxes.insert(state.name.clone(), state);
                 }

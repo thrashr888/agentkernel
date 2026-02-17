@@ -41,6 +41,10 @@ tags:
     description: Parallel batch execution
   - name: Snapshots
     description: Snapshot and restore operations
+  - name: Objects
+    description: Durable object management (stateful sandbox actors)
+  - name: Schedules
+    description: Schedule management (timed triggers)
 
 paths:
   /health:
@@ -554,6 +558,158 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /objects:
+    get:
+      tags: [Objects]
+      summary: List durable objects
+      description: Returns all non-deleted durable objects.
+      responses:
+        '200':
+          description: List of objects
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DurableObject'
+    post:
+      tags: [Objects]
+      summary: Create a durable object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDurableObject'
+      responses:
+        '201':
+          description: Object created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/DurableObject'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /objects/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Objects]
+      summary: Get durable object by id
+      responses:
+        '200':
+          description: Object found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/DurableObject'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Objects]
+      summary: Delete a durable object
+      responses:
+        '200':
+          description: Object deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /schedules:
+    get:
+      tags: [Schedules]
+      summary: List schedules
+      description: Returns all schedules.
+      responses:
+        '200':
+          description: List of schedules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Schedule'
+    post:
+      tags: [Schedules]
+      summary: Create a schedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSchedule'
+      responses:
+        '201':
+          description: Schedule created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/Schedule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /schedules/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Schedules]
+      summary: Get schedule by id
+      responses:
+        '200':
+          description: Schedule found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/Schedule'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Schedules]
+      summary: Delete a schedule
+      responses:
+        '200':
+          description: Schedule deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
   schemas:
     RunRequest:
@@ -934,6 +1090,115 @@ components:
       schema:
         type: string
         format: uuid
+
+    DurableObject:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        class:
+          type: string
+        object_id:
+          type: string
+        status:
+          type: string
+          enum: [active, hibernating, deleted]
+        sandbox:
+          type: string
+          nullable: true
+        storage:
+          type: object
+        idle_timeout_seconds:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateDurableObject:
+      type: object
+      required: [class, object_id]
+      properties:
+        class:
+          type: string
+        object_id:
+          type: string
+        sandbox:
+          type: string
+        storage:
+          type: object
+        idle_timeout_seconds:
+          type: integer
+          default: 300
+
+    Schedule:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        cron:
+          type: string
+          nullable: true
+        fire_at:
+          type: string
+          format: date-time
+          nullable: true
+        method:
+          type: string
+        args:
+          type: object
+        target_class:
+          type: string
+          nullable: true
+        target_object_id:
+          type: string
+          nullable: true
+        target_orchestration:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [active, paused, completed]
+        last_fired_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateSchedule:
+      type: object
+      required: [name, method]
+      properties:
+        name:
+          type: string
+        cron:
+          type: string
+          description: Cron expression (mutually exclusive with fire_at)
+        fire_at:
+          type: string
+          format: date-time
+          description: One-shot fire time (mutually exclusive with cron)
+        method:
+          type: string
+        args:
+          type: object
+        target_class:
+          type: string
+        target_object_id:
+          type: string
+        target_orchestration:
+          type: string
 
   responses:
     BadRequest:

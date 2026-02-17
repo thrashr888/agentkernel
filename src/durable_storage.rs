@@ -70,6 +70,50 @@ CREATE INDEX IF NOT EXISTS idx_stores_name ON stores(name);
 CREATE INDEX IF NOT EXISTS idx_stores_kind ON stores(kind);
 "#,
     ),
+    (
+        5,
+        r#"
+CREATE TABLE IF NOT EXISTS objects (
+    id TEXT PRIMARY KEY,
+    class TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'hibernating',
+    sandbox TEXT,
+    storage_json TEXT NOT NULL DEFAULT '{}',
+    idle_timeout_seconds INTEGER NOT NULL DEFAULT 300,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(class, object_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_objects_class ON objects(class);
+CREATE INDEX IF NOT EXISTS idx_objects_status ON objects(status);
+CREATE INDEX IF NOT EXISTS idx_objects_class_object_id ON objects(class, object_id);
+"#,
+    ),
+    (
+        6,
+        r#"
+CREATE TABLE IF NOT EXISTS schedules (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    cron TEXT,
+    fire_at TEXT,
+    method TEXT NOT NULL,
+    args_json TEXT NOT NULL DEFAULT '{}',
+    target_class TEXT,
+    target_object_id TEXT,
+    target_orchestration TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    last_fired_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_schedules_status ON schedules(status);
+CREATE INDEX IF NOT EXISTS idx_schedules_fire_at ON schedules(fire_at);
+"#,
+    ),
 ];
 
 /// SQLite durable storage wrapper with schema bootstrap.
@@ -212,6 +256,6 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(migration_count, 4);
+        assert_eq!(migration_count, 6);
     }
 }

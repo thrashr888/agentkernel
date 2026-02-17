@@ -30,9 +30,10 @@ use tokio::time::{Duration, sleep};
 use crate::languages;
 use crate::opencode::OpenCodeState;
 use crate::orchestration_store::{
-    CreateDurableStore, CreateOrchestration, DurableStoreCommandResult, DurableStoreExecuteResult,
-    DurableStoreKind, DurableStoreQueryResult, OrchestrationEvent, OrchestrationRecord,
-    OrchestrationStatus, OrchestrationStore, UpdateOrchestration,
+    CreateDurableObject, CreateDurableStore, CreateOrchestration, CreateSchedule,
+    DurableObjectRecord, DurableStoreCommandResult, DurableStoreExecuteResult, DurableStoreKind,
+    DurableStoreQueryResult, OrchestrationEvent, OrchestrationRecord, OrchestrationStatus,
+    OrchestrationStore, ScheduleRecord, UpdateOrchestration,
 };
 use crate::permissions::SecurityProfile;
 use crate::secrets::{SecretBackend, SecretVault};
@@ -736,6 +737,20 @@ async fn handle_request(
         (Method::GET, ["stores", store_id]) => handle_get_durable_store(store_id, state).await,
         (Method::DELETE, ["stores", store_id]) => {
             handle_delete_durable_store(store_id, state).await
+        }
+
+        // Durable Objects
+        (Method::GET, ["objects"]) => handle_list_objects(state).await,
+        (Method::POST, ["objects"]) => handle_create_object(req, state).await,
+        (Method::GET, ["objects", object_id]) => handle_get_object(object_id, state).await,
+        (Method::DELETE, ["objects", object_id]) => handle_delete_object(object_id, state).await,
+
+        // Schedules
+        (Method::GET, ["schedules"]) => handle_list_schedules(state).await,
+        (Method::POST, ["schedules"]) => handle_create_schedule(req, state).await,
+        (Method::GET, ["schedules", schedule_id]) => handle_get_schedule(schedule_id, state).await,
+        (Method::DELETE, ["schedules", schedule_id]) => {
+            handle_delete_schedule(schedule_id, state).await
         }
 
         // List sandboxes
@@ -1655,6 +1670,172 @@ async fn handle_command_durable_store(
             };
             json_response(status, &ApiResponse::<()>::error(msg))
         }
+    }
+}
+
+// --- Durable Object handlers ---
+
+async fn handle_list_objects(state: Arc<AppState>) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    match store.list_objects(200, 0) {
+        Ok(objects) => json_response(StatusCode::OK, &ApiResponse::success(objects)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_create_object(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    let body: CreateDurableObject = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    if body.class.trim().is_empty() || body.object_id.trim().is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("class and object_id are required"),
+        );
+    }
+
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    match store.create_object(body) {
+        Ok(object) => json_response(StatusCode::CREATED, &ApiResponse::success(object)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_get_object(object_id: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    match store.get_object(object_id) {
+        Ok(Some(object)) => json_response(
+            StatusCode::OK,
+            &ApiResponse::<DurableObjectRecord>::success(object),
+        ),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Object not found"),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_delete_object(object_id: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    match store.delete_object(object_id) {
+        Ok(true) => json_response(StatusCode::OK, &ApiResponse::success("deleted")),
+        Ok(false) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Object not found"),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+// --- Schedule handlers ---
+
+async fn handle_list_schedules(state: Arc<AppState>) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    match store.list_schedules(200, 0) {
+        Ok(schedules) => json_response(StatusCode::OK, &ApiResponse::success(schedules)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_create_schedule(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    let body: CreateSchedule = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    if body.name.trim().is_empty() || body.method.trim().is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("name and method are required"),
+        );
+    }
+    if body.cron.is_none() && body.fire_at.is_none() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("either cron or fire_at is required"),
+        );
+    }
+
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    match store.create_schedule(body) {
+        Ok(schedule) => json_response(StatusCode::CREATED, &ApiResponse::success(schedule)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_get_schedule(schedule_id: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    match store.get_schedule(schedule_id) {
+        Ok(Some(schedule)) => json_response(
+            StatusCode::OK,
+            &ApiResponse::<ScheduleRecord>::success(schedule),
+        ),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Schedule not found"),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_delete_schedule(schedule_id: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    match store.delete_schedule(schedule_id) {
+        Ok(true) => json_response(StatusCode::OK, &ApiResponse::success("deleted")),
+        Ok(false) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Schedule not found"),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
     }
 }
 
