@@ -5,6 +5,21 @@
 [sandbox]
 name = "gitea"
 base_image = "gitea/gitea:latest"
+init_script = """
+set -e
+mkdir -p /data/gitea /etc/gitea
+export GITEA__security__INSTALL_LOCK=true
+export GITEA__database__DB_TYPE=sqlite3
+nohup gitea web --port 3000 >/tmp/gitea.log 2>&1 &
+SERVER_PID=$!
+sleep 1
+kill -0 "$SERVER_PID" 2>/dev/null || { echo "gitea failed to start; check /tmp/gitea.log" >&2; exit 1; }
+for i in $(seq 1 60); do
+  if wget -q -O /dev/null http://127.0.0.1:3000 2>/dev/null; then break; fi
+  sleep 1
+done
+wget -q -O /dev/null http://127.0.0.1:3000 2>/dev/null || { echo "gitea not ready after 60s; check /tmp/gitea.log" >&2; exit 1; }
+"""
 
 [resources]
 vcpus = 1

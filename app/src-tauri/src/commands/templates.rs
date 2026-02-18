@@ -29,7 +29,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
-            init_script: None,
+            init_script: Some("set -e\nnpm install -g @anthropic-ai/claude-code\n".into()),
             help_text: None,
             ports: vec![],
             secret_files: vec![],
@@ -42,7 +42,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
-            init_script: None,
+            init_script: Some("set -e\nnpm install -g @openai/codex\n".into()),
             help_text: None,
             ports: vec![],
             secret_files: vec![],
@@ -55,7 +55,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
-            init_script: None,
+            init_script: Some("set -e\nnpm install -g @google/gemini-cli\n".into()),
             help_text: None,
             ports: vec![],
             secret_files: vec![],
@@ -71,7 +71,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
-            init_script: None,
+            init_script: Some("set -e\nnpm install -g opencode\n".into()),
             help_text: None,
             ports: vec![],
             secret_files: vec![],
@@ -87,7 +87,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
-            init_script: None,
+            init_script: Some("set -e\nnpm install -g @sourcegraph/amp\n".into()),
             help_text: None,
             ports: vec![],
             secret_files: vec![],
@@ -100,7 +100,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "node:22-alpine".into(),
             vcpus: 2,
             memory_mb: 1024,
-            init_script: None,
+            init_script: Some("set -e\nnpm install -g @mariozechner/pi-coding-agent\n".into()),
             help_text: None,
             ports: vec![],
             secret_files: vec![],
@@ -439,7 +439,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "python:3.12-slim".into(),
             vcpus: 2,
             memory_mb: 2048,
-            init_script: None,
+            init_script: Some("set -e\npip install --quiet playwright\nplaywright install --with-deps chromium\n".into()),
             help_text: None,
             ports: vec![],
             secret_files: vec![],
@@ -452,7 +452,7 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "python:3.12-slim".into(),
             vcpus: 2,
             memory_mb: 2048,
-            init_script: None,
+            init_script: Some("set -e\npip install --quiet playwright playwright-stealth\nplaywright install --with-deps chromium\n".into()),
             help_text: None,
             ports: vec![],
             secret_files: vec![],
@@ -518,7 +518,19 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "gitpod/openvscode-server:latest".into(),
             vcpus: 2,
             memory_mb: 2048,
-            init_script: None,
+            // No auth token for local dev; use --connection-token in production
+            init_script: Some(concat!(
+                "set -e\n",
+                "nohup /home/.openvscode-server/bin/openvscode-server --without-connection-token --host 0.0.0.0 --port 3000 >/tmp/vscode.log 2>&1 &\n",
+                "SERVER_PID=$!\n",
+                "sleep 1\n",
+                "kill -0 \"$SERVER_PID\" 2>/dev/null || { echo \"openvscode-server failed to start; check /tmp/vscode.log\" >&2; exit 1; }\n",
+                "for i in $(seq 1 30); do\n",
+                "  if wget -q -O /dev/null http://127.0.0.1:3000 2>/dev/null; then break; fi\n",
+                "  sleep 1\n",
+                "done\n",
+                "wget -q -O /dev/null http://127.0.0.1:3000 2>/dev/null || { echo \"openvscode-server not ready after 30s; check /tmp/vscode.log\" >&2; exit 1; }\n",
+            ).into()),
             help_text: None,
             ports: vec![],
             secret_files: vec![],
@@ -531,7 +543,19 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "codercom/code-server:latest".into(),
             vcpus: 2,
             memory_mb: 2048,
-            init_script: None,
+            // No password auth for local dev; set PASSWORD env var in production
+            init_script: Some(concat!(
+                "set -e\n",
+                "nohup code-server --bind-addr 0.0.0.0:8080 --auth none >/tmp/code-server.log 2>&1 &\n",
+                "SERVER_PID=$!\n",
+                "sleep 1\n",
+                "kill -0 \"$SERVER_PID\" 2>/dev/null || { echo \"code-server failed to start; check /tmp/code-server.log\" >&2; exit 1; }\n",
+                "for i in $(seq 1 30); do\n",
+                "  if curl -s -o /dev/null http://127.0.0.1:8080 2>/dev/null; then break; fi\n",
+                "  sleep 1\n",
+                "done\n",
+                "curl -s -o /dev/null http://127.0.0.1:8080 2>/dev/null || { echo \"code-server not ready after 30s; check /tmp/code-server.log\" >&2; exit 1; }\n",
+            ).into()),
             help_text: None,
             ports: vec![],
             secret_files: vec![],
@@ -544,11 +568,47 @@ fn builtin_templates() -> Vec<TemplateInfo> {
             base_image: "gitea/gitea:latest".into(),
             vcpus: 1,
             memory_mb: 512,
-            init_script: None,
+            init_script: Some(concat!(
+                "set -e\n",
+                "mkdir -p /data/gitea /etc/gitea\n",
+                "export GITEA__security__INSTALL_LOCK=true\n",
+                "export GITEA__database__DB_TYPE=sqlite3\n",
+                "nohup gitea web --port 3000 >/tmp/gitea.log 2>&1 &\n",
+                "SERVER_PID=$!\n",
+                "sleep 1\n",
+                "kill -0 \"$SERVER_PID\" 2>/dev/null || { echo \"gitea failed to start; check /tmp/gitea.log\" >&2; exit 1; }\n",
+                "for i in $(seq 1 60); do\n",
+                "  if wget -q -O /dev/null http://127.0.0.1:3000 2>/dev/null; then break; fi\n",
+                "  sleep 1\n",
+                "done\n",
+                "wget -q -O /dev/null http://127.0.0.1:3000 2>/dev/null || { echo \"gitea not ready after 60s; check /tmp/gitea.log\" >&2; exit 1; }\n",
+            ).into()),
             help_text: None,
             ports: vec![],
             secret_files: vec![],
             secrets: BTreeMap::new(),
+        },
+        TemplateInfo {
+            name: "openclaw".into(),
+            description: "Self-hosted personal AI assistant with multi-channel messaging".into(),
+            category: "Specialized".into(),
+            base_image: "node:22-slim".into(),
+            vcpus: 2,
+            memory_mb: 1024,
+            init_script: Some(concat!(
+                "set -e\n",
+                "apt-get update -qq && apt-get install -y -qq git curl >/dev/null\n",
+                "corepack enable\n",
+                "corepack prepare pnpm@latest --activate\n",
+                "npm install -g openclaw@latest\n",
+            ).into()),
+            help_text: None,
+            ports: vec![],
+            secret_files: vec![],
+            secrets: secrets(&[
+                ("ANTHROPIC_API_KEY", "api.anthropic.com"),
+                ("OPENAI_API_KEY", "api.openai.com"),
+            ]),
         },
     ];
 
@@ -590,13 +650,16 @@ fn usage_for_template(name: &str) -> &'static str {
             "Redis is started by the init script when the sandbox boots. Optional secret file REDIS_PASSWORD enables requirepass authentication."
         }
         "playwright" | "playwright-stealth" => {
-            "Install Python deps in your project, then run Playwright scripts from /workspace."
+            "Playwright and Chromium are installed by the init script. Run Playwright scripts from /workspace."
         }
         "vscode" | "coder" => {
             "Start the sandbox and open the mapped web port in your browser to use the IDE."
         }
         "gitea" => {
             "Start the sandbox and open the mapped web port in your browser to access the Git UI."
+        }
+        "openclaw" => {
+            "OpenClaw is installed by the init script. Run `openclaw onboard --install-daemon` to configure, then start the gateway on port 18789."
         }
         _ => {
             "Start the sandbox, attach with `agentkernel attach <name>`, and run commands in /workspace."
@@ -618,6 +681,7 @@ fn example_for_template(name: &str) -> &'static str {
         "redis" => {
             r#"sh -lc 'PW=$(cat /run/agentkernel/secrets/REDIS_PASSWORD 2>/dev/null || true); if [ -n "$PW" ]; then redis-cli -h 127.0.0.1 -p 6379 -a "$PW" ping; else redis-cli -h 127.0.0.1 -p 6379 ping; fi'"#
         }
+        "openclaw" => "openclaw --version",
         "node" | "node-fullstack" | "typescript" => "node -v",
         "python" | "python-ml" => "python --version",
         "go" => "go version",
@@ -637,6 +701,7 @@ fn binaries_for_template(name: &str) -> &'static str {
         "dotnet" => "dotnet",
         "go" => "go",
         "java" => "java, javac",
+        "openclaw" => "node, npm, npx, pnpm, openclaw",
         "node" | "node-fullstack" | "typescript" => "node, npm, npx",
         "python" | "python-ml" | "playwright" | "playwright-stealth" | "terraform" => "python, pip",
         "ruby" => "ruby, gem, bundle",
@@ -648,8 +713,12 @@ fn binaries_for_template(name: &str) -> &'static str {
         "vscode" => "openvscode-server",
         "coder" => "code-server",
         "gitea" => "gitea",
-        "claude-sandbox" | "codex-sandbox" | "gemini-sandbox" | "opencode-sandbox"
-        | "amp-sandbox" | "pi-sandbox" => "node, npm, npx",
+        "claude-sandbox" => "node, npm, npx, claude",
+        "codex-sandbox" => "node, npm, npx, codex",
+        "gemini-sandbox" => "node, npm, npx, gemini",
+        "opencode-sandbox" => "node, npm, npx, opencode",
+        "amp-sandbox" => "node, npm, npx, amp",
+        "pi-sandbox" => "node, npm, npx, pi",
         "secure" => "sh, busybox",
         _ => "standard binaries from the base image",
     }
@@ -663,6 +732,7 @@ fn services_ports_for_template(name: &str) -> &'static str {
         "vscode" => "OpenVSCode web UI on 3000/tcp.",
         "coder" => "code-server web UI on 8080/tcp (unless changed by image defaults).",
         "gitea" => "Gitea web UI and SSH are image-configurable; map ports as needed.",
+        "openclaw" => "OpenClaw gateway WebSocket control plane on 18789/tcp.",
         _ => {
             "No long-running service is configured by default. Only explicitly mapped ports are exposed."
         }
@@ -677,6 +747,7 @@ fn default_ports_for_template(name: &str) -> Vec<String> {
         "vscode" => vec!["3000:3000".to_string()],
         "coder" => vec!["8080:8080".to_string()],
         "gitea" => vec!["3000:3000".to_string(), "2222:22".to_string()],
+        "openclaw" => vec!["18789:18789".to_string()],
         _ => Vec::new(),
     }
 }

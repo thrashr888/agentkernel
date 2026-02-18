@@ -59,6 +59,8 @@ pub enum AuditEvent {
         duration_secs: u64,
         recording: Option<String>,
     },
+    /// Sandbox error (e.g. init script failure)
+    SandboxError { name: String, error: String },
 }
 
 /// A logged audit entry with metadata
@@ -203,6 +205,7 @@ impl AuditLog {
                 AuditEvent::PolicyViolation { sandbox: s, .. } => s == sandbox,
                 AuditEvent::SshConnected { sandbox: s, .. } => s == sandbox,
                 AuditEvent::SshDisconnected { sandbox: s, .. } => s == sandbox,
+                AuditEvent::SandboxError { name, .. } => name == sandbox,
             })
             .collect())
     }

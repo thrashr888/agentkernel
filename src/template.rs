@@ -71,6 +71,7 @@ const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
     ("vscode", include_str!("../templates/vscode.toml")),
     ("coder", include_str!("../templates/coder.toml")),
     ("gitea", include_str!("../templates/gitea.toml")),
+    ("openclaw", include_str!("../templates/openclaw.toml")),
 ];
 
 /// Where a template was found
@@ -389,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_builtin_template_count() {
-        assert_eq!(BUILTIN_TEMPLATES.len(), 30);
+        assert_eq!(BUILTIN_TEMPLATES.len(), 31);
     }
 
     #[test]

@@ -5,6 +5,11 @@
 [sandbox]
 name = "playwright"
 base_image = "python:3.12-slim"
+init_script = """
+set -e
+pip install --quiet playwright
+playwright install --with-deps chromium
+"""
 
 [resources]
 vcpus = 2

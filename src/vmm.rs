@@ -1277,7 +1277,9 @@ impl VmManager {
             }
         }
 
-        // Run init_script if specified (from template config)
+        // Run init_script if specified (from template config).
+        // On failure, stop the sandbox and propagate the error so the user
+        // does not end up with a broken but "started" sandbox.
         if let Some(ref script) = state.init_script {
             eprintln!("Running init script...");
             match sandbox.exec(&["sh", "-c", script]).await {
@@ -1285,14 +1287,33 @@ impl VmManager {
                     eprintln!("Init script completed successfully");
                 }
                 Ok(result) => {
+                    let stderr = result.stderr.trim().to_string();
                     eprintln!(
-                        "Warning: init script exited with code {}: {}",
+                        "Error: init script exited with code {}: {}",
+                        result.exit_code, stderr
+                    );
+                    log_event(AuditEvent::SandboxError {
+                        name: name.to_string(),
+                        error: format!(
+                            "init script exited with code {}: {}",
+                            result.exit_code, stderr
+                        ),
+                    });
+                    let _ = sandbox.stop().await;
+                    anyhow::bail!(
+                        "init script failed (exit code {}): {}",
                         result.exit_code,
-                        result.stderr.trim()
+                        stderr
                     );
                 }
                 Err(e) => {
-                    eprintln!("Warning: Failed to run init script: {}", e);
+                    eprintln!("Error: Failed to run init script: {}", e);
+                    log_event(AuditEvent::SandboxError {
+                        name: name.to_string(),
+                        error: format!("failed to run init script: {}", e),
+                    });
+                    let _ = sandbox.stop().await;
+                    anyhow::bail!("failed to run init script: {}", e);
                 }
             }
         }

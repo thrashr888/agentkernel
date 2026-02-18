@@ -4,6 +4,10 @@
 [sandbox]
 name = "pi-sandbox"
 base_image = "node:22-alpine"
+init_script = """
+set -e
+npm install -g @mariozechner/pi-coding-agent
+"""
 
 [agent]
 preferred = "pi"
@@ -28,6 +32,6 @@ allow = ["api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.c
 help_text = """
 How to use: Start the sandbox and run your workflow inside /workspace.
 Example command: ls -la /workspace
-Binaries available: node, npm, npx
+Binaries available: node, npm, npx, pi
 Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
 """

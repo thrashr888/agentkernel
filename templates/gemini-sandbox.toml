@@ -4,6 +4,10 @@
 [sandbox]
 name = "gemini-sandbox"
 base_image = "node:22-alpine"
+init_script = """
+set -e
+npm install -g @google/gemini-cli
+"""
 
 [agent]
 preferred = "gemini"
@@ -27,6 +31,6 @@ allow = ["generativelanguage.googleapis.com"]
 help_text = """
 How to use: Start the sandbox and run your workflow inside /workspace.
 Example command: ls -la /workspace
-Binaries available: node, npm, npx
+Binaries available: node, npm, npx, gemini
 Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
 """

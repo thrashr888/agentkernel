@@ -2675,6 +2675,9 @@ memory_mb = 512
                                     .unwrap_or_default()
                             ),
                         ),
+                        audit::AuditEvent::SandboxError { name, error } => {
+                            ("sandbox_error", name.as_str(), error.clone())
+                        }
                     };
                     println!(
                         "{:<24} {:<20} {:<15} {}",
@@ -3922,6 +3925,9 @@ fn run_info(name: &str) -> Result<()> {
                 }
                 audit::AuditEvent::SshDisconnected { duration_secs, .. } => {
                     format!("ssh-end {}s", duration_secs)
+                }
+                audit::AuditEvent::SandboxError { error, .. } => {
+                    format!("error   {}", error)
                 }
             };
             println!("  {}  {}", ts, desc);

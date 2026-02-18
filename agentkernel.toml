@@ -18,4 +18,4 @@ profile = "restrictive"
 [enterprise]
 enabled = true
 org_id = "acme-corp"
-offline_mode = "cached_indefinite"
+offline_mode = "default_policy"

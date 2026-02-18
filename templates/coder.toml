@@ -5,6 +5,18 @@
 [sandbox]
 name = "coder"
 base_image = "codercom/code-server:latest"
+init_script = """
+set -e
+nohup code-server --bind-addr 0.0.0.0:8080 --auth none >/tmp/code-server.log 2>&1 &
+SERVER_PID=$!
+sleep 1
+kill -0 "$SERVER_PID" 2>/dev/null || { echo "code-server failed to start; check /tmp/code-server.log" >&2; exit 1; }
+for i in $(seq 1 30); do
+  if curl -s -o /dev/null http://127.0.0.1:8080 2>/dev/null; then break; fi
+  sleep 1
+done
+curl -s -o /dev/null http://127.0.0.1:8080 2>/dev/null || { echo "code-server not ready after 30s; check /tmp/code-server.log" >&2; exit 1; }
+"""
 
 [resources]
 vcpus = 2

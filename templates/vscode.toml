@@ -5,6 +5,18 @@
 [sandbox]
 name = "vscode"
 base_image = "gitpod/openvscode-server:latest"
+init_script = """
+set -e
+nohup /home/.openvscode-server/bin/openvscode-server --without-connection-token --host 0.0.0.0 --port 3000 >/tmp/vscode.log 2>&1 &
+SERVER_PID=$!
+sleep 1
+kill -0 "$SERVER_PID" 2>/dev/null || { echo "openvscode-server failed to start; check /tmp/vscode.log" >&2; exit 1; }
+for i in $(seq 1 30); do
+  if wget -q -O /dev/null http://127.0.0.1:3000 2>/dev/null; then break; fi
+  sleep 1
+done
+wget -q -O /dev/null http://127.0.0.1:3000 2>/dev/null || { echo "openvscode-server not ready after 30s; check /tmp/vscode.log" >&2; exit 1; }
+"""
 
 [resources]
 vcpus = 2
