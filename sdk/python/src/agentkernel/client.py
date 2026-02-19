@@ -381,6 +381,21 @@ class AgentKernel:
         )
         return resp
 
+    def delete_object(self, object_id: str) -> str:
+        """Delete a durable object by identifier."""
+        return self._request("DELETE", f"/objects/{object_id}")
+
+    def patch_object(
+        self, object_id: str, *, storage: dict | None = None, status: str | None = None,
+    ) -> DurableObject:
+        """Partially update a durable object (storage and/or status)."""
+        body: dict[str, Any] = {}
+        if storage is not None:
+            body["storage"] = storage
+        if status is not None:
+            body["status"] = status
+        return self._request("PATCH", f"/objects/{object_id}", json=body)
+
     def list_schedules(self) -> list[Schedule]:
         """List schedules."""
         return self._request("GET", "/schedules")
@@ -392,6 +407,10 @@ class AgentKernel:
     def get_schedule(self, schedule_id: str) -> Schedule:
         """Get a schedule by identifier."""
         return self._request("GET", f"/schedules/{schedule_id}")
+
+    def delete_schedule(self, schedule_id: str) -> str:
+        """Delete a schedule by identifier."""
+        return self._request("DELETE", f"/schedules/{schedule_id}")
 
     def list_stores(self) -> list[DurableStore]:
         """List durable stores."""

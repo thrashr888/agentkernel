@@ -407,6 +407,23 @@ export class AgentKernel {
     return resp;
   }
 
+  /** Delete a durable object by identifier. */
+  async deleteObject(id: string): Promise<string> {
+    return this.request<string>("DELETE", `/objects/${encodeURIComponent(id)}`);
+  }
+
+  /** Partially update a durable object (storage and/or status). */
+  async patchObject(
+    id: string,
+    payload: { storage?: unknown; status?: string },
+  ): Promise<DurableObject> {
+    return this.request<DurableObject>(
+      "PATCH",
+      `/objects/${encodeURIComponent(id)}`,
+      payload,
+    );
+  }
+
   /** List all schedules. */
   async listSchedules(): Promise<Schedule[]> {
     return this.request<Schedule[]>("GET", "/schedules");
@@ -423,6 +440,11 @@ export class AgentKernel {
       "GET",
       `/schedules/${encodeURIComponent(id)}`,
     );
+  }
+
+  /** Delete a schedule by identifier. */
+  async deleteSchedule(id: string): Promise<string> {
+    return this.request<string>("DELETE", `/schedules/${encodeURIComponent(id)}`);
   }
 
   /** List all durable stores. */

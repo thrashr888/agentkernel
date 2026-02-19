@@ -16,7 +16,7 @@ info:
 
     Authentication is optional. When enabled, use Bearer token in the
     Authorization header.
-  version: 0.4.0
+  version: 0.15.0
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
@@ -45,6 +45,8 @@ tags:
     description: Durable object management (stateful sandbox actors)
   - name: Schedules
     description: Schedule management (timed triggers)
+  - name: Stores
+    description: Durable store management (sqlite, kv, queue)
 
 paths:
   /health:
@@ -625,12 +627,234 @@ paths:
                     $ref: '#/components/schemas/DurableObject'
         '404':
           $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Objects]
+      summary: Partially update a durable object
+      description: Update storage and/or status of a durable object.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchDurableObject'
+      responses:
+        '200':
+          description: Object updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/DurableObject'
+        '404':
+          $ref: '#/components/responses/NotFound'
     delete:
       tags: [Objects]
       summary: Delete a durable object
       responses:
         '200':
           description: Object deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /objects/{class}/{object_id}/call/{method}:
+    parameters:
+      - name: class
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: object_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: method
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Objects]
+      summary: Call a method on a durable object
+      description: |
+        Invokes a method on a durable object. Auto-creates the object if it
+        does not exist and wakes it from hibernation if needed.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Method arguments (arbitrary JSON)
+      responses:
+        '200':
+          description: Method result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    description: Method return value
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /stores:
+    get:
+      tags: [Stores]
+      summary: List durable stores
+      description: Returns all durable stores.
+      responses:
+        '200':
+          description: List of stores
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DurableStore'
+    post:
+      tags: [Stores]
+      summary: Create a durable store
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDurableStore'
+      responses:
+        '201':
+          description: Store created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/DurableStore'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /stores/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Stores]
+      summary: Get durable store by id
+      responses:
+        '200':
+          description: Store found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/DurableStore'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Stores]
+      summary: Delete a durable store
+      responses:
+        '200':
+          description: Store deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /stores/{id}/query:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Stores]
+      summary: Run a read query against a store
+      description: Execute a read-only query (e.g. SQL SELECT for sqlite stores).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sql:
+                  type: string
+                  description: SQL query (for sqlite stores)
+                params:
+                  type: array
+                  description: Query parameters
+      responses:
+        '200':
+          description: Query results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/StoreQueryResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /stores/{id}/execute:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Stores]
+      summary: Run a write statement against a store
+      description: Execute a write statement (e.g. SQL INSERT/UPDATE/DELETE for sqlite stores).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sql:
+                  type: string
+                  description: SQL statement (for sqlite stores)
+                params:
+                  type: array
+                  description: Statement parameters
+      responses:
+        '200':
+          description: Execution result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/StoreExecuteResult'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -1175,6 +1399,74 @@ components:
         updated_at:
           type: string
           format: date-time
+
+    PatchDurableObject:
+      type: object
+      properties:
+        storage:
+          type: object
+          description: Replace the object's storage (arbitrary JSON)
+        status:
+          type: string
+          enum: [active, hibernating]
+          description: Set the object status
+
+    DurableStore:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [sqlite, kv, queue]
+        sandbox:
+          type: string
+          nullable: true
+        config:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateDurableStore:
+      type: object
+      required: [name, kind]
+      properties:
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [sqlite, kv, queue]
+        sandbox:
+          type: string
+        config:
+          type: object
+
+    StoreQueryResult:
+      type: object
+      properties:
+        columns:
+          type: array
+          items:
+            type: string
+        rows:
+          type: array
+          items:
+            type: array
+        row_count:
+          type: integer
+
+    StoreExecuteResult:
+      type: object
+      properties:
+        rows_affected:
+          type: integer
 
     CreateSchedule:
       type: object

@@ -531,6 +531,26 @@ impl AgentKernel {
         Ok(result)
     }
 
+    /// Delete a durable object by id.
+    pub async fn delete_object(&self, id: &str) -> Result<String> {
+        self.request(reqwest::Method::DELETE, &format!("/objects/{id}"), None::<&()>)
+            .await
+    }
+
+    /// Partially update a durable object (storage and/or status).
+    pub async fn patch_object(
+        &self,
+        id: &str,
+        payload: serde_json::Value,
+    ) -> Result<DurableObject> {
+        self.request(
+            reqwest::Method::PATCH,
+            &format!("/objects/{id}"),
+            Some(&payload),
+        )
+        .await
+    }
+
     /// List all schedules.
     pub async fn list_schedules(&self) -> Result<Vec<Schedule>> {
         self.request(reqwest::Method::GET, "/schedules", None::<&()>).await
@@ -549,6 +569,16 @@ impl AgentKernel {
     pub async fn get_schedule(&self, id: &str) -> Result<Schedule> {
         self.request(
             reqwest::Method::GET,
+            &format!("/schedules/{id}"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Delete a schedule by id.
+    pub async fn delete_schedule(&self, id: &str) -> Result<String> {
+        self.request(
+            reqwest::Method::DELETE,
             &format!("/schedules/{id}"),
             None::<&()>,
         )

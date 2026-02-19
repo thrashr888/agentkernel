@@ -326,6 +326,19 @@ public actor AgentKernel {
         return try await requestObject(method: "POST", path: path, body: args)
     }
 
+    /// Delete a durable object by identifier.
+    public func deleteObject(_ id: String) async throws -> String {
+        try await request(method: "DELETE", path: "/objects/\(id)")
+    }
+
+    /// Partially update a durable object (storage and/or status).
+    public func patchObject(_ id: String, storage: [String: Any]? = nil, status: String? = nil) async throws -> DurableObject {
+        var body: [String: Any] = [:]
+        if let s = storage { body["storage"] = s }
+        if let st = status { body["status"] = st }
+        return try await requestObject(method: "PATCH", path: "/objects/\(id)", body: body)
+    }
+
     /// List all schedules.
     public func listSchedules() async throws -> [Schedule] {
         try await requestObjectArray(method: "GET", path: "/schedules")
@@ -339,6 +352,11 @@ public actor AgentKernel {
     /// Get a schedule by identifier.
     public func getSchedule(_ id: String) async throws -> Schedule {
         try await requestObject(method: "GET", path: "/schedules/\(id)")
+    }
+
+    /// Delete a schedule by identifier.
+    public func deleteSchedule(_ id: String) async throws -> String {
+        try await request(method: "DELETE", path: "/schedules/\(id)")
     }
 
     /// List all durable stores.

@@ -736,6 +736,305 @@ curl "http://localhost:18888/sandboxes/my-browser/browser/events?offset=0&limit=
 | `offset` | integer | No | Start from this sequence number (default: 0) |
 | `limit` | integer | No | Max events to return (default: 100) |
 
+### Durable Objects
+
+#### List Objects
+
+```
+GET /objects
+```
+
+```bash
+curl http://localhost:18888/objects
+```
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "019abc12-...",
+      "class": "Counter",
+      "object_id": "counter-1",
+      "status": "active",
+      "sandbox": "my-sandbox",
+      "storage": {"count": 42},
+      "idle_timeout_seconds": 300,
+      "created_at": "2026-02-18T12:00:00Z",
+      "updated_at": "2026-02-18T12:00:00Z"
+    }
+  ]
+}
+```
+
+#### Create Object
+
+```
+POST /objects
+```
+
+```bash
+curl -X POST http://localhost:18888/objects \
+  -H "Content-Type: application/json" \
+  -d '{"class": "Counter", "object_id": "counter-1", "sandbox": "my-sandbox"}'
+```
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `class` | string | Yes | Object class name |
+| `object_id` | string | Yes | Unique object identifier within the class |
+| `sandbox` | string | No | Sandbox to bind to (validated if provided) |
+| `storage` | object | No | Initial storage state |
+| `idle_timeout_seconds` | integer | No | Seconds before hibernation (default: 300) |
+
+#### Get Object
+
+```
+GET /objects/{id}
+```
+
+```bash
+curl http://localhost:18888/objects/019abc12-...
+```
+
+#### Update Object
+
+```
+PATCH /objects/{id}
+```
+
+```bash
+curl -X PATCH http://localhost:18888/objects/019abc12-... \
+  -H "Content-Type: application/json" \
+  -d '{"storage": {"count": 99}}'
+```
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `storage` | object | No | Replace storage state |
+| `status` | string | No | Set status (`active`, `hibernating`) |
+
+#### Delete Object
+
+```
+DELETE /objects/{id}
+```
+
+```bash
+curl -X DELETE http://localhost:18888/objects/019abc12-...
+```
+
+#### Call Object Method
+
+```
+POST /objects/{class}/{object_id}/call/{method}
+```
+
+```bash
+curl -X POST http://localhost:18888/objects/Counter/counter-1/call/increment \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 1}'
+```
+
+Auto-creates the object if it does not exist. Wakes from hibernation if needed. The request body is passed as method arguments.
+
+### Schedules
+
+#### List Schedules
+
+```
+GET /schedules
+```
+
+```bash
+curl http://localhost:18888/schedules
+```
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "019abc12-...",
+      "name": "daily-cleanup",
+      "cron": "0 0 * * *",
+      "method": "cleanup",
+      "args": {},
+      "status": "active",
+      "created_at": "2026-02-18T12:00:00Z",
+      "updated_at": "2026-02-18T12:00:00Z"
+    }
+  ]
+}
+```
+
+#### Create Schedule
+
+```
+POST /schedules
+```
+
+```bash
+curl -X POST http://localhost:18888/schedules \
+  -H "Content-Type: application/json" \
+  -d '{"name": "daily-cleanup", "cron": "0 0 * * *", "method": "cleanup"}'
+```
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Schedule name |
+| `method` | string | Yes | Method to invoke |
+| `cron` | string | No | Cron expression (mutually exclusive with `fire_at`) |
+| `fire_at` | string | No | One-shot fire time in RFC3339 format |
+| `args` | object | No | Method arguments |
+| `target_class` | string | No | Target durable object class |
+| `target_object_id` | string | No | Target durable object ID |
+| `target_orchestration` | string | No | Target orchestration |
+
+#### Get Schedule
+
+```
+GET /schedules/{id}
+```
+
+```bash
+curl http://localhost:18888/schedules/019abc12-...
+```
+
+#### Delete Schedule
+
+```
+DELETE /schedules/{id}
+```
+
+```bash
+curl -X DELETE http://localhost:18888/schedules/019abc12-...
+```
+
+### Durable Stores
+
+#### List Stores
+
+```
+GET /stores
+```
+
+```bash
+curl http://localhost:18888/stores
+```
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "019abc12-...",
+      "name": "my-db",
+      "kind": "sqlite",
+      "sandbox": "my-sandbox",
+      "config": {},
+      "created_at": "2026-02-18T12:00:00Z",
+      "updated_at": "2026-02-18T12:00:00Z"
+    }
+  ]
+}
+```
+
+#### Create Store
+
+```
+POST /stores
+```
+
+```bash
+curl -X POST http://localhost:18888/stores \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-db", "kind": "sqlite", "sandbox": "my-sandbox"}'
+```
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Store name |
+| `kind` | string | Yes | Engine type: `sqlite`, `kv`, `queue` |
+| `sandbox` | string | No | Sandbox to bind to (validated if provided) |
+| `config` | object | No | Engine-specific configuration |
+
+#### Get Store
+
+```
+GET /stores/{id}
+```
+
+```bash
+curl http://localhost:18888/stores/019abc12-...
+```
+
+#### Delete Store
+
+```
+DELETE /stores/{id}
+```
+
+```bash
+curl -X DELETE http://localhost:18888/stores/019abc12-...
+```
+
+#### Query Store
+
+Run a read-only query against a store.
+
+```
+POST /stores/{id}/query
+```
+
+```bash
+curl -X POST http://localhost:18888/stores/019abc12-.../query \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT * FROM users WHERE active = ?", "params": [true]}'
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "columns": ["id", "name", "active"],
+    "rows": [[1, "Alice", true]],
+    "row_count": 1
+  }
+}
+```
+
+#### Execute Store
+
+Run a write statement against a store.
+
+```
+POST /stores/{id}/execute
+```
+
+```bash
+curl -X POST http://localhost:18888/stores/019abc12-.../execute \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "INSERT INTO users (name, active) VALUES (?, ?)", "params": ["Bob", true]}'
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "rows_affected": 1
+  }
+}
+```
+
 ## Error Responses
 
 ```json

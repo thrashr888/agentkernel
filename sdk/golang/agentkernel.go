@@ -447,6 +447,21 @@ func (c *Client) CallObject(ctx context.Context, class, objectID, method string,
 	return result, nil
 }
 
+// DeleteObject deletes a durable object by id.
+func (c *Client) DeleteObject(ctx context.Context, id string) error {
+	return c.request(ctx, http.MethodDelete, "/objects/"+id, nil, nil)
+}
+
+// PatchObject partially updates a durable object (storage and/or status).
+func (c *Client) PatchObject(ctx context.Context, id string, body map[string]interface{}) (*DurableObject, error) {
+	var result DurableObject
+	err := c.request(ctx, "PATCH", "/objects/"+id, body, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // ListSchedules returns all schedules.
 func (c *Client) ListSchedules(ctx context.Context) ([]Schedule, error) {
 	var result []Schedule
@@ -472,6 +487,11 @@ func (c *Client) GetSchedule(ctx context.Context, id string) (*Schedule, error) 
 		return nil, err
 	}
 	return &result, nil
+}
+
+// DeleteSchedule deletes a schedule by id.
+func (c *Client) DeleteSchedule(ctx context.Context, id string) error {
+	return c.request(ctx, http.MethodDelete, "/schedules/"+id, nil, nil)
 }
 
 // ListStores returns all durable stores.
