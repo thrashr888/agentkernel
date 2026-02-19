@@ -149,7 +149,7 @@ impl FirecrackerSandbox {
 
         // Check ~/.local/share/agentkernel/kernel (installed)
         if let Some(home) = std::env::var_os("HOME") {
-            let kernel_dir = PathBuf::from(home).join(".local/share/agentkernel/kernel");
+            let kernel_dir = PathBuf::from(home).join(".local/share/agentkernel/images/kernel");
             if let Some(path) = find_vmlinux_in(&kernel_dir) {
                 return Ok(path);
             }
@@ -181,7 +181,7 @@ impl FirecrackerSandbox {
 
         // Check ~/.local/share/agentkernel/rootfs (installed)
         if let Some(home) = std::env::var_os("HOME") {
-            let rootfs_dir = PathBuf::from(home).join(".local/share/agentkernel/rootfs");
+            let rootfs_dir = PathBuf::from(home).join(".local/share/agentkernel/images/rootfs");
             let rootfs_path = rootfs_dir.join(&rootfs_name);
             if rootfs_path.exists() {
                 return Ok(rootfs_path);

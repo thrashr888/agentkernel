@@ -92,10 +92,6 @@ pub struct SetupStatus {
 
 impl SetupStatus {
     pub fn is_ready(&self) -> bool {
-        // Ready if we have a working backend (KVM, Docker, or Apple containers)
-        let has_backend =
-            self.kvm_available || self.docker_available || self.apple_containers_available;
-
         // For Firecracker backend, we need kernel + rootfs
         let firecracker_ready =
             self.kvm_available && self.kernel_installed && self.rootfs_base_installed;
@@ -103,7 +99,12 @@ impl SetupStatus {
         // For container backends (Docker/Apple), just need the backend available
         let container_ready = self.docker_available || self.apple_containers_available;
 
-        has_backend && (firecracker_ready || container_ready)
+        // If KVM is available, require Firecracker assets (daemon will use them)
+        if self.kvm_available {
+            return firecracker_ready;
+        }
+
+        container_ready
     }
 
     pub fn print(&self) {
@@ -859,14 +860,17 @@ cat > "$MOUNT_DIR/init" << 'INIT'
 # Start guest agent in background if available
 if [ -x /usr/bin/agent ]; then
     /usr/bin/agent &
+    AGENT_PID=$!
     echo "Guest agent started"
 fi
 
 echo "Agentkernel guest ready"
-if [ $# -eq 0 ]; then
-    exec /bin/busybox sh
-else
+if [ $# -gt 0 ]; then
     exec "$@"
+elif [ -n "$AGENT_PID" ]; then
+    wait $AGENT_PID
+else
+    exec /bin/busybox sh
 fi
 INIT
 chmod +x "$MOUNT_DIR/init"

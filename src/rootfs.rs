@@ -227,14 +227,15 @@ hostname agentkernel
 
 # Start guest agent in background
 /usr/bin/agent &
+AGENT_PID=$!
 
 echo "Agentkernel guest ready"
 
-# If no arguments, run shell (for debugging)
-if [ $# -eq 0 ]; then
-    exec /bin/sh
-else
+# If arguments given, run them; otherwise wait for guest agent
+if [ $# -gt 0 ]; then
     exec "$@"
+else
+    wait $AGENT_PID
 fi
 INIT
 chmod +x /mnt/rootfs/init
