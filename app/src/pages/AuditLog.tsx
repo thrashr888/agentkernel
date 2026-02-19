@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { RefreshCw, Search, ChevronRight, ChevronDown } from "lucide-react";
 import { api } from "@/lib/api";
@@ -112,8 +113,9 @@ function summarize(details: Record<string, unknown>): string {
 }
 
 export function AuditLog() {
+  const [searchParams] = useSearchParams();
   const [last, setLast] = useState<number>(100);
-  const [filter, setFilter] = useState("");
+  const [filter, setFilter] = useState(searchParams.get("filter") ?? "");
 
   const {
     data: entries,

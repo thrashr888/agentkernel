@@ -514,6 +514,23 @@ impl AgentKernel {
         .await
     }
 
+    /// Call a method on a durable object (auto-creates/wakes if needed).
+    pub async fn call_object(
+        &self,
+        class: &str,
+        object_id: &str,
+        method: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let url = format!(
+            "{}/objects/{}/{}/call/{}",
+            self.base_url, class, object_id, method
+        );
+        let resp = self.http.post(&url).json(&args).send().await?;
+        let result = resp.json().await?;
+        Ok(result)
+    }
+
     /// List all schedules.
     pub async fn list_schedules(&self) -> Result<Vec<Schedule>> {
         self.request(reqwest::Method::GET, "/schedules", None::<&()>).await

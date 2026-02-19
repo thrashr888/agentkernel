@@ -392,6 +392,21 @@ export class AgentKernel {
     );
   }
 
+  /** Call a method on a durable object (auto-creates/wakes if needed). */
+  async callObject(
+    className: string,
+    objectId: string,
+    method: string,
+    args?: Record<string, unknown>,
+  ): Promise<unknown> {
+    const resp = await this.request(
+      "POST",
+      `/objects/${encodeURIComponent(className)}/${encodeURIComponent(objectId)}/call/${encodeURIComponent(method)}`,
+      args ?? {},
+    );
+    return resp;
+  }
+
   /** List all schedules. */
   async listSchedules(): Promise<Schedule[]> {
     return this.request<Schedule[]>("GET", "/schedules");

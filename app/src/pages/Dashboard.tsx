@@ -125,13 +125,9 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
-      {/* Status cards row */}
+      {/* Status metrics bar */}
       {isLoading ? (
-        <div className="grid gap-4 sm:grid-cols-3">
-          {[1, 2, 3].map((i) => (
-            <Skeleton key={i} className="h-[108px] rounded-lg" />
-          ))}
-        </div>
+        <Skeleton className="h-10 rounded-md" />
       ) : error ? (
         <Card>
           <CardContent className="pt-6">

@@ -7,6 +7,16 @@ use std::path::Path;
 use crate::backend::FileInjection;
 use crate::permissions::SecurityProfile;
 
+/// LLM key configuration: maps API domain → vault key name.
+///
+/// Example:
+/// ```toml
+/// [llm_keys]
+/// "api.openai.com" = "OPENAI_API_KEY"
+/// "api.anthropic.com" = "ANTHROPIC_API_KEY"
+/// ```
+pub type LlmKeysConfig = std::collections::BTreeMap<String, String>;
+
 /// File entry for injecting files into the sandbox at startup
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntry {
@@ -310,6 +320,11 @@ pub struct Config {
     /// is created automatically (format: `KEY=value:host`).
     #[serde(default)]
     pub secrets: std::collections::BTreeMap<String, String>,
+    /// Org-level LLM API key mappings: domain → vault key name.
+    /// Keys configured here are auto-injected via proxy for all sandboxes
+    /// unless overridden by sandbox-specific secret bindings.
+    #[serde(default)]
+    pub llm_keys: LlmKeysConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -582,6 +597,7 @@ impl Config {
             api: ApiConfig::default(),
             proxy: ProxyHooksConfig::default(),
             secrets: std::collections::BTreeMap::new(),
+            llm_keys: LlmKeysConfig::default(),
         }
     }
 
@@ -1370,6 +1386,28 @@ mod tests {
             warnings
                 .iter()
                 .any(|w| w.contains("SSH") || w.contains("ssh"))
+        );
+    }
+
+    #[test]
+    fn test_parse_llm_keys_config() {
+        let toml = r#"
+            [sandbox]
+            name = "test"
+
+            [llm_keys]
+            "api.openai.com" = "OPENAI_API_KEY"
+            "api.anthropic.com" = "ANTHROPIC_API_KEY"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert_eq!(config.llm_keys.len(), 2);
+        assert_eq!(
+            config.llm_keys.get("api.openai.com"),
+            Some(&"OPENAI_API_KEY".to_string())
+        );
+        assert_eq!(
+            config.llm_keys.get("api.anthropic.com"),
+            Some(&"ANTHROPIC_API_KEY".to_string())
         );
     }
 }

@@ -665,7 +665,29 @@ LIMIT ?1 OFFSET ?2
             return Ok(None);
         };
 
-        let conn = self.connect_durable_store(&store)?;
+        match store.kind {
+            DurableStoreKind::Sqlite => self.query_store_sqlite(&store, sql, params),
+            DurableStoreKind::Postgres => tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(Self::query_store_postgres(&store, sql, params))
+            }),
+            DurableStoreKind::Mysql => tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(Self::query_store_mysql(&store, sql, params))
+            }),
+            DurableStoreKind::Redis => {
+                anyhow::bail!("redis stores do not support SQL queries; use the command endpoint")
+            }
+        }
+    }
+
+    fn query_store_sqlite(
+        &self,
+        store: &DurableStoreRecord,
+        sql: &str,
+        params: Vec<serde_json::Value>,
+    ) -> Result<Option<DurableStoreQueryResult>> {
+        let conn = self.connect_durable_store(store)?;
         let mut stmt = conn
             .prepare(sql)
             .with_context(|| format!("failed preparing store query for store {}", store.id))?;
@@ -699,6 +721,94 @@ LIMIT ?1 OFFSET ?2
         }))
     }
 
+    async fn query_store_postgres(
+        store: &DurableStoreRecord,
+        sql: &str,
+        _params: Vec<serde_json::Value>,
+    ) -> Result<Option<DurableStoreQueryResult>> {
+        let conn_str = Self::postgres_connection_string(store);
+        let (client, connection) = tokio_postgres::connect(&conn_str, tokio_postgres::NoTls)
+            .await
+            .context("failed to connect to postgres store")?;
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("[durable-store] postgres connection error: {e}");
+            }
+        });
+
+        let rows = client
+            .query(sql, &[])
+            .await
+            .context("postgres query failed")?;
+
+        let columns: Vec<String> = rows
+            .first()
+            .map(|r| r.columns().iter().map(|c| c.name().to_string()).collect())
+            .unwrap_or_default();
+
+        let mut out_rows = Vec::new();
+        for row in &rows {
+            let mut object = serde_json::Map::new();
+            for (idx, col) in row.columns().iter().enumerate() {
+                let val = Self::pg_value_to_json(row, idx);
+                object.insert(col.name().to_string(), val);
+            }
+            out_rows.push(serde_json::Value::Object(object));
+        }
+
+        Ok(Some(DurableStoreQueryResult {
+            columns,
+            row_count: out_rows.len(),
+            rows: out_rows,
+        }))
+    }
+
+    async fn query_store_mysql(
+        store: &DurableStoreRecord,
+        sql: &str,
+        _params: Vec<serde_json::Value>,
+    ) -> Result<Option<DurableStoreQueryResult>> {
+        use mysql_async::prelude::*;
+
+        let url = Self::mysql_connection_string(store);
+        let pool = mysql_async::Pool::new(url.as_str());
+        let mut conn = pool
+            .get_conn()
+            .await
+            .context("failed to connect to mysql store")?;
+
+        let result: Vec<mysql_async::Row> = conn.query(sql).await.context("mysql query failed")?;
+
+        let columns: Vec<String> = result
+            .first()
+            .map(|r| {
+                r.columns_ref()
+                    .iter()
+                    .map(|c| c.name_str().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut out_rows = Vec::new();
+        for row in &result {
+            let mut object = serde_json::Map::new();
+            for (idx, col_name) in columns.iter().enumerate() {
+                let val: mysql_async::Value = row.get(idx).unwrap_or(mysql_async::Value::NULL);
+                object.insert(col_name.clone(), Self::mysql_value_to_json(val));
+            }
+            out_rows.push(serde_json::Value::Object(object));
+        }
+
+        drop(conn);
+        pool.disconnect().await.ok();
+
+        Ok(Some(DurableStoreQueryResult {
+            columns,
+            row_count: out_rows.len(),
+            rows: out_rows,
+        }))
+    }
+
     pub fn execute_store(
         &self,
         id: &str,
@@ -709,7 +819,28 @@ LIMIT ?1 OFFSET ?2
             return Ok(None);
         };
 
-        let conn = self.connect_durable_store(&store)?;
+        match store.kind {
+            DurableStoreKind::Sqlite => self.execute_store_sqlite(&store, sql, params),
+            DurableStoreKind::Postgres => tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(Self::execute_store_postgres(&store, sql))
+            }),
+            DurableStoreKind::Mysql => tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(Self::execute_store_mysql(&store, sql))
+            }),
+            DurableStoreKind::Redis => {
+                anyhow::bail!("redis stores do not support SQL execute; use the command endpoint")
+            }
+        }
+    }
+
+    fn execute_store_sqlite(
+        &self,
+        store: &DurableStoreRecord,
+        sql: &str,
+        params: Vec<serde_json::Value>,
+    ) -> Result<Option<DurableStoreExecuteResult>> {
+        let conn = self.connect_durable_store(store)?;
         let sql_params: Vec<rusqlite::types::Value> =
             params.into_iter().map(Self::json_to_sql_value).collect();
         let rows_affected = conn
@@ -838,6 +969,96 @@ LIMIT ?1 OFFSET ?2
         Ok(deleted > 0)
     }
 
+    /// Find a durable object by class name and object_id.
+    pub fn find_object_by_class_and_id(
+        &self,
+        class: &str,
+        object_id: &str,
+    ) -> Result<Option<DurableObjectRecord>> {
+        let conn = self.storage.open_connection()?;
+        conn.query_row(
+            r#"
+SELECT id, class, object_id, status, sandbox, storage_json, idle_timeout_seconds, created_at, updated_at
+FROM objects
+WHERE class = ?1 AND object_id = ?2 AND status != 'deleted'
+"#,
+            params![class, object_id],
+            Self::row_to_object,
+        )
+        .optional()
+        .context("failed to find object by class and id")
+    }
+
+    /// Update the status and optional sandbox name of a durable object.
+    pub fn update_object_status(
+        &self,
+        id: &str,
+        status: DurableObjectStatus,
+        sandbox: Option<&str>,
+    ) -> Result<bool> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.storage.open_connection()?;
+        let updated = conn
+            .execute(
+                "UPDATE objects SET status = ?2, sandbox = ?3, updated_at = ?4 WHERE id = ?1",
+                params![id, status.to_string(), sandbox, now],
+            )
+            .context("failed to update object status")?;
+        Ok(updated > 0)
+    }
+
+    /// Persist storage JSON for a durable object.
+    pub fn update_object_storage(&self, id: &str, storage: &serde_json::Value) -> Result<bool> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let storage_json = serde_json::to_string(storage)?;
+        let conn = self.storage.open_connection()?;
+        let updated = conn
+            .execute(
+                "UPDATE objects SET storage_json = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, storage_json, now],
+            )
+            .context("failed to update object storage")?;
+        Ok(updated > 0)
+    }
+
+    /// List all active (non-deleted, non-hibernating) objects.
+    pub fn list_active_objects(&self) -> Result<Vec<DurableObjectRecord>> {
+        let conn = self.storage.open_connection()?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+SELECT id, class, object_id, status, sandbox, storage_json, idle_timeout_seconds, created_at, updated_at
+FROM objects
+WHERE status = 'active'
+ORDER BY updated_at ASC
+"#,
+            )
+            .context("failed to prepare list active objects query")?;
+
+        let rows = stmt
+            .query_map([], Self::row_to_object)
+            .context("failed to execute list active objects query")?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.context("failed to parse active object row")?);
+        }
+        Ok(out)
+    }
+
+    /// Touch the updated_at timestamp of an object (to reset idle timer).
+    pub fn touch_object(&self, id: &str) -> Result<bool> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.storage.open_connection()?;
+        let updated = conn
+            .execute(
+                "UPDATE objects SET updated_at = ?2 WHERE id = ?1",
+                params![id, now],
+            )
+            .context("failed to touch object timestamp")?;
+        Ok(updated > 0)
+    }
+
     // --- Schedule CRUD ---
 
     pub fn create_schedule(&self, req: CreateSchedule) -> Result<ScheduleRecord> {
@@ -937,6 +1158,19 @@ LIMIT ?1 OFFSET ?2
         Ok(deleted > 0)
     }
 
+    /// Mark a schedule as just fired (update last_fired_at to now).
+    pub fn mark_schedule_fired(&self, id: &str) -> Result<bool> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.storage.open_connection()?;
+        let updated = conn
+            .execute(
+                "UPDATE schedules SET last_fired_at = ?2, updated_at = ?2 WHERE id = ?1",
+                params![id, now],
+            )
+            .context("failed to mark schedule as fired")?;
+        Ok(updated > 0)
+    }
+
     fn execute_redis_command(
         store: &DurableStoreRecord,
         command: Vec<String>,
@@ -985,6 +1219,162 @@ LIMIT ?1 OFFSET ?2
         Ok(DurableStoreCommandResult {
             result: redis_value_to_json(raw),
         })
+    }
+
+    // ---- Postgres helpers ----
+
+    fn postgres_connection_string(store: &DurableStoreRecord) -> String {
+        let host = store
+            .config
+            .get("host")
+            .and_then(|v| v.as_str())
+            .unwrap_or("127.0.0.1");
+        let port = store
+            .config
+            .get("port")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5432);
+        let user = store
+            .config
+            .get("user")
+            .and_then(|v| v.as_str())
+            .unwrap_or("postgres");
+        let password = store
+            .config
+            .get("password")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let dbname = store
+            .config
+            .get("dbname")
+            .and_then(|v| v.as_str())
+            .unwrap_or("postgres");
+        format!("host={host} port={port} user={user} password={password} dbname={dbname}")
+    }
+
+    async fn execute_store_postgres(
+        store: &DurableStoreRecord,
+        sql: &str,
+    ) -> Result<Option<DurableStoreExecuteResult>> {
+        let conn_str = Self::postgres_connection_string(store);
+        let (client, connection) = tokio_postgres::connect(&conn_str, tokio_postgres::NoTls)
+            .await
+            .context("failed to connect to postgres store")?;
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("[durable-store] postgres connection error: {e}");
+            }
+        });
+
+        let rows_affected = client
+            .execute(sql, &[])
+            .await
+            .context("postgres execute failed")?;
+
+        Ok(Some(DurableStoreExecuteResult {
+            rows_affected: rows_affected as usize,
+            last_insert_rowid: None,
+        }))
+    }
+
+    fn pg_value_to_json(row: &tokio_postgres::Row, idx: usize) -> serde_json::Value {
+        // Try common types in order
+        if let Ok(v) = row.try_get::<_, bool>(idx) {
+            return serde_json::Value::Bool(v);
+        }
+        if let Ok(v) = row.try_get::<_, i32>(idx) {
+            return serde_json::json!(v);
+        }
+        if let Ok(v) = row.try_get::<_, i64>(idx) {
+            return serde_json::json!(v);
+        }
+        if let Ok(v) = row.try_get::<_, f64>(idx) {
+            return serde_json::json!(v);
+        }
+        if let Ok(v) = row.try_get::<_, String>(idx) {
+            return serde_json::Value::String(v);
+        }
+        if let Ok(v) = row.try_get::<_, serde_json::Value>(idx) {
+            return v;
+        }
+        serde_json::Value::Null
+    }
+
+    // ---- MySQL helpers ----
+
+    fn mysql_connection_string(store: &DurableStoreRecord) -> String {
+        let host = store
+            .config
+            .get("host")
+            .and_then(|v| v.as_str())
+            .unwrap_or("127.0.0.1");
+        let port = store
+            .config
+            .get("port")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(3306);
+        let user = store
+            .config
+            .get("user")
+            .and_then(|v| v.as_str())
+            .unwrap_or("root");
+        let password = store
+            .config
+            .get("password")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let dbname = store
+            .config
+            .get("dbname")
+            .and_then(|v| v.as_str())
+            .unwrap_or("mysql");
+        format!("mysql://{user}:{password}@{host}:{port}/{dbname}")
+    }
+
+    async fn execute_store_mysql(
+        store: &DurableStoreRecord,
+        sql: &str,
+    ) -> Result<Option<DurableStoreExecuteResult>> {
+        use mysql_async::prelude::*;
+
+        let url = Self::mysql_connection_string(store);
+        let pool = mysql_async::Pool::new(url.as_str());
+        let mut conn = pool
+            .get_conn()
+            .await
+            .context("failed to connect to mysql store")?;
+
+        conn.exec_drop(sql, ())
+            .await
+            .context("mysql execute failed")?;
+
+        drop(conn);
+        pool.disconnect().await.ok();
+
+        Ok(Some(DurableStoreExecuteResult {
+            rows_affected: 0,
+            last_insert_rowid: None,
+        }))
+    }
+
+    fn mysql_value_to_json(val: mysql_async::Value) -> serde_json::Value {
+        match val {
+            mysql_async::Value::NULL => serde_json::Value::Null,
+            mysql_async::Value::Int(i) => serde_json::json!(i),
+            mysql_async::Value::UInt(u) => serde_json::json!(u),
+            mysql_async::Value::Float(f) => serde_json::json!(f),
+            mysql_async::Value::Double(d) => serde_json::json!(d),
+            mysql_async::Value::Bytes(b) => {
+                serde_json::Value::String(String::from_utf8_lossy(&b).to_string())
+            }
+            mysql_async::Value::Date(y, m, d, h, mi, s, _us) => {
+                serde_json::Value::String(format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}"))
+            }
+            mysql_async::Value::Time(neg, d, h, mi, s, _us) => {
+                let sign = if neg { "-" } else { "" };
+                serde_json::Value::String(format!("{sign}{d}d {h:02}:{mi:02}:{s:02}"))
+            }
+        }
     }
 
     pub fn update(

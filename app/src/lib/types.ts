@@ -162,6 +162,88 @@ export interface LlmUsageEntry {
   last_request: string;
 }
 
+// Durable Objects
+export interface DurableObjectInfo {
+  id: string;
+  class: string;
+  object_id: string;
+  status: string;
+  sandbox?: string;
+  storage: unknown;
+  idle_timeout_seconds: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateObjectRequest {
+  class: string;
+  object_id: string;
+  sandbox?: string;
+  storage?: unknown;
+  idle_timeout_seconds?: number;
+}
+
+// Schedules
+export interface ScheduleInfo {
+  id: string;
+  name: string;
+  cron?: string;
+  fire_at?: string;
+  method: string;
+  args: unknown;
+  target_class?: string;
+  target_object_id?: string;
+  target_orchestration?: string;
+  status: string;
+  last_fired_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateScheduleRequest {
+  name: string;
+  cron?: string;
+  fire_at?: string;
+  method: string;
+  args?: unknown;
+  target_class?: string;
+  target_object_id?: string;
+  target_orchestration?: string;
+}
+
+// Durable Stores
+export interface DurableStoreInfo {
+  id: string;
+  name: string;
+  kind: string;
+  sandbox?: string;
+  config: unknown;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateStoreRequest {
+  name: string;
+  kind: string;
+  sandbox?: string;
+  config?: unknown;
+}
+
+export interface StoreQueryResult {
+  columns: string[];
+  rows: unknown[];
+  row_count: number;
+}
+
+export interface StoreExecuteResult {
+  rows_affected: number;
+  last_insert_rowid?: number;
+}
+
+export interface StoreCommandResult {
+  result: unknown;
+}
+
 // Settings
 export interface Settings {
   api_url: string;

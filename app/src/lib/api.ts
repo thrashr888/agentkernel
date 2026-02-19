@@ -21,6 +21,15 @@ import type {
   PolicyReloadResult,
   PolicyAuditEntry,
   LlmUsageEntry,
+  DurableObjectInfo,
+  CreateObjectRequest,
+  ScheduleInfo,
+  CreateScheduleRequest,
+  DurableStoreInfo,
+  CreateStoreRequest,
+  StoreQueryResult,
+  StoreExecuteResult,
+  StoreCommandResult,
 } from "./types";
 
 export const api = {
@@ -109,6 +118,38 @@ export const api = {
     invoke<Record<string, LlmUsageEntry[]>>("get_llm_usage"),
   getLlmUsageBySandbox: (sandbox: string) =>
     invoke<LlmUsageEntry[]>("get_llm_usage_by_sandbox", { sandbox }),
+
+  // Durable Objects
+  listObjects: () => invoke<DurableObjectInfo[]>("list_objects"),
+  getObject: (id: string) => invoke<DurableObjectInfo>("get_object", { id }),
+  createObject: (req: CreateObjectRequest) =>
+    invoke<DurableObjectInfo>("create_object", { req }),
+  deleteObject: (id: string) => invoke<void>("delete_object", { id }),
+  patchObject: (id: string, storage?: unknown, status?: string) =>
+    invoke<DurableObjectInfo>("patch_object", { id, storage: storage ?? null, status: status ?? null }),
+  callObject: (objectClass: string, objectId: string, method: string, args: unknown) =>
+    invoke<unknown>("call_object", { class: objectClass, object_id: objectId, method, args }),
+
+  // Schedules
+  listSchedules: () => invoke<ScheduleInfo[]>("list_schedules"),
+  getSchedule: (id: string) => invoke<ScheduleInfo>("get_schedule", { id }),
+  createSchedule: (req: CreateScheduleRequest) =>
+    invoke<ScheduleInfo>("create_schedule", { req }),
+  deleteSchedule: (id: string) => invoke<void>("delete_schedule", { id }),
+  triggerSchedule: (id: string) => invoke<ScheduleInfo>("trigger_schedule", { id }),
+
+  // Durable Stores
+  listStores: () => invoke<DurableStoreInfo[]>("list_stores"),
+  getStore: (id: string) => invoke<DurableStoreInfo>("get_store", { id }),
+  createStore: (req: CreateStoreRequest) =>
+    invoke<DurableStoreInfo>("create_store", { req }),
+  deleteStore: (id: string) => invoke<void>("delete_store", { id }),
+  queryStore: (id: string, sql: string, params?: unknown[]) =>
+    invoke<StoreQueryResult>("query_store", { id, sql, params: params ?? [] }),
+  executeStore: (id: string, sql: string, params?: unknown[]) =>
+    invoke<StoreExecuteResult>("execute_store", { id, sql, params: params ?? [] }),
+  commandStore: (id: string, command: string[]) =>
+    invoke<StoreCommandResult>("command_store", { id, command }),
 
   // Policy (enterprise)
   getPolicyStatus: () => invoke<PolicyStatus>("get_policy_status"),

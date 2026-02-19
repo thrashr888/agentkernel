@@ -6,6 +6,80 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## [Unreleased] — Durable Objects, LLM Key Management & Desktop UI
+
+### Added
+
+- **Durable object runtime** — full wake/hibernate lifecycle with auto-create on first call, health-check polling, storage push/pull, and background hibernation daemon (30s poll interval, configurable idle timeout per object)
+- **Object call API** — `POST /objects/{class}/{object_id}/call/{method}` auto-creates and wakes hibernating objects; alarm endpoint at `POST /objects/{class}/{object_id}/alarm`
+- **SDK `callObject`** — durable object method invocation added to all 5 SDKs (TypeScript, Python, Rust, Go, Swift)
+- **LLM key management CLI** — `agentkernel llm keys list/set/remove` for org-level API key mapping (provider shorthand → domain → vault key)
+- **LLM key management API** — `GET /llm/keys`, `PUT /llm/keys/{provider}`, `DELETE /llm/keys/{provider}` HTTP endpoints
+- **Org-level LLM key injection** — `[llm_keys]` config section; proxy auto-injects org keys for configured domains unless overridden by sandbox-specific bindings; `key_source` field tracks origin (org/sandbox/none) in LLM events
+- **Cedar `UseLlmProvider` action** — policy-level control over LLM provider access per sandbox
+- **Durable Objects page** — desktop app page for managing stateful durable objects with status badges (active/hibernating/deleted), create dialog, delete actions, and sandbox links
+- **Schedules page** — desktop app page for cron and one-shot schedules with type/status badges, target display, last-fired timestamps, and create dialog
+- **Durable Stores page** — desktop app page for persistent data stores with kind badges (SQLite/Postgres/MySQL/Redis), click-through SQL console for SQLite stores with query/execute support
+- **Sidebar "Durable" section** — new navigation group with Objects, Schedules, and Stores items (Blocks, Timer, Database icons)
+- **Tauri IPC commands** — 15 new commands for objects, schedules, and stores CRUD
+- **React Query hooks** — `useObjects`, `useSchedules`, `useStores` with 5-second polling
+
+---
+
+## [v0.15.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.15.0) — Durable Orchestrations, UUIDs & Template Init Scripts
+
+_February 2026_
+
+### Added
+
+- **Durable orchestrations** — server-side orchestration runtime with deterministic replay, activity retries with exponential backoff, SHA256 idempotency keys, and signal/terminate lifecycle; `POST /orchestrations`, `GET /orchestrations/{id}/events`, `POST /orchestrations/{id}/signal`, `DELETE /orchestrations/{id}`
+- **Orchestration SDKs** — orchestration definition, execution, signal, and terminate methods across all SDKs (TypeScript, Python, Rust, Go, Swift)
+- **Durable stores** — SQLite/Postgres abstraction for persistent state; `GET /stores`, `POST /stores`, `DELETE /stores/{name}` APIs with SDK support
+- **Durable objects & schedules endpoints** — `GET /objects`, `GET /schedules` API stubs for future durable object and cron scheduling features
+- **Sandbox UUIDs** — UUIDv7 identifiers for globally unique sandbox addressing across API, SDKs, and desktop app
+- **Template init scripts** — all templates now include `init_script` for automated dependency installation and service startup at boot; agent sandboxes install their CLI tools, service templates (vscode, coder, gitea) start and health-check their daemons
+- **Init script fail-fast** — init script failures now abort sandbox start (stop + bail) instead of warning and continuing with a broken sandbox; `SandboxError` audit event for observability
+- **Service health check robustness** — vscode, coder, and gitea templates verify background process PID and assert service readiness after polling loop, matching the existing redis/mysql/postgres pattern
+- **OpenClaw template** — new template for self-hosted personal AI assistant with multi-channel messaging (gateway on port 18789)
+- **Template help text** — all templates include structured help text with usage, example commands, available binaries, and service/port information; Tauri app generates help from metadata functions
+- **Template ports tab** — desktop app surfaces template port mappings
+- **Datastore secret-file metadata** — postgres, mysql, and redis templates declare expected secret file keys; wired through UI and API
+- **Redis command endpoint** — `POST /sandboxes/{name}/redis` for direct Redis command execution
+
+### Changed
+
+- **Agent sandbox binaries** — template help text now correctly lists agent-specific CLI binaries (claude, codex, gemini, opencode, amp, pi)
+- **Enterprise offline mode** — default config uses `default_policy` instead of `cached_indefinite`
+
+### Fixed
+
+- **Apple sandbox stop hang** — hardened against container command hangs during stop
+- **Datastore template startup** — improved init scripts for postgres, mysql, redis with proper health check assertions
+- **apt-get stderr preserved** — openclaw template no longer suppresses stderr, improving error diagnostics
+- **CI** — skip macOS build/bundle on PRs (only on push to main); pass Tauri signing key to app build; cargo fmt fix in templates.rs
+
+---
+
+## [v0.14.2](https://github.com/thrashr888/agentkernel/releases/tag/v0.14.2) — Test Fix
+
+_February 15, 2026_
+
+### Fixed
+
+- Integration tests updated for CLI subcommand restructure
+
+---
+
+## [v0.14.1](https://github.com/thrashr888/agentkernel/releases/tag/v0.14.1) — Formatting Fix
+
+_February 15, 2026_
+
+### Fixed
+
+- Rust formatting in Tauri crate
+
+---
+
 ## [v0.14.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.14.0) — LLM Gateway, Secret Bindings & App Redesign
 
 _February 15, 2026_

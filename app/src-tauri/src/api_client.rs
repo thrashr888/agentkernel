@@ -495,6 +495,209 @@ impl ApiClient {
     }
 
     // -----------------------------------------------------------------
+    // Durable Objects
+    // -----------------------------------------------------------------
+
+    pub async fn list_objects(&self) -> anyhow::Result<Vec<crate::types::DurableObjectInfo>> {
+        self.request(reqwest::Method::GET, "/objects", None::<&()>)
+            .await
+    }
+
+    pub async fn get_object(&self, id: &str) -> anyhow::Result<crate::types::DurableObjectInfo> {
+        self.request(reqwest::Method::GET, &format!("/objects/{id}"), None::<&()>)
+            .await
+    }
+
+    pub async fn create_object(
+        &self,
+        req: &crate::types::CreateObjectRequest,
+    ) -> anyhow::Result<crate::types::DurableObjectInfo> {
+        self.request(reqwest::Method::POST, "/objects", Some(req))
+            .await
+    }
+
+    pub async fn delete_object(&self, id: &str) -> anyhow::Result<()> {
+        let _: String = self
+            .request(
+                reqwest::Method::DELETE,
+                &format!("/objects/{id}"),
+                None::<&()>,
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn patch_object(
+        &self,
+        id: &str,
+        storage: Option<serde_json::Value>,
+        status: Option<String>,
+    ) -> anyhow::Result<crate::types::DurableObjectInfo> {
+        #[derive(serde::Serialize)]
+        struct PatchBody {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            storage: Option<serde_json::Value>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            status: Option<String>,
+        }
+        self.request(
+            reqwest::Method::PATCH,
+            &format!("/objects/{id}"),
+            Some(&PatchBody { storage, status }),
+        )
+        .await
+    }
+
+    pub async fn call_object(
+        &self,
+        class: &str,
+        object_id: &str,
+        method: &str,
+        args: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.request(
+            reqwest::Method::POST,
+            &format!("/objects/{class}/{object_id}/call/{method}"),
+            Some(&args),
+        )
+        .await
+    }
+
+    // -----------------------------------------------------------------
+    // Schedules
+    // -----------------------------------------------------------------
+
+    pub async fn list_schedules(&self) -> anyhow::Result<Vec<crate::types::ScheduleInfo>> {
+        self.request(reqwest::Method::GET, "/schedules", None::<&()>)
+            .await
+    }
+
+    pub async fn get_schedule(&self, id: &str) -> anyhow::Result<crate::types::ScheduleInfo> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/schedules/{id}"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn create_schedule(
+        &self,
+        req: &crate::types::CreateScheduleRequest,
+    ) -> anyhow::Result<crate::types::ScheduleInfo> {
+        self.request(reqwest::Method::POST, "/schedules", Some(req))
+            .await
+    }
+
+    pub async fn delete_schedule(&self, id: &str) -> anyhow::Result<()> {
+        let _: String = self
+            .request(
+                reqwest::Method::DELETE,
+                &format!("/schedules/{id}"),
+                None::<&()>,
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn trigger_schedule(&self, id: &str) -> anyhow::Result<ScheduleInfo> {
+        self.request(
+            reqwest::Method::POST,
+            &format!("/schedules/{id}/trigger"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // -----------------------------------------------------------------
+    // Durable Stores
+    // -----------------------------------------------------------------
+
+    pub async fn list_stores(&self) -> anyhow::Result<Vec<crate::types::DurableStoreInfo>> {
+        self.request(reqwest::Method::GET, "/stores", None::<&()>)
+            .await
+    }
+
+    pub async fn get_store(&self, id: &str) -> anyhow::Result<crate::types::DurableStoreInfo> {
+        self.request(reqwest::Method::GET, &format!("/stores/{id}"), None::<&()>)
+            .await
+    }
+
+    pub async fn create_store(
+        &self,
+        req: &crate::types::CreateStoreRequest,
+    ) -> anyhow::Result<crate::types::DurableStoreInfo> {
+        self.request(reqwest::Method::POST, "/stores", Some(req))
+            .await
+    }
+
+    pub async fn delete_store(&self, id: &str) -> anyhow::Result<()> {
+        let _: serde_json::Value = self
+            .request(
+                reqwest::Method::DELETE,
+                &format!("/stores/{id}"),
+                None::<&()>,
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn query_store(
+        &self,
+        id: &str,
+        sql: &str,
+        params: Vec<serde_json::Value>,
+    ) -> anyhow::Result<crate::types::StoreQueryResult> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            sql: &'a str,
+            params: Vec<serde_json::Value>,
+        }
+        self.request(
+            reqwest::Method::POST,
+            &format!("/stores/{id}/query"),
+            Some(&Body { sql, params }),
+        )
+        .await
+    }
+
+    pub async fn execute_store(
+        &self,
+        id: &str,
+        sql: &str,
+        params: Vec<serde_json::Value>,
+    ) -> anyhow::Result<crate::types::StoreExecuteResult> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            sql: &'a str,
+            params: Vec<serde_json::Value>,
+        }
+        self.request(
+            reqwest::Method::POST,
+            &format!("/stores/{id}/execute"),
+            Some(&Body { sql, params }),
+        )
+        .await
+    }
+
+    pub async fn command_store(
+        &self,
+        id: &str,
+        command: Vec<String>,
+    ) -> anyhow::Result<crate::types::StoreCommandResult> {
+        #[derive(serde::Serialize)]
+        struct Body {
+            command: Vec<String>,
+        }
+        self.request(
+            reqwest::Method::POST,
+            &format!("/stores/{id}/command"),
+            Some(&Body { command }),
+        )
+        .await
+    }
+
+    // -----------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------
 

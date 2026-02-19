@@ -146,6 +146,9 @@ impl Permissions {
                 crate::policy::Action::SSH => {
                     // Deny SSH access - caller should check decision first
                 }
+                crate::policy::Action::UseLlmProvider => {
+                    // Deny LLM provider usage - caller should check decision first
+                }
             }
         }
 

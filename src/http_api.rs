@@ -411,6 +411,8 @@ struct AppState {
     opencode: Arc<OpenCodeState>,
     /// Durable orchestration persistence store
     orchestration_store: Option<Arc<OrchestrationStore>>,
+    /// Shared VmManager for durable object wake/hibernate operations
+    vm_manager: Option<Arc<tokio::sync::RwLock<VmManager>>>,
     /// Enterprise configuration (when enterprise feature is enabled)
     #[cfg(feature = "enterprise")]
     enterprise_config: Option<crate::config::EnterpriseConfig>,
@@ -434,6 +436,10 @@ impl AppState {
             api_key,
             opencode: Arc::new(OpenCodeState::new()),
             orchestration_store: Self::init_orchestration_store(),
+            vm_manager: match VmManager::new() {
+                Ok(mgr) => Some(Arc::new(tokio::sync::RwLock::new(mgr))),
+                Err(_) => None,
+            },
             #[cfg(feature = "enterprise")]
             enterprise_config,
             #[cfg(feature = "enterprise")]
@@ -451,6 +457,7 @@ impl AppState {
             api_key,
             opencode: Arc::new(OpenCodeState::new()),
             orchestration_store: Self::init_orchestration_store(),
+            vm_manager: None,
             #[cfg(feature = "enterprise")]
             enterprise_config: None,
             #[cfg(feature = "enterprise")]
@@ -744,6 +751,16 @@ async fn handle_request(
         (Method::POST, ["objects"]) => handle_create_object(req, state).await,
         (Method::GET, ["objects", object_id]) => handle_get_object(object_id, state).await,
         (Method::DELETE, ["objects", object_id]) => handle_delete_object(object_id, state).await,
+        (Method::PATCH, ["objects", object_id]) => handle_patch_object(req, object_id, state).await,
+
+        // Durable Object call (auto-create + auto-wake)
+        (Method::POST, ["objects", class, object_id, "call", method]) => {
+            handle_object_call_request(req, class, object_id, method, state).await
+        }
+        // Durable Object alarm
+        (Method::POST, ["objects", class, object_id, "alarm"]) => {
+            handle_object_alarm(req, class, object_id, state).await
+        }
 
         // Schedules
         (Method::GET, ["schedules"]) => handle_list_schedules(state).await,
@@ -751,6 +768,9 @@ async fn handle_request(
         (Method::GET, ["schedules", schedule_id]) => handle_get_schedule(schedule_id, state).await,
         (Method::DELETE, ["schedules", schedule_id]) => {
             handle_delete_schedule(schedule_id, state).await
+        }
+        (Method::POST, ["schedules", schedule_id, "trigger"]) => {
+            handle_trigger_schedule(schedule_id, state).await
         }
 
         // List sandboxes
@@ -869,6 +889,11 @@ async fn handle_request(
         // LLM usage
         (Method::GET, ["llm", "usage"]) => handle_llm_usage_all().await,
         (Method::GET, ["llm", "usage", sandbox]) => handle_llm_usage_sandbox(sandbox).await,
+
+        // LLM key management
+        (Method::GET, ["llm", "keys"]) => handle_llm_keys_list().await,
+        (Method::PUT, ["llm", "keys", provider]) => handle_llm_keys_set(req, provider).await,
+        (Method::DELETE, ["llm", "keys", provider]) => handle_llm_keys_remove(provider).await,
 
         // Garbage collection
         (Method::POST, ["gc"]) => handle_gc(state).await,
@@ -1460,6 +1485,18 @@ async fn handle_create_durable_store(
         );
     }
 
+    // Validate sandbox exists if specified
+    if let Some(ref sandbox_name) = body.sandbox
+        && !sandbox_name.is_empty()
+        && let Ok(manager) = state.get_manager().await
+        && !manager.exists(sandbox_name)
+    {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(format!("sandbox '{}' does not exist", sandbox_name)),
+        );
+    }
+
     let store = match state.orchestration_store() {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -1529,13 +1566,7 @@ async fn handle_delete_durable_store(store_id: &str, state: Arc<AppState>) -> Re
     };
 
     match store.delete_store(store_id) {
-        Ok(true) => json_response(
-            StatusCode::OK,
-            &ApiResponse::success(serde_json::json!({
-                "deleted": true,
-                "id": store_id,
-            })),
-        ),
+        Ok(true) => json_response(StatusCode::OK, &ApiResponse::success("deleted")),
         Ok(false) => json_response(
             StatusCode::NOT_FOUND,
             &ApiResponse::<()>::error("Store not found"),
@@ -1701,6 +1732,18 @@ async fn handle_create_object(req: Request<Incoming>, state: Arc<AppState>) -> R
         );
     }
 
+    // Validate sandbox exists if specified
+    if let Some(ref sandbox_name) = body.sandbox
+        && !sandbox_name.is_empty()
+        && let Ok(manager) = state.get_manager().await
+        && !manager.exists(sandbox_name)
+    {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(format!("sandbox '{}' does not exist", sandbox_name)),
+        );
+    }
+
     let store = match state.orchestration_store() {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -1746,6 +1789,200 @@ async fn handle_delete_object(object_id: &str, state: Arc<AppState>) -> Response
             StatusCode::NOT_FOUND,
             &ApiResponse::<()>::error("Object not found"),
         ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_patch_object(
+    req: Request<Incoming>,
+    object_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    #[derive(serde::Deserialize)]
+    struct PatchBody {
+        storage: Option<serde_json::Value>,
+        status: Option<String>,
+    }
+
+    let body: PatchBody = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
+    if let Some(storage) = &body.storage {
+        match store.update_object_storage(object_id, storage) {
+            Ok(false) => {
+                return json_response(
+                    StatusCode::NOT_FOUND,
+                    &ApiResponse::<()>::error("Object not found"),
+                );
+            }
+            Err(e) => {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(e.to_string()),
+                );
+            }
+            Ok(true) => {}
+        }
+    }
+
+    if let Some(status_str) = &body.status {
+        let status = match status_str.as_str() {
+            "active" => crate::orchestration_store::DurableObjectStatus::Active,
+            "hibernating" => crate::orchestration_store::DurableObjectStatus::Hibernating,
+            "deleted" => crate::orchestration_store::DurableObjectStatus::Deleted,
+            _ => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    &ApiResponse::<()>::error(
+                        "invalid status: use active, hibernating, or deleted",
+                    ),
+                );
+            }
+        };
+        match store.update_object_status(object_id, status, None) {
+            Ok(false) => {
+                return json_response(
+                    StatusCode::NOT_FOUND,
+                    &ApiResponse::<()>::error("Object not found"),
+                );
+            }
+            Err(e) => {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(e.to_string()),
+                );
+            }
+            Ok(true) => {}
+        }
+    }
+
+    // Return the updated object
+    match store.get_object(object_id) {
+        Ok(Some(object)) => json_response(StatusCode::OK, &ApiResponse::success(object)),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Object not found"),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_object_call_request(
+    req: Request<Incoming>,
+    class: &str,
+    object_id: &str,
+    method: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let store = match state.orchestration_store.as_ref() {
+        Some(s) => s,
+        None => {
+            return json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &ApiResponse::<()>::error("Orchestration store not available"),
+            );
+        }
+    };
+    let manager = match state.vm_manager.as_ref() {
+        Some(m) => m,
+        None => {
+            return json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &ApiResponse::<()>::error("VmManager not available"),
+            );
+        }
+    };
+
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match crate::object_runtime::handle_object_call(store, manager, class, object_id, method, body)
+        .await
+    {
+        Ok((status, resp_body)) => {
+            let http_status =
+                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            Response::builder()
+                .status(http_status)
+                .header("Content-Type", "application/json")
+                .body(full(resp_body))
+                .unwrap()
+        }
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_object_alarm(
+    req: Request<Incoming>,
+    class: &str,
+    object_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    // Alarm is just a call to the "alarm" method
+    let store = match state.orchestration_store.as_ref() {
+        Some(s) => s,
+        None => {
+            return json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &ApiResponse::<()>::error("Orchestration store not available"),
+            );
+        }
+    };
+    let manager = match state.vm_manager.as_ref() {
+        Some(m) => m,
+        None => {
+            return json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &ApiResponse::<()>::error("VmManager not available"),
+            );
+        }
+    };
+
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match crate::object_runtime::handle_object_call(store, manager, class, object_id, "alarm", body)
+        .await
+    {
+        Ok((status, resp_body)) => {
+            let http_status =
+                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            Response::builder()
+                .status(http_status)
+                .header("Content-Type", "application/json")
+                .body(full(resp_body))
+                .unwrap()
+        }
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
@@ -1829,6 +2066,40 @@ async fn handle_delete_schedule(schedule_id: &str, state: Arc<AppState>) -> Resp
     match store.delete_schedule(schedule_id) {
         Ok(true) => json_response(StatusCode::OK, &ApiResponse::success("deleted")),
         Ok(false) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Schedule not found"),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_trigger_schedule(schedule_id: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    let store = match state.orchestration_store() {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    // Verify schedule exists
+    match store.get_schedule(schedule_id) {
+        Ok(Some(schedule)) => {
+            // Mark as fired
+            if let Err(e) = store.mark_schedule_fired(schedule_id) {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(e.to_string()),
+                );
+            }
+            // Audit log
+            crate::audit::log_event(crate::audit::AuditEvent::ScheduleTriggered {
+                schedule_id: schedule.id.clone(),
+                schedule_name: schedule.name.clone(),
+                method: schedule.method.clone(),
+            });
+            json_response(StatusCode::OK, &ApiResponse::success(schedule))
+        }
+        Ok(None) => json_response(
             StatusCode::NOT_FOUND,
             &ApiResponse::<()>::error("Schedule not found"),
         ),
@@ -4457,6 +4728,12 @@ async fn execute_runtime_activity(activity: &RuntimeActivity) -> Result<String> 
 pub async fn run_server(addr: SocketAddr) -> Result<()> {
     let state = Arc::new(AppState::new());
     spawn_orchestration_worker(state.clone());
+    // Spawn hibernation daemon for durable objects
+    if let (Some(store), Some(manager)) =
+        (state.orchestration_store.clone(), state.vm_manager.clone())
+    {
+        tokio::spawn(crate::object_runtime::hibernation_daemon(store, manager));
+    }
     let listener = TcpListener::bind(addr).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
             anyhow::anyhow!(
@@ -4510,6 +4787,12 @@ pub async fn run_server_with_tls(
 
     let state = Arc::new(AppState::new());
     spawn_orchestration_worker(state.clone());
+    // Spawn hibernation daemon for durable objects
+    if let (Some(store), Some(manager)) =
+        (state.orchestration_store.clone(), state.vm_manager.clone())
+    {
+        tokio::spawn(crate::object_runtime::hibernation_daemon(store, manager));
+    }
     let listener = TcpListener::bind(addr).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
             anyhow::anyhow!(
@@ -4825,6 +5108,164 @@ async fn handle_llm_usage_sandbox(sandbox: &str) -> Response<BoxBody> {
     let store = crate::llm_intercept::LLM_USAGE.read().await;
     let usage = store.usage_for_sandbox(sandbox);
     json_response(StatusCode::OK, &ApiResponse::success(usage))
+}
+
+// ---------------------------------------------------------------------------
+// LLM key management
+// ---------------------------------------------------------------------------
+
+fn llm_keys_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".agentkernel")
+        .join("llm_keys.json")
+}
+
+fn provider_to_domain(provider: &str) -> String {
+    match provider {
+        "openai" => "api.openai.com".to_string(),
+        "anthropic" => "api.anthropic.com".to_string(),
+        "google" | "gemini" => "generativelanguage.googleapis.com".to_string(),
+        "deepseek" => "api.deepseek.com".to_string(),
+        "groq" => "api.groq.com".to_string(),
+        "mistral" => "api.mistral.ai".to_string(),
+        "cohere" => "api.cohere.com".to_string(),
+        "together" => "api.together.xyz".to_string(),
+        "fireworks" => "api.fireworks.ai".to_string(),
+        other => other.to_string(),
+    }
+}
+
+async fn handle_llm_keys_list() -> Response<BoxBody> {
+    let keys_path = llm_keys_path();
+    let keys: std::collections::BTreeMap<String, String> = if keys_path.exists() {
+        match std::fs::read_to_string(&keys_path).and_then(|s| {
+            serde_json::from_str(&s)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        }) {
+            Ok(k) => k,
+            Err(e) => {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(e.to_string()),
+                );
+            }
+        }
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    // Return domain -> vault_key_name (never expose actual secret values)
+    json_response(StatusCode::OK, &ApiResponse::success(keys))
+}
+
+async fn handle_llm_keys_set(req: Request<Incoming>, provider: &str) -> Response<BoxBody> {
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    #[derive(Debug, serde::Deserialize)]
+    struct SetKeyRequest {
+        vault_key_name: String,
+        #[serde(default)]
+        value: Option<String>,
+    }
+
+    let parsed: SetKeyRequest = match serde_json::from_slice(&body) {
+        Ok(p) => p,
+        Err(e) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let domain = provider_to_domain(provider);
+
+    // Store value in vault if provided
+    if let Some(ref val) = parsed.value {
+        let vault = crate::secrets::SecretVault::new(crate::secrets::SecretBackend::default());
+        if let Err(e) = vault.set(&parsed.vault_key_name, val) {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    }
+
+    // Update llm_keys.json mapping
+    let keys_path = llm_keys_path();
+    let mut keys: std::collections::BTreeMap<String, String> = if keys_path.exists() {
+        std::fs::read_to_string(&keys_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    keys.insert(domain.clone(), parsed.vault_key_name.clone());
+    if let Some(parent) = keys_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = serde_json::to_string_pretty(&keys)
+        .and_then(|s| std::fs::write(&keys_path, s).map_err(serde_json::Error::io))
+    {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(serde_json::json!({
+            "domain": domain,
+            "vault_key_name": parsed.vault_key_name,
+        })),
+    )
+}
+
+async fn handle_llm_keys_remove(provider: &str) -> Response<BoxBody> {
+    let domain = provider_to_domain(provider);
+    let keys_path = llm_keys_path();
+
+    let mut keys: std::collections::BTreeMap<String, String> = if keys_path.exists() {
+        std::fs::read_to_string(&keys_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    } else {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("No LLM keys configured"),
+        );
+    };
+
+    if keys.remove(&domain).is_some() {
+        if let Err(e) = serde_json::to_string_pretty(&keys)
+            .and_then(|s| std::fs::write(&keys_path, s).map_err(serde_json::Error::io))
+        {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+        json_response(
+            StatusCode::OK,
+            &ApiResponse::success(serde_json::json!({"removed": domain})),
+        )
+    } else {
+        json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("No LLM key mapping for {}", domain)),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------

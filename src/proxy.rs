@@ -162,6 +162,8 @@ pub struct ProxyConfig {
     pub llm_intercept: bool,
     /// Additional LLM domains beyond the built-in list
     pub llm_domains: Vec<String>,
+    /// Domains whose keys are managed at the org level (from [llm_keys] config)
+    pub org_managed_domains: Vec<String>,
 }
 
 /// Handle to a running proxy instance.
@@ -189,6 +191,8 @@ struct ProxyState {
     hook_registry: HookRegistry,
     /// LLM domain registry for traffic interception
     llm_registry: LlmDomainRegistry,
+    /// Domains whose keys are managed at the org level
+    org_managed_domains: std::collections::HashSet<String>,
 }
 
 /// Holds the CA cert and key pair for signing per-host certs.
@@ -326,6 +330,9 @@ pub async fn start_proxy(
         .context("Failed to bind proxy listener")?;
     let actual_addr = listener.local_addr()?;
 
+    let org_managed_domains: std::collections::HashSet<String> =
+        config.org_managed_domains.iter().cloned().collect();
+
     let state = Arc::new(RwLock::new(ProxyState {
         config,
         resolved_secrets,
@@ -333,6 +340,7 @@ pub async fn start_proxy(
         cert_cache: HashMap::new(),
         hook_registry: hook_registry.clone(),
         llm_registry,
+        org_managed_domains,
     }));
 
     // Spawn the proxy accept loop
@@ -458,6 +466,7 @@ async fn handle_connect(
     let ca_signer = s.ca_signer.clone();
     let sandbox_name = s.config.sandbox_name.clone();
     let registry = s.hook_registry.clone();
+    let is_org_managed = s.org_managed_domains.contains(&host_only);
     drop(s);
 
     // Dispatch OnRequest hook for CONNECT
@@ -562,6 +571,7 @@ async fn handle_connect(
             &sandbox_name,
             llm_provider.as_ref(),
             &registry,
+            is_org_managed,
         )
         .await
         {
@@ -584,6 +594,7 @@ async fn mitm_bridge(
     sandbox_name: &str,
     llm_provider: Option<&llm_intercept::LlmProvider>,
     hook_registry: &HookRegistry,
+    is_org_managed: bool,
 ) -> Result<()> {
     // Connect to upstream with real TLS
     let upstream_tcp = TcpStream::connect(upstream_addr)
@@ -718,6 +729,13 @@ async fn mitm_bridge(
                                         total_tokens: None,
                                         streaming: true,
                                         secret_injected: has_secret,
+                                        key_source: if is_org_managed {
+                                            "org".to_string()
+                                        } else if has_secret {
+                                            "sandbox".to_string()
+                                        } else {
+                                            "none".to_string()
+                                        },
                                     };
                                     llm_intercept::record_llm_event(&llm_event).await;
                                     crate::metrics::record_llm_request(
@@ -760,6 +778,13 @@ async fn mitm_bridge(
                                         total_tokens: usage.total_tokens,
                                         streaming: false,
                                         secret_injected: has_secret,
+                                        key_source: if is_org_managed {
+                                            "org".to_string()
+                                        } else if has_secret {
+                                            "sandbox".to_string()
+                                        } else {
+                                            "none".to_string()
+                                        },
                                     };
                                     llm_intercept::record_llm_event(&llm_event).await;
                                     crate::metrics::record_llm_request(
@@ -847,6 +872,7 @@ async fn handle_plain_http(
     } else {
         None
     };
+    let is_org_managed_http = s.org_managed_domains.contains(&host);
     drop(s);
 
     // Dispatch OnRequest hook
@@ -912,6 +938,13 @@ async fn handle_plain_http(
                     total_tokens: usage.total_tokens,
                     streaming: false,
                     secret_injected,
+                    key_source: if is_org_managed_http {
+                        "org".to_string()
+                    } else if secret_injected {
+                        "sandbox".to_string()
+                    } else {
+                        "none".to_string()
+                    },
                 };
                 llm_intercept::record_llm_event(&llm_event).await;
                 crate::metrics::record_llm_request(
@@ -1034,6 +1067,7 @@ mod tests {
             hooks: vec![],
             llm_intercept: false,
             llm_domains: vec![],
+            org_managed_domains: vec![],
         };
 
         assert!(is_host_allowed("api.openai.com", &config));
@@ -1053,6 +1087,7 @@ mod tests {
             hooks: vec![],
             llm_intercept: false,
             llm_domains: vec![],
+            org_managed_domains: vec![],
         };
 
         assert!(is_host_allowed("api.openai.com", &config));
@@ -1073,6 +1108,7 @@ mod tests {
             hooks: vec![],
             llm_intercept: false,
             llm_domains: vec![],
+            org_managed_domains: vec![],
         };
 
         assert!(is_host_allowed("api.openai.com", &config));
@@ -1093,6 +1129,7 @@ mod tests {
             hooks: vec![],
             llm_intercept: false,
             llm_domains: vec![],
+            org_managed_domains: vec![],
         };
 
         assert!(is_host_allowed("api.openai.com:443", &config));

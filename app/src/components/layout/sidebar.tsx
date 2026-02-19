@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, Link } from "react-router-dom";
 import {
   LayoutDashboard,
   Box,
@@ -14,10 +14,20 @@ import {
   Settings,
   Wifi,
   WifiOff,
+  Blocks,
+  Timer,
+  Database,
+  BookOpen,
+  Github,
+  ExternalLink,
+  ShieldCheck,
+  ShieldOff,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
+import { open } from "@tauri-apps/plugin-shell";
 import { cn } from "@/lib/utils";
 import { useHealth } from "@/lib/hooks/use-health";
+import { api } from "@/lib/api";
 import { Separator } from "@/components/ui/separator";
 
 function AKLogo({ className }: { className?: string }) {
@@ -53,6 +63,14 @@ const navSections = [
     ],
   },
   {
+    label: "Durable",
+    items: [
+      { to: "/objects", label: "Objects", icon: Blocks },
+      { to: "/schedules", label: "Schedules", icon: Timer },
+      { to: "/stores", label: "Stores", icon: Database },
+    ],
+  },
+  {
     label: "Extensions",
     items: [
       { to: "/plugins", label: "Plugins", icon: Puzzle },
@@ -73,10 +91,22 @@ const navSections = [
 export function Sidebar() {
   const { isConnected } = useHealth();
   const [appVersion, setAppVersion] = useState<string>("");
+  const [serverVersion, setServerVersion] = useState<string>("");
+  const [backend, setBackend] = useState<string>("");
+  const [apiUrl, setApiUrl] = useState<string>("");
+  const [policyEnabled, setPolicyEnabled] = useState<boolean | null>(null);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => {});
+    api.getSettings().then((s) => setApiUrl(s.api_url)).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (isConnected) {
+      api.getStatus().then((s) => { setServerVersion(s.version); setBackend(s.backend); }).catch(() => {});
+      api.getPolicyStatus().then((s) => setPolicyEnabled(s.enabled)).catch(() => setPolicyEnabled(null));
+    }
+  }, [isConnected]);
 
   return (
     <aside className="flex h-full w-[240px] flex-col border-r bg-muted/40">
@@ -87,7 +117,7 @@ export function Sidebar() {
         </span>
       </div>
       <Separator />
-      <nav className="flex flex-1 flex-col gap-0.5 p-2">
+      <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2">
         {navSections.map((section, i) => (
           <div key={i}>
             {i > 0 && <Separator className="my-2" />}
@@ -119,8 +149,8 @@ export function Sidebar() {
         ))}
       </nav>
       <Separator />
-      <div className="px-4 py-3 space-y-1">
-        <div className="flex items-center gap-2">
+      <div className="px-4 py-3 space-y-2">
+        <Link to="/settings" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
           {isConnected ? (
             <Wifi className="h-3.5 w-3.5 text-green-500" />
           ) : (
@@ -133,10 +163,43 @@ export function Sidebar() {
               <span className="text-destructive">Disconnected</span>
             )}
           </span>
+          {apiUrl && (
+            <span className="text-xs text-muted-foreground font-mono truncate">
+              {apiUrl.replace(/^https?:\/\//, "")}
+            </span>
+          )}
+        </Link>
+        <div className="flex items-center gap-3 text-xs text-muted-foreground font-mono flex-wrap">
+          {backend && <span>{backend}</span>}
+          {policyEnabled !== null && (
+            <Link to="/policy" className={`flex items-center gap-1 hover:opacity-80 transition-opacity ${policyEnabled ? "text-green-600 dark:text-green-400" : "text-muted-foreground"}`}>
+              {policyEnabled ? <ShieldCheck className="h-3 w-3" /> : <ShieldOff className="h-3 w-3" />}
+              {policyEnabled ? "policy" : "no policy"}
+            </Link>
+          )}
         </div>
-        {appVersion && (
-          <p className="text-xs text-muted-foreground font-mono">v{appVersion}</p>
-        )}
+        <div className="flex items-center gap-3 text-xs text-muted-foreground font-mono flex-wrap">
+          {appVersion && <span>app v{appVersion}</span>}
+          {serverVersion && <span>server v{serverVersion}</span>}
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => open("https://thrashr888.github.io/agentkernel/")}
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <BookOpen className="h-3 w-3" />
+            Docs
+            <ExternalLink className="h-2.5 w-2.5" />
+          </button>
+          <button
+            onClick={() => open("https://github.com/thrashr888/agentkernel")}
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <Github className="h-3 w-3" />
+            GitHub
+            <ExternalLink className="h-2.5 w-2.5" />
+          </button>
+        </div>
       </div>
     </aside>
   );

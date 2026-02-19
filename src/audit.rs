@@ -61,6 +61,12 @@ pub enum AuditEvent {
     },
     /// Sandbox error (e.g. init script failure)
     SandboxError { name: String, error: String },
+    /// Schedule triggered (manually or by cron)
+    ScheduleTriggered {
+        schedule_id: String,
+        schedule_name: String,
+        method: String,
+    },
 }
 
 /// A logged audit entry with metadata
@@ -206,6 +212,7 @@ impl AuditLog {
                 AuditEvent::SshConnected { sandbox: s, .. } => s == sandbox,
                 AuditEvent::SshDisconnected { sandbox: s, .. } => s == sandbox,
                 AuditEvent::SandboxError { name, .. } => name == sandbox,
+                AuditEvent::ScheduleTriggered { .. } => false,
             })
             .collect())
     }

@@ -22,6 +22,7 @@ mod languages;
 mod llm_intercept;
 mod mcp;
 mod metrics;
+mod object_runtime;
 mod opencode;
 mod orchestration_store;
 mod permissions;
@@ -338,6 +339,12 @@ enum Commands {
         #[arg(short = 'f', long)]
         dockerfile: Option<PathBuf>,
     },
+    /// Manage LLM API keys (org-level key injection)
+    Llm {
+        #[command(subcommand)]
+        action: LlmAction,
+    },
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -349,6 +356,34 @@ enum Commands {
     Policy {
         #[command(subcommand)]
         action: PolicyAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum LlmAction {
+    /// Manage LLM provider API keys
+    Keys {
+        #[command(subcommand)]
+        action: LlmKeysAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum LlmKeysAction {
+    /// List configured LLM provider keys
+    List,
+    /// Set an LLM provider key (stored in secrets vault, mapped to a domain)
+    Set {
+        /// Provider shorthand or domain (e.g. "openai", "anthropic", "api.openai.com")
+        provider: String,
+        /// Vault key name (e.g. OPENAI_API_KEY). Read from stdin if --key not provided.
+        #[arg(long)]
+        key: Option<String>,
+    },
+    /// Remove an LLM provider key mapping
+    Remove {
+        /// Provider shorthand or domain
+        provider: String,
     },
 }
 
@@ -2678,6 +2713,15 @@ memory_mb = 512
                         audit::AuditEvent::SandboxError { name, error } => {
                             ("sandbox_error", name.as_str(), error.clone())
                         }
+                        audit::AuditEvent::ScheduleTriggered {
+                            schedule_name,
+                            method,
+                            ..
+                        } => (
+                            "schedule_triggered",
+                            schedule_name.as_str(),
+                            format!("method={}", method),
+                        ),
                     };
                     println!(
                         "{:<24} {:<20} {:<15} {}",
@@ -3344,6 +3388,82 @@ memory_mb = 512
                 println!("  agentkernel attach {}", restore_name);
             }
         },
+        Commands::Llm { action } => match action {
+            LlmAction::Keys { action } => match action {
+                LlmKeysAction::List => {
+                    let keys_path = llm_keys_path();
+                    if keys_path.exists() {
+                        let content = std::fs::read_to_string(&keys_path)?;
+                        let keys: std::collections::BTreeMap<String, String> =
+                            serde_json::from_str(&content)?;
+                        if keys.is_empty() {
+                            println!("No LLM keys configured.");
+                        } else {
+                            println!("{:<30} VAULT KEY", "DOMAIN");
+                            for (domain, vault_key) in &keys {
+                                println!("{:<30} {}", domain, vault_key);
+                            }
+                        }
+                    } else {
+                        println!("No LLM keys configured.");
+                    }
+                }
+                LlmKeysAction::Set { provider, key } => {
+                    let domain = provider_to_domain(&provider);
+                    let vault_key = key.unwrap_or_else(|| {
+                        format!(
+                            "{}_API_KEY",
+                            provider.to_uppercase().replace(['.', '-'], "_")
+                        )
+                    });
+
+                    // Read secret from stdin
+                    eprintln!(
+                        "Enter the API key value (or set it separately with `agentkernel secret set {}`):",
+                        vault_key
+                    );
+                    let mut value = String::new();
+                    std::io::stdin().read_line(&mut value)?;
+                    let value = value.trim();
+                    if !value.is_empty() {
+                        let vault = crate::secrets::SecretVault::new(
+                            crate::secrets::SecretBackend::default(),
+                        );
+                        vault.set(&vault_key, value)?;
+                        eprintln!("Secret '{}' stored in vault.", vault_key);
+                    }
+
+                    // Save domain -> vault_key mapping
+                    let keys_path = llm_keys_path();
+                    let mut keys: std::collections::BTreeMap<String, String> = if keys_path.exists()
+                    {
+                        serde_json::from_str(&std::fs::read_to_string(&keys_path)?)?
+                    } else {
+                        std::collections::BTreeMap::new()
+                    };
+                    keys.insert(domain.clone(), vault_key.clone());
+                    std::fs::create_dir_all(keys_path.parent().unwrap())?;
+                    std::fs::write(&keys_path, serde_json::to_string_pretty(&keys)?)?;
+                    println!("LLM key mapping: {} -> {}", domain, vault_key);
+                }
+                LlmKeysAction::Remove { provider } => {
+                    let domain = provider_to_domain(&provider);
+                    let keys_path = llm_keys_path();
+                    if keys_path.exists() {
+                        let mut keys: std::collections::BTreeMap<String, String> =
+                            serde_json::from_str(&std::fs::read_to_string(&keys_path)?)?;
+                        if keys.remove(&domain).is_some() {
+                            std::fs::write(&keys_path, serde_json::to_string_pretty(&keys)?)?;
+                            println!("Removed LLM key mapping for {}", domain);
+                        } else {
+                            println!("No LLM key mapping found for {}", domain);
+                        }
+                    } else {
+                        println!("No LLM keys configured.");
+                    }
+                }
+            },
+        },
         Commands::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -3359,6 +3479,28 @@ memory_mb = 512
     }
 
     Ok(())
+}
+
+fn llm_keys_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".agentkernel")
+        .join("llm_keys.json")
+}
+
+fn provider_to_domain(provider: &str) -> String {
+    match provider {
+        "openai" => "api.openai.com".to_string(),
+        "anthropic" => "api.anthropic.com".to_string(),
+        "google" | "gemini" => "generativelanguage.googleapis.com".to_string(),
+        "deepseek" => "api.deepseek.com".to_string(),
+        "groq" => "api.groq.com".to_string(),
+        "mistral" => "api.mistral.ai".to_string(),
+        "cohere" => "api.cohere.com".to_string(),
+        "together" => "api.together.xyz".to_string(),
+        "fireworks" => "api.fireworks.ai".to_string(),
+        other => other.to_string(), // Assume it's a raw domain
+    }
 }
 
 async fn run_doctor() -> Result<()> {
@@ -3928,6 +4070,13 @@ fn run_info(name: &str) -> Result<()> {
                 }
                 audit::AuditEvent::SandboxError { error, .. } => {
                     format!("error   {}", error)
+                }
+                audit::AuditEvent::ScheduleTriggered {
+                    schedule_name,
+                    method,
+                    ..
+                } => {
+                    format!("sched   {}:{}", schedule_name, method)
                 }
             };
             println!("  {}  {}", ts, desc);

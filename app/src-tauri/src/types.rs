@@ -343,6 +343,134 @@ pub struct LlmUsageEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Durable Objects
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DurableObjectInfo {
+    pub id: String,
+    pub class: String,
+    pub object_id: String,
+    pub status: String,
+    #[serde(default)]
+    pub sandbox: Option<String>,
+    #[serde(default)]
+    pub storage: serde_json::Value,
+    pub idle_timeout_seconds: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateObjectRequest {
+    pub class: String,
+    pub object_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage: Option<serde_json::Value>,
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_seconds: i64,
+}
+
+fn default_idle_timeout() -> i64 {
+    300
+}
+
+// ---------------------------------------------------------------------------
+// Schedules
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub cron: Option<String>,
+    #[serde(default)]
+    pub fire_at: Option<String>,
+    pub method: String,
+    #[serde(default)]
+    pub args: serde_json::Value,
+    #[serde(default)]
+    pub target_class: Option<String>,
+    #[serde(default)]
+    pub target_object_id: Option<String>,
+    #[serde(default)]
+    pub target_orchestration: Option<String>,
+    pub status: String,
+    #[serde(default)]
+    pub last_fired_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateScheduleRequest {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cron: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fire_at: Option<String>,
+    pub method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_object_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_orchestration: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Durable Stores
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DurableStoreInfo {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    #[serde(default)]
+    pub sandbox: Option<String>,
+    #[serde(default)]
+    pub config: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateStoreRequest {
+    pub name: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreQueryResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<serde_json::Value>,
+    pub row_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreExecuteResult {
+    pub rows_affected: usize,
+    #[serde(default)]
+    pub last_insert_rowid: Option<i64>,
+}
+
+/// Result of a store command (e.g. Redis command).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreCommandResult {
+    pub result: serde_json::Value,
+}
+
+// ---------------------------------------------------------------------------
 // API response wrapper (internal)
 // ---------------------------------------------------------------------------
 

@@ -119,6 +119,8 @@ pub struct LlmEvent {
     pub total_tokens: Option<u64>,
     pub streaming: bool,
     pub secret_injected: bool,
+    /// Source of the API key: "org", "sandbox", or "none"
+    pub key_source: String,
 }
 
 // ---- Body Parsing ----
@@ -436,6 +438,7 @@ mod tests {
             total_tokens: Some(30),
             streaming: false,
             secret_injected: true,
+            key_source: "sandbox".into(),
         };
         store.record(&event);
         store.record(&event);
@@ -467,6 +470,7 @@ mod tests {
             total_tokens: None,
             streaming: true,
             secret_injected: true,
+            key_source: "sandbox".into(),
         };
         store.record(&event);
         let entries = store.usage_for_sandbox("test-sb");
@@ -491,6 +495,7 @@ mod tests {
             total_tokens: Some(30),
             streaming: false,
             secret_injected: true,
+            key_source: "sandbox".into(),
         };
         store.record(&base);
 
@@ -520,6 +525,7 @@ mod tests {
             total_tokens: Some(30),
             streaming: false,
             secret_injected: true,
+            key_source: "sandbox".into(),
         };
         store.record(&event);
         store.clear_sandbox("test-sb");

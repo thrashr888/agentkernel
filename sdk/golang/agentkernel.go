@@ -436,6 +436,17 @@ func (c *Client) GetObject(ctx context.Context, id string) (*DurableObject, erro
 	return &result, nil
 }
 
+// CallObject invokes a method on a durable object (auto-creates/wakes if needed).
+func (c *Client) CallObject(ctx context.Context, class, objectID, method string, args interface{}) (json.RawMessage, error) {
+	path := fmt.Sprintf("/objects/%s/%s/call/%s", class, objectID, method)
+	var result json.RawMessage
+	err := c.request(ctx, http.MethodPost, path, args, &result)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // ListSchedules returns all schedules.
 func (c *Client) ListSchedules(ctx context.Context) ([]Schedule, error) {
 	var result []Schedule

@@ -370,6 +370,17 @@ class AgentKernel:
         """Get an object by identifier."""
         return self._request("GET", f"/objects/{object_id}")
 
+    def call_object(
+        self, class_name: str, object_id: str, method: str, args: dict | None = None,
+    ) -> dict:
+        """Call a method on a durable object (auto-creates/wakes if needed)."""
+        resp = self._request(
+            "POST",
+            f"/objects/{class_name}/{object_id}/call/{method}",
+            json=args or {},
+        )
+        return resp
+
     def list_schedules(self) -> list[Schedule]:
         """List schedules."""
         return self._request("GET", "/schedules")

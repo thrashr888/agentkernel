@@ -34,6 +34,8 @@ uuid = { version = "1.0", features = ["v4", "v7"] }
 chrono = { version = "0.4", features = ["serde"] }
 redis = "0.27"
 rusqlite = { version = "0.33", features = ["bundled"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+mysql_async = { version = "0.34", default-features = false, features = ["default-rustls"] }
 sha2 = "0.10"
 prometheus = { version = "0.13", default-features = false }
 wat = "1.225"  # WAT to WASM compiler for WebAssembly text format support

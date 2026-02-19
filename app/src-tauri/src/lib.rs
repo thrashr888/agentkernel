@@ -445,6 +445,27 @@ pub fn run() {
             // settings
             commands::settings::get_settings,
             commands::settings::save_settings,
+            // durable objects
+            commands::objects::list_objects,
+            commands::objects::get_object,
+            commands::objects::create_object,
+            commands::objects::delete_object,
+            commands::objects::patch_object,
+            commands::objects::call_object,
+            // schedules
+            commands::schedules::list_schedules,
+            commands::schedules::get_schedule,
+            commands::schedules::create_schedule,
+            commands::schedules::delete_schedule,
+            commands::schedules::trigger_schedule,
+            // durable stores
+            commands::stores::list_stores,
+            commands::stores::get_store,
+            commands::stores::create_store,
+            commands::stores::delete_store,
+            commands::stores::query_store,
+            commands::stores::execute_store,
+            commands::stores::command_store,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

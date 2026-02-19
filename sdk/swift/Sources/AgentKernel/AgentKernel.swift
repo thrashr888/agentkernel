@@ -320,6 +320,12 @@ public actor AgentKernel {
         try await requestObject(method: "GET", path: "/objects/\(id)")
     }
 
+    /// Call a method on a durable object (auto-creates/wakes if needed).
+    public func callObject(class className: String, id objectId: String, method: String, args: [String: Any] = [:]) async throws -> [String: Any] {
+        let path = "/objects/\(className)/\(objectId)/call/\(method)"
+        return try await requestObject(method: "POST", path: path, body: args)
+    }
+
     /// List all schedules.
     public func listSchedules() async throws -> [Schedule] {
         try await requestObjectArray(method: "GET", path: "/schedules")

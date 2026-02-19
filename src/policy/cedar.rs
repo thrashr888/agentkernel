@@ -73,6 +73,11 @@ namespace AgentKernel {
         principal: [User],
         resource: [Sandbox],
     };
+
+    action UseLlmProvider appliesTo {
+        principal: [User],
+        resource: [Sandbox],
+    };
 }
 "#;
 
@@ -87,6 +92,7 @@ pub enum Action {
     Network,
     PortMap,
     SSH,
+    UseLlmProvider,
 }
 
 impl Action {
@@ -101,6 +107,7 @@ impl Action {
             Action::Network => r#"AgentKernel::Action::"Network""#.to_string(),
             Action::PortMap => r#"AgentKernel::Action::"PortMap""#.to_string(),
             Action::SSH => r#"AgentKernel::Action::"SSH""#.to_string(),
+            Action::UseLlmProvider => r#"AgentKernel::Action::"UseLlmProvider""#.to_string(),
         }
     }
 }
@@ -116,6 +123,7 @@ impl std::fmt::Display for Action {
             Action::Network => write!(f, "Network"),
             Action::PortMap => write!(f, "PortMap"),
             Action::SSH => write!(f, "SSH"),
+            Action::UseLlmProvider => write!(f, "UseLlmProvider"),
         }
     }
 }

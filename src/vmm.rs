@@ -955,6 +955,7 @@ impl VmManager {
                     hooks: Vec::new(),
                     llm_intercept: true,
                     llm_domains: Vec::new(),
+                    org_managed_domains: Vec::new(),
                 };
 
                 match crate::proxy::start_proxy(proxy_config, resolved_secrets).await {
@@ -1019,6 +1020,153 @@ impl VmManager {
                     Err(e) => {
                         eprintln!("Warning: Failed to start secret proxy: {}", e);
                     }
+                }
+            }
+        }
+
+        // Auto-inject org-level LLM keys from [llm_keys] config
+        {
+            let config_path = std::path::PathBuf::from("agentkernel.toml");
+            if config_path.exists()
+                && let Ok(toml_cfg) = Config::from_file(&config_path)
+                && !toml_cfg.llm_keys.is_empty()
+            {
+                let vault = SecretVault::new(SecretBackend::default());
+                let llm_registry = crate::llm_intercept::LlmDomainRegistry::default_registry();
+
+                // Collect domains already bound by sandbox-specific secrets
+                let already_bound: std::collections::HashSet<String> = state
+                    .secret_bindings
+                    .iter()
+                    .filter_map(|raw| {
+                        crate::proxy::SecretBinding::parse_cli(raw)
+                            .ok()
+                            .map(|(b, _)| b.target_host.clone())
+                    })
+                    .collect();
+
+                let mut org_bindings = Vec::new();
+                let mut org_resolved = HashMap::new();
+
+                for (domain, vault_key_name) in &toml_cfg.llm_keys {
+                    if already_bound.contains(domain) {
+                        continue; // Sandbox binding takes precedence
+                    }
+                    if let Ok(Some(secret_val)) = vault.get(vault_key_name) {
+                        // Determine header format from LLM domain registry
+                        let (header_name, header_prefix) =
+                            if let Some(provider) = llm_registry.lookup(domain) {
+                                if provider.name == "anthropic" {
+                                    ("x-api-key".to_string(), String::new())
+                                } else {
+                                    ("Authorization".to_string(), "Bearer ".to_string())
+                                }
+                            } else {
+                                ("Authorization".to_string(), "Bearer ".to_string())
+                            };
+
+                        let header_value = format!("{}{}", header_prefix, secret_val);
+                        org_resolved.insert(domain.clone(), (header_name.clone(), header_value));
+                        org_bindings.push(SecretBinding {
+                            secret_key: vault_key_name.clone(),
+                            target_host: domain.clone(),
+                            header_name,
+                            header_prefix,
+                        });
+                    }
+                }
+
+                if !org_resolved.is_empty() {
+                    // If no proxy is running yet, start one for org keys
+                    let has_proxy = PROXY_HANDLES.read().await.contains_key(name);
+                    if !has_proxy {
+                        let org_domains: Vec<String> =
+                            org_bindings.iter().map(|b| b.target_host.clone()).collect();
+                        let allowed_hosts = org_domains.clone();
+                        let proxy_config = ProxyConfig {
+                            listen_addr: "0.0.0.0:0".parse().unwrap(),
+                            bindings: org_bindings,
+                            allowed_hosts,
+                            blocked_hosts: Vec::new(),
+                            allowlist_only: false,
+                            sandbox_name: name.to_string(),
+                            hooks: Vec::new(),
+                            llm_intercept: true,
+                            llm_domains: Vec::new(),
+                            org_managed_domains: org_domains,
+                        };
+
+                        match crate::proxy::start_proxy(proxy_config, org_resolved).await {
+                            Ok(handle) => {
+                                let proxy_addr = handle.addr;
+                                let proxy_host = match backend {
+                                    BackendType::Apple => {
+                                        format!("192.168.64.1:{}", proxy_addr.port())
+                                    }
+                                    BackendType::Docker | BackendType::Podman => {
+                                        if cfg!(target_os = "macos") {
+                                            format!("host.docker.internal:{}", proxy_addr.port())
+                                        } else {
+                                            format!("172.17.0.1:{}", proxy_addr.port())
+                                        }
+                                    }
+                                    _ => format!("127.0.0.1:{}", proxy_addr.port()),
+                                };
+
+                                env.push((
+                                    "HTTP_PROXY".to_string(),
+                                    format!("http://{}", proxy_host),
+                                ));
+                                env.push((
+                                    "HTTPS_PROXY".to_string(),
+                                    format!("http://{}", proxy_host),
+                                ));
+                                env.push((
+                                    "http_proxy".to_string(),
+                                    format!("http://{}", proxy_host),
+                                ));
+                                env.push((
+                                    "https_proxy".to_string(),
+                                    format!("http://{}", proxy_host),
+                                ));
+                                env.push((
+                                    "NO_PROXY".to_string(),
+                                    "localhost,127.0.0.1".to_string(),
+                                ));
+                                env.push((
+                                    "NODE_EXTRA_CA_CERTS".to_string(),
+                                    "/usr/local/share/ca-certificates/agentkernel-proxy.crt"
+                                        .to_string(),
+                                ));
+                                env.push((
+                                    "REQUESTS_CA_BUNDLE".to_string(),
+                                    "/etc/ssl/certs/agentkernel-combined.crt".to_string(),
+                                ));
+                                env.push((
+                                    "SSL_CERT_FILE".to_string(),
+                                    "/etc/ssl/certs/agentkernel-combined.crt".to_string(),
+                                ));
+
+                                if let Some(s) = self.sandboxes.get_mut(name) {
+                                    s.proxy_port = Some(proxy_addr.port());
+                                }
+                                self.save_sandbox(self.sandboxes.get(name).unwrap())?;
+
+                                eprintln!(
+                                    "Org LLM key proxy started on port {} ({} key(s))",
+                                    proxy_addr.port(),
+                                    toml_cfg.llm_keys.len()
+                                );
+
+                                PROXY_HANDLES.write().await.insert(name.to_string(), handle);
+                            }
+                            Err(e) => {
+                                eprintln!("Warning: Failed to start org LLM key proxy: {}", e);
+                            }
+                        }
+                    }
+                    // If proxy already running, we can't add more secrets dynamically yet
+                    // Future: add hot-reload support
                 }
             }
         }
