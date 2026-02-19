@@ -662,8 +662,8 @@ async fn build_guest_agent(data_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(&bin_dir)?;
 
     // Embedded guest agent source
-    let guest_agent_source = include_str!("../guest-agent/src/main.rs");
-    let guest_agent_cargo = include_str!("../guest-agent/Cargo.toml");
+    let guest_agent_source = include_str!("embedded/guest_agent_main.rs");
+    let guest_agent_cargo = include_str!("embedded/guest_agent_cargo.toml");
 
     // Create temp directory for build
     let temp_dir = std::env::temp_dir().join("agentkernel-guest-build");

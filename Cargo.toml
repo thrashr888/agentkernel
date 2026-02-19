@@ -8,6 +8,19 @@ license = "MIT"
 repository = "https://github.com/thrashr888/agentkernel"
 keywords = ["ai", "agents", "sandbox", "firecracker", "microvm"]
 categories = ["command-line-utilities", "development-tools"]
+include = [
+  "/src/**/*",
+  "/guest-agent/**/*",
+  "/claude-plugin/**/*",
+  "/plugins/**/*",
+  "/images/build/build-kernel.sh",
+  "/images/kernel/microvm.config",
+  "/templates/*.toml",
+  "/Cargo.toml",
+  "/Cargo.lock",
+  "/LICENSE",
+  "/README.md",
+]
 
 [features]
 default = ["kubernetes", "nomad", "enterprise"]
