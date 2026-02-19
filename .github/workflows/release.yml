@@ -233,6 +233,46 @@ jobs:
           generate_release_notes: true
           files: release-files/*
 
+  publish-crate:
+    name: Publish CLI to crates.io
+    needs: test
+    runs-on: ubuntu-latest
+    environment: crates
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set version from tag
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG_NAME#v}"
+          sed -i "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+
+      - name: Authenticate with crates.io
+        id: crates-auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/agentkernel/${VERSION}")
+          if [ "$HTTP_STATUS" = "200" ]; then
+            echo "Version ${VERSION} already published to crates.io, skipping"
+          else
+            cargo publish
+          fi
+
   helm:
     name: Publish Helm Chart
     needs: release
