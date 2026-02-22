@@ -1614,14 +1614,16 @@ impl VmManager {
         let id = format!("{:08x}", rand::thread_rng().r#gen::<u32>());
         let stdout_path = format!("/tmp/ak-{id}.out");
         let stderr_path = format!("/tmp/ak-{id}.err");
+        let exit_path = format!("/tmp/ak-{id}.exit");
 
         // Wrap the command to run in background with output capture
         let escaped_cmd: Vec<String> = cmd.iter().map(|c| shell_escape(c)).collect();
         let wrapped = format!(
-            "nohup sh -c '{} > {} 2> {} & echo $!'",
+            "nohup sh -c '{}' > {} 2> {} & pid=$!; (wait $pid; echo $? > {}) >/dev/null 2>&1 & echo $pid",
             escaped_cmd.join(" "),
             stdout_path,
             stderr_path,
+            exit_path,
         );
         let wrapper_cmd: Vec<&str> = vec!["sh", "-c", &wrapped];
 
@@ -1672,39 +1674,54 @@ impl VmManager {
             return Ok(cmd);
         }
 
-        // Check if process is still running
+        let exit_path = format!("/tmp/ak-{}.exit", cmd_id);
         let sandbox = self
             .running
             .get_mut(&cmd.sandbox)
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' is not running", cmd.sandbox))?;
 
-        let check_cmd = format!(
-            "kill -0 {} 2>/dev/null && echo running || (wait {} 2>/dev/null; echo $?)",
-            cmd.pid, cmd.pid
-        );
-        let result = sandbox
+        // If an exit-code file exists, consume that first for stable status.
+        let read_exit = sandbox
             .exec_with_options(
-                &["sh", "-c", &check_cmd],
+                &["cat", &exit_path],
                 &crate::backend::ExecOptions::default(),
             )
-            .await?;
-
-        let output = result.stdout.trim().to_string();
-        if output == "running" {
+            .await;
+        if let Ok(exit_result) = read_exit
+            && exit_result.exit_code == 0
+        {
+            let exit_code = exit_result.stdout.trim().parse::<i32>().unwrap_or(1);
+            let status = if exit_code == 0 {
+                DetachedStatus::Completed
+            } else {
+                DetachedStatus::Failed
+            };
+            if let Some(tracked) = self.detached.get_mut(cmd_id) {
+                tracked.status = status;
+                tracked.exit_code = Some(exit_code);
+                return Ok(tracked.clone());
+            }
             return Ok(cmd);
         }
 
-        // Process finished — parse exit code
-        let exit_code: i32 = output.parse().unwrap_or(1);
-        let status = if exit_code == 0 {
-            DetachedStatus::Completed
-        } else {
-            DetachedStatus::Failed
-        };
+        // Check if process is still running without invoking a shell.
+        let pid_str = cmd.pid.to_string();
+        let sandbox = self
+            .running
+            .get_mut(&cmd.sandbox)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' is not running", cmd.sandbox))?;
+        let result = sandbox
+            .exec_with_options(&["kill", "-0", &pid_str], &crate::backend::ExecOptions::default())
+            .await?;
 
+        if result.exit_code == 0 {
+            return Ok(cmd);
+        }
+
+        // Process is no longer running but exit status file is unavailable.
         if let Some(tracked) = self.detached.get_mut(cmd_id) {
-            tracked.status = status;
-            tracked.exit_code = Some(exit_code);
+            tracked.status = DetachedStatus::Failed;
+            tracked.exit_code = None;
             return Ok(tracked.clone());
         }
         Ok(cmd)
@@ -1755,13 +1772,10 @@ impl VmManager {
             .get_mut(&cmd.sandbox)
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' is not running", cmd.sandbox))?;
 
-        let kill_cmd = format!("kill {} 2>/dev/null || true", cmd.pid);
-        sandbox
-            .exec_with_options(
-                &["sh", "-c", &kill_cmd],
-                &crate::backend::ExecOptions::default(),
-            )
-            .await?;
+        let pid_str = cmd.pid.to_string();
+        let _ = sandbox
+            .exec_with_options(&["kill", &pid_str], &crate::backend::ExecOptions::default())
+            .await;
 
         if let Some(tracked) = self.detached.get_mut(cmd_id) {
             tracked.status = DetachedStatus::Failed;

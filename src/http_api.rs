@@ -39,6 +39,7 @@ use crate::permissions::SecurityProfile;
 use crate::secrets::{SecretBackend, SecretVault};
 use crate::validation;
 use crate::vmm::VmManager;
+use std::path::Path;
 
 type BoxBody = http_body_util::combinators::BoxBody<bytes::Bytes, hyper::Error>;
 
@@ -5241,6 +5242,26 @@ fn llm_keys_path() -> std::path::PathBuf {
         .join("llm_keys.json")
 }
 
+fn write_secure_json_file<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+
+    let payload = serde_json::to_string_pretty(value)?;
+    std::fs::write(path, payload)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
 fn provider_to_domain(provider: &str) -> String {
     match provider {
         "openai" => "api.openai.com".to_string(),
@@ -5330,12 +5351,7 @@ async fn handle_llm_keys_set(req: Request<Incoming>, provider: &str) -> Response
         std::collections::BTreeMap::new()
     };
     keys.insert(domain.clone(), parsed.vault_key_name.clone());
-    if let Some(parent) = keys_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Err(e) = serde_json::to_string_pretty(&keys)
-        .and_then(|s| std::fs::write(&keys_path, s).map_err(serde_json::Error::io))
-    {
+    if let Err(e) = write_secure_json_file(&keys_path, &keys) {
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
@@ -5368,9 +5384,7 @@ async fn handle_llm_keys_remove(provider: &str) -> Response<BoxBody> {
     };
 
     if keys.remove(&domain).is_some() {
-        if let Err(e) = serde_json::to_string_pretty(&keys)
-            .and_then(|s| std::fs::write(&keys_path, s).map_err(serde_json::Error::io))
-        {
+        if let Err(e) = write_secure_json_file(&keys_path, &keys) {
             return json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &ApiResponse::<()>::error(e.to_string()),
@@ -5503,11 +5517,7 @@ async fn handle_list_agents(_state: Arc<AppState>) -> Response<BoxBody> {
     let agents: Vec<AgentInfo> = agent_defs
         .into_iter()
         .map(|(name, display, bin, desc)| {
-            let enabled = std::process::Command::new("sh")
-                .args(["-c", &format!("command -v {} >/dev/null 2>&1", bin)])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+            let enabled = binary_exists_in_path(bin);
             AgentInfo {
                 name: name.into(),
                 display_name: display.into(),
@@ -5518,6 +5528,16 @@ async fn handle_list_agents(_state: Arc<AppState>) -> Response<BoxBody> {
         .collect();
 
     json_response(StatusCode::OK, &ApiResponse::success(agents))
+}
+
+fn binary_exists_in_path(bin: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        let candidate = dir.join(bin);
+        candidate.exists() && candidate.is_file()
+    })
 }
 
 // ---------------------------------------------------------------------------
