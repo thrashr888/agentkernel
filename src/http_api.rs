@@ -44,11 +44,62 @@ use crate::validation;
 use crate::vmm::VmManager;
 
 type BoxBody = http_body_util::combinators::BoxBody<bytes::Bytes, hyper::Error>;
+const MAX_HTTP_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
 
 fn full<T: Into<bytes::Bytes>>(chunk: T) -> BoxBody {
     Full::new(chunk.into())
         .map_err(|never| match never {})
         .boxed()
+}
+
+fn request_body_too_large() -> Response<BoxBody> {
+    json_response(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        &ApiResponse::<()>::error(format!(
+            "Request body exceeds the maximum size of {MAX_HTTP_REQUEST_BODY_BYTES} bytes"
+        )),
+    )
+}
+
+fn invalid_content_length() -> Response<BoxBody> {
+    json_response(
+        StatusCode::BAD_REQUEST,
+        &ApiResponse::<()>::error("Invalid Content-Length header"),
+    )
+}
+
+async fn read_body_bytes(req: Request<Incoming>) -> Result<bytes::Bytes, Response<BoxBody>> {
+    if let Some(content_length) = req.headers().get("content-length") {
+        let len = match content_length
+            .to_str()
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+        {
+            Some(len) => len,
+            None => return Err(invalid_content_length()),
+        };
+
+        if len > MAX_HTTP_REQUEST_BODY_BYTES {
+            return Err(request_body_too_large());
+        }
+    }
+
+    let body_bytes = req
+        .collect()
+        .await
+        .map_err(|_| {
+            json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error("Failed to read body"),
+            )
+        })?
+        .to_bytes();
+
+    if body_bytes.len() > MAX_HTTP_REQUEST_BODY_BYTES {
+        return Err(request_body_too_large());
+    }
+
+    Ok(body_bytes)
 }
 
 fn constant_time_eq(a: &str, b: &str) -> bool {
@@ -1086,16 +1137,7 @@ fn json_response<T: Serialize>(status: StatusCode, data: &T) -> Response<BoxBody
 async fn read_json_body<T: for<'de> Deserialize<'de>>(
     req: Request<Incoming>,
 ) -> Result<T, Response<BoxBody>> {
-    let body_bytes = req
-        .collect()
-        .await
-        .map_err(|_| {
-            json_response(
-                StatusCode::BAD_REQUEST,
-                &ApiResponse::<()>::error("Failed to read body"),
-            )
-        })?
-        .to_bytes();
+    let body_bytes = read_body_bytes(req).await?;
 
     serde_json::from_slice(&body_bytes).map_err(|e| {
         json_response(
@@ -2014,13 +2056,10 @@ async fn handle_object_call_request(
         }
     };
 
-    let body = match req.collect().await {
-        Ok(b) => b.to_bytes(),
+    let body = match read_body_bytes(req).await {
+        Ok(b) => b,
         Err(e) => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                &ApiResponse::<()>::error(e.to_string()),
-            );
+            return e;
         }
     };
 
@@ -2069,13 +2108,10 @@ async fn handle_object_alarm(
         }
     };
 
-    let body = match req.collect().await {
-        Ok(b) => b.to_bytes(),
+    let body = match read_body_bytes(req).await {
+        Ok(b) => b,
         Err(e) => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                &ApiResponse::<()>::error(e.to_string()),
-            );
+            return e;
         }
     };
 
@@ -5326,13 +5362,10 @@ async fn handle_llm_keys_list() -> Response<BoxBody> {
 }
 
 async fn handle_llm_keys_set(req: Request<Incoming>, provider: &str) -> Response<BoxBody> {
-    let body = match req.collect().await {
-        Ok(b) => b.to_bytes(),
+    let body = match read_body_bytes(req).await {
+        Ok(b) => b,
         Err(e) => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                &ApiResponse::<()>::error(e.to_string()),
-            );
+            return e;
         }
     };
 
