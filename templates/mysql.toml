@@ -64,6 +64,9 @@ network = true
 3306 = 3306
 
 [template]
+description = "MySQL server image for local development"
+category = "Datastores"
+secret_files = ["MYSQL_ROOT_PASSWORD", "MYSQL_DATABASE", "MYSQL_USER", "MYSQL_PASSWORD"]
 help_text = """
 How to use: MySQL is started by the init script when the sandbox boots. A root password is auto-generated if MYSQL_ROOT_PASSWORD is not provided. Optional secret files MYSQL_ROOT_PASSWORD, MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD are read from /run/agentkernel/secrets.
 Example command: sh -lc 'MYSQL_PWD="$(cat /run/agentkernel/secrets/MYSQL_ROOT_PASSWORD 2>/dev/null || true)" mysql -h 127.0.0.1 -u root -e "SELECT VERSION();"'

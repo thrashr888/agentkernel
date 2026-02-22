@@ -14,6 +14,8 @@ profile = "restrictive"
 network = false
 
 [template]
+description = "Maximum isolation: no network, read-only"
+category = "Specialized"
 help_text = """
 How to use: Start the sandbox and run your workflow inside /workspace.
 Example command: ls -la /workspace

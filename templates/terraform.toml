@@ -17,7 +17,7 @@ case "$ARCH" in
 esac
 
 # Install system deps
-apt-get update -qq && apt-get install -y -qq curl unzip >/dev/null 2>&1
+apt-get update -qq && apt-get install -y -qq ca-certificates curl unzip >/dev/null 2>&1
 
 # Install Terraform with integrity verification
 TF_VERSION="1.14.5"
@@ -88,6 +88,8 @@ allow = [
 ]
 
 [template]
+description = "Terraform with HCP Terraform CLI"
+category = "Infrastructure"
 help_text = """
 Terraform sandbox with HCP Terraform CLI.
 How to use: Start the sandbox and run your workflow inside /workspace.

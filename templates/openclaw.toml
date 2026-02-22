@@ -18,6 +18,10 @@ npm install -g openclaw@latest
 vcpus = 2
 memory_mb = 1024
 
+[secrets]
+ANTHROPIC_API_KEY = "api.anthropic.com"
+OPENAI_API_KEY = "api.openai.com"
+
 [security]
 profile = "moderate"
 network = true
@@ -31,6 +35,8 @@ allow = ["registry.npmjs.org", "api.anthropic.com", "api.openai.com"]
 18789 = 18789
 
 [template]
+description = "Self-hosted personal AI assistant with multi-channel messaging"
+category = "Specialized"
 help_text = """
 How to use: Start the sandbox, then run `openclaw onboard --install-daemon` to configure.
 Example command: openclaw --version

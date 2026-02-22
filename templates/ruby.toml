@@ -16,6 +16,8 @@ profile = "moderate"
 allow = ["rubygems.org"]
 
 [template]
+description = "Ruby with Bundler for Ruby development"
+category = "Languages"
 help_text = """
 How to use: Start the sandbox and run your workflow inside /workspace.
 Example command: ruby -v

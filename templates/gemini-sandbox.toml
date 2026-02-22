@@ -28,6 +28,8 @@ profile = "moderate"
 allow = ["generativelanguage.googleapis.com"]
 
 [template]
+description = "Gemini CLI agent sandbox"
+category = "Agent Sandboxes"
 help_text = """
 How to use: Start the sandbox and run your workflow inside /workspace.
 Example command: ls -la /workspace

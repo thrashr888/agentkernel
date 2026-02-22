@@ -45,6 +45,9 @@ network = true
 5432 = 5432
 
 [template]
+description = "Postgres server image for local development"
+category = "Datastores"
+secret_files = ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"]
 help_text = """
 How to use: PostgreSQL is started by the init script when the sandbox boots. Optional secret files POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB are read from /run/agentkernel/secrets.
 Example command: sh -lc 'PGPASSWORD="$(cat /run/agentkernel/secrets/POSTGRES_PASSWORD 2>/dev/null || true)" psql -h 127.0.0.1 -U "$(cat /run/agentkernel/secrets/POSTGRES_USER 2>/dev/null || echo postgres)" -d "$(cat /run/agentkernel/secrets/POSTGRES_DB 2>/dev/null || echo postgres)" -c "SELECT version();"'

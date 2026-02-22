@@ -16,6 +16,8 @@ profile = "moderate"
 allow = ["pypi.org", "files.pythonhosted.org"]
 
 [template]
+description = "Python for machine learning / data science"
+category = "Specialized"
 help_text = """
 How to use: Start the sandbox and run your workflow inside /workspace.
 Example command: python --version

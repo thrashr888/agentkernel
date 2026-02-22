@@ -5,7 +5,6 @@
   "permissions": [
     "core:default",
     "shell:allow-open",
-    "updater:default",
-    "debug-bridge:default"
+    "updater:default"
   ]
 }

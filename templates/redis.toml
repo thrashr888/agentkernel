@@ -50,6 +50,9 @@ network = true
 6379 = 6379
 
 [template]
+description = "Redis server image for caching and queues"
+category = "Datastores"
+secret_files = ["REDIS_PASSWORD"]
 help_text = """
 How to use: Redis is started by the init script when the sandbox boots. Optional secret file REDIS_PASSWORD is read from /run/agentkernel/secrets.
 Example command: sh -lc 'PW=$(cat /run/agentkernel/secrets/REDIS_PASSWORD 2>/dev/null || true); if [ -n "$PW" ]; then redis-cli -h 127.0.0.1 -p 6379 -a "$PW" ping; else redis-cli -h 127.0.0.1 -p 6379 ping; fi'

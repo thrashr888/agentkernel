@@ -22,6 +22,8 @@ profile = "moderate"
 allow = ["pypi.org", "files.pythonhosted.org", "playwright.azureedge.net"]
 
 [template]
+description = "Stealth browser automation that avoids bot detection"
+category = "Browser Automation"
 help_text = """
 How to use: Start the sandbox and run your workflow inside /workspace.
 Example command: ls -la /workspace

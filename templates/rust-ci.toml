@@ -16,6 +16,8 @@ profile = "moderate"
 allow = ["crates.io", "static.crates.io", "index.crates.io"]
 
 [template]
+description = "Rust build and test CI workloads"
+category = "Specialized"
 help_text = """
 How to use: Start the sandbox and run your workflow inside /workspace.
 Example command: cargo --version

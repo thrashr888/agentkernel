@@ -16,6 +16,8 @@ profile = "moderate"
 allow = ["api.nuget.org"]
 
 [template]
+description = ".NET SDK for C#/F# development"
+category = "Languages"
 help_text = """
 How to use: Start the sandbox and run your workflow inside /workspace.
 Example command: dotnet --version

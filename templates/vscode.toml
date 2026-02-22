@@ -36,6 +36,8 @@ mount_cwd = true
 OPENVSCODE_SERVER_OPTIONS = "--without-connection-token --host 0.0.0.0"
 
 [template]
+description = "Browser-based VS Code IDE (openvscode-server)"
+category = "Specialized"
 help_text = """
 How to use: Start the sandbox and open the mapped web port in your browser.
 Example command: ls -la /workspace
