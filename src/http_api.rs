@@ -8,6 +8,9 @@
 //! - Set `AGENTKERNEL_API_KEY` environment variable
 //! - Or configure `[api].api_key` / `[api].api_key_env` in `agentkernel.toml`
 //!
+//! Root execution (`sudo: true`) is disabled by default for HTTP API requests.
+//! To allow it explicitly, set `[api].allow_sudo_exec = true`.
+//!
 //! When enabled, requests must include the API key in the Authorization header:
 //! ```text
 //! Authorization: Bearer <api_key>
@@ -120,6 +123,44 @@ fn load_api_key() -> Option<String> {
         return Some(key);
     }
     load_api_key_from_config()
+}
+
+fn load_api_allow_sudo_exec_from_config() -> bool {
+    let config_path = std::path::PathBuf::from("agentkernel.toml");
+    if !config_path.exists() {
+        return false;
+    }
+
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "[api] Failed to read {}: {}",
+                config_path.display(),
+                e
+            );
+            return false;
+        }
+    };
+
+    let parsed: toml::Value = match toml::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "[api] Failed to parse {}: {}",
+                config_path.display(),
+                e
+            );
+            return false;
+        }
+    };
+
+    parsed
+        .get("api")
+        .and_then(|v| v.as_table())
+        .and_then(|api| api.get("allow_sudo_exec"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 /// Request to run a command
@@ -481,6 +522,8 @@ struct RunResponse {
 struct AppState {
     /// Optional API key for authentication
     api_key: Option<String>,
+    /// Whether HTTP API callers may request root execution (`sudo: true`).
+    allow_sudo_exec: bool,
     /// OpenCode API state
     opencode: Arc<OpenCodeState>,
     /// Durable orchestration persistence store
@@ -498,8 +541,12 @@ struct AppState {
 impl AppState {
     fn new() -> Self {
         let api_key = load_api_key();
+        let allow_sudo_exec = load_api_allow_sudo_exec_from_config();
         if api_key.is_some() {
             eprintln!("API key authentication enabled");
+        }
+        if allow_sudo_exec {
+            eprintln!("[api] Root exec via HTTP API is enabled");
         }
 
         #[cfg(feature = "enterprise")]
@@ -507,6 +554,7 @@ impl AppState {
 
         Self {
             api_key,
+            allow_sudo_exec,
             opencode: Arc::new(OpenCodeState::new()),
             orchestration_store: Self::init_orchestration_store(),
             vm_manager: match VmManager::new() {
@@ -528,6 +576,7 @@ impl AppState {
         }
         Self {
             api_key,
+            allow_sudo_exec: false,
             opencode: Arc::new(OpenCodeState::new()),
             orchestration_store: Self::init_orchestration_store(),
             vm_manager: None,
@@ -2941,6 +2990,15 @@ async fn handle_exec_sandbox(
             &ApiResponse::<()>::error("command is required"),
         );
     }
+    let sudo_requested = body.sudo.unwrap_or(false);
+    if sudo_requested && !state.allow_sudo_exec {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            &ApiResponse::<()>::error(
+                "sudo execution is disabled for HTTP API. Set [api].allow_sudo_exec = true to enable it",
+            ),
+        );
+    }
     if let Some(ref workdir) = body.workdir
         && let Err(e) = validation::validate_exec_workdir(workdir)
     {
@@ -2963,7 +3021,7 @@ async fn handle_exec_sandbox(
     let opts = crate::backend::ExecOptions {
         env: body.env,
         workdir: body.workdir,
-        user: if body.sudo.unwrap_or(false) {
+        user: if sudo_requested {
             Some("root".to_string())
         } else {
             None
@@ -3020,6 +3078,15 @@ async fn handle_exec_detach(
             &ApiResponse::<()>::error("command is required"),
         );
     }
+    let sudo_requested = body.sudo.unwrap_or(false);
+    if sudo_requested && !state.allow_sudo_exec {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            &ApiResponse::<()>::error(
+                "sudo execution is disabled for HTTP API. Set [api].allow_sudo_exec = true to enable it",
+            ),
+        );
+    }
     if let Some(ref workdir) = body.workdir
         && let Err(e) = validation::validate_exec_workdir(workdir)
     {
@@ -3042,7 +3109,7 @@ async fn handle_exec_detach(
     let opts = crate::backend::ExecOptions {
         env: body.env,
         workdir: body.workdir,
-        user: if body.sudo.unwrap_or(false) {
+        user: if sudo_requested {
             Some("root".to_string())
         } else {
             None
