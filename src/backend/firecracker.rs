@@ -79,6 +79,8 @@ pub struct FirecrackerSandbox {
     vsock_cid: u32,
     kernel_path: Option<PathBuf>,
     rootfs_path: Option<PathBuf>,
+    /// Per-sandbox CoW copy of the rootfs, cleaned up on stop/drop
+    sandbox_rootfs: Option<PathBuf>,
     running: bool,
 }
 
@@ -108,6 +110,7 @@ impl FirecrackerSandbox {
             vsock_cid,
             kernel_path: None,
             rootfs_path: None,
+            sandbox_rootfs: None,
             running: false,
         })
     }
@@ -217,8 +220,9 @@ impl FirecrackerSandbox {
             .ok_or_else(|| anyhow::anyhow!("Kernel path not set"))?;
 
         let rootfs_path = self
-            .rootfs_path
+            .sandbox_rootfs
             .clone()
+            .or_else(|| self.rootfs_path.clone())
             .or_else(|| Self::find_rootfs(&config.image).ok())
             .ok_or_else(|| anyhow::anyhow!("Rootfs path not set"))?;
 
@@ -284,6 +288,36 @@ impl Sandbox for FirecrackerSandbox {
     async fn start(&mut self, config: &SandboxConfig) -> Result<()> {
         let firecracker_bin = find_firecracker()?;
 
+        // Create a per-sandbox CoW copy of the rootfs for filesystem isolation.
+        // Uses cp --reflink=auto for instant zero-copy on btrfs/XFS/APFS,
+        // falls back to a regular copy on filesystems without reflink support.
+        let base_rootfs = self
+            .rootfs_path
+            .clone()
+            .or_else(|| Self::find_rootfs(&config.image).ok());
+        if let Some(base) = base_rootfs {
+            let sandbox_path = PathBuf::from(format!("/tmp/agentkernel-{}-rootfs.ext4", self.name));
+            let reflink_ok = Command::new("cp")
+                .arg("--reflink=auto")
+                .arg(&base)
+                .arg(&sandbox_path)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !reflink_ok {
+                std::fs::copy(&base, &sandbox_path).with_context(|| {
+                    format!(
+                        "Failed to copy rootfs {} -> {}",
+                        base.display(),
+                        sandbox_path.display()
+                    )
+                })?;
+            }
+            self.sandbox_rootfs = Some(sandbox_path);
+        }
+
         // Start firecracker process
         let process = Command::new(&firecracker_bin)
             .arg("--api-sock")
@@ -344,9 +378,12 @@ impl Sandbox for FirecrackerSandbox {
             let _ = process.wait();
         }
 
-        // Clean up sockets
+        // Clean up sockets and per-sandbox rootfs
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = std::fs::remove_file(&self.vsock_path);
+        if let Some(ref path) = self.sandbox_rootfs {
+            let _ = std::fs::remove_file(path);
+        }
 
         self.running = false;
         Ok(())
@@ -405,5 +442,8 @@ impl Drop for FirecrackerSandbox {
         }
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = std::fs::remove_file(&self.vsock_path);
+        if let Some(ref path) = self.sandbox_rootfs {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }

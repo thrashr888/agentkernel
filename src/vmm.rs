@@ -1256,8 +1256,8 @@ impl VmManager {
                     .exec(&[
                         "sh",
                         "-c",
-                        "cat /etc/ssl/certs/ca-certificates.crt /usr/local/share/ca-certificates/agentkernel-proxy.crt > /etc/ssl/certs/agentkernel-combined.crt 2>/dev/null || \
-                         cat /etc/pki/tls/certs/ca-bundle.crt /usr/local/share/ca-certificates/agentkernel-proxy.crt > /etc/ssl/certs/agentkernel-combined.crt 2>/dev/null || \
+                        "{ cat /etc/ssl/certs/ca-certificates.crt /usr/local/share/ca-certificates/agentkernel-proxy.crt > /etc/ssl/certs/agentkernel-combined.crt && [ -s /etc/ssl/certs/agentkernel-combined.crt ]; } 2>/dev/null || \
+                         { cat /etc/pki/tls/certs/ca-bundle.crt /usr/local/share/ca-certificates/agentkernel-proxy.crt > /etc/ssl/certs/agentkernel-combined.crt && [ -s /etc/ssl/certs/agentkernel-combined.crt ]; } 2>/dev/null || \
                          cp /usr/local/share/ca-certificates/agentkernel-proxy.crt /etc/ssl/certs/agentkernel-combined.crt",
                     ])
                     .await;
