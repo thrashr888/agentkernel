@@ -115,6 +115,25 @@ ports = ["8080:80", "3000"]   # Port mappings (host:container or container-only)
 
 Port mappings have no effect when network access is disabled (`[security] network = false` or `--no-network`).
 
+## [api]
+
+HTTP API server security settings.
+
+```toml
+[api]
+api_key = "my-secret-key"
+api_key_env = "AGENTKERNEL_API_KEY"
+allow_sudo_exec = false
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `api_key` | string | - | Static API key for HTTP Bearer authentication. |
+| `api_key_env` | string | - | Environment variable name to read the API key from (used if set). |
+| `allow_sudo_exec` | bool | `false` | Allow `/exec` and `/sandboxes/{name}/exec` to run with `sudo: true` when explicitly requested. |
+
+HTTP API authentication uses the `Authorization: Bearer <api_key>` header when enabled.
+
 ## [ssh]
 
 SSH access configuration. When enabled, an OpenSSH server is injected into the sandbox with certificate-only authentication.

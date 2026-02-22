@@ -21,10 +21,15 @@ AGENTKERNEL_API_KEY=your-secret agentkernel serve
 
 ## Authentication
 
-If `AGENTKERNEL_API_KEY` is set, all requests require the `X-API-Key` header:
+If `AGENTKERNEL_API_KEY` is set (or `[api].api_key` is configured), all requests require
+an `Authorization` header, except for health/metrics:
+
+```text
+Authorization: Bearer your-secret
+```
 
 ```bash
-curl -H "X-API-Key: your-secret" http://localhost:18888/health
+curl -H "Authorization: Bearer your-secret" http://localhost:18888/sandboxes
 ```
 
 ## Endpoints
