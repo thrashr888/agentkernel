@@ -6,7 +6,10 @@
 //!
 //! API key authentication is optional. To enable:
 //! - Set `AGENTKERNEL_API_KEY` environment variable
-//! - Or configure `api_key` in the config file
+//! - Or configure `[api].api_key` / `[api].api_key_env` in `agentkernel.toml`
+//!
+//! Root execution (`sudo: true`) is disabled by default for HTTP API requests.
+//! To allow it explicitly, set `[api].allow_sudo_exec = true`.
 //!
 //! When enabled, requests must include the API key in the Authorization header:
 //! ```text
@@ -46,6 +49,99 @@ fn full<T: Into<bytes::Bytes>>(chunk: T) -> BoxBody {
     Full::new(chunk.into())
         .map_err(|never| match never {})
         .boxed()
+}
+
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+fn load_api_key_from_config() -> Option<String> {
+    let config_path = std::path::PathBuf::from("agentkernel.toml");
+    if !config_path.exists() {
+        return None;
+    }
+
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[api] Failed to read {}: {}", config_path.display(), e);
+            return None;
+        }
+    };
+    let parsed: toml::Value = match toml::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[api] Failed to parse {}: {}", config_path.display(), e);
+            return None;
+        }
+    };
+    let api_cfg = parsed.get("api").and_then(|v| v.as_table())?;
+
+    if let Some(env_name) = api_cfg
+        .get("api_key_env")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        && let Ok(key) = std::env::var(env_name)
+        && !key.trim().is_empty()
+    {
+        return Some(key);
+    }
+
+    api_cfg
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(std::string::ToString::to_string)
+}
+
+fn load_api_key() -> Option<String> {
+    if let Ok(key) = std::env::var("AGENTKERNEL_API_KEY")
+        && !key.trim().is_empty()
+    {
+        return Some(key);
+    }
+    load_api_key_from_config()
+}
+
+fn load_api_allow_sudo_exec_from_config() -> bool {
+    let config_path = std::path::PathBuf::from("agentkernel.toml");
+    if !config_path.exists() {
+        return false;
+    }
+
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[api] Failed to read {}: {}", config_path.display(), e);
+            return false;
+        }
+    };
+
+    let parsed: toml::Value = match toml::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[api] Failed to parse {}: {}", config_path.display(), e);
+            return false;
+        }
+    };
+
+    parsed
+        .get("api")
+        .and_then(|v| v.as_table())
+        .and_then(|api| api.get("allow_sudo_exec"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 /// Request to run a command
@@ -407,6 +503,8 @@ struct RunResponse {
 struct AppState {
     /// Optional API key for authentication
     api_key: Option<String>,
+    /// Whether HTTP API callers may request root execution (`sudo: true`).
+    allow_sudo_exec: bool,
     /// OpenCode API state
     opencode: Arc<OpenCodeState>,
     /// Durable orchestration persistence store
@@ -423,10 +521,13 @@ struct AppState {
 
 impl AppState {
     fn new() -> Self {
-        // Load API key from environment variable
-        let api_key = std::env::var("AGENTKERNEL_API_KEY").ok();
+        let api_key = load_api_key();
+        let allow_sudo_exec = load_api_allow_sudo_exec_from_config();
         if api_key.is_some() {
             eprintln!("API key authentication enabled");
+        }
+        if allow_sudo_exec {
+            eprintln!("[api] Root exec via HTTP API is enabled");
         }
 
         #[cfg(feature = "enterprise")]
@@ -434,6 +535,7 @@ impl AppState {
 
         Self {
             api_key,
+            allow_sudo_exec,
             opencode: Arc::new(OpenCodeState::new()),
             orchestration_store: Self::init_orchestration_store(),
             vm_manager: match VmManager::new() {
@@ -455,6 +557,7 @@ impl AppState {
         }
         Self {
             api_key,
+            allow_sudo_exec: false,
             opencode: Arc::new(OpenCodeState::new()),
             orchestration_store: Self::init_orchestration_store(),
             vm_manager: None,
@@ -541,7 +644,7 @@ impl AppState {
         match auth_header {
             Some(header) if header.starts_with("Bearer ") => {
                 let token = &header[7..];
-                if token == api_key {
+                if constant_time_eq(token, api_key) {
                     Ok(())
                 } else {
                     Err(json_response(
@@ -589,7 +692,12 @@ async fn extract_identity(
                     Ok(claims) => return crate::identity::AgentIdentity::from_jwt(claims),
                     Err(e) => {
                         eprintln!("[enterprise] JWT validation failed: {}", e);
-                        // Fall through to API key identity
+                        if let Some(expected_api_key) = state.api_key.as_deref()
+                            && crate::identity::validate_api_key(token, expected_api_key).is_ok()
+                        {
+                            return crate::identity::AgentIdentity::from_api_key(token.to_string());
+                        }
+                        return crate::identity::AgentIdentity::anonymous();
                     }
                 }
             }
@@ -2443,6 +2551,29 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             &ApiResponse::<()>::error(e.to_string()),
         );
     }
+    if body.source_ref.is_some() && body.source_url.is_none() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("source_ref requires source_url"),
+        );
+    }
+    if let Some(ref source_url) = body.source_url {
+        let normalized = source_url.strip_prefix("git:").unwrap_or(source_url);
+        if let Err(e) = validation::validate_git_source_url(normalized) {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    }
+    if let Some(ref git_ref) = body.source_ref
+        && let Err(e) = validation::validate_git_ref(git_ref)
+    {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
 
     let image = body.image.as_deref().unwrap_or("alpine:3.20");
     let vcpus = body.vcpus.unwrap_or(1);
@@ -2603,7 +2734,9 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
     }
 
     // Clone git repo if source_url is specified
-    if let Some(ref url) = body.source_url {
+    if let Some(ref source_url) = body.source_url {
+        let url = source_url.strip_prefix("git:").unwrap_or(source_url);
+
         // Install git
         let install = vec![
             "sh".to_string(),
@@ -2615,7 +2748,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         let clone = vec![
             "git".to_string(),
             "clone".to_string(),
-            url.clone(),
+            url.to_string(),
             "/workspace".to_string(),
         ];
         if let Err(e) = manager.exec_cmd(&body.name, &clone).await {
@@ -2836,6 +2969,23 @@ async fn handle_exec_sandbox(
             &ApiResponse::<()>::error("command is required"),
         );
     }
+    let sudo_requested = body.sudo.unwrap_or(false);
+    if sudo_requested && !state.allow_sudo_exec {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            &ApiResponse::<()>::error(
+                "sudo execution is disabled for HTTP API. Set [api].allow_sudo_exec = true to enable it",
+            ),
+        );
+    }
+    if let Some(ref workdir) = body.workdir
+        && let Err(e) = validation::validate_exec_workdir(workdir)
+    {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
 
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
@@ -2850,7 +3000,7 @@ async fn handle_exec_sandbox(
     let opts = crate::backend::ExecOptions {
         env: body.env,
         workdir: body.workdir,
-        user: if body.sudo.unwrap_or(false) {
+        user: if sudo_requested {
             Some("root".to_string())
         } else {
             None
@@ -2907,6 +3057,23 @@ async fn handle_exec_detach(
             &ApiResponse::<()>::error("command is required"),
         );
     }
+    let sudo_requested = body.sudo.unwrap_or(false);
+    if sudo_requested && !state.allow_sudo_exec {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            &ApiResponse::<()>::error(
+                "sudo execution is disabled for HTTP API. Set [api].allow_sudo_exec = true to enable it",
+            ),
+        );
+    }
+    if let Some(ref workdir) = body.workdir
+        && let Err(e) = validation::validate_exec_workdir(workdir)
+    {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
 
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
@@ -2921,7 +3088,7 @@ async fn handle_exec_detach(
     let opts = crate::backend::ExecOptions {
         env: body.env,
         workdir: body.workdir,
-        user: if body.sudo.unwrap_or(false) {
+        user: if sudo_requested {
             Some("root".to_string())
         } else {
             None
@@ -5210,12 +5377,7 @@ async fn handle_llm_keys_set(req: Request<Incoming>, provider: &str) -> Response
         std::collections::BTreeMap::new()
     };
     keys.insert(domain.clone(), parsed.vault_key_name.clone());
-    if let Some(parent) = keys_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Err(e) = serde_json::to_string_pretty(&keys)
-        .and_then(|s| std::fs::write(&keys_path, s).map_err(serde_json::Error::io))
-    {
+    if let Err(e) = crate::secure_fs::write_private_json(&keys_path, &keys) {
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
@@ -5248,9 +5410,7 @@ async fn handle_llm_keys_remove(provider: &str) -> Response<BoxBody> {
     };
 
     if keys.remove(&domain).is_some() {
-        if let Err(e) = serde_json::to_string_pretty(&keys)
-            .and_then(|s| std::fs::write(&keys_path, s).map_err(serde_json::Error::io))
-        {
+        if let Err(e) = crate::secure_fs::write_private_json(&keys_path, &keys) {
             return json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &ApiResponse::<()>::error(e.to_string()),
@@ -5383,11 +5543,7 @@ async fn handle_list_agents(_state: Arc<AppState>) -> Response<BoxBody> {
     let agents: Vec<AgentInfo> = agent_defs
         .into_iter()
         .map(|(name, display, bin, desc)| {
-            let enabled = std::process::Command::new("sh")
-                .args(["-c", &format!("command -v {} >/dev/null 2>&1", bin)])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+            let enabled = binary_exists_in_path(bin);
             AgentInfo {
                 name: name.into(),
                 display_name: display.into(),
@@ -5398,6 +5554,78 @@ async fn handle_list_agents(_state: Arc<AppState>) -> Response<BoxBody> {
         .collect();
 
     json_response(StatusCode::OK, &ApiResponse::success(agents))
+}
+
+fn is_executable(candidate: &std::path::Path) -> bool {
+    if !candidate.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = candidate.metadata() {
+            return (metadata.permissions().mode() & 0o111) != 0;
+        }
+        false
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn binary_exists_in_path(bin: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+
+    #[cfg(windows)]
+    let exts: Vec<std::ffi::OsString> = {
+        let pathext = std::env::var_os("PATHEXT")
+            .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+        pathext
+            .to_string_lossy()
+            .split(';')
+            .filter(|s| !s.is_empty())
+            .map(|ext| {
+                if ext.starts_with('.') {
+                    std::ffi::OsString::from(ext)
+                } else {
+                    std::ffi::OsString::from(format!(".{}", ext))
+                }
+            })
+            .collect()
+    };
+
+    std::env::split_paths(&path).any(|dir| {
+        #[cfg(windows)]
+        {
+            let has_ext = std::path::Path::new(bin)
+                .extension()
+                .map(|ext| !ext.is_empty())
+                .unwrap_or(false);
+
+            if has_ext {
+                return is_executable(&dir.join(bin));
+            }
+
+            for ext in &exts {
+                let mut name = std::ffi::OsString::from(bin);
+                name.push(ext);
+                if is_executable(&dir.join(name)) {
+                    return true;
+                }
+            }
+            false
+        }
+
+        #[cfg(not(windows))]
+        {
+            is_executable(&dir.join(bin))
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------

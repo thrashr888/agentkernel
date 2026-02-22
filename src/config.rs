@@ -168,6 +168,10 @@ pub struct ApiConfig {
     /// TLS configuration
     #[serde(default)]
     pub tls: ApiTlsConfig,
+    /// Allow HTTP API callers to run commands as root (`sudo: true`).
+    /// Disabled by default for least privilege.
+    #[serde(default)]
+    pub allow_sudo_exec: bool,
 }
 
 /// Trust anchor configuration for enterprise policy signing
@@ -1222,6 +1226,7 @@ mod tests {
         assert!(config.api.tls.cert.is_none());
         assert!(config.api.tls.key.is_none());
         assert!(!config.api.tls.require_tls);
+        assert!(!config.api.allow_sudo_exec);
     }
 
     #[test]
@@ -1229,6 +1234,9 @@ mod tests {
         let toml = r#"
             [sandbox]
             name = "tls-app"
+
+            [api]
+            allow_sudo_exec = true
 
             [api.tls]
             enabled = true
@@ -1244,6 +1252,7 @@ mod tests {
             Some("/etc/certs/api-key.pem".to_string())
         );
         assert!(config.api.tls.require_tls);
+        assert!(config.api.allow_sudo_exec);
     }
 
     #[test]
@@ -1260,6 +1269,7 @@ mod tests {
         assert!(config.api.tls.cert.is_none());
         assert!(config.api.tls.key.is_none());
         assert!(!config.api.tls.require_tls);
+        assert!(!config.api.allow_sudo_exec);
     }
 
     #[test]
