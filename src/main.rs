@@ -437,6 +437,9 @@ enum SandboxAction {
         /// Inject a secret as a file inside the sandbox (KEY from vault). Can be repeated.
         #[arg(long = "secret-file")]
         secret_files: Vec<String>,
+        /// Don't auto-start the sandbox after creation
+        #[arg(long)]
+        no_start: bool,
     },
     /// Start a sandbox
     Start {
@@ -965,6 +968,7 @@ memory_mb = 512
                 volumes,
                 secrets: secret_bindings_raw,
                 secret_files: secret_file_keys,
+                no_start,
             } => {
                 // Resolve sandbox name: --branch auto-derives from git, otherwise require explicit name
                 let name = if branch {
@@ -1223,52 +1227,88 @@ memory_mb = 512
                     println!("  TTL: {} (expires automatically)", format_ttl(secs));
                 }
 
-                // If --source provided, auto-start and clone the repo
-                if let Some(ref source_url) = source {
-                    // Strip optional "git:" prefix
-                    let url = source_url.strip_prefix("git:").unwrap_or(source_url);
+                // Auto-start the sandbox unless --no-start was passed
+                if !no_start {
+                    let has_secrets = !all_bindings.is_empty();
+                    let api_port = std::env::var("AGENTKERNEL_PORT")
+                        .ok()
+                        .and_then(|p| p.parse::<u16>().ok())
+                        .unwrap_or(18888);
+                    let server_running = try_server_health("127.0.0.1", api_port).await;
 
-                    println!("\nStarting sandbox and cloning {}...", url);
-                    manager.start(&name).await?;
-
-                    // Install git if needed, then clone
-                    let install_cmd = vec![
-                    "sh".to_string(),
-                    "-c".to_string(),
-                    "which git >/dev/null 2>&1 || apk add --no-cache git >/dev/null 2>&1 || apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1 || yum install -y git >/dev/null 2>&1 || true".to_string(),
-                ];
-                    let _ = manager.exec_cmd(&name, &install_cmd).await;
-
-                    let clone_cmd = vec![
-                        "git".to_string(),
-                        "clone".to_string(),
-                        url.to_string(),
-                        "/workspace".to_string(),
-                    ];
-                    manager.exec_cmd(&name, &clone_cmd).await?;
-
-                    // Checkout specific ref if requested
-                    if let Some(ref git_ref_val) = git_ref {
-                        let checkout_cmd = vec![
-                            "git".to_string(),
-                            "-C".to_string(),
-                            "/workspace".to_string(),
-                            "checkout".to_string(),
-                            git_ref_val.clone(),
-                        ];
-                        manager.exec_cmd(&name, &checkout_cmd).await?;
-                        println!("Cloned {} (ref: {}) into /workspace", url, git_ref_val);
+                    if has_secrets && server_running {
+                        // Delegate to HTTP server so the secrets proxy
+                        // lives in the long-running server process
+                        println!("Starting sandbox via API server (secrets proxy will persist)...");
+                        delegate_start_to_server("127.0.0.1", api_port, &name).await?;
+                    } else if has_secrets && !server_running {
+                        eprintln!(
+                            "Warning: Secrets proxy requires 'agentkernel serve' to be running.\n\
+                             Start the server first, then run: agentkernel start {}",
+                            name
+                        );
                     } else {
-                        println!("Cloned {} into /workspace", url);
+                        // No secrets — start locally (no proxy needed)
+                        manager.start(&name).await?;
                     }
 
-                    println!("\nTo connect:");
-                    if enable_ssh {
-                        println!("  agentkernel ssh {}", name);
-                    } else {
-                        println!("  agentkernel attach {}", name);
+                    // If --source provided, clone the repo into the
+                    // (now-running) sandbox
+                    if let Some(ref source_url) = source {
+                        let url = source_url.strip_prefix("git:").unwrap_or(source_url);
+
+                        // Only start here if we skipped auto-start above
+                        // (secrets warning case — sandbox not yet running)
+                        if has_secrets && !server_running {
+                            println!(
+                                "\nCannot clone repo: sandbox not started (secrets proxy requires 'agentkernel serve')."
+                            );
+                        } else {
+                            println!("Cloning {}...", url);
+                            // Install git if needed, then clone
+                            let install_cmd = vec![
+                                "sh".to_string(),
+                                "-c".to_string(),
+                                "which git >/dev/null 2>&1 || apk add --no-cache git >/dev/null 2>&1 || apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1 || yum install -y git >/dev/null 2>&1 || true".to_string(),
+                            ];
+                            let _ = manager.exec_cmd(&name, &install_cmd).await;
+
+                            let clone_cmd = vec![
+                                "git".to_string(),
+                                "clone".to_string(),
+                                url.to_string(),
+                                "/workspace".to_string(),
+                            ];
+                            manager.exec_cmd(&name, &clone_cmd).await?;
+
+                            if let Some(ref git_ref_val) = git_ref {
+                                let checkout_cmd = vec![
+                                    "git".to_string(),
+                                    "-C".to_string(),
+                                    "/workspace".to_string(),
+                                    "checkout".to_string(),
+                                    git_ref_val.clone(),
+                                ];
+                                manager.exec_cmd(&name, &checkout_cmd).await?;
+                                println!("Cloned {} (ref: {}) into /workspace", url, git_ref_val);
+                            } else {
+                                println!("Cloned {} into /workspace", url);
+                            }
+                        }
+                    }
+
+                    // Print connection instructions (only if sandbox was started)
+                    if !has_secrets || server_running {
+                        println!("\nSandbox '{}' started.", name);
+                        println!("To connect:");
+                        if enable_ssh {
+                            println!("  agentkernel ssh {}", name);
+                        } else {
+                            println!("  agentkernel attach {}", name);
+                        }
                     }
                 } else {
+                    // --no-start: show manual next steps
                     println!("\nNext steps:");
                     println!("  1. agentkernel start {}", name);
                     if enable_ssh {
@@ -1303,6 +1343,39 @@ memory_mb = 512
                         name,
                         name
                     );
+                }
+
+                // Check if sandbox has secret bindings that need a long-lived proxy
+                let has_secrets = manager
+                    .get_sandbox_state(&name)
+                    .is_some_and(|s| !s.secret_bindings.is_empty());
+
+                if has_secrets {
+                    let api_port = std::env::var("AGENTKERNEL_PORT")
+                        .ok()
+                        .and_then(|p| p.parse::<u16>().ok())
+                        .unwrap_or(18888);
+                    let server_running = try_server_health("127.0.0.1", api_port).await;
+                    if server_running {
+                        println!("Starting sandbox via API server (secrets proxy will persist)...");
+                        delegate_start_to_server("127.0.0.1", api_port, &name).await?;
+                        println!("Sandbox '{}' started.", name);
+                        if manager
+                            .get_sandbox_state(&name)
+                            .is_some_and(|s| s.ssh_enabled)
+                        {
+                            println!("\nTo connect: agentkernel ssh {}", name);
+                        } else {
+                            println!("\nTo attach: agentkernel attach {}", name);
+                        }
+                        return Ok(());
+                    } else {
+                        eprintln!(
+                            "Warning: Sandbox has secrets configured but 'agentkernel serve' is not running.\n\
+                             The secrets proxy will stop when this command exits.\n\
+                             For persistent proxy, start 'agentkernel serve' first."
+                        );
+                    }
                 }
 
                 println!("Starting sandbox '{}'...", name);
@@ -4251,5 +4324,59 @@ fn format_ttl(secs: u64) -> String {
         format!("{}m", secs / 60)
     } else {
         format!("{}s", secs)
+    }
+}
+
+/// Check if the HTTP API server is running on the given address.
+/// Returns true if a TCP connection succeeds within a short timeout.
+async fn try_server_health(host: &str, port: u16) -> bool {
+    let addr = format!("{}:{}", host, port);
+    matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            tokio::net::TcpStream::connect(&addr),
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+/// Delegate sandbox start to the running HTTP server.
+/// Sends POST /sandboxes/{name}/start and checks for a 200 response.
+async fn delegate_start_to_server(host: &str, port: u16, name: &str) -> Result<()> {
+    use http_body_util::{BodyExt, Empty};
+    use hyper::Request;
+    use hyper_util::client::legacy::Client;
+    use hyper_util::rt::TokioExecutor;
+
+    let uri: hyper::Uri = format!("http://{}:{}/sandboxes/{}/start", host, port, name)
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid URI: {}", e))?;
+
+    let client = Client::builder(TokioExecutor::new()).build_http::<Empty<bytes::Bytes>>();
+
+    let req = Request::builder()
+        .method(hyper::Method::POST)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Empty::<bytes::Bytes>::new())
+        .map_err(|e| anyhow::anyhow!("failed to build request: {}", e))?;
+
+    let resp = tokio::time::timeout(std::time::Duration::from_secs(30), client.request(req))
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout waiting for server to start sandbox"))?
+        .map_err(|e| anyhow::anyhow!("HTTP request failed: {}", e))?;
+
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        let status = resp.status();
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .map(|c| String::from_utf8_lossy(&c.to_bytes()).to_string())
+            .unwrap_or_default();
+        bail!("Server returned {} when starting sandbox: {}", status, body);
     }
 }
