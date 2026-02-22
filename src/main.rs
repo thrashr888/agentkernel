@@ -37,6 +37,7 @@ mod rootfs;
 mod sandbox_pool;
 mod seatbelt;
 mod secrets;
+mod secure_fs;
 mod session;
 mod setup;
 mod snapshot;
@@ -3455,7 +3456,7 @@ memory_mb = 512
                         std::collections::BTreeMap::new()
                     };
                     keys.insert(domain.clone(), vault_key.clone());
-                    write_secure_json_file(&keys_path, &keys)?;
+                    crate::secure_fs::write_private_json(&keys_path, &keys)?;
                     println!("LLM key mapping: {} -> {}", domain, vault_key);
                 }
                 LlmKeysAction::Remove { provider } => {
@@ -3465,7 +3466,7 @@ memory_mb = 512
                         let mut keys: std::collections::BTreeMap<String, String> =
                             serde_json::from_str(&std::fs::read_to_string(&keys_path)?)?;
                         if keys.remove(&domain).is_some() {
-                            write_secure_json_file(&keys_path, &keys)?;
+                            crate::secure_fs::write_private_json(&keys_path, &keys)?;
                             println!("Removed LLM key mapping for {}", domain);
                         } else {
                             println!("No LLM key mapping found for {}", domain);
@@ -3498,25 +3499,6 @@ fn llm_keys_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".agentkernel")
         .join("llm_keys.json")
-}
-
-fn write_secure_json_file<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-        }
-    }
-    let payload = serde_json::to_string_pretty(value)?;
-    std::fs::write(path, payload)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
 }
 
 fn provider_to_domain(provider: &str) -> String {

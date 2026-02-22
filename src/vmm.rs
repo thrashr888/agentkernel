@@ -1675,12 +1675,24 @@ impl VmManager {
         }
 
         let exit_path = format!("/tmp/ak-{}.exit", cmd_id);
+        let pid_str = cmd.pid.to_string();
         let sandbox = self
             .running
             .get_mut(&cmd.sandbox)
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' is not running", cmd.sandbox))?;
 
-        // If an exit-code file exists, consume that first for stable status.
+        // Process still running: ignore exit file to avoid spoofing/stale reads.
+        let probe = sandbox
+            .exec_with_options(
+                &["kill", "-0", &pid_str],
+                &crate::backend::ExecOptions::default(),
+            )
+            .await?;
+        if probe.exit_code == 0 {
+            return Ok(cmd);
+        }
+
+        // Process is no longer running; now consume the exit-code file if available.
         let read_exit = sandbox
             .exec_with_options(
                 &["cat", &exit_path],
@@ -1701,23 +1713,6 @@ impl VmManager {
                 tracked.exit_code = Some(exit_code);
                 return Ok(tracked.clone());
             }
-            return Ok(cmd);
-        }
-
-        // Check if process is still running without invoking a shell.
-        let pid_str = cmd.pid.to_string();
-        let sandbox = self
-            .running
-            .get_mut(&cmd.sandbox)
-            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' is not running", cmd.sandbox))?;
-        let result = sandbox
-            .exec_with_options(
-                &["kill", "-0", &pid_str],
-                &crate::backend::ExecOptions::default(),
-            )
-            .await?;
-
-        if result.exit_code == 0 {
             return Ok(cmd);
         }
 

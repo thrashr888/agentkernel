@@ -42,7 +42,6 @@ use crate::permissions::SecurityProfile;
 use crate::secrets::{SecretBackend, SecretVault};
 use crate::validation;
 use crate::vmm::VmManager;
-use std::path::Path;
 
 type BoxBody = http_body_util::combinators::BoxBody<bytes::Bytes, hyper::Error>;
 
@@ -5289,26 +5288,6 @@ fn llm_keys_path() -> std::path::PathBuf {
         .join("llm_keys.json")
 }
 
-fn write_secure_json_file<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-        }
-    }
-
-    let payload = serde_json::to_string_pretty(value)?;
-    std::fs::write(path, payload)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
-}
-
 fn provider_to_domain(provider: &str) -> String {
     match provider {
         "openai" => "api.openai.com".to_string(),
@@ -5398,7 +5377,7 @@ async fn handle_llm_keys_set(req: Request<Incoming>, provider: &str) -> Response
         std::collections::BTreeMap::new()
     };
     keys.insert(domain.clone(), parsed.vault_key_name.clone());
-    if let Err(e) = write_secure_json_file(&keys_path, &keys) {
+    if let Err(e) = crate::secure_fs::write_private_json(&keys_path, &keys) {
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
@@ -5431,7 +5410,7 @@ async fn handle_llm_keys_remove(provider: &str) -> Response<BoxBody> {
     };
 
     if keys.remove(&domain).is_some() {
-        if let Err(e) = write_secure_json_file(&keys_path, &keys) {
+        if let Err(e) = crate::secure_fs::write_private_json(&keys_path, &keys) {
             return json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &ApiResponse::<()>::error(e.to_string()),
@@ -5577,13 +5556,75 @@ async fn handle_list_agents(_state: Arc<AppState>) -> Response<BoxBody> {
     json_response(StatusCode::OK, &ApiResponse::success(agents))
 }
 
+fn is_executable(candidate: &std::path::Path) -> bool {
+    if !candidate.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = candidate.metadata() {
+            return (metadata.permissions().mode() & 0o111) != 0;
+        }
+        false
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 fn binary_exists_in_path(bin: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
+
+    #[cfg(windows)]
+    let exts: Vec<std::ffi::OsString> = {
+        let pathext = std::env::var_os("PATHEXT")
+            .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+        pathext
+            .to_string_lossy()
+            .split(';')
+            .filter(|s| !s.is_empty())
+            .map(|ext| {
+                if ext.starts_with('.') {
+                    std::ffi::OsString::from(ext)
+                } else {
+                    std::ffi::OsString::from(format!(".{}", ext))
+                }
+            })
+            .collect()
+    };
+
     std::env::split_paths(&path).any(|dir| {
-        let candidate = dir.join(bin);
-        candidate.exists() && candidate.is_file()
+        #[cfg(windows)]
+        {
+            let has_ext = std::path::Path::new(bin)
+                .extension()
+                .map(|ext| !ext.is_empty())
+                .unwrap_or(false);
+
+            if has_ext {
+                return is_executable(&dir.join(bin));
+            }
+
+            for ext in &exts {
+                let mut name = std::ffi::OsString::from(bin);
+                name.push(ext);
+                if is_executable(&dir.join(name)) {
+                    return true;
+                }
+            }
+            false
+        }
+
+        #[cfg(not(windows))]
+        {
+            is_executable(&dir.join(bin))
+        }
     })
 }
 

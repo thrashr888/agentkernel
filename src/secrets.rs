@@ -173,75 +173,53 @@ impl SecretVault {
     }
 
     fn save_store(&self, store: &FileStore) -> Result<()> {
-        if let Some(parent) = self.store_path.parent() {
-            std::fs::create_dir_all(parent)?;
+        crate::secure_fs::write_private_json(&self.store_path, store)
+    }
 
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let perms = std::fs::Permissions::from_mode(0o700);
-                std::fs::set_permissions(parent, perms)?;
-            }
+    fn read_file_key(&self) -> Result<[u8; FILE_KEY_LEN]> {
+        use base64::Engine;
+
+        let raw = std::fs::read(&self.key_path).context("Failed to read secrets key file")?;
+        let key_bytes = if raw.len() == FILE_KEY_LEN {
+            raw
+        } else {
+            let encoded = String::from_utf8(raw).context("Invalid secrets key format")?;
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded.trim())
+                .context("Failed to decode secrets key")?
+        };
+        if key_bytes.len() != FILE_KEY_LEN {
+            bail!("Invalid secrets key length");
         }
-        let content = serde_json::to_string_pretty(store)?;
-        std::fs::write(&self.store_path, content)?;
-
-        // Restrict file permissions on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(&self.store_path, perms)?;
-        }
-
-        Ok(())
+        let mut key = [0u8; FILE_KEY_LEN];
+        key.copy_from_slice(&key_bytes);
+        Ok(key)
     }
 
     fn load_or_create_file_key(&self) -> Result<[u8; FILE_KEY_LEN]> {
         use base64::Engine;
 
         if self.key_path.exists() {
-            let raw = std::fs::read(&self.key_path).context("Failed to read secrets key file")?;
-            let key_bytes = if raw.len() == FILE_KEY_LEN {
-                raw
-            } else {
-                let encoded = String::from_utf8(raw).context("Invalid secrets key format")?;
-                base64::engine::general_purpose::STANDARD
-                    .decode(encoded.trim())
-                    .context("Failed to decode secrets key")?
-            };
-            if key_bytes.len() != FILE_KEY_LEN {
-                bail!("Invalid secrets key length");
-            }
-            let mut key = [0u8; FILE_KEY_LEN];
-            key.copy_from_slice(&key_bytes);
-            return Ok(key);
-        }
-
-        if let Some(parent) = self.key_path.parent() {
-            std::fs::create_dir_all(parent)?;
-
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let perms = std::fs::Permissions::from_mode(0o700);
-                std::fs::set_permissions(parent, perms)?;
-            }
+            return self.read_file_key();
         }
 
         let mut key = [0u8; FILE_KEY_LEN];
         rand::rngs::OsRng.fill_bytes(&mut key);
         let encoded = base64::engine::general_purpose::STANDARD.encode(key);
-        std::fs::write(&self.key_path, encoded).context("Failed to write secrets key file")?;
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(&self.key_path, perms)?;
+        match crate::secure_fs::create_private_file(&self.key_path, encoded.as_bytes()) {
+            Ok(()) => Ok(key),
+            Err(e) => {
+                let already_exists = e
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|ioe| ioe.kind() == std::io::ErrorKind::AlreadyExists);
+                if already_exists {
+                    self.read_file_key()
+                } else {
+                    Err(e)
+                }
+            }
         }
-
-        Ok(key)
     }
 
     fn encrypt_value(&self, value: &str) -> Result<String> {
