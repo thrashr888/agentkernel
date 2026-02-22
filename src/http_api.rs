@@ -74,28 +74,18 @@ fn load_api_key_from_config() -> Option<String> {
     let content = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!(
-                "[api] Failed to read {}: {}",
-                config_path.display(),
-                e
-            );
+            eprintln!("[api] Failed to read {}: {}", config_path.display(), e);
             return None;
         }
     };
     let parsed: toml::Value = match toml::from_str(&content) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!(
-                "[api] Failed to parse {}: {}",
-                config_path.display(),
-                e
-            );
+            eprintln!("[api] Failed to parse {}: {}", config_path.display(), e);
             return None;
         }
     };
-    let Some(api_cfg) = parsed.get("api").and_then(|v| v.as_table()) else {
-        return None;
-    };
+    let api_cfg = parsed.get("api").and_then(|v| v.as_table())?;
 
     if let Some(env_name) = api_cfg
         .get("api_key_env")
@@ -134,11 +124,7 @@ fn load_api_allow_sudo_exec_from_config() -> bool {
     let content = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!(
-                "[api] Failed to read {}: {}",
-                config_path.display(),
-                e
-            );
+            eprintln!("[api] Failed to read {}: {}", config_path.display(), e);
             return false;
         }
     };
@@ -146,11 +132,7 @@ fn load_api_allow_sudo_exec_from_config() -> bool {
     let parsed: toml::Value = match toml::from_str(&content) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!(
-                "[api] Failed to parse {}: {}",
-                config_path.display(),
-                e
-            );
+            eprintln!("[api] Failed to parse {}: {}", config_path.display(), e);
             return false;
         }
     };
@@ -714,9 +696,7 @@ async fn extract_identity(
                         if let Some(expected_api_key) = state.api_key.as_deref()
                             && crate::identity::validate_api_key(token, expected_api_key).is_ok()
                         {
-                            return crate::identity::AgentIdentity::from_api_key(
-                                token.to_string(),
-                            );
+                            return crate::identity::AgentIdentity::from_api_key(token.to_string());
                         }
                         return crate::identity::AgentIdentity::anonymous();
                     }

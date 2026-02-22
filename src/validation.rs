@@ -208,10 +208,16 @@ pub fn validate_git_source_url(url: &str) -> Result<()> {
         bail!("Git source URL cannot be empty");
     }
     if url.len() > MAX_GIT_URL_LEN {
-        bail!("Git source URL too long (max {} characters)", MAX_GIT_URL_LEN);
+        bail!(
+            "Git source URL too long (max {} characters)",
+            MAX_GIT_URL_LEN
+        );
     }
 
-    if url.chars().any(|ch| ch.is_ascii_control() || ch.is_whitespace()) {
+    if url
+        .chars()
+        .any(|ch| ch.is_ascii_control() || ch.is_whitespace())
+    {
         bail!("Git source URL cannot contain whitespace or control characters");
     }
 

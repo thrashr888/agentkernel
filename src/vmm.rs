@@ -1711,7 +1711,10 @@ impl VmManager {
             .get_mut(&cmd.sandbox)
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' is not running", cmd.sandbox))?;
         let result = sandbox
-            .exec_with_options(&["kill", "-0", &pid_str], &crate::backend::ExecOptions::default())
+            .exec_with_options(
+                &["kill", "-0", &pid_str],
+                &crate::backend::ExecOptions::default(),
+            )
             .await?;
 
         if result.exit_code == 0 {
