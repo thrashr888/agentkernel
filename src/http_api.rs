@@ -6,7 +6,7 @@
 //!
 //! API key authentication is optional. To enable:
 //! - Set `AGENTKERNEL_API_KEY` environment variable
-//! - Or configure `api_key` in the config file
+//! - Or configure `[api].api_key` / `[api].api_key_env` in `agentkernel.toml`
 //!
 //! When enabled, requests must include the API key in the Authorization header:
 //! ```text
@@ -46,6 +46,79 @@ fn full<T: Into<bytes::Bytes>>(chunk: T) -> BoxBody {
     Full::new(chunk.into())
         .map_err(|never| match never {})
         .boxed()
+}
+
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+fn load_api_key_from_config() -> Option<String> {
+    let config_path = std::path::PathBuf::from("agentkernel.toml");
+    if !config_path.exists() {
+        return None;
+    }
+
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "[api] Failed to read {}: {}",
+                config_path.display(),
+                e
+            );
+            return None;
+        }
+    };
+    let parsed: toml::Value = match toml::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "[api] Failed to parse {}: {}",
+                config_path.display(),
+                e
+            );
+            return None;
+        }
+    };
+    let Some(api_cfg) = parsed.get("api").and_then(|v| v.as_table()) else {
+        return None;
+    };
+
+    if let Some(env_name) = api_cfg
+        .get("api_key_env")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        && let Ok(key) = std::env::var(env_name)
+        && !key.trim().is_empty()
+    {
+        return Some(key);
+    }
+
+    api_cfg
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(std::string::ToString::to_string)
+}
+
+fn load_api_key() -> Option<String> {
+    if let Ok(key) = std::env::var("AGENTKERNEL_API_KEY")
+        && !key.trim().is_empty()
+    {
+        return Some(key);
+    }
+    load_api_key_from_config()
 }
 
 /// Request to run a command
@@ -423,8 +496,7 @@ struct AppState {
 
 impl AppState {
     fn new() -> Self {
-        // Load API key from environment variable
-        let api_key = std::env::var("AGENTKERNEL_API_KEY").ok();
+        let api_key = load_api_key();
         if api_key.is_some() {
             eprintln!("API key authentication enabled");
         }
@@ -541,7 +613,7 @@ impl AppState {
         match auth_header {
             Some(header) if header.starts_with("Bearer ") => {
                 let token = &header[7..];
-                if token == api_key {
+                if constant_time_eq(token, api_key) {
                     Ok(())
                 } else {
                     Err(json_response(
@@ -589,7 +661,14 @@ async fn extract_identity(
                     Ok(claims) => return crate::identity::AgentIdentity::from_jwt(claims),
                     Err(e) => {
                         eprintln!("[enterprise] JWT validation failed: {}", e);
-                        // Fall through to API key identity
+                        if let Some(expected_api_key) = state.api_key.as_deref()
+                            && crate::identity::validate_api_key(token, expected_api_key).is_ok()
+                        {
+                            return crate::identity::AgentIdentity::from_api_key(
+                                token.to_string(),
+                            );
+                        }
+                        return crate::identity::AgentIdentity::anonymous();
                     }
                 }
             }
@@ -2443,6 +2522,29 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             &ApiResponse::<()>::error(e.to_string()),
         );
     }
+    if body.source_ref.is_some() && body.source_url.is_none() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("source_ref requires source_url"),
+        );
+    }
+    if let Some(ref source_url) = body.source_url {
+        let normalized = source_url.strip_prefix("git:").unwrap_or(source_url);
+        if let Err(e) = validation::validate_git_source_url(normalized) {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    }
+    if let Some(ref git_ref) = body.source_ref
+        && let Err(e) = validation::validate_git_ref(git_ref)
+    {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
 
     let image = body.image.as_deref().unwrap_or("alpine:3.20");
     let vcpus = body.vcpus.unwrap_or(1);
@@ -2603,7 +2705,9 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
     }
 
     // Clone git repo if source_url is specified
-    if let Some(ref url) = body.source_url {
+    if let Some(ref source_url) = body.source_url {
+        let url = source_url.strip_prefix("git:").unwrap_or(source_url);
+
         // Install git
         let install = vec![
             "sh".to_string(),
@@ -2615,7 +2719,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         let clone = vec![
             "git".to_string(),
             "clone".to_string(),
-            url.clone(),
+            url.to_string(),
             "/workspace".to_string(),
         ];
         if let Err(e) = manager.exec_cmd(&body.name, &clone).await {
@@ -2836,6 +2940,14 @@ async fn handle_exec_sandbox(
             &ApiResponse::<()>::error("command is required"),
         );
     }
+    if let Some(ref workdir) = body.workdir
+        && let Err(e) = validation::validate_exec_workdir(workdir)
+    {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
 
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
@@ -2905,6 +3017,14 @@ async fn handle_exec_detach(
         return json_response(
             StatusCode::BAD_REQUEST,
             &ApiResponse::<()>::error("command is required"),
+        );
+    }
+    if let Some(ref workdir) = body.workdir
+        && let Err(e) = validation::validate_exec_workdir(workdir)
+    {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
         );
     }
 

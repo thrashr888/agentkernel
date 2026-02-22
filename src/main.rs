@@ -985,6 +985,16 @@ memory_mb = 512
 
                 // Validate sandbox name (security: prevents command injection)
                 validation::validate_sandbox_name(&name)?;
+                if git_ref.is_some() && source.is_none() {
+                    bail!("--git-ref requires --source");
+                }
+                if let Some(ref source_url) = source {
+                    let url = source_url.strip_prefix("git:").unwrap_or(source_url);
+                    validation::validate_git_source_url(url)?;
+                }
+                if let Some(ref git_ref_val) = git_ref {
+                    validation::validate_git_ref(git_ref_val)?;
+                }
 
                 // Check setup status first
                 let status = check_installation();
@@ -1685,6 +1695,9 @@ memory_mb = 512
 
             if command.is_empty() {
                 bail!("No command specified. Usage: agentkernel exec <name> <command...>");
+            }
+            if let Some(ref dir) = workdir {
+                validation::validate_exec_workdir(dir)?;
             }
 
             let mut manager = VmManager::new()?;

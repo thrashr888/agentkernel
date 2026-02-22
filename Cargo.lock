@@ -38,6 +38,7 @@ dependencies = [
  "rcgen",
  "redis",
  "reqwest",
+ "ring",
  "rusqlite",
  "rustls",
  "rustls-pemfile",
