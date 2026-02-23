@@ -64,6 +64,11 @@ agentkernel run --keep npm test
 
 # Use a config file
 agentkernel run --config ./agentkernel.toml npm test
+
+# Emit a verifiable execution receipt
+agentkernel run --receipt ./run-receipt.json -- python3 -c "print('ok')"
+agentkernel receipt verify ./run-receipt.json
+agentkernel receipt replay ./run-receipt.json
 ```
 
 ## Auto-Detection
@@ -622,6 +627,7 @@ See [BENCHMARK.md](BENCHMARK.md) for detailed Hyperlight benchmarks.
 - [Sessions](docs/cmd-sessions.md) - Agent session lifecycle management
 - [Pipelines](docs/cmd-pipelines.md) - Multi-step sandbox pipelines
 - [Parallel](docs/cmd-parallel.md) - Concurrent job execution
+- [Execution Receipts](docs/commands/receipts.md) - Verify and replay command executions
 - [Secrets](docs/cmd-secrets.md) - API key and credential management
 - [Agents](docs/agents.md) - Running Claude Code, Codex, Gemini CLI
 - [HTTP API](docs/api.md) - Programmatic access

@@ -24,6 +24,7 @@ agentkernel run [OPTIONS] <COMMAND>...
 | `--branch` | Use git project+branch as sandbox name (reuses existing sandbox) |
 | `--no-network` | Disable network access |
 | `-P, --publish <PORT>` | Port mapping (e.g. `8080:80`, `3000`). Repeatable. Requires `--fast=false`. |
+| `--receipt <FILE>` | Write a verifiable execution receipt JSON for this run |
 
 ## Examples
 
@@ -99,6 +100,19 @@ Note: Port mapping is not compatible with `--fast` mode (container pool). Use `-
 ```bash
 agentkernel run --template python -- python3 -c "print('hello')"
 agentkernel run --template rust-ci -- cargo test
+```
+
+### Execution receipt
+
+```bash
+# Run and emit a receipt
+agentkernel run --receipt ./run-receipt.json -- python3 -c "print('ok')"
+
+# Verify receipt integrity
+agentkernel receipt verify ./run-receipt.json
+
+# Replay the recorded invocation and compare hash/exit code
+agentkernel receipt replay ./run-receipt.json
 ```
 
 ## Auto-Detection

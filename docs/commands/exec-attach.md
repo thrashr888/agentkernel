@@ -18,6 +18,10 @@ agentkernel exec [OPTIONS] <NAME> -- <COMMAND>...
 | Option | Description |
 |--------|-------------|
 | `-e, --env <KEY=VALUE>` | Set environment variable (can be repeated) |
+| `-w, --workdir <PATH>` | Set working directory inside the sandbox |
+| `--sudo` | Run command as root |
+| `-d, --detach` | Run in background and return command ID |
+| `--receipt <FILE>` | Write a verifiable execution receipt JSON (not supported with `--detach`) |
 
 ### Examples
 
@@ -39,6 +43,10 @@ agentkernel exec my-sandbox \
 
 # Run a shell command
 agentkernel exec my-sandbox -- sh -c "echo \$HOME && pwd"
+
+# Emit an execution receipt
+agentkernel exec my-sandbox --receipt ./exec-receipt.json -- python3 -c "print(1+1)"
+agentkernel receipt verify ./exec-receipt.json
 ```
 
 ### Output

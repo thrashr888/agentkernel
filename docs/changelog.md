@@ -6,7 +6,7 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
-## [Unreleased] — Durable Objects, LLM Key Management & Desktop UI
+## [Unreleased] — Durable Objects, LLM Key Management, Execution Receipts & Desktop UI
 
 ### Added
 
@@ -17,6 +17,8 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 - **LLM key management API** — `GET /llm/keys`, `PUT /llm/keys/{provider}`, `DELETE /llm/keys/{provider}` HTTP endpoints
 - **Org-level LLM key injection** — `[llm_keys]` config section; proxy auto-injects org keys for configured domains unless overridden by sandbox-specific bindings; `key_source` field tracks origin (org/sandbox/none) in LLM events
 - **Cedar `UseLlmProvider` action** — policy-level control over LLM provider access per sandbox
+- **Execution receipts** — `run`/`exec` support `--receipt <FILE>` to emit tamper-evident JSON receipts with invocation metadata, output hash, and exit code
+- **Receipt verification/replay CLI** — `agentkernel receipt verify <FILE>` validates receipt integrity; `agentkernel receipt replay <FILE>` re-runs the recorded invocation and compares output hash + exit code
 - **Durable Objects page** — desktop app page for managing stateful durable objects with status badges (active/hibernating/deleted), create dialog, delete actions, and sandbox links
 - **Schedules page** — desktop app page for cron and one-shot schedules with type/status badges, target display, last-fired timestamps, and create dialog
 - **Durable Stores page** — desktop app page for persistent data stores with kind badges (SQLite/Postgres/MySQL/Redis), click-through SQL console for SQLite stores with query/execute support
