@@ -168,7 +168,10 @@ impl ApiClient {
         self.request(
             reqwest::Method::PATCH,
             &format!("/sandboxes/{name}"),
-            Some(&Body { labels, description }),
+            Some(&Body {
+                labels,
+                description,
+            }),
         )
         .await
     }

@@ -54,6 +54,7 @@ prometheus = { version = "0.13", default-features = false }
 wat = "1.225"  # WAT to WASM compiler for WebAssembly text format support
 tempfile = "3.0"  # Temporary directories for rootfs conversion
 dirs = "6.0.0"
+sysinfo = "0.34"
 
 # SSH support (CA key generation and client key signing)
 ssh-key = { version = "0.6", features = ["ed25519", "rand_core"] }

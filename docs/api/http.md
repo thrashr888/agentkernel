@@ -16,13 +16,21 @@ agentkernel serve
 agentkernel serve --port 3000
 
 # With API key authentication
+agentkernel serve --api-key your-secret
+
+# Multiple API keys
+agentkernel serve --api-key key1 --api-key key2
+
+# Load keys from a file (one per line, # comments supported)
+agentkernel serve --api-key-file /path/to/keys.txt
+
+# Or via environment variable
 AGENTKERNEL_API_KEY=your-secret agentkernel serve
 ```
 
 ## Authentication
 
-If `AGENTKERNEL_API_KEY` is set (or `[api].api_key` is configured), all requests require
-an `Authorization` header, except for health/metrics:
+When API key authentication is enabled (via `--api-key`, `--api-key-file`, `AGENTKERNEL_API_KEY`, or `[api].api_key` in config), all requests require an `Authorization` header, except for `/health` and `/status`:
 
 ```text
 Authorization: Bearer your-secret
@@ -31,6 +39,8 @@ Authorization: Bearer your-secret
 ```bash
 curl -H "Authorization: Bearer your-secret" http://localhost:18888/sandboxes
 ```
+
+Multiple keys can be configured for key rotation or multi-tenant setups. Any valid key will authenticate the request.
 
 ## Endpoints
 
@@ -47,6 +57,73 @@ curl http://localhost:18888/health
 ```json
 {"status": "ok"}
 ```
+
+### Server Status
+
+```
+GET /status
+```
+
+```bash
+curl http://localhost:18888/status
+```
+
+```json
+{
+  "success": true,
+  "data": {"version": "0.15.0", "backend": "docker", "api_key_configured": false}
+}
+```
+
+### Server Statistics
+
+```
+GET /stats
+```
+
+```bash
+curl http://localhost:18888/stats
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "sandbox_count": 12,
+    "sandbox_limit": 0,
+    "backend": "docker",
+    "uptime_seconds": 3600,
+    "version": "0.15.0",
+    "resource_usage": {
+      "cpu_percent": 65.2,
+      "memory_used_mb": 8192,
+      "memory_total_mb": 16384,
+      "disk_used_mb": 4096
+    }
+  }
+}
+```
+
+The `resource_usage` field provides host-level CPU, memory, and disk metrics for fleet load-balancing.
+
+### Garbage Collection
+
+```
+POST /gc
+```
+
+```bash
+curl -X POST http://localhost:18888/gc
+```
+
+```json
+{
+  "success": true,
+  "data": {"removed": ["expired-sandbox-1", "old-test"]}
+}
+```
+
+Removes sandboxes that have exceeded their time-to-live.
 
 ### Run Command
 
@@ -138,10 +215,15 @@ data: {"exit_code":0}
 
 ```
 GET /sandboxes
+GET /sandboxes?label=key:value
 ```
 
 ```bash
+# List all sandboxes
 curl http://localhost:18888/sandboxes
+
+# Filter by labels (multiple labels are ANDed)
+curl "http://localhost:18888/sandboxes?label=env:prod&label=team:ml"
 ```
 
 ```json
@@ -184,14 +266,47 @@ curl -X POST http://localhost:18888/sandboxes \
 | `vcpus` | integer | No | Number of vCPUs (default: 1) |
 | `memory_mb` | integer | No | Memory in MB (default: 512) |
 | `profile` | string | No | Security profile: `permissive`, `moderate`, `restrictive` |
+| `labels` | object | No | Key-value labels for fleet management and filtering |
+| `description` | string | No | Human-readable description |
 
-**With resource limits:**
+**With labels and description:**
 
 ```bash
 curl -X POST http://localhost:18888/sandboxes \
   -H "Content-Type: application/json" \
-  -d '{"name": "big", "vcpus": 2, "memory_mb": 1024, "profile": "restrictive"}'
+  -d '{
+    "name": "eval-sandbox",
+    "image": "python:3.12-alpine",
+    "labels": {"scenario": "drift_s3", "model": "sonnet", "eval_run": "pr-123"},
+    "description": "Drift scenario evaluation"
+  }'
 ```
+
+### Update Sandbox
+
+```
+PATCH /sandboxes/{name}
+```
+
+```bash
+curl -X PATCH http://localhost:18888/sandboxes/my-sandbox \
+  -H "Content-Type: application/json" \
+  -d '{"labels": {"env": "staging"}, "description": "Updated description"}'
+```
+
+```json
+{
+  "success": true,
+  "data": {"name": "my-sandbox", "uuid": "019abc12-...", "status": "running", "backend": "docker"}
+}
+```
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `labels` | object | No | Replace all labels |
+| `description` | string | No | Update description |
 
 ### Get Sandbox
 

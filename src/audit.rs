@@ -19,6 +19,8 @@ pub enum AuditEvent {
         name: String,
         image: String,
         backend: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        labels: std::collections::HashMap<String, String>,
     },
     /// Sandbox started
     SandboxStarted {
@@ -261,6 +263,7 @@ mod tests {
             name: "test".to_string(),
             image: "alpine:3.20".to_string(),
             backend: "docker".to_string(),
+            labels: Default::default(),
         });
 
         let json = serde_json::to_string(&entry).unwrap();
@@ -280,6 +283,7 @@ mod tests {
             name: "test1".to_string(),
             image: "alpine".to_string(),
             backend: "docker".to_string(),
+            labels: Default::default(),
         })
         .unwrap();
 
@@ -305,6 +309,7 @@ mod tests {
             name: "test1".to_string(),
             image: "alpine".to_string(),
             backend: "docker".to_string(),
+            labels: Default::default(),
         })
         .unwrap();
 
@@ -312,6 +317,7 @@ mod tests {
             name: "test2".to_string(),
             image: "alpine".to_string(),
             backend: "docker".to_string(),
+            labels: Default::default(),
         })
         .unwrap();
 

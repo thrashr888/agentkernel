@@ -564,8 +564,8 @@ struct RunResponse {
 
 /// Shared state for the HTTP server
 struct AppState {
-    /// Optional API key for authentication
-    api_key: Option<String>,
+    /// API keys for authentication (empty = no auth required)
+    api_keys: Vec<String>,
     /// Whether HTTP API callers may request root execution (`sudo: true`).
     allow_sudo_exec: bool,
     /// Server start time for uptime calculation
@@ -585,11 +585,21 @@ struct AppState {
 }
 
 impl AppState {
-    fn new(api_key_override: Option<String>) -> Self {
-        let api_key = api_key_override.or_else(load_api_key);
+    fn new(api_keys_override: Vec<String>) -> Self {
+        let mut api_keys = api_keys_override;
+        // If no keys provided via CLI, fall back to env var / config file
+        if api_keys.is_empty()
+            && let Some(key) = load_api_key()
+        {
+            api_keys.push(key);
+        }
         let allow_sudo_exec = load_api_allow_sudo_exec_from_config();
-        if api_key.is_some() {
-            eprintln!("API key authentication enabled");
+        if !api_keys.is_empty() {
+            eprintln!(
+                "API key authentication enabled ({} key{})",
+                api_keys.len(),
+                if api_keys.len() == 1 { "" } else { "s" }
+            );
         }
         if allow_sudo_exec {
             eprintln!("[api] Root exec via HTTP API is enabled");
@@ -599,7 +609,7 @@ impl AppState {
         let (enterprise_config, policy_engine) = Self::init_enterprise();
 
         Self {
-            api_key,
+            api_keys,
             allow_sudo_exec,
             started_at: std::time::Instant::now(),
             opencode: Arc::new(OpenCodeState::new()),
@@ -615,14 +625,14 @@ impl AppState {
         }
     }
 
-    /// Create state with explicit API key
+    /// Create state with explicit API keys
     #[allow(dead_code)]
-    fn with_api_key(api_key: Option<String>) -> Self {
-        if api_key.is_some() {
+    fn with_api_keys(api_keys: Vec<String>) -> Self {
+        if !api_keys.is_empty() {
             eprintln!("API key authentication enabled");
         }
         Self {
-            api_key,
+            api_keys,
             allow_sudo_exec: false,
             started_at: std::time::Instant::now(),
             opencode: Arc::new(OpenCodeState::new()),
@@ -696,11 +706,10 @@ impl AppState {
     /// Check if a request is authenticated
     #[allow(clippy::result_large_err)]
     fn check_auth(&self, req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
-        // If no API key is configured, allow all requests
-        let api_key = match &self.api_key {
-            Some(key) => key,
-            None => return Ok(()),
-        };
+        // If no API keys configured, allow all requests
+        if self.api_keys.is_empty() {
+            return Ok(());
+        }
 
         // Get Authorization header
         let auth_header = req
@@ -711,7 +720,7 @@ impl AppState {
         match auth_header {
             Some(header) if header.starts_with("Bearer ") => {
                 let token = &header[7..];
-                if constant_time_eq(token, api_key) {
+                if self.api_keys.iter().any(|key| constant_time_eq(token, key)) {
                     Ok(())
                 } else {
                     Err(json_response(
@@ -759,8 +768,10 @@ async fn extract_identity(
                     Ok(claims) => return crate::identity::AgentIdentity::from_jwt(claims),
                     Err(e) => {
                         eprintln!("[enterprise] JWT validation failed: {}", e);
-                        if let Some(expected_api_key) = state.api_key.as_deref()
-                            && crate::identity::validate_api_key(token, expected_api_key).is_ok()
+                        if state
+                            .api_keys
+                            .iter()
+                            .any(|k| crate::identity::validate_api_key(token, k).is_ok())
                         {
                             return crate::identity::AgentIdentity::from_api_key(token.to_string());
                         }
@@ -5118,8 +5129,8 @@ async fn execute_runtime_activity(activity: &RuntimeActivity) -> Result<String> 
 
 /// Run the HTTP API server (plain HTTP)
 #[allow(dead_code)]
-pub async fn run_server(addr: SocketAddr, api_key: Option<String>) -> Result<()> {
-    let state = Arc::new(AppState::new(api_key));
+pub async fn run_server(addr: SocketAddr, api_keys: Vec<String>) -> Result<()> {
+    let state = Arc::new(AppState::new(api_keys));
     spawn_orchestration_worker(state.clone());
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) =
@@ -5169,7 +5180,7 @@ pub async fn run_server(addr: SocketAddr, api_key: Option<String>) -> Result<()>
 pub async fn run_server_with_tls(
     addr: SocketAddr,
     tls_config: Option<crate::tls::TlsConfig>,
-    api_key: Option<String>,
+    api_keys: Vec<String>,
 ) -> Result<()> {
     let acceptor = match tls_config {
         Some(ref tls) => {
@@ -5179,7 +5190,7 @@ pub async fn run_server_with_tls(
         None => None,
     };
 
-    let state = Arc::new(AppState::new(api_key));
+    let state = Arc::new(AppState::new(api_keys));
     spawn_orchestration_worker(state.clone());
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) =
@@ -5269,7 +5280,7 @@ async fn handle_status(state: Arc<AppState>) -> Response<BoxBody> {
     let info = StatusInfo {
         version,
         backend,
-        api_key_configured: state.api_key.is_some(),
+        api_key_configured: !state.api_keys.is_empty(),
     };
 
     json_response(StatusCode::OK, &ApiResponse::success(info))
@@ -5277,12 +5288,21 @@ async fn handle_status(state: Arc<AppState>) -> Response<BoxBody> {
 
 async fn handle_stats(state: Arc<AppState>) -> Response<BoxBody> {
     #[derive(serde::Serialize)]
+    struct ResourceUsage {
+        cpu_percent: f32,
+        memory_used_mb: u64,
+        memory_total_mb: u64,
+        disk_used_mb: u64,
+    }
+
+    #[derive(serde::Serialize)]
     struct Stats {
         sandbox_count: usize,
         sandbox_limit: usize,
         backend: String,
         uptime_seconds: u64,
         version: String,
+        resource_usage: ResourceUsage,
     }
 
     let (sandbox_count, backend) = match state.get_manager().await {
@@ -5294,12 +5314,39 @@ async fn handle_stats(state: Arc<AppState>) -> Response<BoxBody> {
         Err(_) => (0, "unknown".to_string()),
     };
 
+    // Gather OS-level resource usage
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_cpu_usage();
+    // Brief sleep to get meaningful CPU measurement (sysinfo needs two samples)
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    sys.refresh_cpu_usage();
+    sys.refresh_memory();
+
+    let cpu_percent = sys.global_cpu_usage();
+    let memory_used_mb = sys.used_memory() / (1024 * 1024);
+    let memory_total_mb = sys.total_memory() / (1024 * 1024);
+
+    // Disk usage for root filesystem
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let disk_used_mb = disks
+        .iter()
+        .find(|d| d.mount_point() == std::path::Path::new("/"))
+        .map(|d| (d.total_space() - d.available_space()) / (1024 * 1024))
+        .unwrap_or(0);
+
     let stats = Stats {
         sandbox_count,
         sandbox_limit: 0,
         backend,
         uptime_seconds: state.started_at.elapsed().as_secs(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        resource_usage: ResourceUsage {
+            cpu_percent,
+            memory_used_mb,
+            memory_total_mb,
+            disk_used_mb,
+        },
     };
 
     json_response(StatusCode::OK, &ApiResponse::success(stats))
@@ -6318,14 +6365,14 @@ mod tests {
 
     #[test]
     fn test_app_state_with_api_key() {
-        let state = AppState::with_api_key(Some("secret123".to_string()));
-        assert_eq!(state.api_key, Some("secret123".to_string()));
+        let state = AppState::with_api_keys(vec!["secret123".to_string()]);
+        assert_eq!(state.api_keys, vec!["secret123".to_string()]);
     }
 
     #[test]
     fn test_app_state_without_api_key() {
-        let state = AppState::with_api_key(None);
-        assert!(state.api_key.is_none());
+        let state = AppState::with_api_keys(vec![]);
+        assert!(state.api_keys.is_empty());
     }
 
     // === default_fast tests ===

@@ -48,6 +48,7 @@ impl Stats {
                     name,
                     image,
                     backend,
+                    ..
                 } => {
                     sandboxes_created += 1;
                     *image_counts.entry(image.clone()).or_default() += 1;
@@ -164,6 +165,7 @@ mod tests {
                 name: "test1".to_string(),
                 image: "alpine:3.20".to_string(),
                 backend: "docker".to_string(),
+                labels: Default::default(),
             }),
             make_entry(AuditEvent::CommandExecuted {
                 sandbox: "test1".to_string(),
@@ -197,11 +199,13 @@ mod tests {
                 name: "a".to_string(),
                 image: "alpine".to_string(),
                 backend: "docker".to_string(),
+                labels: Default::default(),
             }),
             make_entry(AuditEvent::SandboxCreated {
                 name: "b".to_string(),
                 image: "alpine".to_string(),
                 backend: "docker".to_string(),
+                labels: Default::default(),
             }),
             make_entry(AuditEvent::SandboxRemoved {
                 name: "a".to_string(),

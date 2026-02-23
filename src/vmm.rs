@@ -660,6 +660,11 @@ impl VmManager {
             name: name.to_string(),
             image: effective_image,
             backend: self.backend.to_string(),
+            labels: self
+                .sandboxes
+                .get(name)
+                .map(|s| s.labels.clone())
+                .unwrap_or_default(),
         });
         crate::metrics::record_sandbox_lifecycle(
             "created",
@@ -1917,6 +1922,19 @@ impl VmManager {
                 }
                 None
             })
+            .collect()
+    }
+
+    /// Return names of sandboxes matching all given label key=value pairs.
+    pub fn list_matching_labels(&self, filters: &[(String, String)]) -> Vec<String> {
+        self.sandboxes
+            .iter()
+            .filter(|(_, state)| {
+                filters
+                    .iter()
+                    .all(|(k, v)| state.labels.get(k).map(|lv| lv == v).unwrap_or(false))
+            })
+            .map(|(name, _)| name.clone())
             .collect()
     }
 
