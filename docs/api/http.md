@@ -123,7 +123,7 @@ The `resource_usage` field provides host-level CPU, memory, and disk metrics for
 GET /events
 ```
 
-Streams sandbox lifecycle events via Server-Sent Events. No authentication required. Requires `--webhook-url` or `--otel-endpoint` to enable the event bus.
+Streams sandbox lifecycle events via Server-Sent Events. Requires authentication when API keys are configured. Requires `--webhook-url` or `--otel-endpoint` to enable the event bus.
 
 ```bash
 # Stream all events

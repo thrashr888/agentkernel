@@ -1,8 +1,9 @@
 //! OpenTelemetry integration for agentkernel.
 //!
 //! Initializes an OTLP/HTTP trace exporter and provides helpers for
-//! extracting W3C `traceparent` context from incoming HTTP requests and
-//! creating spans for sandbox operations.
+//! extracting W3C `traceparent` context from incoming HTTP requests.
+//! Each HTTP request handled by `http_api` is wrapped in a single
+//! server span; sandbox-level sub-spans are not created.
 
 use anyhow::Result;
 use hyper::Request;

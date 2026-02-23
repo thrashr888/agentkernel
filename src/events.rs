@@ -42,41 +42,60 @@ pub fn new_event_bus() -> EventBus {
 // ---------------------------------------------------------------------------
 
 /// Background task that forwards events to webhook URLs with retry.
+///
+/// Uses a bounded semaphore to limit concurrent in-flight deliveries.
 pub async fn webhook_dispatcher(mut rx: broadcast::Receiver<SandboxEvent>, urls: Vec<String>) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap_or_default();
 
-    while let Ok(event) = rx.recv().await {
-        for url in &urls {
-            let client = client.clone();
-            let url = url.clone();
-            let payload = event.clone();
-            tokio::spawn(async move {
-                for attempt in 0..3u32 {
-                    match client.post(&url).json(&payload).send().await {
-                        Ok(resp) if resp.status().is_success() => break,
-                        Ok(resp) => {
-                            eprintln!(
-                                "[webhook] POST {} returned {} (attempt {})",
-                                url,
-                                resp.status(),
-                                attempt + 1
-                            );
+    // Limit concurrent webhook deliveries to avoid unbounded task growth
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(64));
+
+    loop {
+        match rx.recv().await {
+            Ok(event) => {
+                for url in &urls {
+                    let client = client.clone();
+                    let url = url.clone();
+                    let payload = event.clone();
+                    let permit = semaphore.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit.acquire().await;
+                        for attempt in 0..3u32 {
+                            match client.post(&url).json(&payload).send().await {
+                                Ok(resp) if resp.status().is_success() => break,
+                                Ok(resp) => {
+                                    eprintln!(
+                                        "[webhook] POST {} returned {} (attempt {})",
+                                        url,
+                                        resp.status(),
+                                        attempt + 1
+                                    );
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[webhook] POST {} failed: {} (attempt {})",
+                                        url,
+                                        e,
+                                        attempt + 1
+                                    );
+                                }
+                            }
+                            tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(attempt)))
+                                .await;
                         }
-                        Err(e) => {
-                            eprintln!(
-                                "[webhook] POST {} failed: {} (attempt {})",
-                                url,
-                                e,
-                                attempt + 1
-                            );
-                        }
-                    }
-                    tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(attempt))).await;
+                    });
                 }
-            });
+            }
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                eprintln!(
+                    "[webhook] receiver lagged, skipped {} event(s); continuing",
+                    skipped
+                );
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
         }
     }
 }

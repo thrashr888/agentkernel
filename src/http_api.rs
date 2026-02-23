@@ -916,7 +916,12 @@ async fn handle_request(
         return Ok(handle_stats(state).await);
     }
 
-    // SSE event stream (no auth, used by observability collectors)
+    // Check authentication for all other endpoints
+    if let Err(resp) = state.check_auth(&req) {
+        return Ok(resp);
+    }
+
+    // SSE event stream (requires auth when API keys are configured)
     if method == Method::GET && segments.as_slice() == ["events"] {
         if let Some(ref bus) = state.event_bus {
             return Ok(crate::events::handle_events_sse(&req, bus).await);
@@ -927,11 +932,6 @@ async fn handle_request(
                 "Event streaming not enabled. Start server with --webhook-url or --otel-endpoint",
             ),
         ));
-    }
-
-    // Check authentication for all other endpoints
-    if let Err(resp) = state.check_auth(&req) {
-        return Ok(resp);
     }
 
     // Handle OpenCode API routes
@@ -3243,8 +3243,13 @@ async fn handle_exec_sandbox(
         }
     };
 
-    // Propagate trace context into sandbox environment variables
-    let mut env = body.env;
+    // Propagate trace context into sandbox environment variables.
+    // Filter any caller-supplied TRACEPARENT/TRACESTATE to avoid duplicates.
+    let mut env: Vec<String> = body
+        .env
+        .into_iter()
+        .filter(|e| !e.starts_with("TRACEPARENT=") && !e.starts_with("TRACESTATE="))
+        .collect();
     if let Some(ref tp) = traceparent_hdr {
         env.push(format!("TRACEPARENT={}", tp));
     }
@@ -3278,13 +3283,17 @@ async fn handle_exec_sandbox(
     };
 
     // Emit sandbox.exec.completed event
+    let event_labels = manager
+        .get_state(name)
+        .map(|s| s.labels.clone())
+        .unwrap_or_default();
     crate::events::emit(
         state.event_bus.as_ref(),
         crate::events::SandboxEvent {
             event: "sandbox.exec.completed".to_string(),
             timestamp: chrono::Utc::now(),
             sandbox: name.to_string(),
-            labels: std::collections::HashMap::new(),
+            labels: event_labels,
             metadata: serde_json::json!({
                 "command": cmd_str,
                 "duration_ms": duration_ms,
@@ -3531,6 +3540,12 @@ async fn handle_delete_sandbox(name: &str, state: Arc<AppState>) -> Response<Box
         }
     };
 
+    // Capture labels before removal (remove destroys the state)
+    let event_labels = manager
+        .get_state(name)
+        .map(|s| s.labels.clone())
+        .unwrap_or_default();
+
     match manager.remove(name).await {
         Ok(_) => {
             crate::events::emit(
@@ -3539,7 +3554,7 @@ async fn handle_delete_sandbox(name: &str, state: Arc<AppState>) -> Response<Box
                     event: "sandbox.deleted".to_string(),
                     timestamp: chrono::Utc::now(),
                     sandbox: name.to_string(),
-                    labels: std::collections::HashMap::new(),
+                    labels: event_labels,
                     metadata: serde_json::json!({}),
                 },
             );

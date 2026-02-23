@@ -34,7 +34,6 @@ dependencies = [
  "libc",
  "mysql_async",
  "opentelemetry",
- "opentelemetry-http",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "prometheus",
