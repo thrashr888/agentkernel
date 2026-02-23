@@ -62,6 +62,12 @@ ssh-key = { version = "0.6", features = ["ed25519", "rand_core"] }
 rand = "0.8"
 ring = "0.17"
 
+# OpenTelemetry trace export
+opentelemetry = "0.28"
+opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.28", features = ["http-proto", "reqwest-client"] }
+opentelemetry-http = "0.28"
+
 # TLS support for HTTP API
 rustls = { version = "0.23", features = ["ring"] }
 rustls-pemfile = "2"

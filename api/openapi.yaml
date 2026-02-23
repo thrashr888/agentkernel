@@ -47,6 +47,8 @@ tags:
     description: Schedule management (timed triggers)
   - name: Stores
     description: Durable store management (sqlite, kv, queue)
+  - name: Events
+    description: Real-time sandbox lifecycle event stream
 
 paths:
   /health:
@@ -151,6 +153,42 @@ paths:
                         memory_used_mb: 8192
                         memory_total_mb: 16384
                         disk_used_mb: 4096
+
+  /events:
+    get:
+      tags: [Events]
+      summary: Stream sandbox lifecycle events via SSE
+      description: |
+        Server-Sent Events (SSE) endpoint that streams sandbox lifecycle events
+        in real-time. No authentication required. Returns events for up to 30
+        seconds or 100 events, whichever comes first.
+
+        Events include: `sandbox.created`, `sandbox.exec.completed`, `sandbox.deleted`.
+
+        Requires the server to be started with `--webhook-url` or `--otel-endpoint`
+        to enable the event bus.
+      operationId: streamEvents
+      parameters:
+        - name: sandbox
+          in: query
+          description: Filter events to a specific sandbox name
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              examples:
+                created:
+                  value: |
+                    event: sandbox.created
+                    data: {"event":"sandbox.created","timestamp":"2026-02-23T12:00:00Z","sandbox":"my-sandbox","labels":{},"metadata":{"image":"alpine:3.20","backend":"docker","vcpus":1,"memory_mb":512,"duration_ms":150}}
+        '503':
+          description: Event bus not enabled
 
   /gc:
     post:

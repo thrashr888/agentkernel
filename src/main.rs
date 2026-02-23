@@ -12,6 +12,7 @@ mod config;
 mod daemon;
 mod docker_backend;
 mod durable_storage;
+mod events;
 mod firecracker_client;
 mod git_utils;
 mod http_api;
@@ -23,6 +24,7 @@ mod llm_intercept;
 mod mcp;
 mod metrics;
 mod object_runtime;
+mod observe;
 mod opencode;
 mod orchestration_store;
 mod permissions;
@@ -262,6 +264,12 @@ enum Commands {
         /// Require TLS (reject plain HTTP)
         #[arg(long)]
         require_tls: bool,
+        /// OpenTelemetry OTLP endpoint for trace export (e.g. http://localhost:4318)
+        #[arg(long)]
+        otel_endpoint: Option<String>,
+        /// Webhook URL for event notifications (can be repeated)
+        #[arg(long)]
+        webhook_url: Vec<String>,
     },
     /// Start MCP server for Claude Code integration (JSON-RPC over stdio)
     McpServer,
@@ -2201,6 +2209,8 @@ memory_mb = 512
             tls_cert,
             tls_key,
             require_tls,
+            otel_endpoint,
+            webhook_url,
         } => {
             let addr: std::net::SocketAddr = format!("{}:{}", host, port)
                 .parse()
@@ -2244,7 +2254,8 @@ memory_mb = 512
                 None
             };
 
-            http_api::run_server_with_tls(addr, tls_config, api_keys).await?;
+            http_api::run_server_with_tls(addr, tls_config, api_keys, otel_endpoint, webhook_url)
+                .await?;
         }
         Commands::Ssh { action } => match action {
             SshAction::Connect {
