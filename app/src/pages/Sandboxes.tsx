@@ -67,6 +67,7 @@ export function Sandboxes() {
   const [formProfile, setFormProfile] = useState("restrictive");
   const [formAgent, setFormAgent] = useState("");
   const [formLabels, setFormLabels] = useState("");
+  const [formDescription, setFormDescription] = useState("");
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 24;
 
@@ -171,6 +172,7 @@ export function Sandboxes() {
     setFormProfile("restrictive");
     setFormAgent("");
     setFormLabels("");
+    setFormDescription("");
   }
 
   function handleCreate() {
@@ -190,6 +192,7 @@ export function Sandboxes() {
       profile: formProfile,
       ...(formAgent && formAgent !== "none" ? { agent: formAgent } : {}),
       ...(Object.keys(labels).length > 0 ? { labels } : {}),
+      ...(formDescription.trim() ? { description: formDescription.trim() } : {}),
     });
   }
 
@@ -250,14 +253,14 @@ export function Sandboxes() {
               Create Sandbox
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="max-h-[85vh] flex flex-col">
             <DialogHeader>
               <DialogTitle>Create Sandbox</DialogTitle>
               <DialogDescription>
                 Configure a new isolated sandbox environment.
               </DialogDescription>
             </DialogHeader>
-            <div className="grid gap-4 py-4">
+            <div className="grid gap-4 py-4 overflow-y-auto pr-1">
               <div className="grid gap-2">
                 <Label htmlFor="name">Name</Label>
                 <Input
@@ -265,6 +268,15 @@ export function Sandboxes() {
                   placeholder="my-sandbox"
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="description">Description (optional)</Label>
+                <Input
+                  id="description"
+                  placeholder="What this sandbox is for"
+                  value={formDescription}
+                  onChange={(e) => setFormDescription(e.target.value)}
                 />
               </div>
               <div className="grid gap-2">

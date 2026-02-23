@@ -15,6 +15,7 @@ export interface SandboxInfo {
   secret_files?: string[];
   secret_mappings?: Record<string, string>;
   labels?: Record<string, string>;
+  description?: string;
 }
 
 export interface RunOutput {
@@ -109,6 +110,7 @@ export interface CreateSandboxRequest {
   created_from_template?: string;
   template_help_text?: string;
   labels?: Record<string, string>;
+  description?: string;
 }
 
 export interface ExecRequest {

@@ -15,6 +15,8 @@ import {
   Brain,
   Shield,
   ExternalLink,
+  Pencil,
+  Tag,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSandbox } from "@/lib/hooks/use-sandbox";
@@ -96,6 +98,9 @@ export function SandboxDetail() {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [runInBackground, setRunInBackground] = useState(false);
   const [activeDetachedJobId, setActiveDetachedJobId] = useState<string | null>(null);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editLabels, setEditLabels] = useState("");
+  const [editDescription, setEditDescription] = useState("");
   const outputRef = useRef<HTMLDivElement>(null);
   const proxySecretCount = sandbox?.secret_mappings
     ? Object.keys(sandbox.secret_mappings).length
@@ -211,6 +216,36 @@ export function SandboxDetail() {
       queryClient.invalidateQueries({ queryKey: ["sandbox", name] });
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
       setResizeDialogOpen(false);
+    },
+    onError: (err: unknown, _vars, context) => {
+      if (context?.toastId)
+        toast.update(
+          context.toastId,
+          err instanceof Error ? err.message : String(err),
+          "error",
+        );
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({
+      sandboxName,
+      labels,
+      description,
+    }: {
+      sandboxName: string;
+      labels: Record<string, string>;
+      description?: string;
+    }) => api.updateSandbox(sandboxName, labels, description),
+    onMutate: () => {
+      return { toastId: toast("Updating sandbox...") };
+    },
+    onSuccess: (_data, _vars, context) => {
+      if (context?.toastId)
+        toast.update(context.toastId, "Sandbox updated!", "success");
+      queryClient.invalidateQueries({ queryKey: ["sandbox", name] });
+      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+      setEditDialogOpen(false);
     },
     onError: (err: unknown, _vars, context) => {
       if (context?.toastId)
@@ -592,6 +627,16 @@ export function SandboxDetail() {
                     <SandboxStatusBadge status={sandbox.status} />
                   </td>
                 </tr>
+                {sandbox.description && (
+                  <tr className="border-b">
+                    <td className="px-4 py-2.5 text-muted-foreground">
+                      Description
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {sandbox.description}
+                    </td>
+                  </tr>
+                )}
                 <tr className="border-b">
                   <td className="px-4 py-2.5 text-muted-foreground">Backend</td>
                   <td className="px-4 py-2.5">
@@ -754,10 +799,131 @@ export function SandboxDetail() {
                     )}
                   </td>
                 </tr>
+                <tr className="border-b">
+                  <td className="px-4 py-2.5 text-muted-foreground">Labels</td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-2">
+                      {sandbox.labels && Object.keys(sandbox.labels).length > 0 ? (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {Object.entries(sandbox.labels).map(([key, value]) => (
+                            <span
+                              key={key}
+                              className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium"
+                            >
+                              <Tag className="h-3 w-3 text-muted-foreground" />
+                              <span className="text-muted-foreground">{key}:</span>
+                              <span>{value}</span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground">None</span>
+                      )}
+                    </div>
+                  </td>
+                </tr>
                 <tr>
                   <td className="px-4 py-2.5 text-muted-foreground">Actions</td>
                   <td className="px-4 py-2.5">
                     <div className="flex items-center gap-2">
+                      <Dialog
+                        open={editDialogOpen}
+                        onOpenChange={(open) => {
+                          setEditDialogOpen(open);
+                          if (open) {
+                            const labels = sandbox.labels ?? {};
+                            setEditLabels(
+                              Object.entries(labels)
+                                .map(([k, v]) => `${k}=${v}`)
+                                .join(", ")
+                            );
+                            setEditDescription(sandbox.description ?? "");
+                          }
+                        }}
+                      >
+                        <DialogTrigger asChild>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                          >
+                            <Pencil className="mr-1 h-3 w-3" />
+                            Edit
+                          </Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                          <DialogHeader>
+                            <DialogTitle>Edit Sandbox</DialogTitle>
+                            <DialogDescription>
+                              Update sandbox metadata. Changes take effect
+                              immediately.
+                            </DialogDescription>
+                          </DialogHeader>
+                          <div className="grid gap-4 py-4">
+                            <div className="grid gap-2">
+                              <Label htmlFor="edit-description">Description</Label>
+                              <Input
+                                id="edit-description"
+                                placeholder="What this sandbox is for"
+                                value={editDescription}
+                                onChange={(e) => setEditDescription(e.target.value)}
+                              />
+                            </div>
+                            <div className="grid gap-2">
+                              <Label htmlFor="edit-labels">
+                                Labels{" "}
+                                <span className="text-xs text-muted-foreground font-normal">
+                                  (comma-separated key=value)
+                                </span>
+                              </Label>
+                              <Input
+                                id="edit-labels"
+                                placeholder="env=prod, team=platform"
+                                value={editLabels}
+                                onChange={(e) => setEditLabels(e.target.value)}
+                              />
+                            </div>
+                          </div>
+                          {!!updateMutation.error && (
+                            <p className="text-sm text-destructive">
+                              {updateMutation.error instanceof Error
+                                ? updateMutation.error.message
+                                : String(updateMutation.error)}
+                            </p>
+                          )}
+                          <DialogFooter>
+                            <Button
+                              variant="outline"
+                              onClick={() => setEditDialogOpen(false)}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              onClick={() => {
+                                const labels: Record<string, string> = {};
+                                if (editLabels.trim()) {
+                                  for (const part of editLabels.split(",")) {
+                                    const eqIdx = part.indexOf("=");
+                                    if (eqIdx > 0) {
+                                      labels[part.slice(0, eqIdx).trim()] =
+                                        part.slice(eqIdx + 1).trim();
+                                    }
+                                  }
+                                }
+                                updateMutation.mutate({
+                                  sandboxName: sandbox.name,
+                                  labels,
+                                  description: editDescription || undefined,
+                                });
+                              }}
+                              disabled={updateMutation.isPending}
+                            >
+                              {updateMutation.isPending ? "Saving..." : "Save"}
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
+
                       <Dialog
                         open={resizeDialogOpen}
                         onOpenChange={(open) => {
@@ -1022,26 +1188,6 @@ export function SandboxDetail() {
             ) : (
               <p className="text-sm text-muted-foreground">
                 No proxy secret bindings configured.
-              </p>
-            )}
-
-            {/* Labels */}
-            <h3 className="text-sm font-semibold mt-6 mb-2">Labels</h3>
-            {sandbox.labels && Object.keys(sandbox.labels).length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {Object.entries(sandbox.labels).map(([key, value]) => (
-                  <span
-                    key={key}
-                    className="inline-flex items-center gap-1 rounded-md bg-muted px-2.5 py-1 text-xs font-medium"
-                  >
-                    <span className="text-muted-foreground">{key}:</span>
-                    <span>{value}</span>
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                No labels configured.
               </p>
             )}
 

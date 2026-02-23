@@ -410,6 +410,7 @@ pub fn run() {
             commands::sandboxes::quickstart_agent,
             commands::sandboxes::export_sandbox,
             commands::sandboxes::resize_sandbox,
+            commands::sandboxes::update_sandbox,
             // files
             commands::files::list_files,
             commands::files::read_file,

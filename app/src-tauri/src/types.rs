@@ -54,6 +54,9 @@ pub struct SandboxInfo {
     /// User-defined labels for fleet management and filtering.
     #[serde(default)]
     pub labels: std::collections::HashMap<String, String>,
+    /// User-defined description.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// Output from a command execution.
@@ -156,6 +159,9 @@ pub struct CreateSandboxRequest {
     /// User-defined labels for fleet management and filtering.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub labels: std::collections::BTreeMap<String, String>,
+    /// User-defined description.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Request body for executing a command in a sandbox.

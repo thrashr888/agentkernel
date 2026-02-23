@@ -60,6 +60,8 @@ export const api = {
     invoke<string>("export_sandbox", { name }),
   resizeSandbox: (name: string, vcpus?: number, memoryMb?: number) =>
     invoke<SandboxInfo>("resize_sandbox", { name, vcpus, memory_mb: memoryMb }),
+  updateSandbox: (name: string, labels?: Record<string, string>, description?: string) =>
+    invoke<SandboxInfo>("update_sandbox", { name, labels, description }),
 
   // Files
   listFiles: (name: string, path: string) =>

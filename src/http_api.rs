@@ -252,6 +252,9 @@ struct CreateRequest {
     /// User-defined labels for fleet management and filtering.
     #[serde(default)]
     labels: std::collections::HashMap<String, String>,
+    /// User-defined description.
+    #[serde(default)]
+    description: Option<String>,
 }
 
 /// Request to write a file
@@ -524,6 +527,9 @@ struct SandboxInfo {
     /// User-defined labels.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     labels: std::collections::HashMap<String, String>,
+    /// User-defined description.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
 }
 
 /// Extract env_var → host from secret binding strings.
@@ -1026,6 +1032,9 @@ async fn handle_request(
         (Method::POST, ["sandboxes", name, "resize"]) => {
             handle_resize_sandbox(req, name, state).await
         }
+
+        // Update sandbox metadata (labels, etc.)
+        (Method::PATCH, ["sandboxes", name]) => handle_patch_sandbox(req, name, state).await,
 
         // Snapshot endpoints
         (Method::GET, ["snapshots"]) => handle_list_snapshots(state).await,
@@ -2597,6 +2606,7 @@ async fn handle_list_sandboxes(req: Request<Incoming>, state: Arc<AppState>) -> 
                 proxy_port: state_info.and_then(|s| s.proxy_port),
                 secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
                 labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
+                description: state_info.and_then(|s| s.description.clone()),
             }
         })
         .collect();
@@ -2796,6 +2806,17 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         );
     }
 
+    // Set description if provided
+    if body.description.is_some()
+        && let Err(e) = manager.set_description(&body.name, body.description.as_deref())
+    {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to set description: {}", e)),
+        );
+    }
+
     // Resolve profile for start_with_permissions
     let perms = if let Some(ref profile_str) = body.profile {
         match resolve_profile(profile_str) {
@@ -2895,6 +2916,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
                 m
             },
             labels: body.labels.clone(),
+            description: None,
         }),
     )
 }
@@ -2955,6 +2977,7 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                     proxy_port: state_info.and_then(|s| s.proxy_port),
                     secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
                     labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
+                    description: state_info.and_then(|s| s.description.clone()),
                 }),
             );
         }
@@ -3023,6 +3046,7 @@ async fn handle_get_sandbox_by_uuid(uuid: &str, state: Arc<AppState>) -> Respons
             proxy_port: state_info.proxy_port,
             secret_mappings: build_secret_mappings(state_info),
             labels: state_info.labels.clone(),
+            description: state_info.description.clone(),
         }),
     )
 }
@@ -3625,6 +3649,112 @@ async fn handle_resize_sandbox(
                 .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
             secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
             labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
+            description: state_info.and_then(|s| s.description.clone()),
+        }),
+    )
+}
+
+// --- Patch sandbox handler ---
+
+#[derive(Debug, Deserialize)]
+struct PatchSandboxRequest {
+    #[serde(default)]
+    labels: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+async fn handle_patch_sandbox(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let body: PatchSandboxRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    // Sandbox must exist
+    if manager.get_state(name).is_none() {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("Sandbox '{}' not found", name)),
+        );
+    }
+
+    // Apply label updates
+    if let Some(labels) = body.labels
+        && let Err(e) = manager.set_labels(name, &labels)
+    {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to update labels: {}", e)),
+        );
+    }
+
+    // Apply description update
+    if body.description.is_some()
+        && let Err(e) = manager.set_description(name, body.description.as_deref())
+    {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to update description: {}", e)),
+        );
+    }
+
+    // Return updated sandbox info
+    let running = manager.is_running(name);
+    let ip = if running {
+        manager.get_container_ip(name)
+    } else {
+        None
+    };
+    let state_info = manager.get_state(name);
+    let result_ports: Vec<String> = state_info
+        .map(|s| s.ports.iter().map(|p| p.to_string()).collect())
+        .unwrap_or_default();
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(SandboxInfo {
+            name: name.to_string(),
+            status: if running { "running" } else { "stopped" }.to_string(),
+            backend: format!("{}", manager.backend()),
+            ip,
+            image: state_info.map(|s| s.image.clone()),
+            vcpus: state_info.map(|s| s.vcpus),
+            memory_mb: state_info.map(|s| s.memory_mb),
+            created_at: state_info.map(|s| s.created_at.clone()),
+            created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
+            template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
+            ports: result_ports,
+            secret_files: state_info
+                .map(|s| s.secret_files.clone())
+                .unwrap_or_default(),
+            proxy_port: state_info.and_then(|s| s.proxy_port),
+            uuid: state_info
+                .map(|s| s.uuid.clone())
+                .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
+            secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
+            labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
+            description: state_info.and_then(|s| s.description.clone()),
         }),
     )
 }
@@ -3859,6 +3989,7 @@ async fn handle_restore_snapshot(
                     proxy_port: state_info.and_then(|s| s.proxy_port),
                     secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
                     labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
+                    description: state_info.and_then(|s| s.description.clone()),
                 }),
             )
         }
@@ -6164,6 +6295,7 @@ mod tests {
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
+            description: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"name\":\"test-sandbox\""));
@@ -6243,6 +6375,7 @@ mod tests {
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
+            description: None,
         };
         let response = json_response(StatusCode::CREATED, &ApiResponse::success(info));
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -6576,6 +6709,7 @@ mod tests {
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
+            description: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"image\":\"python:3.12\""));
@@ -6603,6 +6737,7 @@ mod tests {
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
+            description: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(!json.contains("image"));
