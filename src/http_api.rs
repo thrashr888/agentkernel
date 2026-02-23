@@ -854,6 +854,11 @@ async fn handle_request(
             .unwrap());
     }
 
+    // Stats endpoint doesn't require auth (used by fleet load-balancers)
+    if method == Method::GET && segments.as_slice() == ["stats"] {
+        return Ok(handle_stats(state).await);
+    }
+
     // Check authentication for all other endpoints
     if let Err(resp) = state.check_auth(&req) {
         return Ok(resp);
@@ -2553,7 +2558,9 @@ async fn handle_list_sandboxes(req: Request<Incoming>, state: Arc<AppState>) -> 
                     if k != "label" {
                         return None;
                     }
-                    let (lk, lv) = v.split_once(':')?;
+                    // Percent-decode the value for labels with special chars
+                    let decoded = urlencoding::decode(v).unwrap_or(std::borrow::Cow::Borrowed(v));
+                    let (lk, lv) = decoded.split_once(':')?;
                     Some((lk.to_string(), lv.to_string()))
                 })
                 .collect()

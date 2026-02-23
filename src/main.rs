@@ -1177,6 +1177,7 @@ memory_mb = 512
                         let (k, v) = raw.split_once('=').ok_or_else(|| {
                             anyhow::anyhow!("Invalid label '{}': expected key=value format", raw)
                         })?;
+                        validation::validate_label(k, v)?;
                         labels.insert(k.to_string(), v.to_string());
                     }
                     manager.set_labels(&name, &labels)?;
@@ -1542,13 +1543,17 @@ memory_mb = 512
                 let vms = manager.list();
 
                 // Parse label filters (key=value)
-                let parsed_labels: Vec<(String, String)> = label_filters
-                    .iter()
-                    .filter_map(|raw| {
-                        let (k, v) = raw.split_once('=')?;
-                        Some((k.to_string(), v.to_string()))
-                    })
-                    .collect();
+                let mut parsed_labels: Vec<(String, String)> = Vec::new();
+                for raw in &label_filters {
+                    if let Some((k, v)) = raw.split_once('=') {
+                        parsed_labels.push((k.to_string(), v.to_string()));
+                    } else {
+                        eprintln!(
+                            "Warning: ignoring malformed label filter '{}'; expected key=value",
+                            raw
+                        );
+                    }
+                }
 
                 // Optionally filter by current git project prefix
                 let project_prefix = if project {
