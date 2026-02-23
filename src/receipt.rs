@@ -3,9 +3,13 @@
 //! A receipt captures invocation metadata, outcome, and a tamper-evident hash.
 
 use anyhow::{Context, Result, bail};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use ring::rand::SystemRandom;
+use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const RECEIPT_VERSION: u32 = 1;
 
@@ -17,6 +21,15 @@ pub struct ExecutionReceipt {
     pub invocation: Invocation,
     pub outcome: ExecutionOutcome,
     pub payload_hash_sha256: String,
+    pub signature: Option<ReceiptSignature>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceiptSignature {
+    pub algorithm: String,
+    pub key_id: String,
+    pub public_key: String,
+    pub signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,12 +107,15 @@ impl ExecutionReceipt {
             invocation,
             outcome,
             payload_hash_sha256: String::new(),
+            signature: None,
         };
-        receipt.payload_hash_sha256 = receipt.compute_payload_hash()?;
+        let payload = receipt.payload_bytes()?;
+        receipt.payload_hash_sha256 = hash_bytes(&payload);
+        receipt.signature = Some(sign_payload(&payload)?);
         Ok(receipt)
     }
 
-    fn compute_payload_hash(&self) -> Result<String> {
+    fn payload_bytes(&self) -> Result<Vec<u8>> {
         let hashable = HashableReceipt {
             version: self.version,
             receipt_id: &self.receipt_id,
@@ -107,8 +123,7 @@ impl ExecutionReceipt {
             invocation: &self.invocation,
             outcome: &self.outcome,
         };
-        let bytes = serde_json::to_vec(&hashable).context("Failed to serialize receipt payload")?;
-        Ok(hash_bytes(&bytes))
+        serde_json::to_vec(&hashable).context("Failed to serialize receipt payload")
     }
 }
 
@@ -119,6 +134,87 @@ pub fn hash_output(output: &str) -> String {
 fn hash_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     format!("{:x}", digest)
+}
+
+fn receipts_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME") {
+        PathBuf::from(home).join(".agentkernel").join("receipts")
+    } else {
+        PathBuf::from("/tmp/agentkernel/receipts")
+    }
+}
+
+fn signing_key_path() -> PathBuf {
+    receipts_dir().join("ed25519_signing_key.pkcs8")
+}
+
+fn load_or_create_signing_key() -> Result<Ed25519KeyPair> {
+    let path = signing_key_path();
+
+    if path.exists() {
+        let key_bytes = std::fs::read(&path)
+            .with_context(|| format!("Failed to read signing key {}", path.display()))?;
+        return Ed25519KeyPair::from_pkcs8(&key_bytes)
+            .map_err(|_| anyhow::anyhow!("Invalid Ed25519 signing key at {}", path.display()));
+    }
+
+    let rng = SystemRandom::new();
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng)
+        .map_err(|_| anyhow::anyhow!("Failed to generate Ed25519 signing key"))?;
+    crate::secure_fs::write_private_file_atomic(&path, pkcs8.as_ref())
+        .with_context(|| format!("Failed to write signing key {}", path.display()))?;
+
+    let key_bytes = std::fs::read(&path)
+        .with_context(|| format!("Failed to read signing key {}", path.display()))?;
+    Ed25519KeyPair::from_pkcs8(&key_bytes)
+        .map_err(|_| anyhow::anyhow!("Invalid generated Ed25519 signing key at {}", path.display()))
+}
+
+fn short_key_id(public_key: &[u8]) -> String {
+    hash_bytes(public_key).chars().take(16).collect()
+}
+
+fn sign_payload(payload: &[u8]) -> Result<ReceiptSignature> {
+    let keypair = load_or_create_signing_key()?;
+    let public_key = keypair.public_key().as_ref().to_vec();
+    let signature = keypair.sign(payload);
+    Ok(ReceiptSignature {
+        algorithm: "ed25519".to_string(),
+        key_id: short_key_id(&public_key),
+        public_key: BASE64.encode(public_key),
+        signature: BASE64.encode(signature.as_ref()),
+    })
+}
+
+fn verify_signature(signature: &ReceiptSignature, payload: &[u8]) -> Result<()> {
+    if !signature.algorithm.eq_ignore_ascii_case("ed25519") {
+        bail!(
+            "Unsupported signature algorithm '{}'; expected ed25519",
+            signature.algorithm
+        );
+    }
+
+    let public_key = BASE64
+        .decode(&signature.public_key)
+        .context("Invalid base64 public key in receipt signature")?;
+    let sig = BASE64
+        .decode(&signature.signature)
+        .context("Invalid base64 signature bytes in receipt signature")?;
+
+    let expected_key_id = short_key_id(&public_key);
+    if expected_key_id != signature.key_id {
+        bail!(
+            "Signature key ID mismatch: expected {}, found {}",
+            expected_key_id,
+            signature.key_id
+        );
+    }
+
+    UnparsedPublicKey::new(&ED25519, &public_key)
+        .verify(payload, &sig)
+        .map_err(|_| anyhow::anyhow!("Invalid receipt signature"))?;
+
+    Ok(())
 }
 
 pub fn write_receipt(path: &Path, receipt: &ExecutionReceipt) -> Result<()> {
@@ -142,7 +238,7 @@ pub fn load_receipt(path: &Path) -> Result<ExecutionReceipt> {
     Ok(receipt)
 }
 
-pub fn verify_receipt(receipt: &ExecutionReceipt) -> Result<()> {
+pub fn verify_receipt(receipt: &ExecutionReceipt, allow_unsigned: bool) -> Result<()> {
     if receipt.version != RECEIPT_VERSION {
         bail!(
             "Unsupported receipt version {} (expected {})",
@@ -151,7 +247,8 @@ pub fn verify_receipt(receipt: &ExecutionReceipt) -> Result<()> {
         );
     }
 
-    let expected = receipt.compute_payload_hash()?;
+    let payload = receipt.payload_bytes()?;
+    let expected = hash_bytes(&payload);
     if expected != receipt.payload_hash_sha256 {
         bail!(
             "Receipt hash mismatch: expected {}, found {}",
@@ -159,12 +256,24 @@ pub fn verify_receipt(receipt: &ExecutionReceipt) -> Result<()> {
             receipt.payload_hash_sha256
         );
     }
+
+    match &receipt.signature {
+        Some(signature) => verify_signature(signature, &payload)?,
+        None => {
+            if !allow_unsigned {
+                bail!(
+                    "Receipt is unsigned. Pass --allow-unsigned to verify legacy receipts."
+                );
+            }
+        }
+    }
+
     Ok(())
 }
 
-pub fn verify_receipt_file(path: &Path) -> Result<ExecutionReceipt> {
+pub fn verify_receipt_file(path: &Path, allow_unsigned: bool) -> Result<ExecutionReceipt> {
     let receipt = load_receipt(path)?;
-    verify_receipt(&receipt)?;
+    verify_receipt(&receipt, allow_unsigned)?;
     Ok(receipt)
 }
 

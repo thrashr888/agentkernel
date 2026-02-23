@@ -764,11 +764,17 @@ enum ReceiptAction {
     Verify {
         /// Path to the receipt JSON file
         file: PathBuf,
+        /// Allow verification of legacy unsigned receipts
+        #[arg(long)]
+        allow_unsigned: bool,
     },
     /// Replay the recorded command and compare output hash
     Replay {
         /// Path to the receipt JSON file
         file: PathBuf,
+        /// Allow replay of legacy unsigned receipts
+        #[arg(long)]
+        allow_unsigned: bool,
     },
 }
 
@@ -3220,16 +3226,27 @@ memory_mb = 512
             println!("Playback complete.");
         }
         Commands::Receipt { action } => match action {
-            ReceiptAction::Verify { file } => {
-                let rec = receipt::verify_receipt_file(&file)?;
+            ReceiptAction::Verify {
+                file,
+                allow_unsigned,
+            } => {
+                let rec = receipt::verify_receipt_file(&file, allow_unsigned)?;
                 println!("Receipt verified.");
                 println!("  ID: {}", rec.receipt_id);
                 println!("  Mode: {}", rec.invocation.mode_name());
                 println!("  Exit code: {}", rec.outcome.exit_code);
                 println!("  Output SHA-256: {}", rec.outcome.output_sha256);
+                if let Some(sig) = rec.signature.as_ref() {
+                    println!("  Signature: valid (ed25519, key {})", sig.key_id);
+                } else {
+                    println!("  Signature: none (legacy receipt accepted)");
+                }
             }
-            ReceiptAction::Replay { file } => {
-                let rec = receipt::verify_receipt_file(&file)?;
+            ReceiptAction::Replay {
+                file,
+                allow_unsigned,
+            } => {
+                let rec = receipt::verify_receipt_file(&file, allow_unsigned)?;
                 let args = receipt::replay_args(&rec);
                 if args.is_empty() {
                     bail!("Receipt does not contain a replayable invocation");

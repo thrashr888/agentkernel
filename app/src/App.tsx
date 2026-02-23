@@ -5,6 +5,7 @@ import { Sandboxes } from "@/pages/Sandboxes";
 import { SandboxDetail } from "@/pages/SandboxDetail";
 import { Templates } from "@/pages/Templates";
 import { Snapshots } from "@/pages/Snapshots";
+import { Receipts } from "@/pages/Receipts";
 import { Settings } from "@/pages/Settings";
 import { AuditLog } from "@/pages/AuditLog";
 import { Diagnostics } from "@/pages/Diagnostics";
@@ -25,6 +26,7 @@ function App() {
         <Route path="/sandboxes/:name" element={<SandboxDetail />} />
         <Route path="/templates" element={<Templates />} />
         <Route path="/snapshots" element={<Snapshots />} />
+        <Route path="/receipts" element={<Receipts />} />
         <Route path="/objects" element={<Objects />} />
         <Route path="/schedules" element={<Schedules />} />
         <Route path="/stores" element={<Stores />} />

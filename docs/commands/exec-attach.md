@@ -21,7 +21,7 @@ agentkernel exec [OPTIONS] <NAME> -- <COMMAND>...
 | `-w, --workdir <PATH>` | Set working directory inside the sandbox |
 | `--sudo` | Run command as root |
 | `-d, --detach` | Run in background and return command ID |
-| `--receipt <FILE>` | Write a verifiable execution receipt JSON (not supported with `--detach`) |
+| `--receipt <FILE>` | Write a signed execution receipt JSON (not supported with `--detach`) |
 
 ### Examples
 

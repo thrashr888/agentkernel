@@ -24,7 +24,7 @@ agentkernel run [OPTIONS] <COMMAND>...
 | `--branch` | Use git project+branch as sandbox name (reuses existing sandbox) |
 | `--no-network` | Disable network access |
 | `-P, --publish <PORT>` | Port mapping (e.g. `8080:80`, `3000`). Repeatable. Requires `--fast=false`. |
-| `--receipt <FILE>` | Write a verifiable execution receipt JSON for this run |
+| `--receipt <FILE>` | Write a signed execution receipt JSON for this run |
 
 ## Examples
 

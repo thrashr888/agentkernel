@@ -65,7 +65,7 @@ agentkernel run --keep npm test
 # Use a config file
 agentkernel run --config ./agentkernel.toml npm test
 
-# Emit a verifiable execution receipt
+# Emit a signed execution receipt
 agentkernel run --receipt ./run-receipt.json -- python3 -c "print('ok')"
 agentkernel receipt verify ./run-receipt.json
 agentkernel receipt replay ./run-receipt.json
