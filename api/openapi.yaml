@@ -204,6 +204,40 @@ paths:
               schema:
                 $ref: '#/components/schemas/GcResponse'
 
+  /lifecycle/reconcile:
+    post:
+      tags: [Sandboxes]
+      summary: Reconcile sandbox lifecycle policies
+      description: |
+        Evaluates lifecycle policies for all sandboxes and applies any needed
+        stop/archive/delete actions. Supports dry-run mode for previews.
+      operationId: reconcileLifecycle
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReconcileLifecycleRequest'
+            examples:
+              apply:
+                summary: Apply actions
+                value: {}
+              dry_run:
+                summary: Preview actions only
+                value:
+                  dry_run: true
+      responses:
+        '200':
+          description: Lifecycle reconciliation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LifecycleReconcileResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /sandboxes:
     get:
       tags: [Sandboxes]
@@ -538,6 +572,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ExtendTtlResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /sandboxes/{name}/recover:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+
+    post:
+      tags: [Sandboxes]
+      summary: Recover an archived sandbox
+      description: |
+        Clears archive metadata so an archived sandbox can be started again.
+      operationId: recoverSandbox
+      responses:
+        '200':
+          description: Sandbox recovered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -1155,6 +1213,8 @@ components:
         description:
           type: string
           description: User-defined description
+        lifecycle:
+          $ref: '#/components/schemas/LifecyclePolicy'
 
     PatchSandboxRequest:
       type: object
@@ -1167,6 +1227,11 @@ components:
         description:
           type: string
           description: Update description
+        lifecycle:
+          description: Set lifecycle policy, or `null` to clear policy
+          oneOf:
+            - $ref: '#/components/schemas/LifecyclePolicy'
+            - type: "null"
 
     ExecRequest:
       type: object
@@ -1280,6 +1345,78 @@ components:
               description: Names of removed sandboxes
               example: ["old-sandbox-1", "expired-test"]
 
+    LifecyclePolicy:
+      type: object
+      properties:
+        auto_stop_after_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Stop sandbox after this many seconds of inactivity
+        auto_archive_after_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Archive sandbox after this many seconds of inactivity
+        auto_delete_after_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Delete archived sandbox after this many seconds
+
+    ReconcileLifecycleRequest:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+          default: false
+          description: Preview lifecycle actions without mutating sandboxes
+
+    LifecycleAction:
+      type: object
+      required: [sandbox, action, reason]
+      properties:
+        sandbox:
+          type: string
+          description: Sandbox name
+        action:
+          type: string
+          enum: [stop, archive, delete]
+        reason:
+          type: string
+
+    LifecycleReconcileResult:
+      type: object
+      required: [dry_run, stopped, archived, removed, actions]
+      properties:
+        dry_run:
+          type: boolean
+        stopped:
+          type: array
+          items:
+            type: string
+        archived:
+          type: array
+          items:
+            type: string
+        removed:
+          type: array
+          items:
+            type: string
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LifecycleAction'
+
+    LifecycleReconcileResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/LifecycleReconcileResult'
+
     SandboxInfo:
       type: object
       required: [name, uuid, status, backend]
@@ -1294,7 +1431,7 @@ components:
           example: "019abc12-1234-7def-89ab-0123456789ab"
         status:
           type: string
-          enum: [running, stopped]
+          enum: [running, stopped, archived]
           example: "running"
         backend:
           type: string
@@ -1319,6 +1456,19 @@ components:
         description:
           type: string
           description: User-defined description
+        last_activity_at:
+          type: string
+          description: Last observed sandbox activity timestamp (RFC3339)
+          example: "2026-02-23T15:04:05Z"
+        archived_at:
+          type: string
+          description: Archive timestamp (RFC3339), when sandbox is archived
+          example: "2026-02-23T16:04:05Z"
+        archived_reason:
+          type: string
+          description: Human-readable archive reason
+        lifecycle:
+          $ref: '#/components/schemas/LifecyclePolicy'
 
     SandboxResponse:
       type: object

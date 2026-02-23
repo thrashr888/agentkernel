@@ -818,6 +818,29 @@ impl VmManager {
         Ok(())
     }
 
+    /// Restore immutable identity/creation metadata after sandbox recreation.
+    ///
+    /// Used by resize fallback paths to avoid changing externally visible
+    /// sandbox identity and historical timestamps.
+    pub fn set_identity_metadata(
+        &mut self,
+        name: &str,
+        uuid: &str,
+        created_at: &str,
+        expires_at: Option<&str>,
+    ) -> Result<()> {
+        let state = self
+            .sandboxes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        state.uuid = uuid.to_string();
+        state.created_at = created_at.to_string();
+        state.expires_at = expires_at.map(ToString::to_string);
+        let snapshot = state.clone();
+        self.save_sandbox(&snapshot)?;
+        Ok(())
+    }
+
     /// Set volume mount specs for a sandbox (slug:/path or slug:/path:ro).
     pub fn set_volumes(&mut self, name: &str, volumes: &[String]) -> Result<()> {
         let state = self
@@ -2540,6 +2563,8 @@ impl VmManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::ExecResult;
+    use async_trait::async_trait;
     use tempfile::TempDir;
 
     #[test]
@@ -3068,5 +3093,256 @@ mod tests {
         let loaded_state = loaded.get("persist-test").unwrap();
         assert_eq!(loaded_state.labels.get("env").unwrap(), "prod");
         assert_eq!(loaded_state.description.as_deref(), Some("Test sandbox"));
+    }
+
+    fn new_test_manager(temp_dir: &TempDir) -> VmManager {
+        std::fs::create_dir_all(temp_dir.path().join("sandboxes")).unwrap();
+        VmManager {
+            sandboxes: HashMap::new(),
+            data_dir: temp_dir.path().to_path_buf(),
+            backend: BackendType::Docker,
+            running: HashMap::new(),
+            rootfs_dir: None,
+            next_cid: 3,
+            detached: HashMap::new(),
+            #[cfg(feature = "enterprise")]
+            policy_engine: None,
+        }
+    }
+
+    fn lifecycle_state(name: &str) -> SandboxState {
+        SandboxState {
+            name: name.to_string(),
+            uuid: uuid::Uuid::now_v7().to_string(),
+            image: "alpine:3.20".to_string(),
+            vcpus: 1,
+            memory_mb: 256,
+            vsock_cid: 3,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            backend: None,
+            remote_id: None,
+            remote_namespace: None,
+            ttl_seconds: Some(3600),
+            expires_at: Some("2026-01-01T01:00:00Z".to_string()),
+            ports: Vec::new(),
+            ssh_enabled: false,
+            ssh_host_port: None,
+            volumes: Vec::new(),
+            agent: None,
+            secret_bindings: Vec::new(),
+            secret_mappings: HashMap::new(),
+            secret_files: Vec::new(),
+            proxy_port: None,
+            init_script: None,
+            created_from_template: None,
+            template_help_text: None,
+            labels: HashMap::new(),
+            description: None,
+            last_activity_at: Some("2026-01-01T00:00:00Z".to_string()),
+            archived_at: None,
+            archived_reason: None,
+            lifecycle_policy: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    struct TestSandbox {
+        name: String,
+        running: bool,
+    }
+
+    #[async_trait]
+    impl Sandbox for TestSandbox {
+        async fn start(&mut self, _config: &SandboxConfig) -> Result<()> {
+            self.running = true;
+            Ok(())
+        }
+
+        async fn exec(&mut self, _cmd: &[&str]) -> Result<ExecResult> {
+            Ok(ExecResult::success(String::new()))
+        }
+
+        async fn stop(&mut self) -> Result<()> {
+            self.running = false;
+            Ok(())
+        }
+
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn backend_type(&self) -> BackendType {
+            BackendType::Docker
+        }
+
+        fn is_running(&self) -> bool {
+            self.running
+        }
+
+        async fn write_file_unchecked(&mut self, _path: &str, _content: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn read_file_unchecked(&mut self, _path: &str) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+
+        async fn remove_file_unchecked(&mut self, _path: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn mkdir_unchecked(&mut self, _path: &str, _recursive: bool) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_touch_activity_updates_timestamp() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let mut state = lifecycle_state("touch-test");
+        state.last_activity_at = Some("2026-01-01T00:00:00Z".to_string());
+        manager.sandboxes.insert("touch-test".to_string(), state);
+
+        manager.touch_activity("touch-test").unwrap();
+        let updated = manager
+            .get_state("touch-test")
+            .unwrap()
+            .last_activity_at
+            .clone()
+            .unwrap();
+        assert_ne!(updated, "2026-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn test_recover_clears_archive_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let mut state = lifecycle_state("recover-test");
+        state.archived_at = Some("2026-01-01T02:00:00Z".to_string());
+        state.archived_reason = Some("manual archive".to_string());
+        manager.sandboxes.insert("recover-test".to_string(), state);
+
+        manager.recover("recover-test").unwrap();
+        let recovered = manager.get_state("recover-test").unwrap();
+        assert!(recovered.archived_at.is_none());
+        assert!(recovered.archived_reason.is_none());
+        assert!(recovered.last_activity_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_lifecycle_dry_run_archive_does_not_mutate() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let mut state = lifecycle_state("archive-dry-run");
+        state.last_activity_at =
+            Some((chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339());
+        state.lifecycle_policy = Some(SandboxLifecyclePolicy {
+            auto_stop_after_seconds: None,
+            auto_archive_after_seconds: Some(60),
+            auto_delete_after_seconds: None,
+        });
+        manager
+            .sandboxes
+            .insert("archive-dry-run".to_string(), state.clone());
+
+        let result = manager.reconcile_lifecycle(true).await.unwrap();
+        assert!(result.archived.contains(&"archive-dry-run".to_string()));
+        assert!(
+            manager
+                .get_state("archive-dry-run")
+                .unwrap()
+                .archived_at
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_lifecycle_archives_when_threshold_hit() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let mut state = lifecycle_state("archive-now");
+        state.last_activity_at =
+            Some((chrono::Utc::now() - chrono::Duration::minutes(10)).to_rfc3339());
+        state.lifecycle_policy = Some(SandboxLifecyclePolicy {
+            auto_stop_after_seconds: None,
+            auto_archive_after_seconds: Some(0),
+            auto_delete_after_seconds: None,
+        });
+        manager.sandboxes.insert("archive-now".to_string(), state);
+
+        let result = manager.reconcile_lifecycle(false).await.unwrap();
+        assert!(result.archived.contains(&"archive-now".to_string()));
+        let archived = manager.get_state("archive-now").unwrap();
+        assert!(archived.archived_at.is_some());
+        assert!(archived.archived_reason.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_lifecycle_stops_running_sandbox() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let mut state = lifecycle_state("stop-now");
+        state.last_activity_at =
+            Some((chrono::Utc::now() - chrono::Duration::minutes(10)).to_rfc3339());
+        state.lifecycle_policy = Some(SandboxLifecyclePolicy {
+            auto_stop_after_seconds: Some(10),
+            auto_archive_after_seconds: None,
+            auto_delete_after_seconds: None,
+        });
+        manager.sandboxes.insert("stop-now".to_string(), state);
+        manager.running.insert(
+            "stop-now".to_string(),
+            Box::new(TestSandbox {
+                name: "stop-now".to_string(),
+                running: true,
+            }),
+        );
+
+        let result = manager.reconcile_lifecycle(false).await.unwrap();
+        assert!(result.stopped.contains(&"stop-now".to_string()));
+        assert!(!manager.is_running("stop-now"));
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_lifecycle_deletes_archived_sandbox() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let mut state = lifecycle_state("delete-now");
+        state.archived_at = Some((chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339());
+        state.archived_reason = Some("stale".to_string());
+        state.lifecycle_policy = Some(SandboxLifecyclePolicy {
+            auto_stop_after_seconds: None,
+            auto_archive_after_seconds: None,
+            auto_delete_after_seconds: Some(60),
+        });
+        manager.sandboxes.insert("delete-now".to_string(), state);
+
+        let result = manager.reconcile_lifecycle(false).await.unwrap();
+        assert!(result.removed.contains(&"delete-now".to_string()));
+        assert!(!manager.exists("delete-now"));
+    }
+
+    #[test]
+    fn test_set_identity_metadata_preserves_uuid_and_timestamps() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        manager
+            .sandboxes
+            .insert("id-test".to_string(), lifecycle_state("id-test"));
+
+        manager
+            .set_identity_metadata(
+                "id-test",
+                "fixed-uuid",
+                "2020-01-01T00:00:00Z",
+                Some("2020-01-01T01:00:00Z"),
+            )
+            .unwrap();
+
+        let state = manager.get_state("id-test").unwrap();
+        assert_eq!(state.uuid, "fixed-uuid");
+        assert_eq!(state.created_at, "2020-01-01T00:00:00Z");
+        assert_eq!(state.expires_at.as_deref(), Some("2020-01-01T01:00:00Z"));
     }
 }

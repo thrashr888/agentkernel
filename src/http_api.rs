@@ -3903,6 +3903,23 @@ async fn handle_resize_sandbox(
                 );
             }
 
+            // Preserve identity/history metadata so resize does not look like a
+            // brand-new sandbox to external systems.
+            if let Err(e) = manager.set_identity_metadata(
+                name,
+                &sandbox_state.uuid,
+                &sandbox_state.created_at,
+                sandbox_state.expires_at.as_deref(),
+            ) {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(format!(
+                        "Failed to preserve sandbox identity metadata: {}",
+                        e
+                    )),
+                );
+            }
+
             // Restore mutable metadata that isn't part of create_with_agent.
             let _ = manager.set_ssh_enabled(name, sandbox_state.ssh_enabled);
             let _ = manager.set_secret_bindings(name, &sandbox_state.secret_bindings);
