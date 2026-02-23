@@ -1903,6 +1903,23 @@ memory_mb = 512
                 bail!("Sandbox '{}' not found", name);
             }
 
+            let receipt_invocation = receipt_path.as_ref().map(|_| {
+                receipt::Invocation::Exec(receipt::ExecInvocation {
+                    name: name.clone(),
+                    command: command.clone(),
+                    env: env.clone(),
+                    workdir: workdir.clone(),
+                    sudo,
+                })
+            });
+            let error_details = |e: &anyhow::Error| -> (i32, String, Option<String>) {
+                if let Some(failed) = e.downcast_ref::<crate::vmm::CommandFailed>() {
+                    (failed.exit_code, failed.output.clone(), Some(e.to_string()))
+                } else {
+                    (1, String::new(), Some(e.to_string()))
+                }
+            };
+
             let opts = crate::backend::ExecOptions {
                 env: env.clone(),
                 workdir: workdir.clone(),
@@ -1920,14 +1937,9 @@ memory_mb = 512
                 match result {
                     Ok(output) => {
                         print!("{}", output);
-                        if let Some(path) = receipt_path.as_ref() {
-                            let invocation = receipt::Invocation::Exec(receipt::ExecInvocation {
-                                name: name.clone(),
-                                command: command.clone(),
-                                env: env.clone(),
-                                workdir: workdir.clone(),
-                                sudo,
-                            });
+                        if let (Some(path), Some(invocation)) =
+                            (receipt_path.as_ref(), receipt_invocation.clone())
+                        {
                             let outcome =
                                 receipt::ExecutionOutcome::from_combined_output(0, &output, None);
                             let rec = receipt::ExecutionReceipt::new(invocation, outcome)?;
@@ -1936,21 +1948,10 @@ memory_mb = 512
                         }
                     }
                     Err(e) => {
-                        if let Some(path) = receipt_path.as_ref() {
-                            let (exit_code, combined_output, error_message) = if let Some(failed) =
-                                e.downcast_ref::<crate::vmm::CommandFailed>()
-                            {
-                                (failed.exit_code, failed.output.clone(), Some(e.to_string()))
-                            } else {
-                                (1, String::new(), Some(e.to_string()))
-                            };
-                            let invocation = receipt::Invocation::Exec(receipt::ExecInvocation {
-                                name: name.clone(),
-                                command: command.clone(),
-                                env: env.clone(),
-                                workdir: workdir.clone(),
-                                sudo,
-                            });
+                        if let (Some(path), Some(invocation)) =
+                            (receipt_path.as_ref(), receipt_invocation.clone())
+                        {
+                            let (exit_code, combined_output, error_message) = error_details(&e);
                             let outcome = receipt::ExecutionOutcome::from_combined_output(
                                 exit_code,
                                 &combined_output,
@@ -2010,6 +2011,13 @@ memory_mb = 512
                 let rec = receipt::ExecutionReceipt::new(invocation, outcome)?;
                 receipt::write_receipt(path, &rec)
             };
+            let error_details = |e: &anyhow::Error| -> (i32, String, Option<String>) {
+                if let Some(failed) = e.downcast_ref::<crate::vmm::CommandFailed>() {
+                    (failed.exit_code, failed.output.clone(), Some(e.to_string()))
+                } else {
+                    (1, String::new(), Some(e.to_string()))
+                }
+            };
 
             // Warn if --ssh and --no-network are both set
             if ssh_flag && no_network {
@@ -2058,13 +2066,14 @@ memory_mb = 512
                     }
                     Err(e) => {
                         if let Some(path) = receipt_path.as_ref() {
+                            let (exit_code, combined_output, error_message) = error_details(&e);
                             write_run_receipt(
                                 path,
                                 Some("alpine:3.20".to_string()),
                                 None,
-                                1,
-                                "",
-                                Some(e.to_string()),
+                                exit_code,
+                                &combined_output,
+                                error_message,
                             )?;
                             eprintln!("Execution receipt written to {}", path.display());
                         }
@@ -2271,13 +2280,14 @@ memory_mb = 512
                         // Firecracker doesn't support ephemeral mode, fall through to multi-step
                         if !e.to_string().contains("Ephemeral mode not supported") {
                             if let Some(path) = receipt_path.as_ref() {
+                                let (exit_code, combined_output, error_message) = error_details(&e);
                                 write_run_receipt(
                                     path,
                                     Some(docker_image.clone()),
                                     Some(format!("{}", manager.backend())),
-                                    1,
-                                    "",
-                                    Some(e.to_string()),
+                                    exit_code,
+                                    &combined_output,
+                                    error_message,
                                 )?;
                                 eprintln!("Execution receipt written to {}", path.display());
                             }
@@ -2330,18 +2340,7 @@ memory_mb = 512
                         }
                         Err(e) => {
                             if let Some(path) = receipt_path.as_ref() {
-                                let (exit_code, combined_output, error_message) =
-                                    if let Some(failed) =
-                                        e.downcast_ref::<crate::vmm::CommandFailed>()
-                                    {
-                                        (
-                                            failed.exit_code,
-                                            failed.output.clone(),
-                                            Some(e.to_string()),
-                                        )
-                                    } else {
-                                        (1, String::new(), Some(e.to_string()))
-                                    };
+                                let (exit_code, combined_output, error_message) = error_details(&e);
                                 let existing_image = manager
                                     .get_state(&name)
                                     .map(|s| s.image.clone())
@@ -2408,13 +2407,7 @@ memory_mb = 512
             if let Some(path) = receipt_path.as_ref() {
                 let (exit_code, combined_output, error_message) = match &result {
                     Ok(output) => (0, output.clone(), None),
-                    Err(e) => {
-                        if let Some(failed) = e.downcast_ref::<crate::vmm::CommandFailed>() {
-                            (failed.exit_code, failed.output.clone(), Some(e.to_string()))
-                        } else {
-                            (1, String::new(), Some(e.to_string()))
-                        }
-                    }
+                    Err(e) => error_details(e),
                 };
                 write_run_receipt(
                     path,

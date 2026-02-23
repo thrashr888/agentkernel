@@ -222,16 +222,8 @@ fn verify_signature(signature: &ReceiptSignature, payload: &[u8]) -> Result<()> 
 }
 
 pub fn write_receipt(path: &Path, receipt: &ExecutionReceipt) -> Result<()> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create receipt directory {}", parent.display()))?;
-    }
-    let content = serde_json::to_string_pretty(receipt)?;
-    std::fs::write(path, content)
-        .with_context(|| format!("Failed to write receipt {}", path.display()))?;
-    Ok(())
+    crate::secure_fs::write_private_json(path, receipt)
+        .with_context(|| format!("Failed to write receipt {}", path.display()))
 }
 
 pub fn load_receipt(path: &Path) -> Result<ExecutionReceipt> {

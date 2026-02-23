@@ -47,6 +47,12 @@ Replay behavior:
 - compares replay output hash to the receipt
 - compares replay exit code to the receipt
 
+Important notes:
+
+- `receipt replay` does not auto-add `--receipt`, so replay does not create a chained receipt unless you explicitly pass `--receipt` yourself in a separate command.
+- `exec` receipts require the referenced sandbox to exist and be running.
+- `run` receipts with state-dependent flags (`--branch`, `--keep`) can replay differently if your local sandbox state has changed.
+
 For legacy unsigned receipts, use:
 
 ```bash
