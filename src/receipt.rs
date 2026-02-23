@@ -166,8 +166,12 @@ fn load_or_create_signing_key() -> Result<Ed25519KeyPair> {
 
     let key_bytes = std::fs::read(&path)
         .with_context(|| format!("Failed to read signing key {}", path.display()))?;
-    Ed25519KeyPair::from_pkcs8(&key_bytes)
-        .map_err(|_| anyhow::anyhow!("Invalid generated Ed25519 signing key at {}", path.display()))
+    Ed25519KeyPair::from_pkcs8(&key_bytes).map_err(|_| {
+        anyhow::anyhow!(
+            "Invalid generated Ed25519 signing key at {}",
+            path.display()
+        )
+    })
 }
 
 fn short_key_id(public_key: &[u8]) -> String {
@@ -261,9 +265,7 @@ pub fn verify_receipt(receipt: &ExecutionReceipt, allow_unsigned: bool) -> Resul
         Some(signature) => verify_signature(signature, &payload)?,
         None => {
             if !allow_unsigned {
-                bail!(
-                    "Receipt is unsigned. Pass --allow-unsigned to verify legacy receipts."
-                );
+                bail!("Receipt is unsigned. Pass --allow-unsigned to verify legacy receipts.");
             }
         }
     }
@@ -321,5 +323,114 @@ pub fn replay_args(receipt: &ExecutionReceipt) -> Vec<String> {
             args.extend(exec.command.clone());
             args
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_invocation() -> Invocation {
+        Invocation::Run(RunInvocation {
+            command: vec![
+                "python3".to_string(),
+                "-c".to_string(),
+                "print('ok')".to_string(),
+            ],
+            image: Some("python:3.12-alpine".to_string()),
+            backend: Some("docker".to_string()),
+            profile: "moderate".to_string(),
+            no_network: false,
+            fast: false,
+            keep: false,
+        })
+    }
+
+    fn unsigned_receipt() -> ExecutionReceipt {
+        let mut rec = ExecutionReceipt {
+            version: RECEIPT_VERSION,
+            receipt_id: "test-receipt-1".to_string(),
+            recorded_at: "2026-02-23T00:00:00Z".to_string(),
+            invocation: sample_invocation(),
+            outcome: ExecutionOutcome::from_combined_output(0, "ok\n", None),
+            payload_hash_sha256: String::new(),
+            signature: None,
+        };
+        let payload = rec.payload_bytes().expect("serialize payload");
+        rec.payload_hash_sha256 = hash_bytes(&payload);
+        rec
+    }
+
+    #[test]
+    fn verify_unsigned_receipt_requires_flag() {
+        let rec = unsigned_receipt();
+        assert!(verify_receipt(&rec, false).is_err());
+        assert!(verify_receipt(&rec, true).is_ok());
+    }
+
+    #[test]
+    fn verify_receipt_detects_tampering() {
+        let mut rec = unsigned_receipt();
+        if let Invocation::Run(run) = &mut rec.invocation {
+            run.command.push("--tampered".to_string());
+        }
+        let err = verify_receipt(&rec, true).expect_err("tampered receipt should fail");
+        assert!(err.to_string().contains("Receipt hash mismatch"));
+    }
+
+    #[test]
+    fn write_and_load_receipt_roundtrip() {
+        let rec = unsigned_receipt();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("receipt.json");
+
+        write_receipt(&path, &rec).expect("write receipt");
+        let loaded = load_receipt(&path).expect("load receipt");
+
+        assert_eq!(loaded.version, rec.version);
+        assert_eq!(loaded.receipt_id, rec.receipt_id);
+        assert_eq!(loaded.payload_hash_sha256, rec.payload_hash_sha256);
+        assert!(verify_receipt(&loaded, true).is_ok());
+    }
+
+    #[test]
+    fn replay_args_for_exec_include_options() {
+        let exec_receipt = ExecutionReceipt {
+            version: RECEIPT_VERSION,
+            receipt_id: "exec-test".to_string(),
+            recorded_at: "2026-02-23T00:00:00Z".to_string(),
+            invocation: Invocation::Exec(ExecInvocation {
+                name: "dev".to_string(),
+                command: vec!["pytest".to_string(), "-q".to_string()],
+                env: vec!["FOO=bar".to_string(), "DEBUG=1".to_string()],
+                workdir: Some("/workspace".to_string()),
+                sudo: true,
+            }),
+            outcome: ExecutionOutcome::from_combined_output(0, "", None),
+            payload_hash_sha256: String::new(),
+            signature: None,
+        };
+
+        let args = replay_args(&exec_receipt);
+        assert_eq!(
+            args,
+            vec![
+                "exec",
+                "dev",
+                "--env",
+                "FOO=bar",
+                "--env",
+                "DEBUG=1",
+                "--workdir",
+                "/workspace",
+                "--sudo",
+                "--",
+                "pytest",
+                "-q",
+            ]
+            .into_iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+        );
     }
 }

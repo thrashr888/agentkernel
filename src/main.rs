@@ -1937,17 +1937,13 @@ memory_mb = 512
                     }
                     Err(e) => {
                         if let Some(path) = receipt_path.as_ref() {
-                            let (exit_code, combined_output, error_message) =
-                                if let Some(failed) = e.downcast_ref::<crate::vmm::CommandFailed>()
-                                {
-                                    (
-                                        failed.exit_code,
-                                        failed.output.clone(),
-                                        Some(e.to_string()),
-                                    )
-                                } else {
-                                    (1, String::new(), Some(e.to_string()))
-                                };
+                            let (exit_code, combined_output, error_message) = if let Some(failed) =
+                                e.downcast_ref::<crate::vmm::CommandFailed>()
+                            {
+                                (failed.exit_code, failed.output.clone(), Some(e.to_string()))
+                            } else {
+                                (1, String::new(), Some(e.to_string()))
+                            };
                             let invocation = receipt::Invocation::Exec(receipt::ExecInvocation {
                                 name: name.clone(),
                                 command: command.clone(),
@@ -2334,18 +2330,18 @@ memory_mb = 512
                         }
                         Err(e) => {
                             if let Some(path) = receipt_path.as_ref() {
-                                let (exit_code, combined_output, error_message) = if let Some(
-                                    failed,
-                                ) = e.downcast_ref::<crate::vmm::CommandFailed>()
-                                {
-                                    (
-                                        failed.exit_code,
-                                        failed.output.clone(),
-                                        Some(e.to_string()),
-                                    )
-                                } else {
-                                    (1, String::new(), Some(e.to_string()))
-                                };
+                                let (exit_code, combined_output, error_message) =
+                                    if let Some(failed) =
+                                        e.downcast_ref::<crate::vmm::CommandFailed>()
+                                    {
+                                        (
+                                            failed.exit_code,
+                                            failed.output.clone(),
+                                            Some(e.to_string()),
+                                        )
+                                    } else {
+                                        (1, String::new(), Some(e.to_string()))
+                                    };
                                 let existing_image = manager
                                     .get_state(&name)
                                     .map(|s| s.image.clone())
