@@ -107,12 +107,83 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /status:
+    get:
+      tags: [Health]
+      summary: Server status
+      description: Returns server version, backend, and whether API key auth is configured.
+      operationId: getStatus
+      responses:
+        '200':
+          description: Server status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+
+  /stats:
+    get:
+      tags: [Health]
+      summary: Server statistics
+      description: |
+        Returns current sandbox count, resource usage (CPU, memory, disk),
+        and server metadata. Designed for fleet load-balancing decisions.
+      operationId: getStats
+      responses:
+        '200':
+          description: Server statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsResponse'
+              examples:
+                default:
+                  value:
+                    success: true
+                    data:
+                      sandbox_count: 12
+                      sandbox_limit: 0
+                      backend: "docker"
+                      uptime_seconds: 3600
+                      version: "0.15.0"
+                      resource_usage:
+                        cpu_percent: 65.2
+                        memory_used_mb: 8192
+                        memory_total_mb: 16384
+                        disk_used_mb: 4096
+
+  /gc:
+    post:
+      tags: [Sandboxes]
+      summary: Garbage-collect expired sandboxes
+      description: Removes sandboxes that have exceeded their time-to-live.
+      operationId: garbageCollect
+      responses:
+        '200':
+          description: GC result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GcResponse'
+
   /sandboxes:
     get:
       tags: [Sandboxes]
       summary: List all sandboxes
-      description: Returns a list of all sandboxes and their current status.
+      description: |
+        Returns a list of all sandboxes and their current status.
+        Supports filtering by labels using `?label=key:value` query parameters.
+        Multiple label filters are ANDed together.
       operationId: listSandboxes
+      parameters:
+        - name: label
+          in: query
+          description: |
+            Filter by label (format: `key:value`). Can be repeated for AND logic.
+            Note: uses `:` separator in HTTP (not `=` like CLI) to avoid URL encoding issues.
+          schema:
+            type: string
+          example: "env:prod"
       responses:
         '200':
           description: List of sandboxes
@@ -141,11 +212,16 @@ paths:
                 summary: Default Alpine sandbox
                 value:
                   name: "my-sandbox"
-              python:
-                summary: Python sandbox
+              with_labels:
+                summary: Sandbox with labels
                 value:
-                  name: "python-sandbox"
+                  name: "eval-sandbox"
                   image: "python:3.12-alpine"
+                  labels:
+                    scenario: "drift_s3"
+                    model: "sonnet"
+                    eval_run: "pr-123"
+                  description: "Drift scenario evaluation"
       responses:
         '201':
           description: Sandbox created
@@ -181,18 +257,30 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /sandboxes/by-uuid/{uuid}:
-    parameters:
-      - $ref: '#/components/parameters/SandboxUUID'
-
-    get:
+    patch:
       tags: [Sandboxes]
-      summary: Get sandbox details by UUID
-      description: Returns details about a specific sandbox by UUIDv7.
-      operationId: getSandboxByUuid
+      summary: Update sandbox metadata
+      description: Update labels and/or description for a sandbox.
+      operationId: updateSandbox
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchSandboxRequest'
+            examples:
+              labels:
+                summary: Update labels
+                value:
+                  labels:
+                    env: "staging"
+                    team: "ml"
+              description:
+                summary: Update description
+                value:
+                  description: "Production evaluation sandbox"
       responses:
         '200':
-          description: Sandbox details
+          description: Sandbox updated
           content:
             application/json:
               schema:
@@ -216,6 +304,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /sandboxes/by-uuid/{uuid}:
+    parameters:
+      - $ref: '#/components/parameters/SandboxUUID'
+
+    get:
+      tags: [Sandboxes]
+      summary: Get sandbox details by UUID
+      description: Returns details about a specific sandbox by UUIDv7.
+      operationId: getSandboxByUuid
+      responses:
+        '200':
+          description: Sandbox details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -995,6 +1106,29 @@ components:
           type: string
           enum: [permissive, moderate, restrictive]
           description: Security profile
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+          description: User-defined labels for fleet management and filtering
+          example:
+            env: "prod"
+            team: "ml"
+        description:
+          type: string
+          description: User-defined description
+
+    PatchSandboxRequest:
+      type: object
+      properties:
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+          description: Replace all labels
+        description:
+          type: string
+          description: Update description
 
     ExecRequest:
       type: object
@@ -1031,6 +1165,83 @@ components:
               description: Combined stdout/stderr from command
               example: "hello world\n"
 
+    StatusResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            version:
+              type: string
+              example: "0.15.0"
+            backend:
+              type: string
+              example: "docker"
+            api_key_configured:
+              type: boolean
+              example: false
+
+    StatsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            sandbox_count:
+              type: integer
+              example: 12
+            sandbox_limit:
+              type: integer
+              example: 0
+              description: 0 means unlimited
+            backend:
+              type: string
+              example: "docker"
+            uptime_seconds:
+              type: integer
+              example: 3600
+            version:
+              type: string
+              example: "0.15.0"
+            resource_usage:
+              type: object
+              properties:
+                cpu_percent:
+                  type: number
+                  format: float
+                  example: 65.2
+                memory_used_mb:
+                  type: integer
+                  example: 8192
+                memory_total_mb:
+                  type: integer
+                  example: 16384
+                disk_used_mb:
+                  type: integer
+                  example: 4096
+
+    GcResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            removed:
+              type: array
+              items:
+                type: string
+              description: Names of removed sandboxes
+              example: ["old-sandbox-1", "expired-test"]
+
     SandboxInfo:
       type: object
       required: [name, uuid, status, backend]
@@ -1062,6 +1273,14 @@ components:
         created_at:
           type: string
           example: "2026-01-30T12:00:00Z"
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+          description: User-defined labels
+        description:
+          type: string
+          description: User-defined description
 
     SandboxResponse:
       type: object

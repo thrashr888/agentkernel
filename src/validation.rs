@@ -361,6 +361,67 @@ pub fn validate_exec_workdir(workdir: &str) -> Result<()> {
     Ok(())
 }
 
+/// Maximum length for label keys (following Kubernetes conventions)
+const MAX_LABEL_KEY_LEN: usize = 63;
+
+/// Maximum length for label values
+const MAX_LABEL_VALUE_LEN: usize = 255;
+
+/// Validate a label key=value pair.
+///
+/// Follows Kubernetes-like conventions:
+/// - Keys: 1–63 chars, alphanumeric plus `-`, `_`, `.`
+/// - Values: 1–255 chars, alphanumeric plus `-`, `_`, `.`, `/`
+///
+/// # Security
+/// Prevents excessively long or malformed labels that could cause
+/// storage/injection issues.
+pub fn validate_label(key: &str, value: &str) -> Result<()> {
+    let key = key.trim();
+    let value = value.trim();
+
+    if key.is_empty() {
+        bail!("Label key must not be empty");
+    }
+    if key.len() > MAX_LABEL_KEY_LEN {
+        bail!(
+            "Label key '{}' too long (max {} characters)",
+            key,
+            MAX_LABEL_KEY_LEN
+        );
+    }
+    if !key
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        bail!(
+            "Label key '{}' contains invalid characters (allowed: alphanumeric, '-', '_', '.')",
+            key
+        );
+    }
+
+    if value.is_empty() {
+        bail!("Label value must not be empty");
+    }
+    if value.len() > MAX_LABEL_VALUE_LEN {
+        bail!(
+            "Label value too long (max {} characters)",
+            MAX_LABEL_VALUE_LEN
+        );
+    }
+    if !value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '/')
+    {
+        bail!(
+            "Label value '{}' contains invalid characters (allowed: alphanumeric, '-', '_', '.', '/')",
+            value
+        );
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,6 +552,41 @@ mod tests {
         assert!(validate_git_ref("main@{1}").is_err());
         assert!(validate_git_ref("main name").is_err());
         assert!(validate_git_ref("main:next").is_err());
+    }
+
+    #[test]
+    fn test_valid_labels() {
+        assert!(validate_label("env", "prod").is_ok());
+        assert!(validate_label("team", "ml-ops").is_ok());
+        assert!(validate_label("eval_run", "pr-123").is_ok());
+        assert!(validate_label("app.version", "v1.2.3").is_ok());
+        assert!(validate_label("scenario", "drift/s3").is_ok());
+    }
+
+    #[test]
+    fn test_invalid_labels() {
+        // Empty key
+        assert!(validate_label("", "value").is_err());
+        assert!(validate_label("  ", "value").is_err());
+
+        // Empty value
+        assert!(validate_label("key", "").is_err());
+        assert!(validate_label("key", "  ").is_err());
+
+        // Key too long
+        assert!(validate_label(&"a".repeat(64), "value").is_err());
+
+        // Value too long
+        assert!(validate_label("key", &"a".repeat(256)).is_err());
+
+        // Invalid characters in key
+        assert!(validate_label("key=value", "v").is_err());
+        assert!(validate_label("key:value", "v").is_err());
+        assert!(validate_label("key value", "v").is_err());
+
+        // Invalid characters in value
+        assert!(validate_label("key", "val;ue").is_err());
+        assert!(validate_label("key", "val$(cmd)").is_err());
     }
 
     #[test]

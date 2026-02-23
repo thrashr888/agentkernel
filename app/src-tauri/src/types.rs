@@ -51,6 +51,12 @@ pub struct SandboxInfo {
     /// Secret mappings: env_var → target_host (values stripped for security).
     #[serde(default)]
     pub secret_mappings: std::collections::HashMap<String, String>,
+    /// User-defined labels for fleet management and filtering.
+    #[serde(default)]
+    pub labels: std::collections::HashMap<String, String>,
+    /// User-defined description.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// Output from a command execution.
@@ -150,6 +156,12 @@ pub struct CreateSandboxRequest {
     /// Plain-text guidance associated with the selected template.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub template_help_text: Option<String>,
+    /// User-defined labels for fleet management and filtering.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub labels: std::collections::BTreeMap<String, String>,
+    /// User-defined description.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Request body for executing a command in a sandbox.

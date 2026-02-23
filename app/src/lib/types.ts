@@ -14,6 +14,8 @@ export interface SandboxInfo {
   ports?: string[];
   secret_files?: string[];
   secret_mappings?: Record<string, string>;
+  labels?: Record<string, string>;
+  description?: string;
 }
 
 export interface RunOutput {
@@ -107,6 +109,8 @@ export interface CreateSandboxRequest {
   secret_mappings?: Record<string, string>;
   created_from_template?: string;
   template_help_text?: string;
+  labels?: Record<string, string>;
+  description?: string;
 }
 
 export interface ExecRequest {

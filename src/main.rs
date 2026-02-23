@@ -62,7 +62,7 @@ mod identity;
 #[cfg(feature = "enterprise")]
 pub mod policy;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
@@ -244,6 +244,12 @@ enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "18888")]
         port: u16,
+        /// API key for authentication (overrides AGENTKERNEL_API_KEY env var). Can be repeated.
+        #[arg(long)]
+        api_key: Vec<String>,
+        /// Path to file containing API keys (one per line)
+        #[arg(long)]
+        api_key_file: Option<String>,
         /// Enable TLS for the API server
         #[arg(long)]
         tls: bool,
@@ -437,6 +443,9 @@ enum SandboxAction {
         /// Inject a secret as a file inside the sandbox (KEY from vault). Can be repeated.
         #[arg(long = "secret-file")]
         secret_files: Vec<String>,
+        /// Add a label (key=value). Can be repeated.
+        #[arg(short = 'l', long = "label")]
+        labels: Vec<String>,
         /// Don't auto-start the sandbox after creation
         #[arg(long)]
         no_start: bool,
@@ -464,6 +473,9 @@ enum SandboxAction {
         /// Filter to sandboxes matching the current git project
         #[arg(long)]
         project: bool,
+        /// Filter by label (key=value). Can be repeated.
+        #[arg(short = 'l', long = "label")]
+        labels: Vec<String>,
     },
     /// Show detailed information about a sandbox
     Info {
@@ -540,6 +552,9 @@ enum SandboxAction {
         /// Show what would be removed without removing
         #[arg(long)]
         dry_run: bool,
+        /// Filter by label (key=value). Only GC sandboxes matching all labels.
+        #[arg(short = 'l', long = "label")]
+        labels: Vec<String>,
     },
     /// Remove all sandboxes and agentkernel Docker artifacts to free disk space
     Clean {
@@ -968,6 +983,7 @@ memory_mb = 512
                 volumes,
                 secrets: secret_bindings_raw,
                 secret_files: secret_file_keys,
+                labels: label_args,
                 no_start,
             } => {
                 // Resolve sandbox name: --branch auto-derives from git, otherwise require explicit name
@@ -1153,6 +1169,20 @@ memory_mb = 512
                         ports,
                     )
                     .await?;
+
+                // Parse and set labels
+                if !label_args.is_empty() {
+                    let mut labels = std::collections::HashMap::new();
+                    for raw in &label_args {
+                        let (k, v) = raw.split_once('=').ok_or_else(|| {
+                            anyhow::anyhow!("Invalid label '{}': expected key=value format", raw)
+                        })?;
+                        validation::validate_label(k, v)?;
+                        labels.insert(k.to_string(), v.to_string());
+                    }
+                    manager.set_labels(&name, &labels)?;
+                    println!("  Labels: {}", label_args.join(", "));
+                }
 
                 if let Some((template_name, template_help_text)) = &template_metadata {
                     manager.set_template_metadata(
@@ -1505,9 +1535,25 @@ memory_mb = 512
                     }
                 }
             }
-            SandboxAction::List { project } => {
+            SandboxAction::List {
+                project,
+                labels: label_filters,
+            } => {
                 let manager = VmManager::new()?;
                 let vms = manager.list();
+
+                // Parse label filters (key=value)
+                let mut parsed_labels: Vec<(String, String)> = Vec::new();
+                for raw in &label_filters {
+                    if let Some((k, v)) = raw.split_once('=') {
+                        parsed_labels.push((k.to_string(), v.to_string()));
+                    } else {
+                        eprintln!(
+                            "Warning: ignoring malformed label filter '{}'; expected key=value",
+                            raw
+                        );
+                    }
+                }
 
                 // Optionally filter by current git project prefix
                 let project_prefix = if project {
@@ -1533,6 +1579,17 @@ memory_mb = 512
                             true
                         }
                     })
+                    .filter(|(name, _, _)| {
+                        if parsed_labels.is_empty() {
+                            return true;
+                        }
+                        let state = manager.get_state(name);
+                        parsed_labels.iter().all(|(fk, fv)| {
+                            state
+                                .and_then(|s| s.labels.get(fk))
+                                .is_some_and(|v| v == fv)
+                        })
+                    })
                     .collect();
 
                 if filtered.is_empty() {
@@ -1544,8 +1601,8 @@ memory_mb = 512
                     println!("\nCreate one with: agentkernel create <name>");
                 } else {
                     println!(
-                        "{:<30} {:<10} {:<10} {:<17} PORTS",
-                        "NAME", "STATUS", "BACKEND", "IP"
+                        "{:<30} {:<10} {:<10} {:<17} {:<20} PORTS",
+                        "NAME", "STATUS", "BACKEND", "IP", "LABELS"
                     );
                     for (name, running, backend) in filtered {
                         let status = if running { "running" } else { "stopped" };
@@ -1559,8 +1616,9 @@ memory_mb = 512
                         } else {
                             "-".to_string()
                         };
-                        let ports_str = manager
-                            .get_state(name)
+                        let state = manager.get_state(name);
+                        let ports_str = state
+                            .as_ref()
                             .map(|s| {
                                 s.ports
                                     .iter()
@@ -1569,26 +1627,58 @@ memory_mb = 512
                                     .join(", ")
                             })
                             .unwrap_or_default();
+                        let labels_str = state
+                            .as_ref()
+                            .map(|s| {
+                                s.labels
+                                    .iter()
+                                    .map(|(k, v)| format!("{}={}", k, v))
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            })
+                            .unwrap_or_default();
                         println!(
-                            "{:<30} {:<10} {:<10} {:<17} {}",
-                            name, status, backend_str, ip_str, ports_str
+                            "{:<30} {:<10} {:<10} {:<17} {:<20} {}",
+                            name, status, backend_str, ip_str, labels_str, ports_str
                         );
                     }
                 }
             }
-            SandboxAction::Gc { dry_run } => {
+            SandboxAction::Gc { dry_run, labels } => {
                 let mut manager = VmManager::new()?;
-                let expired = manager.expired();
-                if expired.is_empty() {
-                    println!("No expired sandboxes.");
+
+                // Parse label filters
+                let label_filters: Vec<(String, String)> = labels
+                    .iter()
+                    .filter_map(|raw| {
+                        let (k, v) = raw.split_once('=')?;
+                        Some((k.to_string(), v.to_string()))
+                    })
+                    .collect();
+
+                let candidates = if label_filters.is_empty() {
+                    // Default: only expired sandboxes
+                    manager.expired()
+                } else {
+                    // With labels: find sandboxes matching all labels
+                    // (expired OR label-matched, since the user explicitly asked for label-based GC)
+                    manager.list_matching_labels(&label_filters)
+                };
+
+                if candidates.is_empty() {
+                    println!("No matching sandboxes.");
                 } else if dry_run {
-                    println!("Would remove {} expired sandbox(es):", expired.len());
-                    for name in &expired {
+                    println!("Would remove {} sandbox(es):", candidates.len());
+                    for name in &candidates {
                         println!("  {}", name);
                     }
                 } else {
-                    let removed = manager.gc().await?;
-                    println!("Removed {} expired sandbox(es):", removed.len());
+                    let mut removed = Vec::new();
+                    for name in candidates {
+                        manager.remove(&name).await?;
+                        removed.push(name);
+                    }
+                    println!("Removed {} sandbox(es):", removed.len());
                     for name in &removed {
                         println!("  {}", name);
                     }
@@ -2105,6 +2195,8 @@ memory_mb = 512
         Commands::Serve {
             host,
             port,
+            api_key,
+            api_key_file,
             tls,
             tls_cert,
             tls_key,
@@ -2116,6 +2208,19 @@ memory_mb = 512
 
             if require_tls && !tls {
                 bail!("--require-tls requires --tls to be enabled");
+            }
+
+            // Collect API keys from --api-key flags and --api-key-file
+            let mut api_keys = api_key;
+            if let Some(path) = api_key_file {
+                let content = std::fs::read_to_string(&path)
+                    .with_context(|| format!("Failed to read API key file: {}", path))?;
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                        api_keys.push(trimmed.to_string());
+                    }
+                }
             }
 
             let tls_config = if tls {
@@ -2139,7 +2244,7 @@ memory_mb = 512
                 None
             };
 
-            http_api::run_server_with_tls(addr, tls_config).await?;
+            http_api::run_server_with_tls(addr, tls_config, api_keys).await?;
         }
         Commands::Ssh { action } => match action {
             SshAction::Connect {
@@ -4099,6 +4204,18 @@ fn run_info(name: &str) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ");
         println!("Ports:          {}", ports_str);
+    }
+    if !state.labels.is_empty() {
+        let labels_str = state
+            .labels
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("Labels:         {}", labels_str);
+    }
+    if let Some(ref desc) = state.description {
+        println!("Description:    {}", desc);
     }
 
     // Show recent audit activity

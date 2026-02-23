@@ -66,6 +66,8 @@ export function Sandboxes() {
   const [formMemory, setFormMemory] = useState(512);
   const [formProfile, setFormProfile] = useState("restrictive");
   const [formAgent, setFormAgent] = useState("");
+  const [formLabels, setFormLabels] = useState("");
+  const [formDescription, setFormDescription] = useState("");
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 24;
 
@@ -169,10 +171,19 @@ export function Sandboxes() {
     setFormMemory(512);
     setFormProfile("restrictive");
     setFormAgent("");
+    setFormLabels("");
+    setFormDescription("");
   }
 
   function handleCreate() {
     if (!formName.trim()) return;
+    const labels: Record<string, string> = {};
+    if (formLabels.trim()) {
+      for (const part of formLabels.split(",")) {
+        const [k, v] = part.trim().split("=");
+        if (k && v) labels[k.trim()] = v.trim();
+      }
+    }
     createMutation.mutate({
       name: formName.trim(),
       image: formImage,
@@ -180,6 +191,8 @@ export function Sandboxes() {
       memory_mb: formMemory,
       profile: formProfile,
       ...(formAgent && formAgent !== "none" ? { agent: formAgent } : {}),
+      ...(Object.keys(labels).length > 0 ? { labels } : {}),
+      ...(formDescription.trim() ? { description: formDescription.trim() } : {}),
     });
   }
 
@@ -205,7 +218,8 @@ export function Sandboxes() {
     if (statusFilter !== "all" && s.status.toLowerCase() !== statusFilter) return false;
     if (search) {
       const q = search.toLowerCase();
-      const haystack = [s.name, s.image ?? "", s.ip ?? ""].join(" ").toLowerCase();
+      const labelStr = Object.entries(s.labels ?? {}).map(([k, v]) => `${k}=${v}`).join(" ");
+      const haystack = [s.name, s.image ?? "", s.ip ?? "", labelStr].join(" ").toLowerCase();
       if (!haystack.includes(q)) return false;
     }
     return true;
@@ -239,14 +253,14 @@ export function Sandboxes() {
               Create Sandbox
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="max-h-[85vh] flex flex-col">
             <DialogHeader>
               <DialogTitle>Create Sandbox</DialogTitle>
               <DialogDescription>
                 Configure a new isolated sandbox environment.
               </DialogDescription>
             </DialogHeader>
-            <div className="grid gap-4 py-4">
+            <div className="grid gap-4 py-4 overflow-y-auto pr-1">
               <div className="grid gap-2">
                 <Label htmlFor="name">Name</Label>
                 <Input
@@ -254,6 +268,15 @@ export function Sandboxes() {
                   placeholder="my-sandbox"
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="description">Description (optional)</Label>
+                <Input
+                  id="description"
+                  placeholder="What this sandbox is for"
+                  value={formDescription}
+                  onChange={(e) => setFormDescription(e.target.value)}
                 />
               </div>
               <div className="grid gap-2">
@@ -334,6 +357,18 @@ export function Sandboxes() {
                   {formProfile === "permissive" && "Network + mount cwd + mount home + pass env vars"}
                   {formProfile === "moderate" && "Network only — no mounts, no env pass-through"}
                   {formProfile === "restrictive" && "No network, no mounts, read-only filesystem"}
+                </p>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="labels">Labels (optional)</Label>
+                <Input
+                  id="labels"
+                  placeholder="env=prod, team=infra"
+                  value={formLabels}
+                  onChange={(e) => setFormLabels(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Comma-separated key=value pairs for fleet management
                 </p>
               </div>
             </div>
@@ -470,12 +505,27 @@ export function Sandboxes() {
               })().map((sandbox) => (
                 <TableRow key={sandbox.name}>
                   <TableCell>
-                    <Link
-                      to={`/sandboxes/${sandbox.name}`}
-                      className="font-medium hover:underline"
-                    >
-                      {sandbox.name}
-                    </Link>
+                    <div className="flex items-center gap-2">
+                      <Link
+                        to={`/sandboxes/${sandbox.name}`}
+                        className="font-medium hover:underline"
+                      >
+                        {sandbox.name}
+                      </Link>
+                      {sandbox.labels && Object.keys(sandbox.labels).length > 0 && (
+                        <div className="flex gap-1 flex-wrap">
+                          {Object.entries(sandbox.labels).map(([k, v]) => (
+                            <span
+                              key={k}
+                              className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+                              title={`${k}=${v}`}
+                            >
+                              {k}={v}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <SandboxStatusBadge status={sandbox.status} />

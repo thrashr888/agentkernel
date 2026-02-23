@@ -120,14 +120,8 @@ fn parse_template(toml_str: &str) -> Option<TemplateInfo> {
         .collect();
     Some(TemplateInfo {
         name: parsed.sandbox.name,
-        description: parsed
-            .template
-            .description
-            .unwrap_or_default(),
-        category: parsed
-            .template
-            .category
-            .unwrap_or_else(|| "Other".into()),
+        description: parsed.template.description.unwrap_or_default(),
+        category: parsed.template.category.unwrap_or_else(|| "Other".into()),
         base_image: parsed.sandbox.base_image.unwrap_or_default(),
         vcpus: parsed.resources.vcpus,
         memory_mb: parsed.resources.memory_mb,

@@ -351,19 +351,33 @@ brew services start thrashr888/agentkernel/agentkernel
 
 # Or run manually
 agentkernel serve --host 127.0.0.1 --port 18888
+
+# With API key authentication
+agentkernel serve --api-key "sk-my-secret-key"
+
+# With multiple keys from a file (one per line)
+agentkernel serve --api-key-file /etc/agentkernel/api-keys
 ```
+
+### Authentication
+
+When `--api-key` or `--api-key-file` is set, all requests (except `GET /health`) must include an `Authorization: Bearer <key>` header. Multiple keys can be provided via repeated `--api-key` flags or a key file. Keys can also be set via the `AGENTKERNEL_API_KEY` env var or in `agentkernel.toml`.
 
 ### Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Health check |
+| GET | `/health` | Health check (no auth required) |
+| GET | `/status` | Server version and backend info |
+| GET | `/stats` | Sandbox count, resource usage (CPU/memory/disk) |
 | POST | `/run` | Run command in temporary sandbox |
-| GET | `/sandboxes` | List all sandboxes (includes IP addresses) |
-| POST | `/sandboxes` | Create a sandbox |
-| GET | `/sandboxes/{name}` | Get sandbox info (includes IP when running) |
+| GET | `/sandboxes` | List all sandboxes (supports `?label=key:value` filter) |
+| POST | `/sandboxes` | Create a sandbox (supports `labels`, `description`) |
+| GET | `/sandboxes/{name}` | Get sandbox info |
+| PATCH | `/sandboxes/{name}` | Update sandbox metadata (labels, description) |
 | DELETE | `/sandboxes/{name}` | Remove sandbox |
 | POST | `/sandboxes/{name}/exec` | Execute command in sandbox |
+| POST | `/gc` | Garbage-collect expired sandboxes |
 
 ### Example
 
@@ -375,10 +389,14 @@ curl -X POST http://localhost:18888/run \
 
 # Response: {"success": true, "data": {"output": "2\n"}}
 
-# Get sandbox info (includes IP for running containers)
-curl http://localhost:18888/sandboxes/my-sandbox
+# Create sandbox with labels
+curl -X POST http://localhost:18888/sandboxes \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-sandbox", "labels": {"env": "prod", "team": "ml"}}'
 
-# Response: {"success": true, "data": {"name": "my-sandbox", "status": "running", "backend": "docker", "ip": "172.17.0.3"}}
+# Get stats (for fleet load balancing)
+curl http://localhost:18888/stats
+# Response includes sandbox_count, resource_usage (cpu_percent, memory_used_mb, etc.)
 ```
 
 ## Multi-Agent Support

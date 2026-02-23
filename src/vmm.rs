@@ -120,6 +120,12 @@ pub struct SandboxState {
     /// Human guidance text associated with the source template.
     #[serde(default)]
     pub template_help_text: Option<String>,
+    /// User-defined labels for fleet management and filtering.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub labels: HashMap<String, String>,
+    /// User-defined description for the sandbox.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// Status of a detached command
@@ -643,6 +649,8 @@ impl VmManager {
             init_script: None,
             created_from_template: None,
             template_help_text: None,
+            labels: HashMap::new(),
+            description: None,
         };
 
         self.save_sandbox(&state)?;
@@ -652,6 +660,11 @@ impl VmManager {
             name: name.to_string(),
             image: effective_image,
             backend: self.backend.to_string(),
+            labels: self
+                .sandboxes
+                .get(name)
+                .map(|s| s.labels.clone())
+                .unwrap_or_default(),
         });
         crate::metrics::record_sandbox_lifecycle(
             "created",
@@ -699,6 +712,30 @@ impl VmManager {
             .get(name)
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
         self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    /// Set user-defined labels on a sandbox for fleet management and filtering.
+    pub fn set_labels(&mut self, name: &str, labels: &HashMap<String, String>) -> Result<()> {
+        let state = self
+            .sandboxes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        state.labels = labels.clone();
+        let snapshot = state.clone();
+        self.save_sandbox(&snapshot)?;
+        Ok(())
+    }
+
+    /// Set user-defined description on a sandbox.
+    pub fn set_description(&mut self, name: &str, description: Option<&str>) -> Result<()> {
+        let state = self
+            .sandboxes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        state.description = description.map(String::from);
+        let snapshot = state.clone();
+        self.save_sandbox(&snapshot)?;
         Ok(())
     }
 
@@ -1878,6 +1915,19 @@ impl VmManager {
             .collect()
     }
 
+    /// Return names of sandboxes matching all given label key=value pairs.
+    pub fn list_matching_labels(&self, filters: &[(String, String)]) -> Vec<String> {
+        self.sandboxes
+            .iter()
+            .filter(|(_, state)| {
+                filters
+                    .iter()
+                    .all(|(k, v)| state.labels.get(k).map(|lv| lv == v).unwrap_or(false))
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
     /// Garbage-collect expired sandboxes. Returns names of removed sandboxes.
     pub async fn gc(&mut self) -> Result<Vec<String>> {
         let expired = self.expired();
@@ -2189,6 +2239,8 @@ mod tests {
             init_script: None,
             created_from_template: None,
             template_help_text: None,
+            labels: HashMap::new(),
+            description: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -2243,6 +2295,8 @@ mod tests {
             init_script: None,
             created_from_template: None,
             template_help_text: None,
+            labels: HashMap::new(),
+            description: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -2307,6 +2361,8 @@ mod tests {
             init_script: None,
             created_from_template: None,
             template_help_text: None,
+            labels: HashMap::new(),
+            description: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -2387,6 +2443,8 @@ mod tests {
                 init_script: None,
                 created_from_template: None,
                 template_help_text: None,
+                labels: HashMap::new(),
+                description: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();
@@ -2405,5 +2463,248 @@ mod tests {
         let incomplete_json = r#"{"name": "test"}"#;
         let result: Result<SandboxState, _> = serde_json::from_str(incomplete_json);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_labels_and_retrieve() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = VmManager {
+            sandboxes: HashMap::new(),
+            data_dir: temp_dir.path().to_path_buf(),
+            backend: BackendType::Docker,
+            running: HashMap::new(),
+            rootfs_dir: None,
+            next_cid: 3,
+            detached: HashMap::new(),
+            #[cfg(feature = "enterprise")]
+            policy_engine: None,
+        };
+
+        // Insert a sandbox manually
+        let state = SandboxState {
+            name: "label-test".to_string(),
+            uuid: uuid::Uuid::now_v7().to_string(),
+            image: "alpine:3.20".to_string(),
+            vcpus: 1,
+            memory_mb: 512,
+            vsock_cid: 3,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            backend: None,
+            remote_id: None,
+            remote_namespace: None,
+            ttl_seconds: None,
+            expires_at: None,
+            ports: Vec::new(),
+            ssh_enabled: false,
+            ssh_host_port: None,
+            volumes: Vec::new(),
+            agent: None,
+            secret_bindings: Vec::new(),
+            secret_mappings: HashMap::new(),
+            secret_files: Vec::new(),
+            proxy_port: None,
+            init_script: None,
+            created_from_template: None,
+            template_help_text: None,
+            labels: HashMap::new(),
+            description: None,
+        };
+        std::fs::create_dir_all(temp_dir.path().join("sandboxes")).unwrap();
+        manager.sandboxes.insert("label-test".to_string(), state);
+
+        // Set labels
+        let mut labels = HashMap::new();
+        labels.insert("env".to_string(), "prod".to_string());
+        labels.insert("team".to_string(), "ml".to_string());
+        manager.set_labels("label-test", &labels).unwrap();
+
+        // Retrieve and verify
+        let state = manager.get_state("label-test").unwrap();
+        assert_eq!(state.labels.get("env").unwrap(), "prod");
+        assert_eq!(state.labels.get("team").unwrap(), "ml");
+    }
+
+    #[test]
+    fn test_list_matching_labels() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = VmManager {
+            sandboxes: HashMap::new(),
+            data_dir: temp_dir.path().to_path_buf(),
+            backend: BackendType::Docker,
+            running: HashMap::new(),
+            rootfs_dir: None,
+            next_cid: 3,
+            detached: HashMap::new(),
+            #[cfg(feature = "enterprise")]
+            policy_engine: None,
+        };
+        std::fs::create_dir_all(temp_dir.path().join("sandboxes")).unwrap();
+
+        // Create sandboxes with different labels
+        for (name, env) in [("s1", "prod"), ("s2", "staging"), ("s3", "prod")] {
+            let mut labels = HashMap::new();
+            labels.insert("env".to_string(), env.to_string());
+            let state = SandboxState {
+                name: name.to_string(),
+                uuid: uuid::Uuid::now_v7().to_string(),
+                image: "alpine:3.20".to_string(),
+                vcpus: 1,
+                memory_mb: 512,
+                vsock_cid: 3,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                backend: None,
+                remote_id: None,
+                remote_namespace: None,
+                ttl_seconds: None,
+                expires_at: None,
+                ports: Vec::new(),
+                ssh_enabled: false,
+                ssh_host_port: None,
+                volumes: Vec::new(),
+                agent: None,
+                secret_bindings: Vec::new(),
+                secret_mappings: HashMap::new(),
+                secret_files: Vec::new(),
+                proxy_port: None,
+                init_script: None,
+                created_from_template: None,
+                template_help_text: None,
+                labels,
+                description: None,
+            };
+            manager.sandboxes.insert(name.to_string(), state);
+        }
+
+        // Filter by env=prod
+        let filters = vec![("env".to_string(), "prod".to_string())];
+        let mut matched = manager.list_matching_labels(&filters);
+        matched.sort();
+        assert_eq!(matched, vec!["s1", "s3"]);
+
+        // Filter by env=staging
+        let filters = vec![("env".to_string(), "staging".to_string())];
+        let matched = manager.list_matching_labels(&filters);
+        assert_eq!(matched, vec!["s2"]);
+
+        // Filter by non-existent label
+        let filters = vec![("team".to_string(), "ml".to_string())];
+        let matched = manager.list_matching_labels(&filters);
+        assert!(matched.is_empty());
+    }
+
+    #[test]
+    fn test_set_description() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = VmManager {
+            sandboxes: HashMap::new(),
+            data_dir: temp_dir.path().to_path_buf(),
+            backend: BackendType::Docker,
+            running: HashMap::new(),
+            rootfs_dir: None,
+            next_cid: 3,
+            detached: HashMap::new(),
+            #[cfg(feature = "enterprise")]
+            policy_engine: None,
+        };
+        std::fs::create_dir_all(temp_dir.path().join("sandboxes")).unwrap();
+
+        let state = SandboxState {
+            name: "desc-test".to_string(),
+            uuid: uuid::Uuid::now_v7().to_string(),
+            image: "alpine:3.20".to_string(),
+            vcpus: 1,
+            memory_mb: 512,
+            vsock_cid: 3,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            backend: None,
+            remote_id: None,
+            remote_namespace: None,
+            ttl_seconds: None,
+            expires_at: None,
+            ports: Vec::new(),
+            ssh_enabled: false,
+            ssh_host_port: None,
+            volumes: Vec::new(),
+            agent: None,
+            secret_bindings: Vec::new(),
+            secret_mappings: HashMap::new(),
+            secret_files: Vec::new(),
+            proxy_port: None,
+            init_script: None,
+            created_from_template: None,
+            template_help_text: None,
+            labels: HashMap::new(),
+            description: None,
+        };
+        manager.sandboxes.insert("desc-test".to_string(), state);
+
+        manager
+            .set_description("desc-test", Some("My sandbox"))
+            .unwrap();
+        assert_eq!(
+            manager
+                .get_state("desc-test")
+                .unwrap()
+                .description
+                .as_deref(),
+            Some("My sandbox")
+        );
+
+        manager.set_description("desc-test", None).unwrap();
+        assert!(
+            manager
+                .get_state("desc-test")
+                .unwrap()
+                .description
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_labels_persist_across_reload() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join("sandboxes")).unwrap();
+
+        let mut labels = HashMap::new();
+        labels.insert("env".to_string(), "prod".to_string());
+
+        let state = SandboxState {
+            name: "persist-test".to_string(),
+            uuid: uuid::Uuid::now_v7().to_string(),
+            image: "alpine:3.20".to_string(),
+            vcpus: 1,
+            memory_mb: 512,
+            vsock_cid: 3,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            backend: None,
+            remote_id: None,
+            remote_namespace: None,
+            ttl_seconds: None,
+            expires_at: None,
+            ports: Vec::new(),
+            ssh_enabled: false,
+            ssh_host_port: None,
+            volumes: Vec::new(),
+            agent: None,
+            secret_bindings: Vec::new(),
+            secret_mappings: HashMap::new(),
+            secret_files: Vec::new(),
+            proxy_port: None,
+            init_script: None,
+            created_from_template: None,
+            template_help_text: None,
+            labels: labels.clone(),
+            description: Some("Test sandbox".to_string()),
+        };
+
+        // Save to disk
+        let path = temp_dir.path().join("sandboxes").join("persist-test.json");
+        std::fs::write(&path, serde_json::to_string_pretty(&state).unwrap()).unwrap();
+
+        // Reload from disk
+        let loaded = VmManager::load_sandboxes(&temp_dir.path().join("sandboxes")).unwrap();
+        let loaded_state = loaded.get("persist-test").unwrap();
+        assert_eq!(loaded_state.labels.get("env").unwrap(), "prod");
+        assert_eq!(loaded_state.description.as_deref(), Some("Test sandbox"));
     }
 }

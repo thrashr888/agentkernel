@@ -180,6 +180,8 @@ pub async fn quickstart_agent(
         secret_mappings: std::collections::BTreeMap::new(),
         created_from_template: None,
         template_help_text: None,
+        labels: std::collections::BTreeMap::new(),
+        description: None,
     };
 
     client
@@ -270,6 +272,21 @@ pub async fn extend_ttl(
     let client = state.client.lock().map_err(|e| e.to_string())?.clone();
     client
         .extend_ttl(&name, &by)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Update sandbox metadata (labels, description, etc.).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn update_sandbox(
+    name: String,
+    labels: Option<std::collections::HashMap<String, String>>,
+    description: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<SandboxInfo, String> {
+    let client = state.client.lock().map_err(|e| e.to_string())?.clone();
+    client
+        .update_sandbox(&name, labels, description)
         .await
         .map_err(|e| e.to_string())
 }

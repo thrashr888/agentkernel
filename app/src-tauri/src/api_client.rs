@@ -152,6 +152,30 @@ impl ApiClient {
         .await
     }
 
+    pub async fn update_sandbox(
+        &self,
+        name: &str,
+        labels: Option<std::collections::HashMap<String, String>>,
+        description: Option<String>,
+    ) -> anyhow::Result<SandboxInfo> {
+        #[derive(serde::Serialize)]
+        struct Body {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            labels: Option<std::collections::HashMap<String, String>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            description: Option<String>,
+        }
+        self.request(
+            reqwest::Method::PATCH,
+            &format!("/sandboxes/{name}"),
+            Some(&Body {
+                labels,
+                description,
+            }),
+        )
+        .await
+    }
+
     pub async fn resize_sandbox(
         &self,
         name: &str,

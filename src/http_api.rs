@@ -249,6 +249,12 @@ struct CreateRequest {
     /// Persisted so the UI can show expected secrets even when not yet bound.
     #[serde(default)]
     secret_mappings: std::collections::HashMap<String, String>,
+    /// User-defined labels for fleet management and filtering.
+    #[serde(default)]
+    labels: std::collections::HashMap<String, String>,
+    /// User-defined description.
+    #[serde(default)]
+    description: Option<String>,
 }
 
 /// Request to write a file
@@ -518,6 +524,12 @@ struct SandboxInfo {
     /// Secret mappings: env_var → target_host (values are stripped for security).
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     secret_mappings: std::collections::HashMap<String, String>,
+    /// User-defined labels.
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    labels: std::collections::HashMap<String, String>,
+    /// User-defined description.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
 }
 
 /// Extract env_var → host from secret binding strings.
@@ -552,10 +564,12 @@ struct RunResponse {
 
 /// Shared state for the HTTP server
 struct AppState {
-    /// Optional API key for authentication
-    api_key: Option<String>,
+    /// API keys for authentication (empty = no auth required)
+    api_keys: Vec<String>,
     /// Whether HTTP API callers may request root execution (`sudo: true`).
     allow_sudo_exec: bool,
+    /// Server start time for uptime calculation
+    started_at: std::time::Instant,
     /// OpenCode API state
     opencode: Arc<OpenCodeState>,
     /// Durable orchestration persistence store
@@ -571,11 +585,21 @@ struct AppState {
 }
 
 impl AppState {
-    fn new() -> Self {
-        let api_key = load_api_key();
+    fn new(api_keys_override: Vec<String>) -> Self {
+        let mut api_keys = api_keys_override;
+        // If no keys provided via CLI, fall back to env var / config file
+        if api_keys.is_empty()
+            && let Some(key) = load_api_key()
+        {
+            api_keys.push(key);
+        }
         let allow_sudo_exec = load_api_allow_sudo_exec_from_config();
-        if api_key.is_some() {
-            eprintln!("API key authentication enabled");
+        if !api_keys.is_empty() {
+            eprintln!(
+                "API key authentication enabled ({} key{})",
+                api_keys.len(),
+                if api_keys.len() == 1 { "" } else { "s" }
+            );
         }
         if allow_sudo_exec {
             eprintln!("[api] Root exec via HTTP API is enabled");
@@ -585,8 +609,9 @@ impl AppState {
         let (enterprise_config, policy_engine) = Self::init_enterprise();
 
         Self {
-            api_key,
+            api_keys,
             allow_sudo_exec,
+            started_at: std::time::Instant::now(),
             opencode: Arc::new(OpenCodeState::new()),
             orchestration_store: Self::init_orchestration_store(),
             vm_manager: match VmManager::new() {
@@ -600,15 +625,16 @@ impl AppState {
         }
     }
 
-    /// Create state with explicit API key
+    /// Create state with explicit API keys
     #[allow(dead_code)]
-    fn with_api_key(api_key: Option<String>) -> Self {
-        if api_key.is_some() {
+    fn with_api_keys(api_keys: Vec<String>) -> Self {
+        if !api_keys.is_empty() {
             eprintln!("API key authentication enabled");
         }
         Self {
-            api_key,
+            api_keys,
             allow_sudo_exec: false,
+            started_at: std::time::Instant::now(),
             opencode: Arc::new(OpenCodeState::new()),
             orchestration_store: Self::init_orchestration_store(),
             vm_manager: None,
@@ -680,11 +706,10 @@ impl AppState {
     /// Check if a request is authenticated
     #[allow(clippy::result_large_err)]
     fn check_auth(&self, req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
-        // If no API key is configured, allow all requests
-        let api_key = match &self.api_key {
-            Some(key) => key,
-            None => return Ok(()),
-        };
+        // If no API keys configured, allow all requests
+        if self.api_keys.is_empty() {
+            return Ok(());
+        }
 
         // Get Authorization header
         let auth_header = req
@@ -695,7 +720,7 @@ impl AppState {
         match auth_header {
             Some(header) if header.starts_with("Bearer ") => {
                 let token = &header[7..];
-                if constant_time_eq(token, api_key) {
+                if self.api_keys.iter().any(|key| constant_time_eq(token, key)) {
                     Ok(())
                 } else {
                     Err(json_response(
@@ -743,8 +768,10 @@ async fn extract_identity(
                     Ok(claims) => return crate::identity::AgentIdentity::from_jwt(claims),
                     Err(e) => {
                         eprintln!("[enterprise] JWT validation failed: {}", e);
-                        if let Some(expected_api_key) = state.api_key.as_deref()
-                            && crate::identity::validate_api_key(token, expected_api_key).is_ok()
+                        if state
+                            .api_keys
+                            .iter()
+                            .any(|k| crate::identity::validate_api_key(token, k).is_ok())
                         {
                             return crate::identity::AgentIdentity::from_api_key(token.to_string());
                         }
@@ -825,6 +852,11 @@ async fn handle_request(
             .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
             .body(full(body))
             .unwrap());
+    }
+
+    // Stats endpoint doesn't require auth (used by fleet load-balancers)
+    if method == Method::GET && segments.as_slice() == ["stats"] {
+        return Ok(handle_stats(state).await);
     }
 
     // Check authentication for all other endpoints
@@ -932,8 +964,8 @@ async fn handle_request(
             handle_trigger_schedule(schedule_id, state).await
         }
 
-        // List sandboxes
-        (Method::GET, ["sandboxes"]) => handle_list_sandboxes(state).await,
+        // List sandboxes (supports ?label=key:value filtering)
+        (Method::GET, ["sandboxes"]) => handle_list_sandboxes(req, state).await,
 
         // Create a sandbox
         (Method::POST, ["sandboxes"]) => handle_create_sandbox(req, state).await,
@@ -1017,6 +1049,9 @@ async fn handle_request(
             handle_resize_sandbox(req, name, state).await
         }
 
+        // Update sandbox metadata (labels, etc.)
+        (Method::PATCH, ["sandboxes", name]) => handle_patch_sandbox(req, name, state).await,
+
         // Snapshot endpoints
         (Method::GET, ["snapshots"]) => handle_list_snapshots(state).await,
         (Method::POST, ["snapshots"]) => handle_take_snapshot(req, state).await,
@@ -1031,6 +1066,9 @@ async fn handle_request(
 
         // Diagnostics: installation status
         (Method::GET, ["status"]) => handle_status(state).await,
+
+        // Stats: lightweight utilization endpoint
+        (Method::GET, ["stats"]) => handle_stats(state).await,
 
         // Diagnostics: health checks
         (Method::GET, ["doctor"]) => handle_doctor(state).await,
@@ -2508,7 +2546,27 @@ async fn handle_delete_orchestration(
     }
 }
 
-async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
+async fn handle_list_sandboxes(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    // Parse label filters from query string: ?label=key:value&label=env:prod
+    let label_filters: Vec<(String, String)> = req
+        .uri()
+        .query()
+        .map(|q| {
+            q.split('&')
+                .filter_map(|param| {
+                    let (k, v) = param.split_once('=')?;
+                    if k != "label" {
+                        return None;
+                    }
+                    // Percent-decode the value for labels with special chars
+                    let decoded = urlencoding::decode(v).unwrap_or(std::borrow::Cow::Borrowed(v));
+                    let (lk, lv) = decoded.split_once(':')?;
+                    Some((lk.to_string(), lv.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let manager = match state.get_manager().await {
         Ok(m) => m,
         Err(e) => {
@@ -2522,6 +2580,17 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
     let sandboxes: Vec<SandboxInfo> = manager
         .list()
         .into_iter()
+        .filter(|(name, _, _)| {
+            if label_filters.is_empty() {
+                return true;
+            }
+            let state_info = manager.get_state(name);
+            label_filters.iter().all(|(fk, fv)| {
+                state_info
+                    .and_then(|s| s.labels.get(fk))
+                    .is_some_and(|v| v == fv)
+            })
+        })
         .map(|(name, running, backend)| {
             let state_info = manager.get_state(name);
             let ports = state_info
@@ -2554,6 +2623,8 @@ async fn handle_list_sandboxes(state: Arc<AppState>) -> Response<BoxBody> {
                     .unwrap_or_default(),
                 proxy_port: state_info.and_then(|s| s.proxy_port),
                 secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
+                labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
+                description: state_info.and_then(|s| s.description.clone()),
             }
         })
         .collect();
@@ -2742,6 +2813,28 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         );
     }
 
+    // Set labels if provided
+    if !body.labels.is_empty()
+        && let Err(e) = manager.set_labels(&body.name, &body.labels)
+    {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to set labels: {}", e)),
+        );
+    }
+
+    // Set description if provided
+    if body.description.is_some()
+        && let Err(e) = manager.set_description(&body.name, body.description.as_deref())
+    {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to set description: {}", e)),
+        );
+    }
+
     // Resolve profile for start_with_permissions
     let perms = if let Some(ref profile_str) = body.profile {
         match resolve_profile(profile_str) {
@@ -2840,6 +2933,8 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
                 m.extend(extract_secret_mappings(&body.secrets));
                 m
             },
+            labels: body.labels.clone(),
+            description: None,
         }),
     )
 }
@@ -2899,6 +2994,8 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                         .unwrap_or_default(),
                     proxy_port: state_info.and_then(|s| s.proxy_port),
                     secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
+                    labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
+                    description: state_info.and_then(|s| s.description.clone()),
                 }),
             );
         }
@@ -2966,6 +3063,8 @@ async fn handle_get_sandbox_by_uuid(uuid: &str, state: Arc<AppState>) -> Respons
             secret_files: state_info.secret_files.clone(),
             proxy_port: state_info.proxy_port,
             secret_mappings: build_secret_mappings(state_info),
+            labels: state_info.labels.clone(),
+            description: state_info.description.clone(),
         }),
     )
 }
@@ -3567,6 +3666,113 @@ async fn handle_resize_sandbox(
                 .map(|s| s.uuid.clone())
                 .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
             secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
+            labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
+            description: state_info.and_then(|s| s.description.clone()),
+        }),
+    )
+}
+
+// --- Patch sandbox handler ---
+
+#[derive(Debug, Deserialize)]
+struct PatchSandboxRequest {
+    #[serde(default)]
+    labels: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+async fn handle_patch_sandbox(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let body: PatchSandboxRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    // Sandbox must exist
+    if manager.get_state(name).is_none() {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("Sandbox '{}' not found", name)),
+        );
+    }
+
+    // Apply label updates
+    if let Some(labels) = body.labels
+        && let Err(e) = manager.set_labels(name, &labels)
+    {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to update labels: {}", e)),
+        );
+    }
+
+    // Apply description update
+    if body.description.is_some()
+        && let Err(e) = manager.set_description(name, body.description.as_deref())
+    {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to update description: {}", e)),
+        );
+    }
+
+    // Return updated sandbox info
+    let running = manager.is_running(name);
+    let ip = if running {
+        manager.get_container_ip(name)
+    } else {
+        None
+    };
+    let state_info = manager.get_state(name);
+    let result_ports: Vec<String> = state_info
+        .map(|s| s.ports.iter().map(|p| p.to_string()).collect())
+        .unwrap_or_default();
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(SandboxInfo {
+            name: name.to_string(),
+            status: if running { "running" } else { "stopped" }.to_string(),
+            backend: format!("{}", manager.backend()),
+            ip,
+            image: state_info.map(|s| s.image.clone()),
+            vcpus: state_info.map(|s| s.vcpus),
+            memory_mb: state_info.map(|s| s.memory_mb),
+            created_at: state_info.map(|s| s.created_at.clone()),
+            created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
+            template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
+            ports: result_ports,
+            secret_files: state_info
+                .map(|s| s.secret_files.clone())
+                .unwrap_or_default(),
+            proxy_port: state_info.and_then(|s| s.proxy_port),
+            uuid: state_info
+                .map(|s| s.uuid.clone())
+                .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
+            secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
+            labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
+            description: state_info.and_then(|s| s.description.clone()),
         }),
     )
 }
@@ -3800,6 +4006,8 @@ async fn handle_restore_snapshot(
                         .unwrap_or_default(),
                     proxy_port: state_info.and_then(|s| s.proxy_port),
                     secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
+                    labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
+                    description: state_info.and_then(|s| s.description.clone()),
                 }),
             )
         }
@@ -4928,8 +5136,8 @@ async fn execute_runtime_activity(activity: &RuntimeActivity) -> Result<String> 
 
 /// Run the HTTP API server (plain HTTP)
 #[allow(dead_code)]
-pub async fn run_server(addr: SocketAddr) -> Result<()> {
-    let state = Arc::new(AppState::new());
+pub async fn run_server(addr: SocketAddr, api_keys: Vec<String>) -> Result<()> {
+    let state = Arc::new(AppState::new(api_keys));
     spawn_orchestration_worker(state.clone());
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) =
@@ -4979,6 +5187,7 @@ pub async fn run_server(addr: SocketAddr) -> Result<()> {
 pub async fn run_server_with_tls(
     addr: SocketAddr,
     tls_config: Option<crate::tls::TlsConfig>,
+    api_keys: Vec<String>,
 ) -> Result<()> {
     let acceptor = match tls_config {
         Some(ref tls) => {
@@ -4988,7 +5197,7 @@ pub async fn run_server_with_tls(
         None => None,
     };
 
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new(api_keys));
     spawn_orchestration_worker(state.clone());
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) =
@@ -5078,10 +5287,76 @@ async fn handle_status(state: Arc<AppState>) -> Response<BoxBody> {
     let info = StatusInfo {
         version,
         backend,
-        api_key_configured: state.api_key.is_some(),
+        api_key_configured: !state.api_keys.is_empty(),
     };
 
     json_response(StatusCode::OK, &ApiResponse::success(info))
+}
+
+async fn handle_stats(state: Arc<AppState>) -> Response<BoxBody> {
+    #[derive(serde::Serialize)]
+    struct ResourceUsage {
+        cpu_percent: f32,
+        memory_used_mb: u64,
+        memory_total_mb: u64,
+        disk_used_mb: u64,
+    }
+
+    #[derive(serde::Serialize)]
+    struct Stats {
+        sandbox_count: usize,
+        sandbox_limit: usize,
+        backend: String,
+        uptime_seconds: u64,
+        version: String,
+        resource_usage: ResourceUsage,
+    }
+
+    let (sandbox_count, backend) = match state.get_manager().await {
+        Ok(manager) => {
+            let count = manager.list().len();
+            let backend = manager.backend().to_string();
+            (count, backend)
+        }
+        Err(_) => (0, "unknown".to_string()),
+    };
+
+    // Gather OS-level resource usage
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_cpu_usage();
+    // Brief sleep to get meaningful CPU measurement (sysinfo needs two samples)
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    sys.refresh_cpu_usage();
+    sys.refresh_memory();
+
+    let cpu_percent = sys.global_cpu_usage();
+    let memory_used_mb = sys.used_memory() / (1024 * 1024);
+    let memory_total_mb = sys.total_memory() / (1024 * 1024);
+
+    // Disk usage for root filesystem
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let disk_used_mb = disks
+        .iter()
+        .find(|d| d.mount_point() == std::path::Path::new("/"))
+        .map(|d| (d.total_space() - d.available_space()) / (1024 * 1024))
+        .unwrap_or(0);
+
+    let stats = Stats {
+        sandbox_count,
+        sandbox_limit: 0,
+        backend,
+        uptime_seconds: state.started_at.elapsed().as_secs(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        resource_usage: ResourceUsage {
+            cpu_percent,
+            memory_used_mb,
+            memory_total_mb,
+            disk_used_mb,
+        },
+    };
+
+    json_response(StatusCode::OK, &ApiResponse::success(stats))
 }
 
 async fn handle_doctor(state: Arc<AppState>) -> Response<BoxBody> {
@@ -6073,6 +6348,8 @@ mod tests {
             secret_files: vec![],
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
+            labels: std::collections::HashMap::new(),
+            description: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"name\":\"test-sandbox\""));
@@ -6095,14 +6372,14 @@ mod tests {
 
     #[test]
     fn test_app_state_with_api_key() {
-        let state = AppState::with_api_key(Some("secret123".to_string()));
-        assert_eq!(state.api_key, Some("secret123".to_string()));
+        let state = AppState::with_api_keys(vec!["secret123".to_string()]);
+        assert_eq!(state.api_keys, vec!["secret123".to_string()]);
     }
 
     #[test]
     fn test_app_state_without_api_key() {
-        let state = AppState::with_api_key(None);
-        assert!(state.api_key.is_none());
+        let state = AppState::with_api_keys(vec![]);
+        assert!(state.api_keys.is_empty());
     }
 
     // === default_fast tests ===
@@ -6151,6 +6428,8 @@ mod tests {
             secret_files: vec![],
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
+            labels: std::collections::HashMap::new(),
+            description: None,
         };
         let response = json_response(StatusCode::CREATED, &ApiResponse::success(info));
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -6483,6 +6762,8 @@ mod tests {
             secret_files: vec![],
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
+            labels: std::collections::HashMap::new(),
+            description: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"image\":\"python:3.12\""));
@@ -6509,6 +6790,8 @@ mod tests {
             secret_files: vec![],
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
+            labels: std::collections::HashMap::new(),
+            description: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(!json.contains("image"));
