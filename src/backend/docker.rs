@@ -367,6 +367,33 @@ impl Sandbox for DockerSandbox {
         Ok(())
     }
 
+    async fn resize(&mut self, vcpus: u32, memory_mb: u64) -> Result<bool> {
+        let container_name = self.container_name();
+        let output = Command::new(self.runtime.cmd())
+            .args([
+                "update",
+                "--cpus",
+                &vcpus.to_string(),
+                "--memory",
+                &format!("{}m", memory_mb),
+                &container_name,
+            ])
+            .output()
+            .context("Failed to resize container")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!(
+                "Warning: in-place resize not supported for '{}': {}",
+                container_name,
+                stderr.trim()
+            );
+            return Ok(false);
+        }
+
+        Ok(true)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }

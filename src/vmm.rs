@@ -56,6 +56,38 @@ async fn get_pool() -> Result<Arc<ContainerPool>> {
         .cloned()
 }
 
+/// Declarative lifecycle automation policy for a sandbox.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SandboxLifecyclePolicy {
+    /// Stop the sandbox after this much inactivity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_stop_after_seconds: Option<u64>,
+    /// Archive the sandbox after this much inactivity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_archive_after_seconds: Option<u64>,
+    /// Delete an archived sandbox after this duration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_delete_after_seconds: Option<u64>,
+}
+
+/// Action produced by lifecycle reconciliation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LifecycleAction {
+    pub sandbox: String,
+    pub action: String,
+    pub reason: String,
+}
+
+/// Result produced by lifecycle reconciliation.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LifecycleReconcileResult {
+    pub dry_run: bool,
+    pub stopped: Vec<String>,
+    pub archived: Vec<String>,
+    pub removed: Vec<String>,
+    pub actions: Vec<LifecycleAction>,
+}
+
 /// Persisted sandbox state (saved to disk)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxState {
@@ -126,6 +158,48 @@ pub struct SandboxState {
     /// User-defined description for the sandbox.
     #[serde(default)]
     pub description: Option<String>,
+    /// Last observed sandbox activity (exec/file/attach/start), RFC3339.
+    #[serde(default)]
+    pub last_activity_at: Option<String>,
+    /// Archive timestamp when sandbox is archived, RFC3339.
+    #[serde(default)]
+    pub archived_at: Option<String>,
+    /// Human-readable archive reason.
+    #[serde(default)]
+    pub archived_reason: Option<String>,
+    /// Optional lifecycle automation policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_policy: Option<SandboxLifecyclePolicy>,
+}
+
+impl SandboxState {
+    /// Render status from persisted archive state + runtime liveness.
+    pub fn status(&self, running: bool) -> &'static str {
+        if self.archived_at.is_some() {
+            "archived"
+        } else if running {
+            "running"
+        } else {
+            "stopped"
+        }
+    }
+
+    fn parse_rfc3339(ts: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        chrono::DateTime::parse_from_rfc3339(ts)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+    }
+
+    fn last_activity_time(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.last_activity_at
+            .as_deref()
+            .and_then(Self::parse_rfc3339)
+            .or_else(|| Self::parse_rfc3339(&self.created_at))
+    }
+
+    fn archived_time(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.archived_at.as_deref().and_then(Self::parse_rfc3339)
+    }
 }
 
 /// Status of a detached command
@@ -621,6 +695,7 @@ impl VmManager {
         self.next_cid += 1;
 
         let created = chrono::Utc::now();
+        let created_at = created.to_rfc3339();
         let expires_at =
             ttl_seconds.map(|ttl| (created + chrono::Duration::seconds(ttl as i64)).to_rfc3339());
 
@@ -631,7 +706,7 @@ impl VmManager {
             vcpus,
             memory_mb,
             vsock_cid,
-            created_at: created.to_rfc3339(),
+            created_at: created_at.clone(),
             backend: Some(self.backend),
             remote_id: None,
             remote_namespace: None,
@@ -651,6 +726,10 @@ impl VmManager {
             template_help_text: None,
             labels: HashMap::new(),
             description: None,
+            last_activity_at: Some(created_at),
+            archived_at: None,
+            archived_reason: None,
+            lifecycle_policy: None,
         };
 
         self.save_sandbox(&state)?;
@@ -734,6 +813,46 @@ impl VmManager {
             .get_mut(name)
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
         state.description = description.map(String::from);
+        let snapshot = state.clone();
+        self.save_sandbox(&snapshot)?;
+        Ok(())
+    }
+
+    /// Set volume mount specs for a sandbox (slug:/path or slug:/path:ro).
+    pub fn set_volumes(&mut self, name: &str, volumes: &[String]) -> Result<()> {
+        let state = self
+            .sandboxes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        state.volumes = volumes.to_vec();
+        let snapshot = state.clone();
+        self.save_sandbox(&snapshot)?;
+        Ok(())
+    }
+
+    /// Set lifecycle automation policy for a sandbox.
+    pub fn set_lifecycle_policy(
+        &mut self,
+        name: &str,
+        policy: Option<SandboxLifecyclePolicy>,
+    ) -> Result<()> {
+        let state = self
+            .sandboxes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        state.lifecycle_policy = policy;
+        let snapshot = state.clone();
+        self.save_sandbox(&snapshot)?;
+        Ok(())
+    }
+
+    /// Mark sandbox activity and persist the updated timestamp.
+    pub fn touch_activity(&mut self, name: &str) -> Result<()> {
+        let state = self
+            .sandboxes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        state.last_activity_at = Some(chrono::Utc::now().to_rfc3339());
         let snapshot = state.clone();
         self.save_sandbox(&snapshot)?;
         Ok(())
@@ -870,6 +989,22 @@ impl VmManager {
         Ok(new_expiry)
     }
 
+    /// Recover an archived sandbox back to a normal lifecycle state.
+    pub fn recover(&mut self, name: &str) -> Result<()> {
+        let state = self
+            .sandboxes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+
+        state.archived_at = None;
+        state.archived_reason = None;
+        state.last_activity_at = Some(chrono::Utc::now().to_rfc3339());
+
+        let snapshot = state.clone();
+        self.save_sandbox(&snapshot)?;
+        Ok(())
+    }
+
     /// Start a sandbox
     pub async fn start(&mut self, name: &str) -> Result<()> {
         self.start_with_permissions(name, &Permissions::default())
@@ -895,6 +1030,14 @@ impl VmManager {
             .get(name)
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?
             .clone();
+
+        if state.archived_at.is_some() {
+            bail!(
+                "Sandbox '{}' is archived. Recover it before starting (POST /sandboxes/{}/recover).",
+                name,
+                name
+            );
+        }
 
         if self.running.contains_key(name) {
             bail!("Sandbox '{}' is already running", name);
@@ -1504,6 +1647,7 @@ impl VmManager {
         }
 
         self.running.insert(name.to_string(), sandbox);
+        self.touch_activity(name)?;
 
         log_event(AuditEvent::SandboxStarted {
             name: name.to_string(),
@@ -1605,6 +1749,9 @@ impl VmManager {
             exit_code: Some(result.exit_code),
         });
 
+        // Any command execution counts as sandbox activity.
+        let _ = self.touch_activity(name);
+
         if result.exit_code != 0 {
             return Err(CommandFailed {
                 exit_code: result.exit_code,
@@ -1695,6 +1842,7 @@ impl VmManager {
         });
 
         self.detached.insert(id, detached_cmd.clone());
+        let _ = self.touch_activity(name);
         Ok(detached_cmd)
     }
 
@@ -1831,19 +1979,26 @@ impl VmManager {
 
     /// Attach to a sandbox's interactive shell with optional environment variables
     pub async fn attach_with_env(&mut self, name: &str, env: &[String]) -> Result<i32> {
-        let sandbox = self.running.get_mut(name).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Sandbox '{}' is not running. Start it with: agentkernel start {}",
-                name,
-                name
-            )
-        })?;
-
         log_event(AuditEvent::SessionAttached {
             sandbox: name.to_string(),
         });
 
-        sandbox.attach_with_env(None, env).await
+        let result = {
+            let sandbox = self.running.get_mut(name).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Sandbox '{}' is not running. Start it with: agentkernel start {}",
+                    name,
+                    name
+                )
+            })?;
+            sandbox.attach_with_env(None, env).await
+        };
+
+        if result.is_ok() {
+            let _ = self.touch_activity(name);
+        }
+
+        result
     }
 
     /// Stop a sandbox
@@ -1896,6 +2051,143 @@ impl VmManager {
             .clear_sandbox(name);
 
         Ok(())
+    }
+
+    /// Reconcile lifecycle automation policies across all sandboxes.
+    ///
+    /// This applies inactivity/archive/delete policies declared on each sandbox.
+    /// Use `dry_run=true` to preview actions without mutating state.
+    pub async fn reconcile_lifecycle(&mut self, dry_run: bool) -> Result<LifecycleReconcileResult> {
+        #[derive(Debug, Clone, Copy)]
+        enum DecisionKind {
+            Stop,
+            Archive,
+            Delete,
+        }
+
+        #[derive(Debug, Clone)]
+        struct Decision {
+            sandbox: String,
+            kind: DecisionKind,
+            reason: String,
+        }
+
+        let now = chrono::Utc::now();
+        let mut decisions: Vec<Decision> = Vec::new();
+
+        for (name, state) in &self.sandboxes {
+            let Some(policy) = state.lifecycle_policy.as_ref() else {
+                continue;
+            };
+
+            if let Some(archived_time) = state.archived_time() {
+                if let Some(delete_after) = policy.auto_delete_after_seconds {
+                    let archived_secs = now.signed_duration_since(archived_time).num_seconds();
+                    if archived_secs >= delete_after as i64 {
+                        decisions.push(Decision {
+                            sandbox: name.clone(),
+                            kind: DecisionKind::Delete,
+                            reason: format!(
+                                "archived for {}s (threshold={}s)",
+                                archived_secs, delete_after
+                            ),
+                        });
+                    }
+                }
+                continue;
+            }
+
+            let inactivity_secs = state
+                .last_activity_time()
+                .map(|ts| now.signed_duration_since(ts).num_seconds().max(0) as u64)
+                .unwrap_or(0);
+
+            if let Some(archive_after) = policy.auto_archive_after_seconds
+                && inactivity_secs >= archive_after
+            {
+                decisions.push(Decision {
+                    sandbox: name.clone(),
+                    kind: DecisionKind::Archive,
+                    reason: format!(
+                        "inactive for {}s (threshold={}s)",
+                        inactivity_secs, archive_after
+                    ),
+                });
+                continue;
+            }
+
+            if let Some(stop_after) = policy.auto_stop_after_seconds
+                && inactivity_secs >= stop_after
+                && self.is_running(name)
+            {
+                decisions.push(Decision {
+                    sandbox: name.clone(),
+                    kind: DecisionKind::Stop,
+                    reason: format!(
+                        "inactive for {}s (threshold={}s)",
+                        inactivity_secs, stop_after
+                    ),
+                });
+            }
+        }
+
+        // Stable order for predictable dry-run and testability.
+        decisions.sort_by(|a, b| {
+            a.sandbox
+                .cmp(&b.sandbox)
+                .then_with(|| a.reason.cmp(&b.reason))
+        });
+
+        let mut result = LifecycleReconcileResult {
+            dry_run,
+            ..Default::default()
+        };
+
+        for decision in decisions {
+            let action_name = match decision.kind {
+                DecisionKind::Stop => "stop",
+                DecisionKind::Archive => "archive",
+                DecisionKind::Delete => "delete",
+            }
+            .to_string();
+
+            result.actions.push(LifecycleAction {
+                sandbox: decision.sandbox.clone(),
+                action: action_name,
+                reason: decision.reason.clone(),
+            });
+
+            match decision.kind {
+                DecisionKind::Stop => {
+                    if !dry_run && self.is_running(&decision.sandbox) {
+                        self.stop(&decision.sandbox).await?;
+                    }
+                    result.stopped.push(decision.sandbox);
+                }
+                DecisionKind::Archive => {
+                    if !dry_run {
+                        if self.is_running(&decision.sandbox) {
+                            self.stop(&decision.sandbox).await?;
+                        }
+                        if let Some(state) = self.sandboxes.get_mut(&decision.sandbox) {
+                            state.archived_at = Some(now.to_rfc3339());
+                            state.archived_reason = Some(decision.reason.clone());
+                            let snapshot = state.clone();
+                            self.save_sandbox(&snapshot)?;
+                        }
+                    }
+                    result.archived.push(decision.sandbox);
+                }
+                DecisionKind::Delete => {
+                    if !dry_run {
+                        self.remove(&decision.sandbox).await?;
+                    }
+                    result.removed.push(decision.sandbox);
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     /// Return names of sandboxes that have expired (past their TTL).
@@ -1966,6 +2258,40 @@ impl VmManager {
             .get(name)
             .map(|s| s.is_running())
             .unwrap_or(false)
+    }
+
+    /// Update persisted sandbox resource values without recreating.
+    pub fn update_resources(&mut self, name: &str, vcpus: u32, memory_mb: u64) -> Result<()> {
+        let state = self
+            .sandboxes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        state.vcpus = vcpus;
+        state.memory_mb = memory_mb;
+        let snapshot = state.clone();
+        self.save_sandbox(&snapshot)?;
+        Ok(())
+    }
+
+    /// Attempt an in-place resize of a running sandbox.
+    ///
+    /// Returns `Ok(true)` if resized in-place, `Ok(false)` if backend does not
+    /// support live resize or sandbox is not running.
+    pub async fn try_resize_in_place(
+        &mut self,
+        name: &str,
+        vcpus: u32,
+        memory_mb: u64,
+    ) -> Result<bool> {
+        let Some(sandbox) = self.running.get_mut(name) else {
+            return Ok(false);
+        };
+        if sandbox.resize(vcpus, memory_mb).await? {
+            self.update_resources(name, vcpus, memory_mb)?;
+            let _ = self.touch_activity(name);
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Get the current backend
@@ -2139,6 +2465,8 @@ impl VmManager {
             path: path.to_string(),
         });
 
+        let _ = self.touch_activity(name);
+
         Ok(())
     }
 
@@ -2203,6 +2531,8 @@ impl VmManager {
             path: path.to_string(),
         });
 
+        let _ = self.touch_activity(name);
+
         Ok(content)
     }
 }
@@ -2241,6 +2571,10 @@ mod tests {
             template_help_text: None,
             labels: HashMap::new(),
             description: None,
+            last_activity_at: None,
+            archived_at: None,
+            archived_reason: None,
+            lifecycle_policy: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -2297,6 +2631,10 @@ mod tests {
             template_help_text: None,
             labels: HashMap::new(),
             description: None,
+            last_activity_at: None,
+            archived_at: None,
+            archived_reason: None,
+            lifecycle_policy: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -2363,6 +2701,10 @@ mod tests {
             template_help_text: None,
             labels: HashMap::new(),
             description: None,
+            last_activity_at: None,
+            archived_at: None,
+            archived_reason: None,
+            lifecycle_policy: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -2445,6 +2787,10 @@ mod tests {
                 template_help_text: None,
                 labels: HashMap::new(),
                 description: None,
+                last_activity_at: None,
+                archived_at: None,
+                archived_reason: None,
+                lifecycle_policy: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();
@@ -2508,6 +2854,10 @@ mod tests {
             template_help_text: None,
             labels: HashMap::new(),
             description: None,
+            last_activity_at: None,
+            archived_at: None,
+            archived_reason: None,
+            lifecycle_policy: None,
         };
         std::fs::create_dir_all(temp_dir.path().join("sandboxes")).unwrap();
         manager.sandboxes.insert("label-test".to_string(), state);
@@ -2571,6 +2921,10 @@ mod tests {
                 template_help_text: None,
                 labels,
                 description: None,
+                last_activity_at: None,
+                archived_at: None,
+                archived_reason: None,
+                lifecycle_policy: None,
             };
             manager.sandboxes.insert(name.to_string(), state);
         }
@@ -2635,6 +2989,10 @@ mod tests {
             template_help_text: None,
             labels: HashMap::new(),
             description: None,
+            last_activity_at: None,
+            archived_at: None,
+            archived_reason: None,
+            lifecycle_policy: None,
         };
         manager.sandboxes.insert("desc-test".to_string(), state);
 
@@ -2695,6 +3053,10 @@ mod tests {
             template_help_text: None,
             labels: labels.clone(),
             description: Some("Test sandbox".to_string()),
+            last_activity_at: None,
+            archived_at: None,
+            archived_reason: None,
+            lifecycle_policy: None,
         };
 
         // Save to disk

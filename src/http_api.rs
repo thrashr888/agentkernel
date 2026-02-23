@@ -210,6 +210,27 @@ fn default_fast() -> bool {
     true // Default to fast mode for HTTP API
 }
 
+/// Lifecycle automation policy from API requests.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct LifecyclePolicyRequest {
+    #[serde(default)]
+    auto_stop_after_seconds: Option<u64>,
+    #[serde(default)]
+    auto_archive_after_seconds: Option<u64>,
+    #[serde(default)]
+    auto_delete_after_seconds: Option<u64>,
+}
+
+impl From<LifecyclePolicyRequest> for crate::vmm::SandboxLifecyclePolicy {
+    fn from(value: LifecyclePolicyRequest) -> Self {
+        Self {
+            auto_stop_after_seconds: value.auto_stop_after_seconds,
+            auto_archive_after_seconds: value.auto_archive_after_seconds,
+            auto_delete_after_seconds: value.auto_delete_after_seconds,
+        }
+    }
+}
+
 /// Request to create a sandbox
 #[derive(Debug, Deserialize)]
 struct CreateRequest {
@@ -255,6 +276,9 @@ struct CreateRequest {
     /// User-defined description.
     #[serde(default)]
     description: Option<String>,
+    /// Lifecycle automation policy.
+    #[serde(default)]
+    lifecycle: Option<LifecyclePolicyRequest>,
 }
 
 /// Request to write a file
@@ -530,6 +554,18 @@ struct SandboxInfo {
     /// User-defined description.
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
+    /// Last observed sandbox activity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_activity_at: Option<String>,
+    /// When sandbox was archived.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archived_at: Option<String>,
+    /// Archive reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archived_reason: Option<String>,
+    /// Lifecycle automation policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lifecycle: Option<crate::vmm::SandboxLifecyclePolicy>,
 }
 
 /// Extract env_var → host from secret binding strings.
@@ -554,6 +590,16 @@ fn build_secret_mappings(
     let mut m = state.secret_mappings.clone();
     m.extend(extract_secret_mappings(&state.secret_bindings));
     m
+}
+
+fn sandbox_status(state: Option<&crate::vmm::SandboxState>, running: bool) -> String {
+    if let Some(s) = state {
+        s.status(running).to_string()
+    } else if running {
+        "running".to_string()
+    } else {
+        "stopped".to_string()
+    }
 }
 
 /// Run command response
@@ -1119,6 +1165,11 @@ async fn handle_request(
             handle_resize_sandbox(req, name, state).await
         }
 
+        // Recover archived sandbox
+        (Method::POST, ["sandboxes", name, "recover"]) => {
+            handle_recover_sandbox(req, name, state).await
+        }
+
         // Update sandbox metadata (labels, etc.)
         (Method::PATCH, ["sandboxes", name]) => handle_patch_sandbox(req, name, state).await,
 
@@ -1164,6 +1215,9 @@ async fn handle_request(
 
         // Garbage collection
         (Method::POST, ["gc"]) => handle_gc(state).await,
+
+        // Lifecycle policy reconciliation
+        (Method::POST, ["lifecycle", "reconcile"]) => handle_reconcile_lifecycle(req, state).await,
 
         // Agents/plugins
         (Method::GET, ["agents"]) => handle_list_agents(state).await,
@@ -2689,7 +2743,7 @@ async fn handle_list_sandboxes(req: Request<Incoming>, state: Arc<AppState>) -> 
                 uuid: state_info
                     .map(|s| s.uuid.clone())
                     .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
-                status: if running { "running" } else { "stopped" }.to_string(),
+                status: sandbox_status(state_info, running),
                 backend: backend
                     .map(|b| format!("{}", b))
                     .unwrap_or_else(|| "unknown".to_string()),
@@ -2708,6 +2762,10 @@ async fn handle_list_sandboxes(req: Request<Incoming>, state: Arc<AppState>) -> 
                 secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
                 labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
                 description: state_info.and_then(|s| s.description.clone()),
+                last_activity_at: state_info.and_then(|s| s.last_activity_at.clone()),
+                archived_at: state_info.and_then(|s| s.archived_at.clone()),
+                archived_reason: state_info.and_then(|s| s.archived_reason.clone()),
+                lifecycle: state_info.and_then(|s| s.lifecycle_policy.clone()),
             }
         })
         .collect();
@@ -2920,6 +2978,17 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         );
     }
 
+    // Set lifecycle policy if provided
+    if let Some(policy) = body.lifecycle.clone()
+        && let Err(e) = manager.set_lifecycle_policy(&body.name, Some(policy.into()))
+    {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to set lifecycle policy: {}", e)),
+        );
+    }
+
     // Resolve profile for start_with_permissions
     let perms = if let Some(ref profile_str) = body.profile {
         match resolve_profile(profile_str) {
@@ -3040,7 +3109,11 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
                 m
             },
             labels: body.labels.clone(),
-            description: None,
+            description: body.description.clone(),
+            last_activity_at: state_info.and_then(|s| s.last_activity_at.clone()),
+            archived_at: state_info.and_then(|s| s.archived_at.clone()),
+            archived_reason: state_info.and_then(|s| s.archived_reason.clone()),
+            lifecycle: state_info.and_then(|s| s.lifecycle_policy.clone()),
         }),
     )
 }
@@ -3083,7 +3156,7 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                     uuid: state_info
                         .map(|s| s.uuid.clone())
                         .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
-                    status: if *running { "running" } else { "stopped" }.to_string(),
+                    status: sandbox_status(state_info, *running),
                     backend: backend
                         .map(|b| format!("{}", b))
                         .unwrap_or_else(|| "unknown".to_string()),
@@ -3102,6 +3175,10 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                     secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
                     labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
                     description: state_info.and_then(|s| s.description.clone()),
+                    last_activity_at: state_info.and_then(|s| s.last_activity_at.clone()),
+                    archived_at: state_info.and_then(|s| s.archived_at.clone()),
+                    archived_reason: state_info.and_then(|s| s.archived_reason.clone()),
+                    lifecycle: state_info.and_then(|s| s.lifecycle_policy.clone()),
                 }),
             );
         }
@@ -3156,7 +3233,7 @@ async fn handle_get_sandbox_by_uuid(uuid: &str, state: Arc<AppState>) -> Respons
         &ApiResponse::success(SandboxInfo {
             name: state_info.name.clone(),
             uuid: state_info.uuid.clone(),
-            status: if running { "running" } else { "stopped" }.to_string(),
+            status: state_info.status(running).to_string(),
             backend: format!("{}", backend),
             ip,
             image: Some(state_info.image.clone()),
@@ -3171,6 +3248,10 @@ async fn handle_get_sandbox_by_uuid(uuid: &str, state: Arc<AppState>) -> Respons
             secret_mappings: build_secret_mappings(state_info),
             labels: state_info.labels.clone(),
             description: state_info.description.clone(),
+            last_activity_at: state_info.last_activity_at.clone(),
+            archived_at: state_info.archived_at.clone(),
+            archived_reason: state_info.archived_reason.clone(),
+            lifecycle: state_info.lifecycle_policy.clone(),
         }),
     )
 }
@@ -3760,42 +3841,93 @@ async fn handle_resize_sandbox(
     let new_vcpus = body.vcpus.unwrap_or(sandbox_state.vcpus);
     let new_memory = body.memory_mb.unwrap_or(sandbox_state.memory_mb);
 
-    // Stop if running
     let was_running = manager.is_running(name);
-    if was_running && let Err(e) = manager.stop(name).await {
-        return json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &ApiResponse::<()>::error(format!("Failed to stop sandbox: {}", e)),
-        );
-    }
+    if !was_running {
+        if let Err(e) = manager.update_resources(name, new_vcpus, new_memory) {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!("Failed to update sandbox resources: {}", e)),
+            );
+        }
+    } else {
+        let resized_in_place = match manager
+            .try_resize_in_place(name, new_vcpus, new_memory)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(format!("Failed to resize sandbox in-place: {}", e)),
+                );
+            }
+        };
 
-    // Remove and recreate with new resources
-    let image = sandbox_state.image.clone();
-    let ports = sandbox_state.ports.clone();
-    let agent = sandbox_state.agent.clone();
-    if let Err(e) = manager.remove(name).await {
-        return json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &ApiResponse::<()>::error(format!("Failed to remove sandbox: {}", e)),
-        );
-    }
+        if !resized_in_place {
+            // Fallback path for backends that don't support live resize yet:
+            // stop -> recreate with preserved metadata -> restart.
+            if let Err(e) = manager.stop(name).await {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(format!("Failed to stop sandbox: {}", e)),
+                );
+            }
 
-    if let Err(e) = manager
-        .create_with_agent(name, &image, new_vcpus, new_memory, None, ports, agent)
-        .await
-    {
-        return json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &ApiResponse::<()>::error(format!("Failed to recreate sandbox: {}", e)),
-        );
-    }
+            let image = sandbox_state.image.clone();
+            let ports = sandbox_state.ports.clone();
+            let agent = sandbox_state.agent.clone();
+            let ttl_seconds = sandbox_state.ttl_seconds;
 
-    // Restart if it was running
-    if was_running && let Err(e) = manager.start(name).await {
-        return json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &ApiResponse::<()>::error(format!("Resized but failed to restart: {}", e)),
-        );
+            if let Err(e) = manager.remove(name).await {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(format!("Failed to remove sandbox: {}", e)),
+                );
+            }
+
+            if let Err(e) = manager
+                .create_with_agent(
+                    name,
+                    &image,
+                    new_vcpus,
+                    new_memory,
+                    ttl_seconds,
+                    ports,
+                    agent,
+                )
+                .await
+            {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(format!("Failed to recreate sandbox: {}", e)),
+                );
+            }
+
+            // Restore mutable metadata that isn't part of create_with_agent.
+            let _ = manager.set_ssh_enabled(name, sandbox_state.ssh_enabled);
+            let _ = manager.set_secret_bindings(name, &sandbox_state.secret_bindings);
+            let _ = manager.set_secret_mappings(name, &sandbox_state.secret_mappings);
+            let _ = manager.set_secret_files(name, &sandbox_state.secret_files);
+            let _ = manager.set_labels(name, &sandbox_state.labels);
+            let _ = manager.set_description(name, sandbox_state.description.as_deref());
+            let _ = manager.set_lifecycle_policy(name, sandbox_state.lifecycle_policy.clone());
+            let _ = manager.set_template_metadata(
+                name,
+                sandbox_state.created_from_template.as_deref(),
+                sandbox_state.template_help_text.as_deref(),
+            );
+            let _ = manager.set_volumes(name, &sandbox_state.volumes);
+            if let Some(script) = sandbox_state.init_script.as_deref() {
+                let _ = manager.set_init_script(name, script);
+            }
+
+            if let Err(e) = manager.start(name).await {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(format!("Resized but failed to restart: {}", e)),
+                );
+            }
+        }
     }
 
     let running = manager.is_running(name);
@@ -3813,10 +3945,10 @@ async fn handle_resize_sandbox(
         StatusCode::OK,
         &ApiResponse::success(SandboxInfo {
             name: name.to_string(),
-            status: if running { "running" } else { "stopped" }.to_string(),
+            status: sandbox_status(state_info, running),
             backend: format!("{}", manager.backend()),
             ip,
-            image: Some(image),
+            image: state_info.map(|s| s.image.clone()),
             vcpus: Some(new_vcpus),
             memory_mb: Some(new_memory),
             created_at: state_info.map(|s| s.created_at.clone()),
@@ -3833,6 +3965,10 @@ async fn handle_resize_sandbox(
             secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
             labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
             description: state_info.and_then(|s| s.description.clone()),
+            last_activity_at: state_info.and_then(|s| s.last_activity_at.clone()),
+            archived_at: state_info.and_then(|s| s.archived_at.clone()),
+            archived_reason: state_info.and_then(|s| s.archived_reason.clone()),
+            lifecycle: state_info.and_then(|s| s.lifecycle_policy.clone()),
         }),
     )
 }
@@ -3845,6 +3981,9 @@ struct PatchSandboxRequest {
     labels: Option<std::collections::HashMap<String, String>>,
     #[serde(default)]
     description: Option<String>,
+    /// Present with `null` clears policy, object sets policy.
+    #[serde(default)]
+    lifecycle: Option<Option<LifecyclePolicyRequest>>,
 }
 
 async fn handle_patch_sandbox(
@@ -3902,6 +4041,17 @@ async fn handle_patch_sandbox(
         );
     }
 
+    // Apply lifecycle policy update (null clears the policy)
+    if let Some(lifecycle) = body.lifecycle {
+        let policy = lifecycle.map(Into::into);
+        if let Err(e) = manager.set_lifecycle_policy(name, policy) {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!("Failed to update lifecycle policy: {}", e)),
+            );
+        }
+    }
+
     // Return updated sandbox info
     let running = manager.is_running(name);
     let ip = if running {
@@ -3918,7 +4068,7 @@ async fn handle_patch_sandbox(
         StatusCode::OK,
         &ApiResponse::success(SandboxInfo {
             name: name.to_string(),
-            status: if running { "running" } else { "stopped" }.to_string(),
+            status: sandbox_status(state_info, running),
             backend: format!("{}", manager.backend()),
             ip,
             image: state_info.map(|s| s.image.clone()),
@@ -3938,8 +4088,138 @@ async fn handle_patch_sandbox(
             secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
             labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
             description: state_info.and_then(|s| s.description.clone()),
+            last_activity_at: state_info.and_then(|s| s.last_activity_at.clone()),
+            archived_at: state_info.and_then(|s| s.archived_at.clone()),
+            archived_reason: state_info.and_then(|s| s.archived_reason.clone()),
+            lifecycle: state_info.and_then(|s| s.lifecycle_policy.clone()),
         }),
     )
+}
+
+#[derive(Debug, Deserialize)]
+struct ReconcileLifecycleRequest {
+    #[serde(default)]
+    dry_run: bool,
+}
+
+async fn handle_recover_sandbox(
+    _req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(e) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    if manager.get_state(name).is_none() {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("Sandbox '{}' not found", name)),
+        );
+    }
+
+    if let Err(e) = manager.recover(name) {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to recover sandbox: {}", e)),
+        );
+    }
+
+    let running = manager.is_running(name);
+    let ip = if running {
+        manager.get_container_ip(name)
+    } else {
+        None
+    };
+    let state_info = manager.get_state(name);
+    let ports: Vec<String> = state_info
+        .map(|s| s.ports.iter().map(|p| p.to_string()).collect())
+        .unwrap_or_default();
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(SandboxInfo {
+            name: name.to_string(),
+            uuid: state_info
+                .map(|s| s.uuid.clone())
+                .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
+            status: sandbox_status(state_info, running),
+            backend: format!("{}", manager.backend()),
+            ip,
+            image: state_info.map(|s| s.image.clone()),
+            vcpus: state_info.map(|s| s.vcpus),
+            memory_mb: state_info.map(|s| s.memory_mb),
+            created_at: state_info.map(|s| s.created_at.clone()),
+            created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
+            template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
+            ports,
+            secret_files: state_info
+                .map(|s| s.secret_files.clone())
+                .unwrap_or_default(),
+            proxy_port: state_info.and_then(|s| s.proxy_port),
+            secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
+            labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
+            description: state_info.and_then(|s| s.description.clone()),
+            last_activity_at: state_info.and_then(|s| s.last_activity_at.clone()),
+            archived_at: state_info.and_then(|s| s.archived_at.clone()),
+            archived_reason: state_info.and_then(|s| s.archived_reason.clone()),
+            lifecycle: state_info.and_then(|s| s.lifecycle_policy.clone()),
+        }),
+    )
+}
+
+async fn handle_reconcile_lifecycle(
+    req: Request<Incoming>,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let body_bytes = match read_body_bytes(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    let body = if body_bytes.is_empty() {
+        ReconcileLifecycleRequest { dry_run: false }
+    } else {
+        match serde_json::from_slice::<ReconcileLifecycleRequest>(&body_bytes) {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    &ApiResponse::<()>::error("Invalid JSON body"),
+                );
+            }
+        }
+    };
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    match manager.reconcile_lifecycle(body.dry_run).await {
+        Ok(result) => json_response(StatusCode::OK, &ApiResponse::success(result)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to reconcile lifecycle policies: {}", e)),
+        ),
+    }
 }
 
 // --- Snapshot handlers ---
@@ -4156,7 +4436,7 @@ async fn handle_restore_snapshot(
                     uuid: state_info
                         .map(|s| s.uuid.clone())
                         .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
-                    status: if running { "running" } else { "stopped" }.to_string(),
+                    status: sandbox_status(state_info, running),
                     backend: meta.backend.clone(),
                     ip,
                     image: Some(meta.image_tag.clone()),
@@ -4173,6 +4453,10 @@ async fn handle_restore_snapshot(
                     secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
                     labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
                     description: state_info.and_then(|s| s.description.clone()),
+                    last_activity_at: state_info.and_then(|s| s.last_activity_at.clone()),
+                    archived_at: state_info.and_then(|s| s.archived_at.clone()),
+                    archived_reason: state_info.and_then(|s| s.archived_reason.clone()),
+                    lifecycle: state_info.and_then(|s| s.lifecycle_policy.clone()),
                 }),
             )
         }
@@ -6517,6 +6801,10 @@ mod tests {
             secret_mappings: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
             description: None,
+            last_activity_at: None,
+            archived_at: None,
+            archived_reason: None,
+            lifecycle: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"name\":\"test-sandbox\""));
@@ -6597,6 +6885,10 @@ mod tests {
             secret_mappings: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
             description: None,
+            last_activity_at: None,
+            archived_at: None,
+            archived_reason: None,
+            lifecycle: None,
         };
         let response = json_response(StatusCode::CREATED, &ApiResponse::success(info));
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -6931,6 +7223,10 @@ mod tests {
             secret_mappings: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
             description: None,
+            last_activity_at: None,
+            archived_at: None,
+            archived_reason: None,
+            lifecycle: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"image\":\"python:3.12\""));
@@ -6959,6 +7255,10 @@ mod tests {
             secret_mappings: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
             description: None,
+            last_activity_at: None,
+            archived_at: None,
+            archived_reason: None,
+            lifecycle: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(!json.contains("image"));
