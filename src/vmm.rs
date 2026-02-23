@@ -120,6 +120,9 @@ pub struct SandboxState {
     /// Human guidance text associated with the source template.
     #[serde(default)]
     pub template_help_text: Option<String>,
+    /// User-defined labels for fleet management and filtering.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub labels: HashMap<String, String>,
 }
 
 /// Status of a detached command
@@ -643,6 +646,7 @@ impl VmManager {
             init_script: None,
             created_from_template: None,
             template_help_text: None,
+            labels: HashMap::new(),
         };
 
         self.save_sandbox(&state)?;
@@ -693,6 +697,23 @@ impl VmManager {
                 .get_mut(name)
                 .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
             state.secret_mappings = mappings.clone();
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    /// Set user-defined labels on a sandbox for fleet management and filtering.
+    pub fn set_labels(&mut self, name: &str, labels: &HashMap<String, String>) -> Result<()> {
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.labels = labels.clone();
         }
         let state = self
             .sandboxes
@@ -2189,6 +2210,7 @@ mod tests {
             init_script: None,
             created_from_template: None,
             template_help_text: None,
+            labels: HashMap::new(),
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -2243,6 +2265,7 @@ mod tests {
             init_script: None,
             created_from_template: None,
             template_help_text: None,
+            labels: HashMap::new(),
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -2307,6 +2330,7 @@ mod tests {
             init_script: None,
             created_from_template: None,
             template_help_text: None,
+            labels: HashMap::new(),
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -2387,6 +2411,7 @@ mod tests {
                 init_script: None,
                 created_from_template: None,
                 template_help_text: None,
+                labels: HashMap::new(),
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();

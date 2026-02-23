@@ -244,6 +244,9 @@ enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "18888")]
         port: u16,
+        /// API key for authentication (overrides AGENTKERNEL_API_KEY env var)
+        #[arg(long)]
+        api_key: Option<String>,
         /// Enable TLS for the API server
         #[arg(long)]
         tls: bool,
@@ -437,6 +440,9 @@ enum SandboxAction {
         /// Inject a secret as a file inside the sandbox (KEY from vault). Can be repeated.
         #[arg(long = "secret-file")]
         secret_files: Vec<String>,
+        /// Add a label (key=value). Can be repeated.
+        #[arg(short = 'l', long = "label")]
+        labels: Vec<String>,
         /// Don't auto-start the sandbox after creation
         #[arg(long)]
         no_start: bool,
@@ -464,6 +470,9 @@ enum SandboxAction {
         /// Filter to sandboxes matching the current git project
         #[arg(long)]
         project: bool,
+        /// Filter by label (key=value). Can be repeated.
+        #[arg(short = 'l', long = "label")]
+        labels: Vec<String>,
     },
     /// Show detailed information about a sandbox
     Info {
@@ -968,6 +977,7 @@ memory_mb = 512
                 volumes,
                 secrets: secret_bindings_raw,
                 secret_files: secret_file_keys,
+                labels: label_args,
                 no_start,
             } => {
                 // Resolve sandbox name: --branch auto-derives from git, otherwise require explicit name
@@ -1153,6 +1163,19 @@ memory_mb = 512
                         ports,
                     )
                     .await?;
+
+                // Parse and set labels
+                if !label_args.is_empty() {
+                    let mut labels = std::collections::HashMap::new();
+                    for raw in &label_args {
+                        let (k, v) = raw.split_once('=').ok_or_else(|| {
+                            anyhow::anyhow!("Invalid label '{}': expected key=value format", raw)
+                        })?;
+                        labels.insert(k.to_string(), v.to_string());
+                    }
+                    manager.set_labels(&name, &labels)?;
+                    println!("  Labels: {}", label_args.join(", "));
+                }
 
                 if let Some((template_name, template_help_text)) = &template_metadata {
                     manager.set_template_metadata(
@@ -1505,9 +1528,21 @@ memory_mb = 512
                     }
                 }
             }
-            SandboxAction::List { project } => {
+            SandboxAction::List {
+                project,
+                labels: label_filters,
+            } => {
                 let manager = VmManager::new()?;
                 let vms = manager.list();
+
+                // Parse label filters (key=value)
+                let parsed_labels: Vec<(String, String)> = label_filters
+                    .iter()
+                    .filter_map(|raw| {
+                        let (k, v) = raw.split_once('=')?;
+                        Some((k.to_string(), v.to_string()))
+                    })
+                    .collect();
 
                 // Optionally filter by current git project prefix
                 let project_prefix = if project {
@@ -1532,6 +1567,17 @@ memory_mb = 512
                         } else {
                             true
                         }
+                    })
+                    .filter(|(name, _, _)| {
+                        if parsed_labels.is_empty() {
+                            return true;
+                        }
+                        let state = manager.get_state(name);
+                        parsed_labels.iter().all(|(fk, fv)| {
+                            state
+                                .and_then(|s| s.labels.get(fk))
+                                .is_some_and(|v| v == fv)
+                        })
                     })
                     .collect();
 
@@ -2105,6 +2151,7 @@ memory_mb = 512
         Commands::Serve {
             host,
             port,
+            api_key,
             tls,
             tls_cert,
             tls_key,
@@ -2139,7 +2186,7 @@ memory_mb = 512
                 None
             };
 
-            http_api::run_server_with_tls(addr, tls_config).await?;
+            http_api::run_server_with_tls(addr, tls_config, api_key).await?;
         }
         Commands::Ssh { action } => match action {
             SshAction::Connect {
