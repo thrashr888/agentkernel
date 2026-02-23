@@ -180,6 +180,7 @@ pub async fn quickstart_agent(
         secret_mappings: std::collections::BTreeMap::new(),
         created_from_template: None,
         template_help_text: None,
+        labels: std::collections::BTreeMap::new(),
     };
 
     client

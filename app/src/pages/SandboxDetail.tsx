@@ -1025,6 +1025,26 @@ export function SandboxDetail() {
               </p>
             )}
 
+            {/* Labels */}
+            <h3 className="text-sm font-semibold mt-6 mb-2">Labels</h3>
+            {sandbox.labels && Object.keys(sandbox.labels).length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(sandbox.labels).map(([key, value]) => (
+                  <span
+                    key={key}
+                    className="inline-flex items-center gap-1 rounded-md bg-muted px-2.5 py-1 text-xs font-medium"
+                  >
+                    <span className="text-muted-foreground">{key}:</span>
+                    <span>{value}</span>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No labels configured.
+              </p>
+            )}
+
             {secretFileCount > 0 ? (
               <div className="rounded-md border">
                 <table className="w-full text-sm">
