@@ -26,6 +26,17 @@ agentkernel serve --api-key-file /path/to/keys.txt
 
 # Or via environment variable
 AGENTKERNEL_API_KEY=your-secret agentkernel serve
+
+# With OpenTelemetry trace export
+agentkernel serve --otel-endpoint http://localhost:4318
+
+# With webhook notifications
+agentkernel serve --webhook-url http://localhost:9999/hooks
+
+# Multiple webhooks + OTel
+agentkernel serve --otel-endpoint http://localhost:4318 \
+  --webhook-url http://hook1.example.com \
+  --webhook-url http://hook2.example.com
 ```
 
 ## Authentication
@@ -105,6 +116,54 @@ curl http://localhost:18888/stats
 ```
 
 The `resource_usage` field provides host-level CPU, memory, and disk metrics for fleet load-balancing.
+
+### Event Stream (SSE)
+
+```
+GET /events
+```
+
+Streams sandbox lifecycle events via Server-Sent Events. Requires authentication when API keys are configured. Requires `--webhook-url` or `--otel-endpoint` to enable the event bus.
+
+```bash
+# Stream all events
+curl -N http://localhost:18888/events
+
+# Filter to a specific sandbox
+curl -N http://localhost:18888/events?sandbox=my-sandbox
+```
+
+Events:
+- `sandbox.created` — sandbox was created and started
+- `sandbox.exec.completed` — command execution finished (includes `exit_code`, `duration_ms`)
+- `sandbox.deleted` — sandbox was removed
+
+Event payload:
+```json
+{
+  "event": "sandbox.exec.completed",
+  "timestamp": "2026-02-23T12:00:00Z",
+  "sandbox": "my-sandbox",
+  "labels": {},
+  "metadata": {
+    "command": "echo hello",
+    "duration_ms": 42,
+    "success": true,
+    "exit_code": 0
+  }
+}
+```
+
+### Observability Flags
+
+| Flag | Description |
+|------|-------------|
+| `--otel-endpoint URL` | OTLP/HTTP endpoint for trace export (e.g. `http://localhost:4318`) |
+| `--webhook-url URL` | POST events to this URL (can be repeated) |
+
+When `--otel-endpoint` is set, every HTTP request creates an OTel span with W3C `traceparent` propagation. Pass a `traceparent` header on incoming requests to link sandbox operations to your existing traces.
+
+When executing commands (`POST /sandboxes/{name}/exec`), the `TRACEPARENT` and `TRACESTATE` environment variables are automatically injected into the sandbox, enabling code inside the sandbox to continue the distributed trace.
 
 ### Garbage Collection
 

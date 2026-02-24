@@ -43,7 +43,7 @@ use crate::secrets::{SecretBackend, SecretVault};
 use crate::validation;
 use crate::vmm::VmManager;
 
-type BoxBody = http_body_util::combinators::BoxBody<bytes::Bytes, hyper::Error>;
+pub type BoxBody = http_body_util::combinators::BoxBody<bytes::Bytes, hyper::Error>;
 const MAX_HTTP_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
 
 fn full<T: Into<bytes::Bytes>>(chunk: T) -> BoxBody {
@@ -576,6 +576,10 @@ struct AppState {
     orchestration_store: Option<Arc<OrchestrationStore>>,
     /// Shared VmManager for durable object wake/hibernate operations
     vm_manager: Option<Arc<tokio::sync::RwLock<VmManager>>>,
+    /// Event bus for sandbox lifecycle events (webhook/SSE/OTel)
+    event_bus: Option<crate::events::EventBus>,
+    /// OpenTelemetry tracer provider for span export
+    otel_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
     /// Enterprise configuration (when enterprise feature is enabled)
     #[cfg(feature = "enterprise")]
     enterprise_config: Option<crate::config::EnterpriseConfig>,
@@ -585,7 +589,11 @@ struct AppState {
 }
 
 impl AppState {
-    fn new(api_keys_override: Vec<String>) -> Self {
+    fn new(
+        api_keys_override: Vec<String>,
+        otel_endpoint: Option<String>,
+        webhook_urls: Vec<String>,
+    ) -> Self {
         let mut api_keys = api_keys_override;
         // If no keys provided via CLI, fall back to env var / config file
         if api_keys.is_empty()
@@ -605,6 +613,36 @@ impl AppState {
             eprintln!("[api] Root exec via HTTP API is enabled");
         }
 
+        // Initialize event bus if webhooks or OTel are configured
+        let event_bus = if !webhook_urls.is_empty() || otel_endpoint.is_some() {
+            let bus = crate::events::new_event_bus();
+            if !webhook_urls.is_empty() {
+                eprintln!(
+                    "Webhook notifications enabled ({} URL{})",
+                    webhook_urls.len(),
+                    if webhook_urls.len() == 1 { "" } else { "s" }
+                );
+                let rx = bus.subscribe();
+                tokio::spawn(crate::events::webhook_dispatcher(rx, webhook_urls));
+            }
+            Some(bus)
+        } else {
+            None
+        };
+
+        // Initialize OTel tracer provider
+        let otel_provider =
+            otel_endpoint.and_then(|endpoint| match crate::observe::init_tracer(&endpoint) {
+                Ok(provider) => {
+                    eprintln!("OpenTelemetry trace export enabled → {}", endpoint);
+                    Some(provider)
+                }
+                Err(e) => {
+                    eprintln!("[otel] Failed to initialize tracer: {}", e);
+                    None
+                }
+            });
+
         #[cfg(feature = "enterprise")]
         let (enterprise_config, policy_engine) = Self::init_enterprise();
 
@@ -618,6 +656,8 @@ impl AppState {
                 Ok(mgr) => Some(Arc::new(tokio::sync::RwLock::new(mgr))),
                 Err(_) => None,
             },
+            event_bus,
+            otel_provider,
             #[cfg(feature = "enterprise")]
             enterprise_config,
             #[cfg(feature = "enterprise")]
@@ -638,6 +678,8 @@ impl AppState {
             opencode: Arc::new(OpenCodeState::new()),
             orchestration_store: Self::init_orchestration_store(),
             vm_manager: None,
+            event_bus: None,
+            otel_provider: None,
             #[cfg(feature = "enterprise")]
             enterprise_config: None,
             #[cfg(feature = "enterprise")]
@@ -836,6 +878,21 @@ async fn handle_request(
     let path = req.uri().path().to_string();
     let start = std::time::Instant::now();
 
+    // OTel: extract trace context and create server span
+    let mut _otel_span = state.otel_provider.as_ref().map(|provider| {
+        let parent_ctx = crate::observe::extract_context(&req);
+        let span_name = format!("{} {}", method_str, path);
+        crate::observe::start_span(
+            provider,
+            &parent_ctx,
+            &span_name,
+            vec![
+                opentelemetry::KeyValue::new("http.method", method_str.clone()),
+                opentelemetry::KeyValue::new("http.target", path.clone()),
+            ],
+        )
+    });
+
     // Parse path segments
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
@@ -862,6 +919,19 @@ async fn handle_request(
     // Check authentication for all other endpoints
     if let Err(resp) = state.check_auth(&req) {
         return Ok(resp);
+    }
+
+    // SSE event stream (requires auth when API keys are configured)
+    if method == Method::GET && segments.as_slice() == ["events"] {
+        if let Some(ref bus) = state.event_bus {
+            return Ok(crate::events::handle_events_sse(&req, bus).await);
+        }
+        return Ok(json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &ApiResponse::<()>::error(
+                "Event streaming not enabled. Start server with --webhook-url or --otel-endpoint",
+            ),
+        ));
     }
 
     // Handle OpenCode API routes
@@ -1152,6 +1222,19 @@ async fn handle_request(
             &ApiResponse::<()>::error("Not found"),
         ),
     };
+
+    // OTel: finish the server span with status info
+    if let Some(ref mut span) = _otel_span {
+        let status_code = response.status().as_u16();
+        crate::observe::finish_span(
+            span,
+            status_code < 400,
+            vec![opentelemetry::KeyValue::new(
+                "http.status_code",
+                status_code as i64,
+            )],
+        );
+    }
 
     crate::metrics::record_http_request(
         &method_str,
@@ -2633,6 +2716,8 @@ async fn handle_list_sandboxes(req: Request<Incoming>, state: Arc<AppState>) -> 
 }
 
 async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    let start = std::time::Instant::now();
+
     // Enterprise policy enforcement (extract identity before consuming body)
     #[cfg(feature = "enterprise")]
     let identity = extract_identity(&req, &state).await;
@@ -2909,6 +2994,27 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
     let port_strings: Vec<String> = ports.iter().map(|p| p.to_string()).collect();
     let ip = manager.get_container_ip(&body.name);
     let state_info = manager.get_state(&body.name);
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    // Emit sandbox.created event
+    crate::events::emit(
+        state.event_bus.as_ref(),
+        crate::events::SandboxEvent {
+            event: "sandbox.created".to_string(),
+            timestamp: chrono::Utc::now(),
+            sandbox: body.name.clone(),
+            labels: body.labels.clone(),
+            metadata: serde_json::json!({
+                "image": image,
+                "backend": format!("{}", manager.backend()),
+                "vcpus": vcpus,
+                "memory_mb": memory_mb,
+                "duration_ms": duration_ms,
+            }),
+        },
+    );
+
     json_response(
         StatusCode::CREATED,
         &ApiResponse::success(SandboxInfo {
@@ -3074,6 +3180,11 @@ async fn handle_exec_sandbox(
     name: &str,
     state: Arc<AppState>,
 ) -> Response<BoxBody> {
+    let exec_start = std::time::Instant::now();
+
+    // Extract trace context from incoming request for OTel + env injection
+    let (traceparent_hdr, tracestate_hdr) = crate::observe::extract_trace_headers(&req);
+
     // Enterprise policy enforcement
     #[cfg(feature = "enterprise")]
     {
@@ -3132,8 +3243,22 @@ async fn handle_exec_sandbox(
         }
     };
 
+    // Propagate trace context into sandbox environment variables.
+    // Filter any caller-supplied TRACEPARENT/TRACESTATE to avoid duplicates.
+    let mut env: Vec<String> = body
+        .env
+        .into_iter()
+        .filter(|e| !e.starts_with("TRACEPARENT=") && !e.starts_with("TRACESTATE="))
+        .collect();
+    if let Some(ref tp) = traceparent_hdr {
+        env.push(format!("TRACEPARENT={}", tp));
+    }
+    if let Some(ref ts) = tracestate_hdr {
+        env.push(format!("TRACESTATE={}", ts));
+    }
+
     let opts = crate::backend::ExecOptions {
-        env: body.env,
+        env,
         workdir: body.workdir,
         user: if sudo_requested {
             Some("root".to_string())
@@ -3141,7 +3266,44 @@ async fn handle_exec_sandbox(
             None
         },
     };
-    match manager.exec_cmd_full(name, &body.command, &opts).await {
+
+    let cmd_str = body.command.join(" ");
+    let result = manager.exec_cmd_full(name, &body.command, &opts).await;
+    let duration_ms = exec_start.elapsed().as_millis() as u64;
+
+    let (success, exit_code) = match &result {
+        Ok(_) => (true, Some(0)),
+        Err(e) => {
+            if let Some(cmd_err) = e.downcast_ref::<crate::vmm::CommandFailed>() {
+                (false, Some(cmd_err.exit_code))
+            } else {
+                (false, None)
+            }
+        }
+    };
+
+    // Emit sandbox.exec.completed event
+    let event_labels = manager
+        .get_state(name)
+        .map(|s| s.labels.clone())
+        .unwrap_or_default();
+    crate::events::emit(
+        state.event_bus.as_ref(),
+        crate::events::SandboxEvent {
+            event: "sandbox.exec.completed".to_string(),
+            timestamp: chrono::Utc::now(),
+            sandbox: name.to_string(),
+            labels: event_labels,
+            metadata: serde_json::json!({
+                "command": cmd_str,
+                "duration_ms": duration_ms,
+                "success": success,
+                "exit_code": exit_code,
+            }),
+        },
+    );
+
+    match result {
         Ok(output) => json_response(
             StatusCode::OK,
             &ApiResponse::success(RunResponse { output }),
@@ -3378,8 +3540,26 @@ async fn handle_delete_sandbox(name: &str, state: Arc<AppState>) -> Response<Box
         }
     };
 
+    // Capture labels before removal (remove destroys the state)
+    let event_labels = manager
+        .get_state(name)
+        .map(|s| s.labels.clone())
+        .unwrap_or_default();
+
     match manager.remove(name).await {
-        Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox removed")),
+        Ok(_) => {
+            crate::events::emit(
+                state.event_bus.as_ref(),
+                crate::events::SandboxEvent {
+                    event: "sandbox.deleted".to_string(),
+                    timestamp: chrono::Utc::now(),
+                    sandbox: name.to_string(),
+                    labels: event_labels,
+                    metadata: serde_json::json!({}),
+                },
+            );
+            json_response(StatusCode::OK, &ApiResponse::success("Sandbox removed"))
+        }
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
@@ -5137,7 +5317,7 @@ async fn execute_runtime_activity(activity: &RuntimeActivity) -> Result<String> 
 /// Run the HTTP API server (plain HTTP)
 #[allow(dead_code)]
 pub async fn run_server(addr: SocketAddr, api_keys: Vec<String>) -> Result<()> {
-    let state = Arc::new(AppState::new(api_keys));
+    let state = Arc::new(AppState::new(api_keys, None, vec![]));
     spawn_orchestration_worker(state.clone());
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) =
@@ -5188,6 +5368,8 @@ pub async fn run_server_with_tls(
     addr: SocketAddr,
     tls_config: Option<crate::tls::TlsConfig>,
     api_keys: Vec<String>,
+    otel_endpoint: Option<String>,
+    webhook_urls: Vec<String>,
 ) -> Result<()> {
     let acceptor = match tls_config {
         Some(ref tls) => {
@@ -5197,7 +5379,7 @@ pub async fn run_server_with_tls(
         None => None,
     };
 
-    let state = Arc::new(AppState::new(api_keys));
+    let state = Arc::new(AppState::new(api_keys, otel_endpoint, webhook_urls));
     spawn_orchestration_worker(state.clone());
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) =
