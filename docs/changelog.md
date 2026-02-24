@@ -6,10 +6,19 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
-## [Unreleased] — Durable Objects, LLM Key Management, Execution Receipts & Desktop UI
+## [v0.16.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.16.0) — Observability, Lifecycle Autopilot, Durable Objects & Receipts
+
+_February 2026_
 
 ### Added
 
+- **OpenTelemetry trace export** — `--otel-endpoint` flag on `agentkernel serve` exports spans via OTLP/HTTP; every HTTP request wrapped in a server span with W3C `traceparent` propagation
+- **Trace context propagation into sandboxes** — `TRACEPARENT` and `TRACESTATE` env vars automatically injected into `exec` commands, enabling unbroken distributed traces across sandbox isolation boundaries
+- **Webhook notifications** — `--webhook-url` flag (repeatable) POSTs sandbox lifecycle events with 3x retry, exponential backoff, and semaphore-bounded concurrency (max 64 concurrent deliveries)
+- **SSE event stream** — `GET /events` endpoint streams `sandbox.created`, `sandbox.exec.completed`, and `sandbox.deleted` events in real-time with optional `?sandbox=` filter; respects API key auth
+- **Lifecycle autopilot** — declarative `lifecycle_policy` on sandboxes with `auto_stop_after_seconds`, `auto_archive_after_seconds`, and `auto_delete_after_seconds`; `POST /lifecycle/reconcile` runs the policy engine with optional `?dry_run=true`
+- **Sandbox archive/recover** — `POST /sandboxes/{name}/recover` restores archived sandboxes; `archived_at`, `archived_reason`, and `last_activity_at` fields on sandbox state
+- **Live resize** — `POST /sandboxes/{name}/resize` adjusts vCPUs and memory on running sandboxes; fallback recreate-and-restore path preserves UUID, timestamps, volumes, and labels
 - **Durable object runtime** — full wake/hibernate lifecycle with auto-create on first call, health-check polling, storage push/pull, and background hibernation daemon (30s poll interval, configurable idle timeout per object)
 - **Object call API** — `POST /objects/{class}/{object_id}/call/{method}` auto-creates and wakes hibernating objects; alarm endpoint at `POST /objects/{class}/{object_id}/alarm`
 - **SDK `callObject`** — durable object method invocation added to all 5 SDKs (TypeScript, Python, Rust, Go, Swift)
@@ -19,13 +28,29 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 - **Cedar `UseLlmProvider` action** — policy-level control over LLM provider access per sandbox
 - **Signed execution receipts** — `run`/`exec` support `--receipt <FILE>` to emit Ed25519-signed JSON receipts with invocation metadata, output hash, and exit code
 - **Receipt verification/replay CLI** — `agentkernel receipt verify <FILE>` validates hash + signature; `agentkernel receipt replay <FILE>` re-runs the recorded invocation and compares output hash + exit code; `--allow-unsigned` supports legacy receipts
-- **Desktop Receipts page** — new Receipts view in the sidebar (next to Snapshots) with copyable verify/replay command templates and legacy verification guidance
+- **Desktop Receipts page** — new Receipts view in the sidebar with copyable verify/replay command templates and legacy verification guidance
 - **Durable Objects page** — desktop app page for managing stateful durable objects with status badges (active/hibernating/deleted), create dialog, delete actions, and sandbox links
 - **Schedules page** — desktop app page for cron and one-shot schedules with type/status badges, target display, last-fired timestamps, and create dialog
 - **Durable Stores page** — desktop app page for persistent data stores with kind badges (SQLite/Postgres/MySQL/Redis), click-through SQL console for SQLite stores with query/execute support
 - **Sidebar "Durable" section** — new navigation group with Objects, Schedules, and Stores items (Blocks, Timer, Database icons)
 - **Tauri IPC commands** — 15 new commands for objects, schedules, and stores CRUD
 - **React Query hooks** — `useObjects`, `useSchedules`, `useStores` with 5-second polling
+- **Sandbox labels** — `--label key:value` on create, `PATCH /sandboxes/{name}` for updates, `?label=key:value` query filter on list; labels propagated to all lifecycle events
+- **Sandbox descriptions** — `--description` on create, editable via PATCH
+- **API key authentication** — `--api-key` and `--api-key-file` flags for `agentkernel serve`; `GET /stats` endpoint for server metrics
+- **Desktop sandbox edit modal** — edit labels and description from the UI
+
+### Changed
+
+- **HTTP request body limit** — enforced 16 MiB maximum on all API endpoints
+- **Sudo exec gated** — `sudo: true` in exec requests now requires explicit `[api].allow_sudo_exec = true` configuration
+
+### Security
+
+- **Detached exec hardening** — input validation on command IDs and stream parameters
+- **LLM key file permissions** — restricted file permissions on key storage
+- **Auth/secrets validation** — stricter input validation across authentication and secret binding paths
+- **Per-sandbox CoW rootfs** — copy-on-write rootfs copies prevent cross-sandbox state leakage
 
 ---
 
