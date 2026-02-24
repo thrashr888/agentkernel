@@ -327,6 +327,7 @@ curl -X POST http://localhost:18888/sandboxes \
 | `profile` | string | No | Security profile: `permissive`, `moderate`, `restrictive` |
 | `labels` | object | No | Key-value labels for fleet management and filtering |
 | `description` | string | No | Human-readable description |
+| `lifecycle` | object | No | Lifecycle policy (`auto_stop_after_seconds`, `auto_archive_after_seconds`, `auto_delete_after_seconds`) |
 
 **With labels and description:**
 
@@ -366,6 +367,7 @@ curl -X PATCH http://localhost:18888/sandboxes/my-sandbox \
 |-------|------|----------|-------------|
 | `labels` | object | No | Replace all labels |
 | `description` | string | No | Update description |
+| `lifecycle` | object or null | No | Set lifecycle policy or clear it with `null` |
 
 ### Get Sandbox
 
@@ -471,6 +473,36 @@ curl -X POST http://localhost:18888/sandboxes/my-sandbox/extend \
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `by` | string | No | Duration to extend (default: "1h"). Examples: "30m", "2h", "1d" |
+
+### Recover Archived Sandbox
+
+Clears archive metadata so an archived sandbox can be started again.
+
+```
+POST /sandboxes/{name}/recover
+```
+
+```bash
+curl -X POST http://localhost:18888/sandboxes/my-sandbox/recover
+```
+
+### Reconcile Lifecycle Policies
+
+Applies lifecycle policies across all sandboxes (or previews actions).
+
+```
+POST /lifecycle/reconcile
+```
+
+```bash
+# Apply lifecycle actions
+curl -X POST http://localhost:18888/lifecycle/reconcile
+
+# Dry run (preview only)
+curl -X POST http://localhost:18888/lifecycle/reconcile \
+  -H "Content-Type: application/json" \
+  -d '{"dry_run": true}'
+```
 
 ### File Operations
 

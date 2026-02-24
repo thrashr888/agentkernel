@@ -384,6 +384,15 @@ pub trait Sandbox: Send + Sync {
     /// Stop the sandbox and clean up resources
     async fn stop(&mut self) -> Result<()>;
 
+    /// Attempt to resize sandbox resources in-place.
+    ///
+    /// Returns:
+    /// - `Ok(true)` when resize succeeded in-place
+    /// - `Ok(false)` when backend does not support in-place resize
+    async fn resize(&mut self, _vcpus: u32, _memory_mb: u64) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Get the sandbox name/identifier
     fn name(&self) -> &str;
 
