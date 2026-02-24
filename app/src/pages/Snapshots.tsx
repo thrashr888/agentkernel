@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSnapshots } from "@/lib/hooks/use-snapshots";
 import { api } from "@/lib/api";
@@ -88,7 +89,11 @@ export function Snapshots() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Snapshots</h1>
         <p className="text-muted-foreground">
-          Saved sandbox states that can be restored
+          Saved sandbox states that can be restored. For signed command provenance, use{" "}
+          <Link to="/receipts" className="text-primary hover:underline">
+            Receipts
+          </Link>
+          .
         </p>
       </div>
 

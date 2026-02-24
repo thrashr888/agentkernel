@@ -56,6 +56,7 @@ nav:
   - Commands:
     - Overview: commands/index.md
     - run: commands/run.md
+    - receipt: commands/receipts.md
     - create: commands/create.md
     - start / stop: commands/start-stop.md
     - exec / attach: commands/exec-attach.md

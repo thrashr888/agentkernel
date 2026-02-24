@@ -12,6 +12,7 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 | [`run`](run.md) | Run a command in a temporary sandbox |
 | [`exec`](exec-attach.md) | Execute a command in a running sandbox |
 | [`attach`](exec-attach.md) | Attach to a sandbox's interactive shell |
+| [`receipt`](receipts.md) | Verify and replay execution receipts |
 
 ### Sandbox Lifecycle (`sandbox` / `sb`)
 
@@ -117,6 +118,8 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 | `daemon` | Manage the VM pool daemon |
 | `audit` | View and manage audit logs |
 | `replay` | Replay a recorded session |
+| [`receipt verify`](receipts.md) | Verify execution receipt integrity |
+| [`receipt replay`](receipts.md) | Replay a recorded command invocation |
 
 ## Global Options
 
@@ -250,6 +253,18 @@ agentkernel replay ~/.agentkernel/recordings/my-sandbox-20260126-120000.cast
 
 # Replay at 2x speed with max 1s idle time
 agentkernel replay session.cast --speed 2.0 --max-idle 1.0
+```
+
+### Execution receipts
+```bash
+# Emit a receipt from run
+agentkernel run --receipt ./run-receipt.json -- python3 -c "print('ok')"
+
+# Verify integrity
+agentkernel receipt verify ./run-receipt.json
+
+# Replay and compare output hash + exit code
+agentkernel receipt replay ./run-receipt.json
 ```
 
 ### Audit logging

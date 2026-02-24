@@ -33,6 +33,7 @@ mod pool;
 mod proxy;
 #[allow(dead_code)]
 mod proxy_hooks;
+mod receipt;
 mod rootfs;
 mod sandbox_pool;
 mod seatbelt;
@@ -129,6 +130,9 @@ enum Commands {
         /// Inject a secret as a file inside the sandbox (KEY from vault). Can be repeated.
         #[arg(long = "secret-file")]
         secret_files: Vec<String>,
+        /// Write a verifiable execution receipt JSON to this path
+        #[arg(long)]
+        receipt: Option<PathBuf>,
     },
     /// Execute a command in a running sandbox
     Exec {
@@ -146,6 +150,9 @@ enum Commands {
         /// Run detached (in background). Returns a command ID for status/logs/kill.
         #[arg(short, long)]
         detach: bool,
+        /// Write a verifiable execution receipt JSON to this path
+        #[arg(long)]
+        receipt: Option<PathBuf>,
         /// Command to execute
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -314,6 +321,11 @@ enum Commands {
         /// Maximum time between frames in seconds (for idle time)
         #[arg(long, default_value = "2.0")]
         max_idle: f64,
+    },
+    /// Verify and replay execution receipts
+    Receipt {
+        #[command(subcommand)]
+        action: ReceiptAction,
     },
 
     // -- Workflows --
@@ -743,6 +755,26 @@ enum SnapshotAction {
         /// Backend to use for the restored sandbox
         #[arg(short = 'B', long)]
         backend: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReceiptAction {
+    /// Verify receipt integrity (hash-based tamper check)
+    Verify {
+        /// Path to the receipt JSON file
+        file: PathBuf,
+        /// Allow verification of legacy unsigned receipts
+        #[arg(long)]
+        allow_unsigned: bool,
+    },
+    /// Replay the recorded command and compare output hash
+    Replay {
+        /// Path to the receipt JSON file
+        file: PathBuf,
+        /// Allow replay of legacy unsigned receipts
+        #[arg(long)]
+        allow_unsigned: bool,
     },
 }
 
@@ -1853,6 +1885,7 @@ memory_mb = 512
             workdir,
             sudo,
             detach,
+            receipt: receipt_path,
             command,
         } => {
             validation::validate_sandbox_name(&name)?;
@@ -1870,18 +1903,67 @@ memory_mb = 512
                 bail!("Sandbox '{}' not found", name);
             }
 
+            let receipt_invocation = receipt_path.as_ref().map(|_| {
+                receipt::Invocation::Exec(receipt::ExecInvocation {
+                    name: name.clone(),
+                    command: command.clone(),
+                    env: env.clone(),
+                    workdir: workdir.clone(),
+                    sudo,
+                })
+            });
+            let error_details = |e: &anyhow::Error| -> (i32, String, Option<String>) {
+                if let Some(failed) = e.downcast_ref::<crate::vmm::CommandFailed>() {
+                    (failed.exit_code, failed.output.clone(), Some(e.to_string()))
+                } else {
+                    (1, String::new(), Some(e.to_string()))
+                }
+            };
+
             let opts = crate::backend::ExecOptions {
-                env,
-                workdir,
+                env: env.clone(),
+                workdir: workdir.clone(),
                 user: if sudo { Some("root".to_string()) } else { None },
             };
 
             if detach {
+                if receipt_path.is_some() {
+                    bail!("--receipt is not supported with --detach");
+                }
                 let cmd = manager.exec_detached(&name, &command, &opts).await?;
                 println!("{}", serde_json::to_string_pretty(&cmd)?);
             } else {
-                let output = manager.exec_cmd_full(&name, &command, &opts).await?;
-                print!("{}", output);
+                let result = manager.exec_cmd_full(&name, &command, &opts).await;
+                match result {
+                    Ok(output) => {
+                        print!("{}", output);
+                        if let (Some(path), Some(invocation)) =
+                            (receipt_path.as_ref(), receipt_invocation.clone())
+                        {
+                            let outcome =
+                                receipt::ExecutionOutcome::from_combined_output(0, &output, None);
+                            let rec = receipt::ExecutionReceipt::new(invocation, outcome)?;
+                            receipt::write_receipt(path, &rec)?;
+                            eprintln!("Execution receipt written to {}", path.display());
+                        }
+                    }
+                    Err(e) => {
+                        if let (Some(path), Some(invocation)) =
+                            (receipt_path.as_ref(), receipt_invocation.clone())
+                        {
+                            let (exit_code, combined_output, error_message) = error_details(&e);
+                            let outcome = receipt::ExecutionOutcome::from_combined_output(
+                                exit_code,
+                                &combined_output,
+                                error_message,
+                            );
+                            let rec = receipt::ExecutionReceipt::new(invocation, outcome)?;
+                            receipt::write_receipt(path, &rec)?;
+                            eprintln!("Execution receipt written to {}", path.display());
+                        }
+                        return Err(e);
+                    }
+                }
             }
         }
         Commands::Run {
@@ -1898,11 +1980,44 @@ memory_mb = 512
             branch,
             publish,
             ssh: ssh_flag,
+            receipt: receipt_path,
             ..
         } => {
             if command.is_empty() {
                 bail!("No command specified. Usage: agentkernel run [OPTIONS] <command...>");
             }
+
+            let write_run_receipt = |path: &Path,
+                                     image: Option<String>,
+                                     backend_name: Option<String>,
+                                     exit_code: i32,
+                                     combined_output: &str,
+                                     error_message: Option<String>|
+             -> Result<()> {
+                let invocation = receipt::Invocation::Run(receipt::RunInvocation {
+                    command: command.clone(),
+                    image,
+                    backend: backend_name,
+                    profile: profile.clone(),
+                    no_network,
+                    fast,
+                    keep,
+                });
+                let outcome = receipt::ExecutionOutcome::from_combined_output(
+                    exit_code,
+                    combined_output,
+                    error_message,
+                );
+                let rec = receipt::ExecutionReceipt::new(invocation, outcome)?;
+                receipt::write_receipt(path, &rec)
+            };
+            let error_details = |e: &anyhow::Error| -> (i32, String, Option<String>) {
+                if let Some(failed) = e.downcast_ref::<crate::vmm::CommandFailed>() {
+                    (failed.exit_code, failed.output.clone(), Some(e.to_string()))
+                } else {
+                    (1, String::new(), Some(e.to_string()))
+                }
+            };
 
             // Warn if --ssh and --no-network are both set
             if ssh_flag && no_network {
@@ -1934,8 +2049,37 @@ memory_mb = 512
                     );
                 }
 
-                let output = VmManager::run_pooled(&command).await?;
-                print!("{}", output);
+                match VmManager::run_pooled(&command).await {
+                    Ok(output) => {
+                        print!("{}", output);
+                        if let Some(path) = receipt_path.as_ref() {
+                            write_run_receipt(
+                                path,
+                                Some("alpine:3.20".to_string()),
+                                None,
+                                0,
+                                &output,
+                                None,
+                            )?;
+                            eprintln!("Execution receipt written to {}", path.display());
+                        }
+                    }
+                    Err(e) => {
+                        if let Some(path) = receipt_path.as_ref() {
+                            let (exit_code, combined_output, error_message) = error_details(&e);
+                            write_run_receipt(
+                                path,
+                                Some("alpine:3.20".to_string()),
+                                None,
+                                exit_code,
+                                &combined_output,
+                                error_message,
+                            )?;
+                            eprintln!("Execution receipt written to {}", path.display());
+                        }
+                        return Err(e);
+                    }
+                }
                 return Ok(());
             }
 
@@ -1960,6 +2104,22 @@ memory_mb = 512
                     print!("{}", result.stdout);
                     if !result.stderr.is_empty() {
                         eprint!("{}", result.stderr);
+                    }
+                    if let Some(path) = receipt_path.as_ref() {
+                        let combined_output = format!("{}{}", result.stdout, result.stderr);
+                        write_run_receipt(
+                            path,
+                            None,
+                            None,
+                            result.exit_code,
+                            &combined_output,
+                            if result.exit_code == 0 {
+                                None
+                            } else {
+                                Some(format!("Command exited with code {}", result.exit_code))
+                            },
+                        )?;
+                        eprintln!("Execution receipt written to {}", path.display());
                     }
                     if result.exit_code != 0 {
                         std::process::exit(result.exit_code);
@@ -2103,11 +2263,34 @@ memory_mb = 512
                 {
                     Ok(output) => {
                         print!("{}", output);
+                        if let Some(path) = receipt_path.as_ref() {
+                            write_run_receipt(
+                                path,
+                                Some(docker_image.clone()),
+                                Some(format!("{}", manager.backend())),
+                                0,
+                                &output,
+                                None,
+                            )?;
+                            eprintln!("Execution receipt written to {}", path.display());
+                        }
                         return Ok(());
                     }
                     Err(e) => {
                         // Firecracker doesn't support ephemeral mode, fall through to multi-step
                         if !e.to_string().contains("Ephemeral mode not supported") {
+                            if let Some(path) = receipt_path.as_ref() {
+                                let (exit_code, combined_output, error_message) = error_details(&e);
+                                write_run_receipt(
+                                    path,
+                                    Some(docker_image.clone()),
+                                    Some(format!("{}", manager.backend())),
+                                    exit_code,
+                                    &combined_output,
+                                    error_message,
+                                )?;
+                                eprintln!("Execution receipt written to {}", path.display());
+                            }
                             // Real error, bail out
                             bail!("{}", e);
                         }
@@ -2129,9 +2312,57 @@ memory_mb = 512
                     if !manager.is_running(&name) {
                         manager.start(&name).await?;
                     }
-                    let output = manager.exec_cmd(&name, &command).await?;
-                    print!("{}", output);
-                    return Ok(());
+                    let result = manager.exec_cmd(&name, &command).await;
+                    match result {
+                        Ok(output) => {
+                            print!("{}", output);
+                            if let Some(path) = receipt_path.as_ref() {
+                                let existing_image = manager
+                                    .get_state(&name)
+                                    .map(|s| s.image.clone())
+                                    .unwrap_or_else(|| docker_image.clone());
+                                let existing_backend = manager
+                                    .get_state(&name)
+                                    .and_then(|s| s.backend)
+                                    .map(|b| b.to_string())
+                                    .unwrap_or_else(|| format!("{}", manager.backend()));
+                                write_run_receipt(
+                                    path,
+                                    Some(existing_image),
+                                    Some(existing_backend),
+                                    0,
+                                    &output,
+                                    None,
+                                )?;
+                                eprintln!("Execution receipt written to {}", path.display());
+                            }
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            if let Some(path) = receipt_path.as_ref() {
+                                let (exit_code, combined_output, error_message) = error_details(&e);
+                                let existing_image = manager
+                                    .get_state(&name)
+                                    .map(|s| s.image.clone())
+                                    .unwrap_or_else(|| docker_image.clone());
+                                let existing_backend = manager
+                                    .get_state(&name)
+                                    .and_then(|s| s.backend)
+                                    .map(|b| b.to_string())
+                                    .unwrap_or_else(|| format!("{}", manager.backend()));
+                                write_run_receipt(
+                                    path,
+                                    Some(existing_image),
+                                    Some(existing_backend),
+                                    exit_code,
+                                    &combined_output,
+                                    error_message,
+                                )?;
+                                eprintln!("Execution receipt written to {}", path.display());
+                            }
+                            return Err(e);
+                        }
+                    }
                 }
                 eprintln!("Using git-derived sandbox name: {}", name);
                 name
@@ -2171,6 +2402,22 @@ memory_mb = 512
             match &result {
                 Ok(output) => print!("{}", output),
                 Err(e) => eprintln!("Error: {}", e),
+            }
+
+            if let Some(path) = receipt_path.as_ref() {
+                let (exit_code, combined_output, error_message) = match &result {
+                    Ok(output) => (0, output.clone(), None),
+                    Err(e) => error_details(e),
+                };
+                write_run_receipt(
+                    path,
+                    Some(docker_image.clone()),
+                    Some(format!("{}", manager.backend())),
+                    exit_code,
+                    &combined_output,
+                    error_message,
+                )?;
+                eprintln!("Execution receipt written to {}", path.display());
             }
 
             // Stop
@@ -2967,6 +3214,77 @@ memory_mb = 512
             println!("{}", "-".repeat(40));
             println!("Playback complete.");
         }
+        Commands::Receipt { action } => match action {
+            ReceiptAction::Verify {
+                file,
+                allow_unsigned,
+            } => {
+                let rec = receipt::verify_receipt_file(&file, allow_unsigned)?;
+                println!("Receipt verified.");
+                println!("  ID: {}", rec.receipt_id);
+                println!("  Mode: {}", rec.invocation.mode_name());
+                println!("  Exit code: {}", rec.outcome.exit_code);
+                println!("  Output SHA-256: {}", rec.outcome.output_sha256);
+                if let Some(sig) = rec.signature.as_ref() {
+                    println!("  Signature: valid (ed25519, key {})", sig.key_id);
+                } else {
+                    println!("  Signature: none (legacy receipt accepted)");
+                }
+            }
+            ReceiptAction::Replay {
+                file,
+                allow_unsigned,
+            } => {
+                let rec = receipt::verify_receipt_file(&file, allow_unsigned)?;
+                let args = receipt::replay_args(&rec);
+                if args.is_empty() {
+                    bail!("Receipt does not contain a replayable invocation");
+                }
+
+                eprintln!(
+                    "Replaying receipt {} ({})...",
+                    rec.receipt_id,
+                    rec.invocation.mode_name()
+                );
+                let exe = std::env::current_exe().context("Failed to locate current executable")?;
+                let output = std::process::Command::new(exe)
+                    .args(&args)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .output()
+                    .context("Failed to replay receipt command")?;
+
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+                print!("{}", stdout);
+                if !stderr.is_empty() {
+                    eprint!("{}", stderr);
+                }
+
+                let replay_hash = receipt::hash_output(&format!("{}{}", stdout, stderr));
+                if replay_hash == rec.outcome.output_sha256 {
+                    eprintln!("Replay output hash matches receipt.");
+                } else {
+                    eprintln!(
+                        "Warning: replay output hash differs (expected {}, got {})",
+                        rec.outcome.output_sha256, replay_hash
+                    );
+                }
+
+                let replay_exit = output.status.code().unwrap_or(1);
+                if replay_exit != rec.outcome.exit_code {
+                    eprintln!(
+                        "Warning: replay exit code differs (expected {}, got {})",
+                        rec.outcome.exit_code, replay_exit
+                    );
+                }
+
+                if !output.status.success() {
+                    std::process::exit(replay_exit);
+                }
+            }
+        },
         Commands::Secret { action } => {
             let vault = secrets::SecretVault::new(secrets::SecretBackend::default());
             match action {
