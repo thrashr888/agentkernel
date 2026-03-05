@@ -181,6 +181,7 @@ pub fn run() {
 
     builder
         .manage(AppState::default())
+        .manage(commands::server::ServerProcess::default())
         .setup(|app| {
             // -- Status items (disabled — informational only) --
             let status_item = MenuItem::with_id(
@@ -307,12 +308,28 @@ pub fn run() {
 
                     let connected = client.health().await.is_ok();
 
+                    // Get active server name for display
+                    let server_name = handle
+                        .state::<AppState>()
+                        .settings
+                        .lock()
+                        .ok()
+                        .and_then(|s| s.active_server.clone())
+                        .unwrap_or_default();
+
                     // Update connection status
-                    let _ = status_clone.set_text(if connected {
-                        "\u{1F7E2} Connected"
+                    let status_text = if connected {
+                        if server_name.is_empty() {
+                            "\u{1F7E2} Connected".to_string()
+                        } else {
+                            format!("\u{1F7E2} {server_name}")
+                        }
+                    } else if server_name.is_empty() {
+                        "\u{1F534} Disconnected".to_string()
                     } else {
-                        "\u{1F534} Disconnected"
-                    });
+                        format!("\u{1F534} {server_name} (offline)")
+                    };
+                    let _ = status_clone.set_text(&status_text);
 
                     // Update sandbox count + recent sandboxes submenu
                     if connected {
@@ -368,11 +385,15 @@ pub fn run() {
                     // Update tray tooltip
                     if let Some(tray) = handle.tray_by_id("main") {
                         let tooltip = if connected {
-                            "AgentKernel \u{2014} Connected"
+                            if server_name.is_empty() {
+                                "AgentKernel \u{2014} Connected".to_string()
+                            } else {
+                                format!("AgentKernel \u{2014} {server_name}")
+                            }
                         } else {
-                            "AgentKernel \u{2014} Disconnected"
+                            "AgentKernel \u{2014} Disconnected".to_string()
                         };
-                        let _ = tray.set_tooltip(Some(tooltip));
+                        let _ = tray.set_tooltip(Some(&tooltip));
                     }
 
                     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -438,6 +459,11 @@ pub fn run() {
             // llm usage
             commands::llm_usage::get_llm_usage,
             commands::llm_usage::get_llm_usage_by_sandbox,
+            // permissions
+            commands::permissions::list_permissions,
+            commands::permissions::grant_permission,
+            commands::permissions::revoke_permission,
+            commands::permissions::check_permission,
             // policy
             commands::policy::get_policy_status,
             commands::policy::check_policy,
@@ -467,6 +493,21 @@ pub fn run() {
             commands::stores::query_store,
             commands::stores::execute_store,
             commands::stores::command_store,
+            // docker images
+            commands::images::list_images,
+            commands::images::remove_image,
+            // benchmark
+            commands::benchmark::run_benchmark,
+            // sessions
+            commands::sessions::list_sessions,
+            commands::sessions::get_sandbox_session,
+            // config export/import
+            commands::config::export_sandbox_config,
+            commands::config::import_sandbox_config,
+            // server management
+            commands::server::start_server,
+            commands::server::stop_server,
+            commands::server::server_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

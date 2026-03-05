@@ -483,6 +483,93 @@ pub struct StoreCommandResult {
 }
 
 // ---------------------------------------------------------------------------
+// Docker Images
+// ---------------------------------------------------------------------------
+
+/// Information about a cached Docker image.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockerImage {
+    pub id: String,
+    pub repository: String,
+    pub tag: String,
+    pub size: String,
+    pub created: String,
+}
+
+// ---------------------------------------------------------------------------
+// Benchmark
+// ---------------------------------------------------------------------------
+
+/// Result from running a hardware benchmark.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkResult {
+    pub create_ms: f64,
+    pub exec_ms: f64,
+    pub destroy_ms: f64,
+    pub total_ms: f64,
+    pub image: String,
+    pub timestamp: String,
+}
+
+// ---------------------------------------------------------------------------
+// Session Recording
+// ---------------------------------------------------------------------------
+
+/// A single recorded command execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEntry {
+    pub command: Vec<String>,
+    pub output: String,
+    pub exit_code: i32,
+    pub timestamp: String,
+    pub duration_ms: f64,
+}
+
+/// Recorded session for a sandbox.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxSession {
+    pub sandbox: String,
+    pub entries: Vec<SessionEntry>,
+}
+
+// ---------------------------------------------------------------------------
+// API response wrapper (internal)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Interactive Permissions
+// ---------------------------------------------------------------------------
+
+/// A stored permission grant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionGrant {
+    pub id: String,
+    pub kind: String,
+    pub scope: String,
+    #[serde(default)]
+    pub sandbox: Option<String>,
+    pub granted_at: String,
+    pub granted_by: String,
+}
+
+/// Request body for granting a permission.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrantPermissionRequest {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+}
+
+/// Result of a permission check.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionCheckResult {
+    pub permitted: bool,
+    pub kind: String,
+}
+
+// ---------------------------------------------------------------------------
 // API response wrapper (internal)
 // ---------------------------------------------------------------------------
 

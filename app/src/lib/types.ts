@@ -248,12 +248,55 @@ export interface StoreCommandResult {
   result: unknown;
 }
 
+// Server entry for multi-server support
+export interface ServerEntry {
+  name: string;
+  url: string;
+  api_key?: string;
+}
+
 // Settings
 export interface Settings {
-  api_url: string;
-  api_key: string;
+  active_server?: string;
+  servers: ServerEntry[];
   theme: "light" | "dark" | "system";
   poll_interval_ms: number;
+  // Legacy fields (kept for migration)
+  api_url: string;
+  api_key: string;
+}
+
+// Docker Images
+export interface DockerImage {
+  id: string;
+  repository: string;
+  tag: string;
+  size: string;
+  created: string;
+}
+
+// Benchmark
+export interface BenchmarkResult {
+  create_ms: number;
+  exec_ms: number;
+  destroy_ms: number;
+  total_ms: number;
+  image: string;
+  timestamp: string;
+}
+
+// Session Recording
+export interface SessionEntry {
+  command: string[];
+  output: string;
+  exit_code: number;
+  timestamp: string;
+  duration_ms: number;
+}
+
+export interface SandboxSession {
+  sandbox: string;
+  entries: SessionEntry[];
 }
 
 // Policy (enterprise)
@@ -286,4 +329,35 @@ export interface PolicyAuditEntry {
   matched_policies: string[];
   evaluation_time_us: number;
   reason?: string;
+}
+
+// Interactive Permissions
+export type PermissionKind =
+  | "sandbox_remove"
+  | "sandbox_create"
+  | "network_access"
+  | "mount_directory"
+  | "sudo_exec"
+  | "file_delete";
+
+export type GrantScope = "once" | "session" | "always";
+
+export interface PermissionGrant {
+  id: string;
+  kind: PermissionKind;
+  scope: GrantScope;
+  sandbox?: string;
+  granted_at: string;
+  granted_by: string;
+}
+
+export interface GrantPermissionRequest {
+  kind: PermissionKind;
+  scope?: GrantScope;
+  sandbox?: string;
+}
+
+export interface PermissionCheckResult {
+  permitted: boolean;
+  kind: string;
 }

@@ -21,7 +21,6 @@ function quotePath(path: string): string {
 
 export function Receipts() {
   const [receiptPath, setReceiptPath] = useState("./run-receipt.json");
-  const [legacyPath, setLegacyPath] = useState("./legacy-receipt.json");
 
   const verifyCmd = useMemo(
     () => `agentkernel receipt verify ${quotePath(receiptPath)}`,
@@ -30,10 +29,6 @@ export function Receipts() {
   const replayCmd = useMemo(
     () => `agentkernel receipt replay ${quotePath(receiptPath)}`,
     [receiptPath]
-  );
-  const verifyLegacyCmd = useMemo(
-    () => `agentkernel receipt verify --allow-unsigned ${quotePath(legacyPath)}`,
-    [legacyPath]
   );
 
   async function copy(text: string, label: string) {
@@ -88,37 +83,6 @@ export function Receipts() {
               Copy Replay Command
             </Button>
           </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Legacy Receipt Compatibility</CardTitle>
-          <CardDescription>
-            Use this only for older unsigned receipts generated before signing was introduced.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-2">
-            <Label htmlFor="legacy-path">Legacy receipt path</Label>
-            <Input
-              id="legacy-path"
-              value={legacyPath}
-              onChange={(e) => setLegacyPath(e.target.value)}
-              className="font-mono"
-              placeholder="./legacy-receipt.json"
-            />
-          </div>
-          <div className="rounded-md border bg-muted/40 p-3">
-            <code className="text-xs sm:text-sm">{verifyLegacyCmd}</code>
-          </div>
-          <Button
-            variant="outline"
-            onClick={() => copy(verifyLegacyCmd, "Legacy verify command")}
-          >
-            <Copy className="mr-2 h-4 w-4" />
-            Copy Legacy Verify Command
-          </Button>
         </CardContent>
       </Card>
 

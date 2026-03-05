@@ -30,6 +30,12 @@ import type {
   StoreQueryResult,
   StoreExecuteResult,
   StoreCommandResult,
+  DockerImage,
+  BenchmarkResult,
+  SandboxSession,
+  PermissionGrant,
+  GrantPermissionRequest,
+  PermissionCheckResult as PermissionCheckResultType,
 } from "./types";
 
 export const api = {
@@ -153,6 +159,29 @@ export const api = {
   commandStore: (id: string, command: string[]) =>
     invoke<StoreCommandResult>("command_store", { id, command }),
 
+  // Server management
+  startServer: () => invoke<string>("start_server"),
+  stopServer: () => invoke<string>("stop_server"),
+  serverStatus: () => invoke<boolean>("server_status"),
+
+  // Docker Images
+  listImages: () => invoke<DockerImage[]>("list_images"),
+  removeImage: (id: string) => invoke<void>("remove_image", { id }),
+
+  // Benchmark
+  runBenchmark: () => invoke<BenchmarkResult>("run_benchmark"),
+
+  // Session Recording
+  listSessions: () => invoke<SandboxSession[]>("list_sessions"),
+  getSandboxSession: (name: string) =>
+    invoke<SandboxSession>("get_sandbox_session", { name }),
+
+  // Export/Import Config
+  exportSandboxConfig: (name: string) =>
+    invoke<string>("export_sandbox_config", { name }),
+  importSandboxConfig: (name: string, config: string) =>
+    invoke<SandboxInfo>("import_sandbox_config", { name, config }),
+
   // Policy (enterprise)
   getPolicyStatus: () => invoke<PolicyStatus>("get_policy_status"),
   checkPolicy: (action: string, sandbox: string) =>
@@ -160,4 +189,13 @@ export const api = {
   reloadPolicy: () => invoke<PolicyReloadResult>("reload_policy"),
   getPolicyAudit: (last?: number) =>
     invoke<PolicyAuditEntry[]>("get_policy_audit", { last }),
+
+  // Interactive Permissions
+  listPermissions: () => invoke<PermissionGrant[]>("list_permissions"),
+  grantPermission: (req: GrantPermissionRequest) =>
+    invoke<{ grant_id: string }>("grant_permission", { req }),
+  revokePermission: (id: string) =>
+    invoke<void>("revoke_permission", { id }),
+  checkPermission: (kind: string, sandbox?: string) =>
+    invoke<PermissionCheckResultType>("check_permission", { kind, sandbox }),
 };

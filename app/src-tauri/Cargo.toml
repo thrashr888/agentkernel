@@ -26,6 +26,8 @@ thiserror = "2"
 base64 = "0.22"
 dirs = "6"
 toml = "0.8"
+url = "2"
+which = "7"
 tauri-plugin-updater = "2"
 tauri-plugin-debug-bridge = { version = "0.4", optional = true }
 

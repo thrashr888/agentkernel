@@ -722,6 +722,144 @@ impl ApiClient {
     }
 
     // -----------------------------------------------------------------
+    // Docker Images
+    // -----------------------------------------------------------------
+
+    /// List cached Docker images.
+    pub async fn list_images(&self) -> anyhow::Result<Vec<crate::types::DockerImage>> {
+        self.request(reqwest::Method::GET, "/images", None::<&()>)
+            .await
+    }
+
+    /// Remove a Docker image by ID.
+    pub async fn remove_image(&self, id: &str) -> anyhow::Result<()> {
+        let _: String = self
+            .request(
+                reqwest::Method::DELETE,
+                &format!("/images/{id}"),
+                None::<&()>,
+            )
+            .await?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Benchmark
+    // -----------------------------------------------------------------
+
+    /// Run a hardware benchmark (create, exec, destroy cycle).
+    pub async fn run_benchmark(&self) -> anyhow::Result<crate::types::BenchmarkResult> {
+        self.request(reqwest::Method::POST, "/benchmark", None::<&()>)
+            .await
+    }
+
+    // -----------------------------------------------------------------
+    // Sessions
+    // -----------------------------------------------------------------
+
+    /// List all sandbox sessions (recorded exec history).
+    pub async fn list_sessions(&self) -> anyhow::Result<Vec<crate::types::SandboxSession>> {
+        self.request(reqwest::Method::GET, "/sessions", None::<&()>)
+            .await
+    }
+
+    /// Get session recording for a specific sandbox.
+    pub async fn get_sandbox_session(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<crate::types::SandboxSession> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/sandboxes/{name}/session"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // -----------------------------------------------------------------
+    // Export/Import Config
+    // -----------------------------------------------------------------
+
+    /// Export sandbox configuration as TOML.
+    pub async fn export_sandbox_config(&self, name: &str) -> anyhow::Result<String> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/sandboxes/{name}/config"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Import sandbox configuration from TOML.
+    pub async fn import_sandbox_config(
+        &self,
+        name: &str,
+        config: &str,
+    ) -> anyhow::Result<SandboxInfo> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            config: &'a str,
+        }
+        self.request(
+            reqwest::Method::POST,
+            &format!("/sandboxes/{name}/config"),
+            Some(&Body { config }),
+        )
+        .await
+    }
+
+    // -----------------------------------------------------------------
+    // Interactive Permissions
+    // -----------------------------------------------------------------
+
+    /// List active permission grants.
+    pub async fn list_permissions(&self) -> anyhow::Result<Vec<crate::types::PermissionGrant>> {
+        self.request(reqwest::Method::GET, "/permissions", None::<&()>)
+            .await
+    }
+
+    /// Grant a permission.
+    pub async fn grant_permission(
+        &self,
+        req: &crate::types::GrantPermissionRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.request(reqwest::Method::POST, "/permissions/grant", Some(req))
+            .await
+    }
+
+    /// Revoke a permission grant.
+    pub async fn revoke_permission(&self, id: &str) -> anyhow::Result<()> {
+        let _: String = self
+            .request(
+                reqwest::Method::DELETE,
+                &format!("/permissions/{id}"),
+                None::<&()>,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Check if a permission is granted.
+    pub async fn check_permission(
+        &self,
+        kind: &str,
+        sandbox: Option<&str>,
+    ) -> anyhow::Result<crate::types::PermissionCheckResult> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            kind: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            sandbox: Option<&'a str>,
+        }
+        self.request(
+            reqwest::Method::POST,
+            "/permissions/check",
+            Some(&Body { kind, sandbox }),
+        )
+        .await
+    }
+
+    // -----------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------
 

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Routes, Route } from "react-router-dom";
 import { AppShell } from "@/components/layout/AppShell";
 import { Dashboard } from "@/pages/Dashboard";
@@ -16,10 +17,21 @@ import { Secrets } from "@/pages/Secrets";
 import { Objects } from "@/pages/Objects";
 import { Schedules } from "@/pages/Schedules";
 import { Stores } from "@/pages/Stores";
+import { Jobs } from "@/pages/Jobs";
+import { Images } from "@/pages/Images";
+import { Benchmark } from "@/pages/Benchmark";
+import { Sessions } from "@/pages/Sessions";
+import { Permissions } from "@/pages/Permissions";
+import { SetupWizard, isSetupComplete } from "@/components/SetupWizard";
 
 function App() {
+  const [setupDone, setSetupDone] = useState(isSetupComplete());
+
   return (
     <AppShell>
+      {!setupDone && (
+        <SetupWizard open={!setupDone} onComplete={() => setSetupDone(true)} />
+      )}
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/sandboxes" element={<Sandboxes />} />
@@ -37,6 +49,11 @@ function App() {
         <Route path="/policy/log" element={<PolicyLog />} />
         <Route path="/secrets" element={<Secrets />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/jobs" element={<Jobs />} />
+        <Route path="/images" element={<Images />} />
+        <Route path="/benchmark" element={<Benchmark />} />
+        <Route path="/sessions" element={<Sessions />} />
+        <Route path="/permissions" element={<Permissions />} />
       </Routes>
     </AppShell>
   );

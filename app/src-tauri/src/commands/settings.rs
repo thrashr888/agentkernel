@@ -1,6 +1,5 @@
 use tauri::State;
 
-use crate::api_client::ApiClient;
 use crate::state::{AppState, Settings};
 
 /// Return the current settings.
@@ -19,8 +18,8 @@ pub async fn save_settings(
     // Persist to disk first so we fail fast on IO errors.
     new_settings.save().map_err(|e| e.to_string())?;
 
-    // Rebuild the HTTP client with potentially new URL / key.
-    let new_client = ApiClient::new(&new_settings.api_url, new_settings.api_key.as_deref());
+    // Rebuild the HTTP client from the active server.
+    let new_client = AppState::client_from_settings(&new_settings);
 
     // Update shared state.
     {

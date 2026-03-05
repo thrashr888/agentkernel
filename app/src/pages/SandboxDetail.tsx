@@ -12,6 +12,8 @@ import {
   Loader2,
   X,
   Download,
+  Upload,
+  FileDown,
   Brain,
   Shield,
   ExternalLink,
@@ -181,6 +183,34 @@ export function SandboxDetail() {
     },
     onError: (err: unknown, _vars, context) => {
       if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
+    },
+  });
+
+  const exportConfigMutation = useMutation({
+    mutationFn: () => api.exportSandboxConfig(name ?? ""),
+    onSuccess: (config) => {
+      const blob = new Blob([config], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${name}.toml`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Config exported");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
+    },
+  });
+
+  const importConfigMutation = useMutation({
+    mutationFn: (config: string) => api.importSandboxConfig(name ?? "", config),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sandbox", name] });
+      toast.success("Config imported");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -561,6 +591,35 @@ export function SandboxDetail() {
               <Download className="h-4 w-4" />
             </Button>
           )}
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => exportConfigMutation.mutate()}
+            disabled={exportConfigMutation.isPending}
+            title="Export Config"
+          >
+            <FileDown className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => {
+              const input = document.createElement("input");
+              input.type = "file";
+              input.accept = ".toml";
+              input.onchange = (e) => {
+                const file = (e.target as HTMLInputElement).files?.[0];
+                if (file) {
+                  file.text().then((text) => importConfigMutation.mutate(text));
+                }
+              };
+              input.click();
+            }}
+            disabled={importConfigMutation.isPending}
+            title="Import Config"
+          >
+            <Upload className="h-4 w-4" />
+          </Button>
           <Button
             variant="outline"
             size="icon"
