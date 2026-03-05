@@ -28,3 +28,7 @@ app/dist/
 
 # Local Homebrew formula repo (separate repo: thrashr888/homebrew-agentkernel)
 /homebrew-agentkernel/
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
