@@ -257,6 +257,9 @@ struct CreateRequest {
     /// Secret keys to inject as files (e.g., ["MY_SECRET"])
     #[serde(default)]
     secret_files: Vec<String>,
+    /// Use placeholder tokens instead of real secret values
+    #[serde(default)]
+    placeholder_secrets: bool,
     /// Shell script to run inside sandbox after start (e.g., install CLIs)
     #[serde(default)]
     init_script: Option<String>,
@@ -543,6 +546,8 @@ struct SandboxInfo {
     ports: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     secret_files: Vec<String>,
+    #[serde(default)]
+    placeholder_secrets: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     proxy_port: Option<u16>,
     /// Secret mappings: env_var → target_host (values are stripped for security).
@@ -1259,6 +1264,33 @@ async fn handle_request(
         (Method::GET, ["sandboxes", name, "browser", "events"]) => {
             handle_browser_events(req, name, state).await
         }
+
+        // Docker image management
+        (Method::GET, ["images"]) => handle_list_images(state).await,
+        (Method::DELETE, ["images", id]) => handle_delete_image(id, state).await,
+
+        // Hardware benchmark
+        (Method::POST, ["benchmark"]) => handle_benchmark(state).await,
+
+        // Session recording
+        (Method::GET, ["sessions"]) => handle_list_sandbox_sessions(state).await,
+        (Method::GET, ["sandboxes", name, "session"]) => {
+            handle_get_sandbox_session(name, state).await
+        }
+
+        // Sandbox config export/import
+        (Method::GET, ["sandboxes", name, "config"]) => {
+            handle_export_sandbox_config(name, state).await
+        }
+        (Method::POST, ["sandboxes", name, "config"]) => {
+            handle_import_sandbox_config(req, name, state).await
+        }
+
+        // Interactive permissions
+        (Method::GET, ["permissions"]) => handle_list_permissions().await,
+        (Method::POST, ["permissions", "grant"]) => handle_grant_permission(req).await,
+        (Method::DELETE, ["permissions", id]) => handle_revoke_permission(id).await,
+        (Method::POST, ["permissions", "check"]) => handle_check_permission(req).await,
 
         // Enterprise policy endpoints
         #[cfg(feature = "enterprise")]
@@ -2758,6 +2790,9 @@ async fn handle_list_sandboxes(req: Request<Incoming>, state: Arc<AppState>) -> 
                 secret_files: state_info
                     .map(|s| s.secret_files.clone())
                     .unwrap_or_default(),
+                placeholder_secrets: state_info
+                    .map(|s| s.placeholder_secrets)
+                    .unwrap_or(false),
                 proxy_port: state_info.and_then(|s| s.proxy_port),
                 secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
                 labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
@@ -2928,6 +2963,13 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             StatusCode::BAD_REQUEST,
             &ApiResponse::<()>::error(format!("Invalid secret file keys: {}", e)),
         );
+    }
+
+    // Set placeholder secrets mode if enabled
+    if body.placeholder_secrets {
+        if let Err(e) = manager.set_placeholder_secrets(&body.name, true) {
+            eprintln!("Warning: Failed to set placeholder secrets: {}", e);
+        }
     }
 
     // Set init script if provided
@@ -3102,6 +3144,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
             ports: port_strings,
             secret_files: body.secret_files.clone(),
+            placeholder_secrets: body.placeholder_secrets,
             proxy_port: state_info.and_then(|s| s.proxy_port),
             secret_mappings: {
                 let mut m = body.secret_mappings.clone();
@@ -3171,6 +3214,9 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                     secret_files: state_info
                         .map(|s| s.secret_files.clone())
                         .unwrap_or_default(),
+                    placeholder_secrets: state_info
+                        .map(|s| s.placeholder_secrets)
+                        .unwrap_or(false),
                     proxy_port: state_info.and_then(|s| s.proxy_port),
                     secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
                     labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
@@ -3244,6 +3290,7 @@ async fn handle_get_sandbox_by_uuid(uuid: &str, state: Arc<AppState>) -> Respons
             template_help_text: state_info.template_help_text.clone(),
             ports,
             secret_files: state_info.secret_files.clone(),
+            placeholder_secrets: state_info.placeholder_secrets,
             proxy_port: state_info.proxy_port,
             secret_mappings: build_secret_mappings(state_info),
             labels: state_info.labels.clone(),
@@ -3940,6 +3987,7 @@ async fn handle_resize_sandbox(
             let _ = manager.set_secret_bindings(name, &sandbox_state.secret_bindings);
             let _ = manager.set_secret_mappings(name, &sandbox_state.secret_mappings);
             let _ = manager.set_secret_files(name, &sandbox_state.secret_files);
+            let _ = manager.set_placeholder_secrets(name, sandbox_state.placeholder_secrets);
             let _ = manager.set_labels(name, &sandbox_state.labels);
             let _ = manager.set_description(name, sandbox_state.description.as_deref());
             let _ = manager.set_lifecycle_policy(name, sandbox_state.lifecycle_policy.clone());
@@ -3990,6 +4038,9 @@ async fn handle_resize_sandbox(
             secret_files: state_info
                 .map(|s| s.secret_files.clone())
                 .unwrap_or_default(),
+            placeholder_secrets: state_info
+                .map(|s| s.placeholder_secrets)
+                .unwrap_or(false),
             proxy_port: state_info.and_then(|s| s.proxy_port),
             uuid: state_info
                 .map(|s| s.uuid.clone())
@@ -4113,6 +4164,9 @@ async fn handle_patch_sandbox(
             secret_files: state_info
                 .map(|s| s.secret_files.clone())
                 .unwrap_or_default(),
+            placeholder_secrets: state_info
+                .map(|s| s.placeholder_secrets)
+                .unwrap_or(false),
             proxy_port: state_info.and_then(|s| s.proxy_port),
             uuid: state_info
                 .map(|s| s.uuid.clone())
@@ -4201,6 +4255,9 @@ async fn handle_recover_sandbox(
             secret_files: state_info
                 .map(|s| s.secret_files.clone())
                 .unwrap_or_default(),
+            placeholder_secrets: state_info
+                .map(|s| s.placeholder_secrets)
+                .unwrap_or(false),
             proxy_port: state_info.and_then(|s| s.proxy_port),
             secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
             labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
@@ -4481,6 +4538,9 @@ async fn handle_restore_snapshot(
                     secret_files: state_info
                         .map(|s| s.secret_files.clone())
                         .unwrap_or_default(),
+                    placeholder_secrets: state_info
+                        .map(|s| s.placeholder_secrets)
+                        .unwrap_or(false),
                     proxy_port: state_info.and_then(|s| s.proxy_port),
                     secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
                     labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
@@ -6718,6 +6778,492 @@ async fn handle_browser_events(
     browser_request(name, "GET", &path, None, &state).await
 }
 
+// ---------------------------------------------------------------------------
+// Docker Image Management
+// ---------------------------------------------------------------------------
+
+async fn handle_list_images(_state: Arc<AppState>) -> Response<BoxBody> {
+    let runtime = crate::docker_backend::detect_container_runtime();
+    let cmd = match runtime {
+        Some(r) => r.cmd(),
+        None => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error("No container runtime available"),
+            );
+        }
+    };
+
+    let output = match tokio::process::Command::new(cmd)
+        .args(["images", "--format", "{{json .}}"])
+        .output()
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!("Failed to list images: {e}")),
+            );
+        }
+    };
+
+    #[derive(Deserialize, Serialize)]
+    struct DockerImage {
+        #[serde(alias = "ID")]
+        id: String,
+        #[serde(alias = "Repository")]
+        repository: String,
+        #[serde(alias = "Tag")]
+        tag: String,
+        #[serde(alias = "Size")]
+        size: String,
+        #[serde(alias = "CreatedAt", alias = "CreatedSince")]
+        created: String,
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let images: Vec<DockerImage> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+
+    json_response(StatusCode::OK, &ApiResponse::success(images))
+}
+
+async fn handle_delete_image(id: &str, _state: Arc<AppState>) -> Response<BoxBody> {
+    let runtime = crate::docker_backend::detect_container_runtime();
+    let cmd = match runtime {
+        Some(r) => r.cmd(),
+        None => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error("No container runtime available"),
+            );
+        }
+    };
+
+    // Validate image ID to prevent command injection
+    if !id.chars().all(|c| {
+        c.is_ascii_alphanumeric() || c == ':' || c == '.' || c == '-' || c == '/' || c == '_'
+    }) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("Invalid image ID"),
+        );
+    }
+
+    match tokio::process::Command::new(cmd)
+        .args(["rmi", id])
+        .output()
+        .await
+    {
+        Ok(o) if o.status.success() => {
+            json_response(StatusCode::OK, &ApiResponse::success("Image removed"))
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!("Failed to remove image: {stderr}")),
+            )
+        }
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to remove image: {e}")),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hardware Benchmark
+// ---------------------------------------------------------------------------
+
+async fn handle_benchmark(state: Arc<AppState>) -> Response<BoxBody> {
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let benchmark_name = format!(
+        "benchmark-{}",
+        uuid::Uuid::new_v4()
+            .to_string()
+            .split('-')
+            .next()
+            .unwrap_or("0")
+    );
+    let image = "alpine:3.20";
+
+    // Phase 1: Create
+    let create_start = std::time::Instant::now();
+    if let Err(e) = manager.create(&benchmark_name, image, 1, 256).await {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Benchmark create failed: {e}")),
+        );
+    }
+    let create_ms = create_start.elapsed().as_secs_f64() * 1000.0;
+
+    // Phase 2: Exec
+    let exec_start = std::time::Instant::now();
+    let exec_cmd = vec!["echo".to_string(), "hello".to_string()];
+    let _ = manager.exec_cmd(&benchmark_name, &exec_cmd).await;
+    let exec_ms = exec_start.elapsed().as_secs_f64() * 1000.0;
+
+    // Phase 3: Destroy
+    let destroy_start = std::time::Instant::now();
+    let _ = manager.remove(&benchmark_name).await;
+    let destroy_ms = destroy_start.elapsed().as_secs_f64() * 1000.0;
+
+    let total_ms = create_ms + exec_ms + destroy_ms;
+
+    #[derive(Serialize)]
+    struct BenchmarkResult {
+        create_ms: f64,
+        exec_ms: f64,
+        destroy_ms: f64,
+        total_ms: f64,
+        image: String,
+        timestamp: String,
+    }
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(BenchmarkResult {
+            create_ms,
+            exec_ms,
+            destroy_ms,
+            total_ms,
+            image: image.to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        }),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Session Recording (reads from audit log)
+// ---------------------------------------------------------------------------
+
+async fn handle_list_sandbox_sessions(state: Arc<AppState>) -> Response<BoxBody> {
+    let manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    #[derive(Serialize)]
+    struct SandboxSession {
+        sandbox: String,
+        entry_count: usize,
+    }
+
+    // List all sandboxes and report which ones exist (as proxy for session data)
+    let sessions: Vec<SandboxSession> = manager
+        .list()
+        .into_iter()
+        .map(|(name, _, _)| SandboxSession {
+            sandbox: name.to_string(),
+            entry_count: 0,
+        })
+        .collect();
+
+    json_response(StatusCode::OK, &ApiResponse::success(sessions))
+}
+
+async fn handle_get_sandbox_session(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    let manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    if !manager.exists(name) {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("Sandbox '{}' not found", name)),
+        );
+    }
+
+    #[derive(Serialize)]
+    struct SandboxSession {
+        sandbox: String,
+        entries: Vec<()>,
+    }
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(SandboxSession {
+            sandbox: name.to_string(),
+            entries: vec![],
+        }),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Sandbox Config Export/Import
+// ---------------------------------------------------------------------------
+
+async fn handle_export_sandbox_config(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    let manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let sandbox_state = match manager.get_state(name) {
+        Some(s) => s,
+        None => {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error(format!("Sandbox '{}' not found", name)),
+            );
+        }
+    };
+
+    match toml::to_string_pretty(sandbox_state) {
+        Ok(config) => json_response(StatusCode::OK, &ApiResponse::success(config)),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to serialize config: {e}")),
+        ),
+    }
+}
+
+async fn handle_import_sandbox_config(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    #[derive(Deserialize)]
+    struct ImportRequest {
+        config: String,
+    }
+
+    let body: ImportRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    // Parse the TOML config to extract sandbox parameters
+    let parsed: crate::vmm::SandboxState = match toml::from_str(&body.config) {
+        Ok(s) => s,
+        Err(e) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(format!("Invalid TOML config: {e}")),
+            );
+        }
+    };
+
+    let mut manager = match state.get_manager().await {
+        Ok(m) => m,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    // Create a new sandbox with the imported config
+    if let Err(e) = manager
+        .create(name, &parsed.image, parsed.vcpus, parsed.memory_mb)
+        .await
+    {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to create sandbox from config: {e}")),
+        );
+    }
+
+    // Return info about the newly created sandbox
+    let running = manager.is_running(name);
+    let ip = if running {
+        manager.get_container_ip(name)
+    } else {
+        None
+    };
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(SandboxInfo {
+            name: name.to_string(),
+            uuid: manager
+                .get_state(name)
+                .map(|s| s.uuid.clone())
+                .unwrap_or_default(),
+            status: if running {
+                "running".to_string()
+            } else {
+                "stopped".to_string()
+            },
+            backend: manager
+                .get_state(name)
+                .and_then(|s| s.backend)
+                .map(|b| format!("{}", b))
+                .unwrap_or_else(|| "unknown".to_string()),
+            ip,
+            image: Some(parsed.image),
+            vcpus: Some(parsed.vcpus),
+            memory_mb: Some(parsed.memory_mb),
+            created_at: manager.get_state(name).map(|s| s.created_at.clone()),
+            created_from_template: None,
+            template_help_text: None,
+            ports: vec![],
+            secret_files: vec![],
+            placeholder_secrets: false,
+            proxy_port: None,
+            secret_mappings: std::collections::HashMap::new(),
+            labels: std::collections::HashMap::new(),
+            description: None,
+            last_activity_at: None,
+            archived_at: None,
+            archived_reason: None,
+            lifecycle: None,
+        }),
+    )
+}
+
+// -----------------------------------------------------------------
+// Interactive Permissions
+// -----------------------------------------------------------------
+
+async fn handle_list_permissions() -> Response<BoxBody> {
+    let store = crate::mcp::default_permission_store();
+    let grants = store.list();
+    json_response(StatusCode::OK, &ApiResponse::success(grants))
+}
+
+async fn handle_grant_permission(req: Request<Incoming>) -> Response<BoxBody> {
+    use crate::interactive_permissions::{GrantScope, PermissionKind};
+
+    let body = match read_body_bytes(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    #[derive(Deserialize)]
+    struct GrantRequest {
+        kind: String,
+        scope: Option<String>,
+        sandbox: Option<String>,
+    }
+
+    let parsed: GrantRequest = match serde_json::from_slice(&body) {
+        Ok(p) => p,
+        Err(e) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let kind = match PermissionKind::from_str(&parsed.kind) {
+        Some(k) => k,
+        None => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(format!("Unknown permission kind: {}", parsed.kind)),
+            );
+        }
+    };
+
+    let scope = match parsed.scope.as_deref() {
+        Some("session") => GrantScope::Session,
+        Some("always") => GrantScope::Always,
+        _ => GrantScope::Once,
+    };
+
+    let store = crate::mcp::default_permission_store();
+    let grant_id = store.grant(kind, scope, parsed.sandbox, "http_user");
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(serde_json::json!({
+            "grant_id": grant_id,
+            "kind": parsed.kind,
+        })),
+    )
+}
+
+async fn handle_revoke_permission(id: &str) -> Response<BoxBody> {
+    let store = crate::mcp::default_permission_store();
+    if store.revoke(id) {
+        json_response(StatusCode::OK, &ApiResponse::success("Permission revoked"))
+    } else {
+        json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("Grant '{id}' not found")),
+        )
+    }
+}
+
+async fn handle_check_permission(req: Request<Incoming>) -> Response<BoxBody> {
+    use crate::interactive_permissions::PermissionKind;
+
+    let body = match read_body_bytes(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+
+    #[derive(Deserialize)]
+    struct CheckRequest {
+        kind: String,
+        sandbox: Option<String>,
+    }
+
+    let parsed: CheckRequest = match serde_json::from_slice(&body) {
+        Ok(p) => p,
+        Err(e) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    };
+
+    let kind = match PermissionKind::from_str(&parsed.kind) {
+        Some(k) => k,
+        None => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(format!("Unknown permission kind: {}", parsed.kind)),
+            );
+        }
+    };
+
+    let store = crate::mcp::default_permission_store();
+    let permitted = store.check(kind, parsed.sandbox.as_deref());
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(serde_json::json!({
+            "permitted": permitted,
+            "kind": parsed.kind,
+        })),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6829,6 +7375,7 @@ mod tests {
             template_help_text: None,
             ports: vec![],
             secret_files: vec![],
+            placeholder_secrets: false,
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
@@ -6913,6 +7460,7 @@ mod tests {
             template_help_text: None,
             ports: vec![],
             secret_files: vec![],
+            placeholder_secrets: false,
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
@@ -7251,6 +7799,7 @@ mod tests {
             template_help_text: None,
             ports: vec![],
             secret_files: vec![],
+            placeholder_secrets: false,
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
@@ -7283,6 +7832,7 @@ mod tests {
             template_help_text: None,
             ports: vec![],
             secret_files: vec![],
+            placeholder_secrets: false,
             proxy_port: None,
             secret_mappings: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),

@@ -136,6 +136,10 @@ pub struct SandboxState {
     /// Secret keys to inject as files (e.g. ["OPENAI_API_KEY"])
     #[serde(default)]
     pub secret_files: Vec<String>,
+    /// Use placeholder tokens instead of real secret values in file injection.
+    /// Real values are substituted by the proxy in outbound traffic.
+    #[serde(default)]
+    pub placeholder_secrets: bool,
     /// Host port of the running proxy (if any)
     #[serde(default)]
     pub proxy_port: Option<u16>,
@@ -720,6 +724,7 @@ impl VmManager {
             secret_bindings: Vec::new(),
             secret_mappings: HashMap::new(),
             secret_files: Vec::new(),
+            placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
             created_from_template: None,
@@ -912,6 +917,126 @@ impl VmManager {
             .get(name)
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
         self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    pub fn set_placeholder_secrets(&mut self, name: &str, enabled: bool) -> Result<()> {
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.placeholder_secrets = enabled;
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    /// Inject secrets as placeholder tokens and start a proxy for substitution.
+    async fn inject_placeholder_secrets(
+        &mut self,
+        sandbox: &mut dyn crate::backend::Sandbox,
+        name: &str,
+        resolved: &HashMap<String, String>,
+        backend: BackendType,
+    ) -> Result<()> {
+        match crate::vsock_secrets::inject_secrets_as_placeholders(
+            sandbox,
+            crate::vsock_secrets::DEFAULT_SECRETS_PATH,
+            resolved,
+        )
+        .await
+        {
+            Ok((injected, placeholder_map)) => {
+                eprintln!(
+                    "Injected {} placeholder secret file(s) at {} (real values never enter VM)",
+                    injected.len(),
+                    crate::vsock_secrets::DEFAULT_SECRETS_PATH,
+                );
+                if !placeholder_map.is_empty() {
+                    let proxy_config = crate::proxy::ProxyConfig {
+                        listen_addr: "0.0.0.0:0".parse().unwrap(),
+                        bindings: Vec::new(),
+                        allowed_hosts: Vec::new(),
+                        blocked_hosts: Vec::new(),
+                        allowlist_only: false,
+                        sandbox_name: name.to_string(),
+                        hooks: Vec::new(),
+                        llm_intercept: true,
+                        llm_domains: Vec::new(),
+                        org_managed_domains: Vec::new(),
+                    };
+                    match crate::proxy::start_proxy(
+                        proxy_config,
+                        HashMap::new(),
+                        placeholder_map,
+                    )
+                    .await
+                    {
+                        Ok(handle) => {
+                            let proxy_addr = handle.addr;
+                            let proxy_host = match backend {
+                                BackendType::Apple => {
+                                    format!("192.168.64.1:{}", proxy_addr.port())
+                                }
+                                BackendType::Docker | BackendType::Podman => {
+                                    if cfg!(target_os = "macos") {
+                                        format!("host.docker.internal:{}", proxy_addr.port())
+                                    } else {
+                                        format!("172.17.0.1:{}", proxy_addr.port())
+                                    }
+                                }
+                                _ => format!("127.0.0.1:{}", proxy_addr.port()),
+                            };
+
+                            // Inject proxy env vars into sandbox
+                            let ca_pem = handle.ca_cert_pem.clone();
+                            sandbox
+                                .inject_files(&[crate::backend::FileInjection {
+                                    dest: "/usr/local/share/ca-certificates/agentkernel-proxy.crt"
+                                        .to_string(),
+                                    content: ca_pem.into_bytes(),
+                                }])
+                                .await
+                                .ok();
+
+                            // Set proxy env vars via profile script
+                            let proxy_script = format!(
+                                "export HTTP_PROXY=http://{h}\nexport HTTPS_PROXY=http://{h}\nexport http_proxy=http://{h}\nexport https_proxy=http://{h}\nexport NO_PROXY=localhost,127.0.0.1\n",
+                                h = proxy_host
+                            );
+                            sandbox
+                                .inject_files(&[crate::backend::FileInjection {
+                                    dest: "/etc/profile.d/agentkernel-proxy.sh".to_string(),
+                                    content: proxy_script.into_bytes(),
+                                }])
+                                .await
+                                .ok();
+
+                            if let Some(s) = self.sandboxes.get_mut(name) {
+                                s.proxy_port = Some(proxy_addr.port());
+                            }
+                            self.save_sandbox(self.sandboxes.get(name).unwrap())?;
+
+                            eprintln!(
+                                "Placeholder proxy started on port {} for secret substitution",
+                                proxy_addr.port()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Failed to start placeholder proxy: {}", e);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to inject placeholder secret files: {}", e);
+            }
+        }
         Ok(())
     }
 
@@ -1161,7 +1286,7 @@ impl VmManager {
                     org_managed_domains: Vec::new(),
                 };
 
-                match crate::proxy::start_proxy(proxy_config, resolved_secrets).await {
+                match crate::proxy::start_proxy(proxy_config, resolved_secrets, crate::vsock_secrets::PlaceholderMap::new()).await {
                     Ok(handle) => {
                         let proxy_addr = handle.addr;
                         // Determine the proxy host for the sandbox to reach
@@ -1299,7 +1424,7 @@ impl VmManager {
                             org_managed_domains: org_domains,
                         };
 
-                        match crate::proxy::start_proxy(proxy_config, org_resolved).await {
+                        match crate::proxy::start_proxy(proxy_config, org_resolved, crate::vsock_secrets::PlaceholderMap::new()).await {
                             Ok(handle) => {
                                 let proxy_addr = handle.addr;
                                 let proxy_host = match backend {
@@ -1491,22 +1616,26 @@ impl VmManager {
                 }
             }
             if !resolved.is_empty() {
-                match crate::vsock_secrets::inject_secrets_as_files(
-                    sandbox.as_mut(),
-                    crate::vsock_secrets::DEFAULT_SECRETS_PATH,
-                    &resolved,
-                )
-                .await
-                {
-                    Ok(injected) => {
-                        eprintln!(
-                            "Injected {} secret file(s) at {}",
-                            injected.len(),
-                            crate::vsock_secrets::DEFAULT_SECRETS_PATH,
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: Failed to inject secret files: {}", e);
+                if state.placeholder_secrets {
+                    self.inject_placeholder_secrets(sandbox.as_mut(), name, &resolved, backend).await?;
+                } else {
+                    match crate::vsock_secrets::inject_secrets_as_files(
+                        sandbox.as_mut(),
+                        crate::vsock_secrets::DEFAULT_SECRETS_PATH,
+                        &resolved,
+                    )
+                    .await
+                    {
+                        Ok(injected) => {
+                            eprintln!(
+                                "Injected {} secret file(s) at {}",
+                                injected.len(),
+                                crate::vsock_secrets::DEFAULT_SECRETS_PATH,
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Failed to inject secret files: {}", e);
+                        }
                     }
                 }
             }
@@ -2590,6 +2719,7 @@ mod tests {
             secret_bindings: Vec::new(),
             secret_mappings: HashMap::new(),
             secret_files: Vec::new(),
+            placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
             created_from_template: None,
@@ -2650,6 +2780,7 @@ mod tests {
             secret_bindings: Vec::new(),
             secret_mappings: HashMap::new(),
             secret_files: Vec::new(),
+            placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
             created_from_template: None,
@@ -2720,6 +2851,7 @@ mod tests {
             secret_bindings: Vec::new(),
             secret_mappings: HashMap::new(),
             secret_files: Vec::new(),
+            placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
             created_from_template: None,
@@ -2873,6 +3005,7 @@ mod tests {
             secret_bindings: Vec::new(),
             secret_mappings: HashMap::new(),
             secret_files: Vec::new(),
+            placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
             created_from_template: None,
@@ -3008,6 +3141,7 @@ mod tests {
             secret_bindings: Vec::new(),
             secret_mappings: HashMap::new(),
             secret_files: Vec::new(),
+            placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
             created_from_template: None,
@@ -3072,6 +3206,7 @@ mod tests {
             secret_bindings: Vec::new(),
             secret_mappings: HashMap::new(),
             secret_files: Vec::new(),
+            placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
             created_from_template: None,
@@ -3132,6 +3267,7 @@ mod tests {
             secret_bindings: Vec::new(),
             secret_mappings: HashMap::new(),
             secret_files: Vec::new(),
+            placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
             created_from_template: None,

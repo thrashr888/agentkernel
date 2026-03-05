@@ -19,6 +19,7 @@ mod http_api;
 mod hyperlight_backend;
 mod image_builder;
 mod images;
+mod interactive_permissions;
 mod languages;
 mod llm_intercept;
 mod mcp;
@@ -132,6 +133,10 @@ enum Commands {
         /// Inject a secret as a file inside the sandbox (KEY from vault). Can be repeated.
         #[arg(long = "secret-file")]
         secret_files: Vec<String>,
+        /// Use placeholder tokens instead of real secret values in file injection.
+        /// Real values are substituted by the proxy in outbound traffic only.
+        #[arg(long)]
+        placeholder_secrets: bool,
         /// Write a verifiable execution receipt JSON to this path
         #[arg(long)]
         receipt: Option<PathBuf>,
@@ -463,6 +468,9 @@ enum SandboxAction {
         /// Inject a secret as a file inside the sandbox (KEY from vault). Can be repeated.
         #[arg(long = "secret-file")]
         secret_files: Vec<String>,
+        /// Use placeholder tokens instead of real secret values in file injection.
+        #[arg(long)]
+        placeholder_secrets: bool,
         /// Add a label (key=value). Can be repeated.
         #[arg(short = 'l', long = "label")]
         labels: Vec<String>,
@@ -1023,6 +1031,7 @@ memory_mb = 512
                 volumes,
                 secrets: secret_bindings_raw,
                 secret_files: secret_file_keys,
+                placeholder_secrets,
                 labels: label_args,
                 no_start,
             } => {
@@ -1275,11 +1284,20 @@ memory_mb = 512
                         vsock_secrets::validate_secret_key(key)?;
                     }
                     manager.set_secret_files(&name, &secret_file_keys)?;
-                    println!(
-                        "  Secret files: {} key(s) will be injected at {}",
-                        secret_file_keys.len(),
-                        vsock_secrets::DEFAULT_SECRETS_PATH,
-                    );
+                    if placeholder_secrets {
+                        manager.set_placeholder_secrets(&name, true)?;
+                        println!(
+                            "  Secret files: {} key(s) with placeholder tokens at {} (proxy substitution)",
+                            secret_file_keys.len(),
+                            vsock_secrets::DEFAULT_SECRETS_PATH,
+                        );
+                    } else {
+                        println!(
+                            "  Secret files: {} key(s) will be injected at {}",
+                            secret_file_keys.len(),
+                            vsock_secrets::DEFAULT_SECRETS_PATH,
+                        );
+                    }
                 }
 
                 // If SSH enabled, update the sandbox state

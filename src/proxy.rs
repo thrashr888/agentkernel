@@ -29,6 +29,7 @@ use crate::llm_intercept::{
 use crate::proxy_hooks::{
     HookEvent, HookRegistry, ProxyEvent, dispatch_hooks, dispatch_llm_hooks, new_registry,
 };
+use crate::vsock_secrets::PlaceholderMap;
 
 /// A secret binding: maps a secret key to a target host and HTTP header.
 #[derive(Debug, Clone)]
@@ -183,6 +184,8 @@ struct ProxyState {
     config: ProxyConfig,
     /// Resolved secrets: host -> (header_name, header_value)
     resolved_secrets: HashMap<String, (String, String)>,
+    /// Placeholder token → real value map for body/header substitution
+    placeholder_map: PlaceholderMap,
     /// CA signing context (cert + key pair) for generating per-host certs
     ca_signer: Arc<CaSigner>,
     /// Cached per-host TLS server configs (for MITM)
@@ -304,10 +307,12 @@ fn matches_domain(host: &str, pattern: &str) -> bool {
 /// Start the proxy server.
 ///
 /// `resolved_secrets` maps host -> (header_name, header_value).
+/// `placeholder_map` maps placeholder tokens to real secret values for body substitution.
 /// The caller is responsible for resolving secrets from the vault.
 pub async fn start_proxy(
     config: ProxyConfig,
     resolved_secrets: HashMap<String, (String, String)>,
+    placeholder_map: PlaceholderMap,
 ) -> Result<ProxyHandle> {
     // Ensure rustls crypto provider is installed (needed for TLS MITM)
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -336,6 +341,7 @@ pub async fn start_proxy(
     let state = Arc::new(RwLock::new(ProxyState {
         config,
         resolved_secrets,
+        placeholder_map,
         ca_signer: Arc::new(ca_signer),
         cert_cache: HashMap::new(),
         hook_registry: hook_registry.clone(),
@@ -467,6 +473,7 @@ async fn handle_connect(
     let sandbox_name = s.config.sandbox_name.clone();
     let registry = s.hook_registry.clone();
     let is_org_managed = s.org_managed_domains.contains(&host_only);
+    let placeholder_map = s.placeholder_map.clone();
     drop(s);
 
     // Dispatch OnRequest hook for CONNECT
@@ -572,6 +579,7 @@ async fn handle_connect(
             llm_provider.as_ref(),
             &registry,
             is_org_managed,
+            &placeholder_map,
         )
         .await
         {
@@ -584,6 +592,8 @@ async fn handle_connect(
 
 /// Bridge between client (TLS-terminated) and upstream (TLS), injecting secret headers.
 /// When `llm_provider` is Some, also captures LLM request/response metadata.
+/// When `placeholder_map` is non-empty, scans request bodies for placeholder tokens
+/// and substitutes real secret values before forwarding upstream.
 #[allow(clippy::too_many_arguments)]
 async fn mitm_bridge(
     client_tls: tokio_rustls::server::TlsStream<TokioIo<hyper::upgrade::Upgraded>>,
@@ -595,6 +605,7 @@ async fn mitm_bridge(
     llm_provider: Option<&llm_intercept::LlmProvider>,
     hook_registry: &HookRegistry,
     is_org_managed: bool,
+    placeholder_map: &PlaceholderMap,
 ) -> Result<()> {
     // Connect to upstream with real TLS
     let upstream_tcp = TcpStream::connect(upstream_addr)
@@ -628,6 +639,7 @@ async fn mitm_bridge(
     let llm_provider_name = llm_provider.map(|p| p.name.to_string());
     let llm_token_format = llm_provider.map(|p| p.token_format);
     let hook_registry = hook_registry.clone();
+    let placeholder_map = placeholder_map.clone();
 
     // Use hyper to serve the client side and forward to upstream
     let (upstream_sender, upstream_conn) = hyper::client::conn::http1::handshake(upstream_io)
@@ -656,6 +668,7 @@ async fn mitm_bridge(
                 let llm_provider_name = llm_provider_name.clone();
                 let llm_token_format = llm_token_format;
                 let hook_registry = hook_registry.clone();
+                let pmap = placeholder_map.clone();
                 async move {
                     let method_str = req.method().to_string();
                     let uri_path = req.uri().path().to_string();
@@ -668,13 +681,24 @@ async fn mitm_bridge(
 
                     // For LLM requests, buffer the request body for metadata extraction
                     let mut model_name = None;
-                    let req = if llm_provider_name.is_some() {
+                    let has_placeholders = !pmap.is_empty();
+                    let req = if llm_provider_name.is_some() || has_placeholders {
+                        // Buffer body for LLM metadata extraction and/or placeholder substitution
                         let (parts, body) = req.into_parts();
-                        let body_bytes = body
+                        let mut body_bytes = body
                             .collect()
                             .await
                             .map(|c| c.to_bytes())
                             .unwrap_or_default();
+
+                        // Substitute placeholder tokens with real secret values
+                        if has_placeholders {
+                            let (substituted, replaced) = pmap.substitute_bytes(&body_bytes);
+                            if replaced {
+                                body_bytes = bytes::Bytes::from(substituted);
+                            }
+                        }
+
                         model_name = extract_model_from_request(&body_bytes);
                         let is_str = extract_streaming_from_request(&body_bytes);
                         let mut new_req = Request::from_parts(
@@ -689,9 +713,13 @@ async fn mitm_bridge(
                         {
                             new_req.headers_mut().insert(name, val);
                         }
+                        // Substitute placeholders in header values
+                        if has_placeholders {
+                            substitute_header_placeholders(new_req.headers_mut(), &pmap);
+                        }
                         (new_req, is_str)
                     } else {
-                        // Non-LLM: inject header directly
+                        // Non-LLM, no placeholders: inject header directly
                         let (parts, body) = req.into_parts();
                         let mut new_req = Request::from_parts(parts, body.boxed());
                         if has_secret
@@ -862,6 +890,13 @@ async fn handle_plain_http(
         secret_injected = true;
     }
 
+    // Substitute placeholder tokens in headers
+    let has_placeholders = !s.placeholder_map.is_empty();
+    let placeholder_map = s.placeholder_map.clone();
+    if has_placeholders {
+        substitute_header_placeholders(req.headers_mut(), &placeholder_map);
+    }
+
     let sandbox_name = s.config.sandbox_name.clone();
     let method_str = req.method().to_string();
     let url_str = req.uri().to_string();
@@ -893,8 +928,28 @@ async fn handle_plain_http(
     )
     .await;
 
+    // Substitute placeholder tokens in request body for plain HTTP
+    let req = if has_placeholders {
+        let (parts, body) = req.into_parts();
+        let body_bytes = body
+            .collect()
+            .await
+            .map(|c| c.to_bytes())
+            .unwrap_or_default();
+        let (substituted, _) = placeholder_map.substitute_bytes(&body_bytes);
+        Request::from_parts(
+            parts,
+            http_body_util::Full::new(bytes::Bytes::from(substituted))
+                .map_err(|never| match never {})
+                .boxed(),
+        )
+    } else {
+        let (parts, body) = req.into_parts();
+        Request::from_parts(parts, body.boxed())
+    };
+
     // Forward the request to the upstream server
-    match forward_request(req).await {
+    match forward_boxed_request(req).await {
         Ok(resp) => {
             let latency = start.elapsed().as_millis() as u64;
             let status = resp.status().as_u16();
@@ -968,6 +1023,27 @@ async fn handle_plain_http(
     }
 }
 
+/// Substitute placeholder tokens in HTTP header values with real secret values.
+fn substitute_header_placeholders(
+    headers: &mut hyper::header::HeaderMap,
+    placeholder_map: &PlaceholderMap,
+) {
+    let mut replacements = Vec::new();
+    for (name, value) in headers.iter() {
+        if let Ok(val_str) = value.to_str() {
+            let (substituted, replaced) = placeholder_map.substitute(val_str);
+            if replaced {
+                if let Ok(new_val) = hyper::header::HeaderValue::from_str(&substituted) {
+                    replacements.push((name.clone(), new_val));
+                }
+            }
+        }
+    }
+    for (name, value) in replacements {
+        headers.insert(name, value);
+    }
+}
+
 /// Forward an HTTP request to the upstream server.
 async fn forward_request(req: Request<Incoming>) -> Result<Response<BoxBody>> {
     use http_body_util::BodyExt;
@@ -998,6 +1074,41 @@ async fn forward_request(req: Request<Incoming>) -> Result<Response<BoxBody>> {
         .context("Failed to send request")?;
 
     // Convert response body
+    let (parts, body) = resp.into_parts();
+    let body = body.boxed();
+    Ok(Response::from_parts(parts, body))
+}
+
+/// Forward an HTTP request with a boxed body to the upstream server.
+/// Used when the request body has been buffered for placeholder substitution.
+async fn forward_boxed_request(req: Request<BoxBody>) -> Result<Response<BoxBody>> {
+    use http_body_util::BodyExt;
+
+    let uri = req.uri().clone();
+    let host = uri.host().context("No host in request URI")?;
+    let port = uri.port_u16().unwrap_or(80);
+    let addr = format!("{}:{}", host, port);
+
+    let stream = TcpStream::connect(&addr)
+        .await
+        .with_context(|| format!("Failed to connect to {}", addr))?;
+
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .context("HTTP handshake failed")?;
+
+    tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            eprintln!("[proxy] Connection task error: {}", e);
+        }
+    });
+
+    let resp = sender
+        .send_request(req)
+        .await
+        .context("Failed to send request")?;
+
     let (parts, body) = resp.into_parts();
     let body = body.boxed();
     Ok(Response::from_parts(parts, body))

@@ -23,6 +23,7 @@ dependencies = [
  "dirs",
  "ed25519-dalek",
  "futures",
+ "hex",
  "http-body-util",
  "hyper",
  "hyper-util",

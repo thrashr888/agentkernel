@@ -11,6 +11,7 @@ pub mod docker_backend;
 pub mod durable_storage;
 pub mod firecracker_client;
 pub mod hyperlight_backend;
+pub mod interactive_permissions;
 pub mod languages;
 pub mod llm_intercept;
 pub mod metrics;

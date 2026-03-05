@@ -47,6 +47,7 @@ enum ToolOutput {
 /// MCP server for agentkernel
 pub struct McpServer {
     initialized: bool,
+    permission_store: crate::interactive_permissions::PermissionStore,
 }
 
 // JSON-RPC 2.0 types
@@ -80,7 +81,10 @@ struct JsonRpcError {
 
 impl McpServer {
     pub fn new() -> Self {
-        Self { initialized: false }
+        Self {
+            initialized: false,
+            permission_store: crate::interactive_permissions::PermissionStore::new(),
+        }
     }
 
     /// Run the MCP server (reads from stdin, writes to stdout)
@@ -832,6 +836,61 @@ impl McpServer {
                         },
                         "required": ["name"]
                     }
+                },
+                // Permission tools
+                {
+                    "name": "permission_grant",
+                    "description": "Grant or deny a permission request. Use after receiving a permission_required error.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "request_id": {
+                                "type": "string",
+                                "description": "The permission request ID from the error response"
+                            },
+                            "kind": {
+                                "type": "string",
+                                "enum": ["sandbox_remove", "sandbox_create", "network_access", "mount_directory", "sudo_exec", "file_delete"],
+                                "description": "The permission kind to grant"
+                            },
+                            "granted": {
+                                "type": "boolean",
+                                "description": "Whether to grant (true) or deny (false) the permission"
+                            },
+                            "scope": {
+                                "type": "string",
+                                "enum": ["once", "session", "always"],
+                                "description": "Scope of the grant (default: once)"
+                            },
+                            "sandbox": {
+                                "type": "string",
+                                "description": "Sandbox name to scope the grant to (omit for all sandboxes)"
+                            }
+                        },
+                        "required": ["kind", "granted"]
+                    }
+                },
+                {
+                    "name": "permission_list",
+                    "description": "List all active permission grants.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                },
+                {
+                    "name": "permission_revoke",
+                    "description": "Revoke a specific permission grant by ID.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "The grant ID to revoke"
+                            }
+                        },
+                        "required": ["id"]
+                    }
                 }
             ]
         });
@@ -903,6 +962,12 @@ impl McpServer {
             "browser_fill" => self.tool_browser_fill(&arguments).map(ToolOutput::Text),
             "browser_close" => self.tool_browser_close(&arguments).map(ToolOutput::Text),
             "browser_events" => self.tool_browser_events(&arguments).map(ToolOutput::Text),
+            // Permission tools
+            "permission_grant" => self.tool_permission_grant(&arguments).map(ToolOutput::Text),
+            "permission_list" => self.tool_permission_list().map(ToolOutput::Text),
+            "permission_revoke" => self
+                .tool_permission_revoke(&arguments)
+                .map(ToolOutput::Text),
             _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
         };
 
@@ -1044,6 +1109,12 @@ impl McpServer {
             .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        // Permission check
+        self.require_permission(
+            crate::interactive_permissions::PermissionKind::SandboxCreate,
+            Some(name),
+        )?;
 
         let image = args
             .get("image")
@@ -1234,6 +1305,12 @@ impl McpServer {
             .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+
+        // Permission check
+        self.require_permission(
+            crate::interactive_permissions::PermissionKind::SandboxRemove,
+            Some(name),
+        )?;
 
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
@@ -1949,12 +2026,106 @@ impl McpServer {
             None,
         )
     }
+
+    // -----------------------------------------------------------------
+    // Permission tools
+    // -----------------------------------------------------------------
+
+    fn tool_permission_grant(&self, args: &Value) -> Result<String> {
+        use crate::interactive_permissions::{GrantScope, PermissionKind};
+
+        let kind_str = args
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("kind is required"))?;
+
+        let kind = PermissionKind::from_str(kind_str)
+            .ok_or_else(|| anyhow::anyhow!("Unknown permission kind: {kind_str}"))?;
+
+        let granted = args
+            .get("granted")
+            .and_then(|v| v.as_bool())
+            .ok_or_else(|| anyhow::anyhow!("granted is required"))?;
+
+        if !granted {
+            return Ok("Permission denied by user.".to_string());
+        }
+
+        let scope = match args.get("scope").and_then(|v| v.as_str()) {
+            Some("session") => GrantScope::Session,
+            Some("always") => GrantScope::Always,
+            _ => GrantScope::Once,
+        };
+
+        let sandbox = args
+            .get("sandbox")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let grant_id = self
+            .permission_store
+            .grant(kind, scope, sandbox, "mcp_user");
+
+        Ok(serde_json::to_string_pretty(&json!({
+            "granted": true,
+            "grant_id": grant_id,
+            "kind": kind_str,
+            "scope": format!("{:?}", scope).to_lowercase(),
+        }))?)
+    }
+
+    fn tool_permission_list(&self) -> Result<String> {
+        let grants = self.permission_store.list();
+        Ok(serde_json::to_string_pretty(&grants)?)
+    }
+
+    fn tool_permission_revoke(&self, args: &Value) -> Result<String> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("id is required"))?;
+
+        if self.permission_store.revoke(id) {
+            Ok(format!("Permission grant '{id}' revoked."))
+        } else {
+            Err(anyhow::anyhow!("Grant '{id}' not found."))
+        }
+    }
+
+    /// Check permission and return a structured error if not granted.
+    fn require_permission(
+        &self,
+        kind: crate::interactive_permissions::PermissionKind,
+        sandbox: Option<&str>,
+    ) -> Result<()> {
+        if self.permission_store.check(kind, sandbox) {
+            // Consume once-grants on use
+            self.permission_store.consume_once(kind, sandbox);
+            Ok(())
+        } else {
+            let req =
+                crate::interactive_permissions::PermissionStore::create_request(kind, sandbox);
+            Err(anyhow::anyhow!(
+                "Permission required: {} for {}. Grant with permission_grant tool. Request ID: {}",
+                kind,
+                sandbox.unwrap_or("all sandboxes"),
+                req.id
+            ))
+        }
+    }
 }
 
 impl Default for McpServer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Access the permission store from outside the MCP server (e.g., HTTP API).
+pub fn default_permission_store() -> &'static crate::interactive_permissions::PermissionStore {
+    use std::sync::OnceLock;
+    static STORE: OnceLock<crate::interactive_permissions::PermissionStore> = OnceLock::new();
+    STORE.get_or_init(crate::interactive_permissions::PermissionStore::new)
 }
 
 /// Run the MCP server

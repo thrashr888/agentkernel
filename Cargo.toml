@@ -61,6 +61,7 @@ urlencoding = "2"
 ssh-key = { version = "0.6", features = ["ed25519", "rand_core"] }
 rand = "0.8"
 ring = "0.17"
+hex = "0.4"
 
 # OpenTelemetry trace export
 opentelemetry = "0.28"
