@@ -130,169 +130,47 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 
 ## Common Workflows
 
-### One-shot execution
 ```bash
+# One-shot execution
 agentkernel run python3 script.py
-```
 
-### Create from template
-```bash
+# Persistent sandbox
 agentkernel sandbox create my-sandbox --template python -B docker
 agentkernel sandbox start my-sandbox
 agentkernel exec my-sandbox -- python3 --version
-```
-
-### Per-branch sandboxes
-```bash
-# Auto-names sandbox from git project + branch
-agentkernel sandbox create --branch -B docker
-agentkernel sandbox list --project    # Filter to current project
-```
-
-### Persistent sandbox
-```bash
-agentkernel sandbox create my-sandbox
-agentkernel sandbox start my-sandbox
-agentkernel exec my-sandbox -- npm test
 agentkernel sandbox stop my-sandbox
-```
 
-### Sandbox with TTL
-```bash
-# Create a sandbox with 2-hour TTL
-agentkernel sandbox create my-sandbox --ttl 2h
-agentkernel sandbox start my-sandbox
+# Per-branch sandboxes (auto-named from git project + branch)
+agentkernel sandbox create --branch -B docker
 
-# Extend the TTL by 1 hour (default)
-agentkernel sandbox extend-ttl my-sandbox
-
-# Extend by specific duration
-agentkernel sandbox extend-ttl my-sandbox --by 30m
-```
-
-### Snapshot and restore
-```bash
-agentkernel snapshot take my-sandbox --name my-checkpoint
-agentkernel snapshot restore my-checkpoint --as restored-sandbox
-```
-
-### Agent sessions
-```bash
-agentkernel session start --name feature-x --agent claude -B docker
-agentkernel exec session-feature-x -- echo "working"
-agentkernel session save feature-x
-agentkernel session resume feature-x
-```
-
-### Parallel execution
-```bash
-agentkernel parallel \
-  --job "lint:node:22-alpine:npx eslint ." \
-  --job "test:node:22-alpine:npm test" \
-  -B docker
-```
-
-### Interactive development
-```bash
+# Interactive development
 agentkernel sandbox create dev --config agentkernel.toml
 agentkernel sandbox start dev
 agentkernel attach dev
 ```
 
-### Persistent volumes
+See individual command pages for detailed examples: [run](run.md), [create](create.md), [snapshots](snapshots.md), [sessions](sessions.md), [pipelines](pipelines.md), [volumes](volumes.md), [images](images.md), [receipts](receipts.md).
+
+## Audit Logging
+
+All sandbox operations are logged to `~/.agentkernel/audit.jsonl` as JSONL. Each entry includes `timestamp`, `pid`, `user`, and the event payload. Set `AGENTKERNEL_AUDIT=0` to disable.
+
 ```bash
-# Create a volume
-agentkernel volume create mydata
-
-# Use it in a sandbox
-agentkernel sandbox create dev --volume mydata:/data
-agentkernel sandbox start dev
-agentkernel exec dev -- echo "hello" > /data/test.txt
-agentkernel sandbox stop dev
-
-# Data persists across restarts
-agentkernel sandbox start dev
-agentkernel exec dev -- cat /data/test.txt
+agentkernel audit                          # list recent events
+agentkernel audit --sandbox my-sandbox     # filter by sandbox
+agentkernel audit --path                   # show log file path
 ```
 
-### Custom images
-```bash
-# Build from Dockerfile
-agentkernel build -t my-tools .
-
-# Use in a sandbox
-agentkernel sandbox create dev --image my-tools
-```
-
-### SSH access
-```bash
-# Create with SSH enabled
-agentkernel sandbox create dev --ssh -B docker
-agentkernel sandbox start dev
-
-# SSH in (generates ephemeral cert automatically)
-agentkernel ssh connect dev
-
-# Run a command over SSH
-agentkernel ssh connect dev -- ls -la /
-
-# Record the session
-agentkernel ssh connect dev --record ./session.cast
-
-# Generate SSH config for VS Code Remote-SSH
-agentkernel ssh config dev >> ~/.ssh/config
-```
-
-### Session recording and playback
-```bash
-# Record a session
-agentkernel attach my-sandbox --record session.cast
-
-# Replay a recorded session
-agentkernel replay ~/.agentkernel/recordings/my-sandbox-20260126-120000.cast
-
-# Replay at 2x speed with max 1s idle time
-agentkernel replay session.cast --speed 2.0 --max-idle 1.0
-```
-
-### Execution receipts
-```bash
-# Emit a receipt from run
-agentkernel run --receipt ./run-receipt.json -- python3 -c "print('ok')"
-
-# Verify integrity
-agentkernel receipt verify ./run-receipt.json
-
-# Replay and compare output hash + exit code
-agentkernel receipt replay ./run-receipt.json
-```
-
-### Audit logging
-```bash
-# List recent audit events
-agentkernel audit
-
-# Show audit entries for a specific sandbox
-agentkernel audit --sandbox my-sandbox
-
-# Show audit log file path
-agentkernel audit --path
-```
-
-The audit log is stored as JSONL at `~/.agentkernel/audit.jsonl`. Each line is a JSON object with `timestamp`, `pid`, `user`, and the event payload. Set `AGENTKERNEL_AUDIT=0` to disable.
-
-**Event types:**
-
-| Event | Fields | When |
-|-------|--------|------|
-| `sandbox_created` | name, image, backend | `sandbox create` |
-| `sandbox_started` | name, profile | `sandbox start` |
-| `sandbox_stopped` | name | `sandbox stop` |
-| `sandbox_removed` | name | `sandbox remove` |
-| `command_executed` | sandbox, command, exit_code | `exec` / `run` |
-| `file_written` | sandbox, path | `sandbox cp` to sandbox |
-| `file_read` | sandbox, path | `sandbox cp` from sandbox |
-| `session_attached` | sandbox | `attach` |
-| `ssh_connected` | sandbox, user, cert_fingerprint | `ssh connect` |
-| `ssh_disconnected` | sandbox, duration_secs, recording | `ssh connect` (disconnect) |
-| `policy_violation` | sandbox, policy, details | Blocked command |
+| Event | When |
+|-------|------|
+| `sandbox_created` | `sandbox create` |
+| `sandbox_started` | `sandbox start` |
+| `sandbox_stopped` | `sandbox stop` |
+| `sandbox_removed` | `sandbox remove` |
+| `command_executed` | `exec` / `run` |
+| `file_written` | `sandbox cp` to sandbox |
+| `file_read` | `sandbox cp` from sandbox |
+| `session_attached` | `attach` |
+| `ssh_connected` | `ssh connect` |
+| `ssh_disconnected` | `ssh connect` (disconnect) |
+| `policy_violation` | Blocked command |

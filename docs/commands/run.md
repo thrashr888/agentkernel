@@ -24,6 +24,10 @@ agentkernel run [OPTIONS] <COMMAND>...
 | `--branch` | Use git project+branch as sandbox name (reuses existing sandbox) |
 | `--no-network` | Disable network access |
 | `-P, --publish <PORT>` | Port mapping (e.g. `8080:80`, `3000`). Repeatable. Requires `--fast=false`. |
+| `--ssh` | Enable SSH access to the sandbox |
+| `-S, --secret <BINDING>` | Bind a secret to a host via proxy (`KEY:host`, `KEY=value:host`, `KEY:host:header`). Repeatable. |
+| `--secret-file <KEY>` | Inject a vault secret as a file inside the sandbox. Repeatable. |
+| `--placeholder-secrets` | Use placeholder tokens instead of real values for `--secret-file`. Real values substituted by proxy. |
 | `--receipt <FILE>` | Write a signed execution receipt JSON for this run |
 
 ## Examples

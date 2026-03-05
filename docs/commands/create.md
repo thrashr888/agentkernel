@@ -27,6 +27,10 @@ agentkernel sandbox create [OPTIONS] [NAME]
 | `--branch` | Auto-name from git project and branch |
 | `--ttl <DURATION>` | Auto-expire after duration (e.g. `1h`, `30m`, `3d`) |
 | `-p, --publish <PORT>` | Port mapping (e.g. `8080:80`, `3000`, `5353:53/udp`). Repeatable. |
+| `--ssh` | Enable SSH access to the sandbox |
+| `-S, --secret <BINDING>` | Bind a secret to a host via proxy. Repeatable. See [Secrets](../features/secrets.md). |
+| `--secret-file <KEY>` | Inject a vault secret as a file. Repeatable. See [Secrets](../features/secrets.md). |
+| `--placeholder-secrets` | Use placeholder tokens for `--secret-file` (real values stay on host). |
 
 ## Examples
 
