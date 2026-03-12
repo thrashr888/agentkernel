@@ -772,8 +772,11 @@ impl AppState {
         }
     }
 
-    async fn get_manager(&self) -> Result<VmManager> {
-        VmManager::new()
+    async fn get_manager(&self) -> Result<tokio::sync::RwLockWriteGuard<'_, VmManager>> {
+        match self.vm_manager.as_ref() {
+            Some(m) => Ok(m.write().await),
+            None => anyhow::bail!("VmManager not initialized"),
+        }
     }
 
     fn init_orchestration_store() -> Option<Arc<OrchestrationStore>> {
