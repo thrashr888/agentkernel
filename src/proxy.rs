@@ -1044,41 +1044,6 @@ fn substitute_header_placeholders(
     }
 }
 
-/// Forward an HTTP request to the upstream server.
-async fn forward_request(req: Request<Incoming>) -> Result<Response<BoxBody>> {
-    use http_body_util::BodyExt;
-
-    let uri = req.uri().clone();
-    let host = uri.host().context("No host in request URI")?;
-    let port = uri.port_u16().unwrap_or(80);
-    let addr = format!("{}:{}", host, port);
-
-    let stream = TcpStream::connect(&addr)
-        .await
-        .with_context(|| format!("Failed to connect to {}", addr))?;
-
-    let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .context("HTTP handshake failed")?;
-
-    tokio::spawn(async move {
-        if let Err(e) = conn.await {
-            eprintln!("[proxy] Connection task error: {}", e);
-        }
-    });
-
-    let resp = sender
-        .send_request(req)
-        .await
-        .context("Failed to send request")?;
-
-    // Convert response body
-    let (parts, body) = resp.into_parts();
-    let body = body.boxed();
-    Ok(Response::from_parts(parts, body))
-}
-
 /// Forward an HTTP request with a boxed body to the upstream server.
 /// Used when the request body has been buffered for placeholder substitution.
 async fn forward_boxed_request(req: Request<BoxBody>) -> Result<Response<BoxBody>> {
