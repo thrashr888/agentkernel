@@ -139,7 +139,7 @@ export function Sidebar() {
       api.getStatus().then((s) => { setServerVersion(s.version); setBackend(s.backend); }).catch(() => {});
       api.getPolicyStatus().then((s) => setPolicyEnabled(s.enabled)).catch(() => setPolicyEnabled(null));
     }
-  }, [isConnected]);
+  }, [isConnected, activeServer]);
 
   function switchServer(name: string) {
     if (!settings || name === activeServer) return;

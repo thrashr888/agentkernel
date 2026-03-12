@@ -79,7 +79,7 @@ export function Settings() {
   // Local form state for servers
   const [servers, setServers] = useState<ServerEntry[]>([]);
   const [activeServer, setActiveServer] = useState<string>("");
-  const [editingServer, setEditingServer] = useState<string | null>(null);
+  const [editingServerIndex, setEditingServerIndex] = useState<number | null>(null);
   const [showApiKeys, setShowApiKeys] = useState<Record<string, boolean>>({});
 
   // Local form state for appearance
@@ -140,7 +140,7 @@ export function Settings() {
     const name = `Server ${servers.length + 1}`;
     const updated = [...servers, { name, url: "http://localhost:18888" }];
     setServers(updated);
-    setEditingServer(name);
+    setEditingServerIndex(updated.length - 1);
   }
 
   function handleRemoveServer(name: string) {
@@ -160,12 +160,17 @@ export function Settings() {
 
   function handleUpdateServer(index: number, field: keyof ServerEntry, value: string) {
     const updated = [...servers];
+    const oldName = updated[index].name;
     updated[index] = { ...updated[index], [field]: value || undefined };
     setServers(updated);
+    // Keep activeServer in sync if we renamed the active entry
+    if (field === "name" && oldName === activeServer && value) {
+      setActiveServer(value);
+    }
   }
 
   function handleServerBlur() {
-    setEditingServer(null);
+    setEditingServerIndex(null);
     saveCurrentSettings();
   }
 
@@ -285,7 +290,7 @@ export function Settings() {
         <CardContent className="space-y-3">
           {servers.map((server, index) => {
             const isActive = server.name === activeServer;
-            const isEditing = editingServer === server.name;
+            const isEditing = editingServerIndex === index;
             const showKey = showApiKeys[server.name] ?? false;
 
             return (
@@ -318,7 +323,7 @@ export function Settings() {
                     />
                   ) : (
                     <button
-                      onClick={() => setEditingServer(server.name)}
+                      onClick={() => setEditingServerIndex(index)}
                       className="text-sm font-medium hover:underline"
                     >
                       {server.name}

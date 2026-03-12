@@ -403,9 +403,12 @@ export function Sandboxes() {
         </div>
       ) : error ? (
         <Card>
-          <CardContent className="pt-6">
+          <CardContent className="pt-6 space-y-2">
             <p className="text-sm text-destructive">
               Failed to load sandboxes: {error.message}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              The server may not be running. Check Settings to verify the connection, or start the server with <code className="rounded bg-muted px-1 py-0.5 text-xs">agentkernel serve</code>.
             </p>
           </CardContent>
         </Card>
