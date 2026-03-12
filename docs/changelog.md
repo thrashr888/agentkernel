@@ -6,6 +6,34 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## Unreleased — Multi-Server Desktop, Placeholder Token Secrets & Permissions
+
+_March 2026_
+
+### Added
+
+- **Multi-server support in desktop app** — manage multiple agentkernel servers (local + remote) from a single app instance; `ServerEntry` type with per-server name, URL, and API key; sidebar server switcher dropdown; auto-migration from single-server settings format
+- **Server process management** — start/stop `agentkernel serve` directly from the desktop app; SetupWizard "Start Server" button when not connected; tray status shows active server name
+- **Placeholder token secrets** — Gondolin-inspired pattern where secrets never enter the VM; random tokens substituted by host-side proxy at the network layer
+- **vsock-based secret injection** — Firecracker backend secret delivery over vsock, bypassing network stack entirely
+- **Interactive permission prompts** — destructive operations (remove, stop, clean) require explicit confirmation; HTTP API endpoints for permissions CRUD
+- **Desktop Benchmark page** — run and display sandbox create/exec/destroy performance metrics from the UI
+- **Desktop Images page** — browse and manage container images
+- **Desktop Jobs page** — view background job status
+- **Desktop Permissions page** — manage interactive permission rules
+- **Desktop Sessions page** — view and manage agent sessions
+
+### Changed
+
+- **Settings page redesign** — replaced single URL/key inputs with per-server cards; add, remove, rename, and switch servers inline
+- **Receipts page** — removed legacy receipt compatibility section
+
+### Docs
+
+- Simplified and condensed documentation across 10 files (commands, security, browser automation, compliance mapping, secrets, comparisons)
+
+---
+
 ## [v0.16.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.16.0) — Observability, Lifecycle Autopilot, Durable Objects & Receipts
 
 _February 2026_

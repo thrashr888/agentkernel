@@ -758,7 +758,7 @@ impl ApiClient {
     // -----------------------------------------------------------------
 
     /// List all sandbox sessions (recorded exec history).
-    pub async fn list_sessions(&self) -> anyhow::Result<Vec<crate::types::SandboxSession>> {
+    pub async fn list_sessions(&self) -> anyhow::Result<Vec<crate::types::SessionSummary>> {
         self.request(reqwest::Method::GET, "/sessions", None::<&()>)
             .await
     }

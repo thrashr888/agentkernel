@@ -32,6 +32,7 @@ import type {
   StoreCommandResult,
   DockerImage,
   BenchmarkResult,
+  SessionSummary,
   SandboxSession,
   PermissionGrant,
   GrantPermissionRequest,
@@ -172,7 +173,7 @@ export const api = {
   runBenchmark: () => invoke<BenchmarkResult>("run_benchmark"),
 
   // Session Recording
-  listSessions: () => invoke<SandboxSession[]>("list_sessions"),
+  listSessions: () => invoke<SessionSummary[]>("list_sessions"),
   getSandboxSession: (name: string) =>
     invoke<SandboxSession>("get_sandbox_session", { name }),
 

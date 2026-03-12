@@ -6901,6 +6901,8 @@ async fn handle_benchmark(state: Arc<AppState>) -> Response<BoxBody> {
     );
     let image = "alpine:3.20";
 
+    let started_at = chrono::Utc::now();
+
     // Phase 1: Create
     let create_start = std::time::Instant::now();
     if let Err(e) = manager.create(&benchmark_name, image, 1, 256).await {
@@ -6923,6 +6925,7 @@ async fn handle_benchmark(state: Arc<AppState>) -> Response<BoxBody> {
     let destroy_ms = destroy_start.elapsed().as_secs_f64() * 1000.0;
 
     let total_ms = create_ms + exec_ms + destroy_ms;
+    let finished_at = chrono::Utc::now();
 
     #[derive(Serialize)]
     struct BenchmarkResult {
@@ -6931,6 +6934,8 @@ async fn handle_benchmark(state: Arc<AppState>) -> Response<BoxBody> {
         destroy_ms: f64,
         total_ms: f64,
         image: String,
+        started_at: String,
+        finished_at: String,
         timestamp: String,
     }
 
@@ -6942,7 +6947,9 @@ async fn handle_benchmark(state: Arc<AppState>) -> Response<BoxBody> {
             destroy_ms,
             total_ms,
             image: image.to_string(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            started_at: started_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            finished_at: finished_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         }),
     )
 }

@@ -508,6 +508,8 @@ pub struct BenchmarkResult {
     pub destroy_ms: f64,
     pub total_ms: f64,
     pub image: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
     pub timestamp: String,
 }
 
@@ -525,7 +527,14 @@ pub struct SessionEntry {
     pub duration_ms: f64,
 }
 
-/// Recorded session for a sandbox.
+/// Summary of a sandbox session (from list endpoint).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub sandbox: String,
+    pub entry_count: u64,
+}
+
+/// Recorded session for a sandbox (from detail endpoint).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxSession {
     pub sandbox: String,

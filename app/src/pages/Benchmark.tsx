@@ -24,6 +24,13 @@ function loadLastResult(): BenchmarkResult | null {
   }
 }
 
+function formatMs(ms: number): string {
+  if (ms >= 100) return ms.toFixed(0);
+  if (ms >= 10) return ms.toFixed(1);
+  if (ms >= 1) return ms.toFixed(2);
+  return ms.toFixed(3);
+}
+
 function MetricCard({ label, value, unit, previous }: {
   label: string;
   value: number;
@@ -36,12 +43,12 @@ function MetricCard({ label, value, unit, previous }: {
       <CardContent className="pt-6">
         <p className="text-sm text-muted-foreground">{label}</p>
         <p className="text-3xl font-bold tabular-nums">
-          {value.toFixed(0)}
+          {formatMs(value)}
           <span className="text-lg font-normal text-muted-foreground">{unit}</span>
         </p>
         {diff !== undefined && (
           <p className={`text-xs ${diff < 0 ? "text-green-600 dark:text-green-400" : diff > 0 ? "text-red-600 dark:text-red-400" : "text-muted-foreground"}`}>
-            {diff > 0 ? "+" : ""}{diff.toFixed(0)}{unit} vs last run
+            {diff > 0 ? "+" : ""}{formatMs(diff)}{unit} vs last run
           </p>
         )}
       </CardContent>
@@ -142,12 +149,30 @@ export function Benchmark() {
                   <span className="text-sm font-medium">Image</span>
                   <span className="font-mono text-sm text-muted-foreground">{current.image}</span>
                 </div>
-                <div className="flex items-center justify-between border-b pb-2">
-                  <span className="text-sm font-medium">Timestamp</span>
-                  <span className="text-sm text-muted-foreground">
-                    {new Date(current.timestamp).toLocaleString()}
-                  </span>
-                </div>
+                {current.started_at && (
+                  <div className="flex items-center justify-between border-b pb-2">
+                    <span className="text-sm font-medium">Started</span>
+                    <span className="font-mono text-sm text-muted-foreground">
+                      {new Date(current.started_at).toISOString().replace("T", " ").replace("Z", " UTC")}
+                    </span>
+                  </div>
+                )}
+                {current.finished_at && (
+                  <div className="flex items-center justify-between border-b pb-2">
+                    <span className="text-sm font-medium">Finished</span>
+                    <span className="font-mono text-sm text-muted-foreground">
+                      {new Date(current.finished_at).toISOString().replace("T", " ").replace("Z", " UTC")}
+                    </span>
+                  </div>
+                )}
+                {!current.started_at && (
+                  <div className="flex items-center justify-between border-b pb-2">
+                    <span className="text-sm font-medium">Timestamp</span>
+                    <span className="font-mono text-sm text-muted-foreground">
+                      {new Date(current.timestamp).toISOString().replace("T", " ").replace("Z", " UTC")}
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium">Performance</span>
                   <span className="text-sm text-muted-foreground">

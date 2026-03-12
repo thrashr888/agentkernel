@@ -282,6 +282,8 @@ export interface BenchmarkResult {
   destroy_ms: number;
   total_ms: number;
   image: string;
+  started_at?: string;
+  finished_at?: string;
   timestamp: string;
 }
 
@@ -292,6 +294,11 @@ export interface SessionEntry {
   exit_code: number;
   timestamp: string;
   duration_ms: number;
+}
+
+export interface SessionSummary {
+  sandbox: string;
+  entry_count: number;
 }
 
 export interface SandboxSession {

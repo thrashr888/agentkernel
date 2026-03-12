@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { RefreshCw, ChevronRight, ChevronDown, Terminal } from "lucide-react";
 import { api } from "@/lib/api";
@@ -14,7 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { SandboxSession, SessionEntry } from "@/lib/types";
+import type { SessionSummary, SessionEntry } from "@/lib/types";
 
 function SessionRow({ entry }: { entry: SessionEntry }) {
   const [expanded, setExpanded] = useState(false);
@@ -60,8 +60,14 @@ function SessionRow({ entry }: { entry: SessionEntry }) {
   );
 }
 
-function SandboxSessionPanel({ session }: { session: SandboxSession }) {
+function SandboxSessionPanel({ summary }: { summary: SessionSummary }) {
   const [expanded, setExpanded] = useState(false);
+
+  const { data: session } = useQuery({
+    queryKey: ["session", summary.sandbox],
+    queryFn: () => api.getSandboxSession(summary.sandbox),
+    enabled: expanded,
+  });
 
   return (
     <div className="rounded-md border">
@@ -71,9 +77,9 @@ function SandboxSessionPanel({ session }: { session: SandboxSession }) {
       >
         <div className="flex items-center gap-3">
           <Terminal className="h-4 w-4 text-muted-foreground" />
-          <span className="font-medium">{session.sandbox}</span>
+          <span className="font-medium">{summary.sandbox}</span>
           <span className="text-xs text-muted-foreground">
-            {session.entries.length} command{session.entries.length === 1 ? "" : "s"}
+            {summary.entry_count} command{summary.entry_count === 1 ? "" : "s"}
           </span>
         </div>
         {expanded ? (
@@ -82,7 +88,7 @@ function SandboxSessionPanel({ session }: { session: SandboxSession }) {
           <ChevronRight className="h-4 w-4 text-muted-foreground" />
         )}
       </button>
-      {expanded && (
+      {expanded && session && (
         <Table>
           <TableHeader>
             <TableRow>
@@ -100,6 +106,11 @@ function SandboxSessionPanel({ session }: { session: SandboxSession }) {
           </TableBody>
         </Table>
       )}
+      {expanded && !session && (
+        <div className="px-4 pb-4">
+          <Skeleton className="h-16 w-full" />
+        </div>
+      )}
     </div>
   );
 }
@@ -115,6 +126,11 @@ export function Sessions() {
     queryFn: () => api.listSessions(),
     refetchInterval: 5000,
   });
+
+  const sorted = useMemo(
+    () => sessions ? [...sessions].sort((a, b) => a.sandbox.localeCompare(b.sandbox)) : [],
+    [sessions]
+  );
 
   if (isLoading) {
     return (
@@ -148,7 +164,7 @@ export function Sessions() {
             </p>
           </CardContent>
         </Card>
-      ) : !sessions || sessions.length === 0 ? (
+      ) : sorted.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">
             <Terminal className="h-12 w-12 text-muted-foreground/30 mb-4" />
@@ -159,8 +175,8 @@ export function Sessions() {
         </Card>
       ) : (
         <div className="space-y-3">
-          {sessions.map((session) => (
-            <SandboxSessionPanel key={session.sandbox} session={session} />
+          {sorted.map((summary) => (
+            <SandboxSessionPanel key={summary.sandbox} summary={summary} />
           ))}
         </div>
       )}
