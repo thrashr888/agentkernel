@@ -27,6 +27,29 @@ _March 2026_
 
 - **Settings page redesign** — replaced single URL/key inputs with per-server cards; add, remove, rename, and switch servers inline
 - **Receipts page** — removed legacy receipt compatibility section
+- **Benchmark endpoint** — now actually boots a Firecracker microVM (create + start + exec + destroy) instead of only saving state; reports backend type in results
+
+### Fixed
+
+- **Shared VmManager in HTTP API** — `get_manager()` was creating a new VmManager per request, causing Firecracker processes to die when the request handler returned; now uses the shared `Arc<RwLock<VmManager>>` initialized at server startup
+- **Server switcher cache invalidation** — switching servers in the sidebar now refreshes all page data via `invalidateQueries()` and re-fetches server version/backend/policy status
+- **Settings name input blur** — editing a server name lost focus after each keystroke because editing state was tracked by name (which changed); now tracked by index
+- **Active server name sync** — renaming the active server now updates the active server reference so the connection isn't lost
+- **Connection error guidance** — sandboxes and dashboard pages show actionable error messages when the server is unreachable, suggesting Settings check or `agentkernel serve` command
+- **Install script** — rewrote to download prebuilt binaries from GitHub releases instead of compiling from source; falls back to `cargo install` with `USE_CARGO=1`
+
+### Performance
+
+Firecracker microVM benchmarks on bare-metal x86_64 (KVM):
+
+| Phase | Time |
+|-------|------|
+| Create + Boot | ~272ms |
+| Exec (`echo hello`) | ~10ms |
+| Destroy | ~530ms |
+| **Total lifecycle** | **~815ms** |
+
+Tested on two hosts (rookery SER8, clue SER9) with consistent results across 6+ runs each.
 
 ### Docs
 
