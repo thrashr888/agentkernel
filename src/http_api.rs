@@ -6906,7 +6906,7 @@ async fn handle_benchmark(state: Arc<AppState>) -> Response<BoxBody> {
 
     let started_at = chrono::Utc::now();
 
-    // Phase 1: Create
+    // Phase 1: Create + Start (includes VM boot for Firecracker)
     let create_start = std::time::Instant::now();
     if let Err(e) = manager.create(&benchmark_name, image, 1, 256).await {
         return json_response(
@@ -6914,12 +6914,29 @@ async fn handle_benchmark(state: Arc<AppState>) -> Response<BoxBody> {
             &ApiResponse::<()>::error(format!("Benchmark create failed: {e}")),
         );
     }
+    let perms = crate::permissions::SecurityProfile::default().permissions();
+    if let Err(e) = manager
+        .start_with_permissions(&benchmark_name, &perms)
+        .await
+    {
+        let _ = manager.remove(&benchmark_name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Benchmark start failed: {e}")),
+        );
+    }
     let create_ms = create_start.elapsed().as_secs_f64() * 1000.0;
 
     // Phase 2: Exec
     let exec_start = std::time::Instant::now();
     let exec_cmd = vec!["echo".to_string(), "hello".to_string()];
-    let _ = manager.exec_cmd(&benchmark_name, &exec_cmd).await;
+    if let Err(e) = manager.exec_cmd(&benchmark_name, &exec_cmd).await {
+        let _ = manager.remove(&benchmark_name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Benchmark exec failed: {e}")),
+        );
+    }
     let exec_ms = exec_start.elapsed().as_secs_f64() * 1000.0;
 
     // Phase 3: Destroy
@@ -6937,10 +6954,13 @@ async fn handle_benchmark(state: Arc<AppState>) -> Response<BoxBody> {
         destroy_ms: f64,
         total_ms: f64,
         image: String,
+        backend: String,
         started_at: String,
         finished_at: String,
         timestamp: String,
     }
+
+    let backend = manager.backend().to_string();
 
     json_response(
         StatusCode::OK,
@@ -6950,6 +6970,7 @@ async fn handle_benchmark(state: Arc<AppState>) -> Response<BoxBody> {
             destroy_ms,
             total_ms,
             image: image.to_string(),
+            backend,
             started_at: started_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             finished_at: finished_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
