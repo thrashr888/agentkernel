@@ -970,12 +970,8 @@ impl VmManager {
                         llm_domains: Vec::new(),
                         org_managed_domains: Vec::new(),
                     };
-                    match crate::proxy::start_proxy(
-                        proxy_config,
-                        HashMap::new(),
-                        placeholder_map,
-                    )
-                    .await
+                    match crate::proxy::start_proxy(proxy_config, HashMap::new(), placeholder_map)
+                        .await
                     {
                         Ok(handle) => {
                             let proxy_addr = handle.addr;
@@ -1286,7 +1282,13 @@ impl VmManager {
                     org_managed_domains: Vec::new(),
                 };
 
-                match crate::proxy::start_proxy(proxy_config, resolved_secrets, crate::vsock_secrets::PlaceholderMap::new()).await {
+                match crate::proxy::start_proxy(
+                    proxy_config,
+                    resolved_secrets,
+                    crate::vsock_secrets::PlaceholderMap::new(),
+                )
+                .await
+                {
                     Ok(handle) => {
                         let proxy_addr = handle.addr;
                         // Determine the proxy host for the sandbox to reach
@@ -1424,7 +1426,13 @@ impl VmManager {
                             org_managed_domains: org_domains,
                         };
 
-                        match crate::proxy::start_proxy(proxy_config, org_resolved, crate::vsock_secrets::PlaceholderMap::new()).await {
+                        match crate::proxy::start_proxy(
+                            proxy_config,
+                            org_resolved,
+                            crate::vsock_secrets::PlaceholderMap::new(),
+                        )
+                        .await
+                        {
                             Ok(handle) => {
                                 let proxy_addr = handle.addr;
                                 let proxy_host = match backend {
@@ -1617,7 +1625,8 @@ impl VmManager {
             }
             if !resolved.is_empty() {
                 if state.placeholder_secrets {
-                    self.inject_placeholder_secrets(sandbox.as_mut(), name, &resolved, backend).await?;
+                    self.inject_placeholder_secrets(sandbox.as_mut(), name, &resolved, backend)
+                        .await?;
                 } else {
                     match crate::vsock_secrets::inject_secrets_as_files(
                         sandbox.as_mut(),
@@ -2938,6 +2947,7 @@ mod tests {
                 secret_bindings: Vec::new(),
                 secret_mappings: HashMap::new(),
                 secret_files: Vec::new(),
+                placeholder_secrets: false,
                 proxy_port: None,
                 init_script: None,
                 created_from_template: None,
@@ -3073,6 +3083,7 @@ mod tests {
                 secret_bindings: Vec::new(),
                 secret_mappings: HashMap::new(),
                 secret_files: Vec::new(),
+                placeholder_secrets: false,
                 proxy_port: None,
                 init_script: None,
                 created_from_template: None,

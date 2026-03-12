@@ -6,7 +6,7 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
-## Unreleased — Multi-Server Desktop, Placeholder Token Secrets & Permissions
+## [v0.17.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.17.0) — Multi-Server Desktop, Firecracker Fleet & Benchmark
 
 _March 2026_
 

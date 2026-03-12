@@ -1032,10 +1032,8 @@ fn substitute_header_placeholders(
     for (name, value) in headers.iter() {
         if let Ok(val_str) = value.to_str() {
             let (substituted, replaced) = placeholder_map.substitute(val_str);
-            if replaced {
-                if let Ok(new_val) = hyper::header::HeaderValue::from_str(&substituted) {
-                    replacements.push((name.clone(), new_val));
-                }
+            if replaced && let Ok(new_val) = hyper::header::HeaderValue::from_str(&substituted) {
+                replacements.push((name.clone(), new_val));
             }
         }
     }

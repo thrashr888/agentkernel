@@ -2793,9 +2793,7 @@ async fn handle_list_sandboxes(req: Request<Incoming>, state: Arc<AppState>) -> 
                 secret_files: state_info
                     .map(|s| s.secret_files.clone())
                     .unwrap_or_default(),
-                placeholder_secrets: state_info
-                    .map(|s| s.placeholder_secrets)
-                    .unwrap_or(false),
+                placeholder_secrets: state_info.map(|s| s.placeholder_secrets).unwrap_or(false),
                 proxy_port: state_info.and_then(|s| s.proxy_port),
                 secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
                 labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
@@ -2969,10 +2967,10 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
     }
 
     // Set placeholder secrets mode if enabled
-    if body.placeholder_secrets {
-        if let Err(e) = manager.set_placeholder_secrets(&body.name, true) {
-            eprintln!("Warning: Failed to set placeholder secrets: {}", e);
-        }
+    if body.placeholder_secrets
+        && let Err(e) = manager.set_placeholder_secrets(&body.name, true)
+    {
+        eprintln!("Warning: Failed to set placeholder secrets: {}", e);
     }
 
     // Set init script if provided
@@ -3217,9 +3215,7 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                     secret_files: state_info
                         .map(|s| s.secret_files.clone())
                         .unwrap_or_default(),
-                    placeholder_secrets: state_info
-                        .map(|s| s.placeholder_secrets)
-                        .unwrap_or(false),
+                    placeholder_secrets: state_info.map(|s| s.placeholder_secrets).unwrap_or(false),
                     proxy_port: state_info.and_then(|s| s.proxy_port),
                     secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
                     labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
@@ -4041,9 +4037,7 @@ async fn handle_resize_sandbox(
             secret_files: state_info
                 .map(|s| s.secret_files.clone())
                 .unwrap_or_default(),
-            placeholder_secrets: state_info
-                .map(|s| s.placeholder_secrets)
-                .unwrap_or(false),
+            placeholder_secrets: state_info.map(|s| s.placeholder_secrets).unwrap_or(false),
             proxy_port: state_info.and_then(|s| s.proxy_port),
             uuid: state_info
                 .map(|s| s.uuid.clone())
@@ -4167,9 +4161,7 @@ async fn handle_patch_sandbox(
             secret_files: state_info
                 .map(|s| s.secret_files.clone())
                 .unwrap_or_default(),
-            placeholder_secrets: state_info
-                .map(|s| s.placeholder_secrets)
-                .unwrap_or(false),
+            placeholder_secrets: state_info.map(|s| s.placeholder_secrets).unwrap_or(false),
             proxy_port: state_info.and_then(|s| s.proxy_port),
             uuid: state_info
                 .map(|s| s.uuid.clone())
@@ -4258,9 +4250,7 @@ async fn handle_recover_sandbox(
             secret_files: state_info
                 .map(|s| s.secret_files.clone())
                 .unwrap_or_default(),
-            placeholder_secrets: state_info
-                .map(|s| s.placeholder_secrets)
-                .unwrap_or(false),
+            placeholder_secrets: state_info.map(|s| s.placeholder_secrets).unwrap_or(false),
             proxy_port: state_info.and_then(|s| s.proxy_port),
             secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
             labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
@@ -4541,9 +4531,7 @@ async fn handle_restore_snapshot(
                     secret_files: state_info
                         .map(|s| s.secret_files.clone())
                         .unwrap_or_default(),
-                    placeholder_secrets: state_info
-                        .map(|s| s.placeholder_secrets)
-                        .unwrap_or(false),
+                    placeholder_secrets: state_info.map(|s| s.placeholder_secrets).unwrap_or(false),
                     proxy_port: state_info.and_then(|s| s.proxy_port),
                     secret_mappings: state_info.map(build_secret_mappings).unwrap_or_default(),
                     labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
