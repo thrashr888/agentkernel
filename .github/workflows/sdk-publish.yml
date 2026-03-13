@@ -174,7 +174,7 @@ jobs:
           if [ "$HTTP_STATUS" = "200" ]; then
             echo "Version ${VERSION} already published to crates.io, skipping"
           else
-            cargo publish
+            cargo publish --allow-dirty
           fi
 
   # ── Swift: verify only (SPM uses Git tags) ──────────────────────────
