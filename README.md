@@ -428,11 +428,11 @@ Official client libraries for the agentkernel HTTP API:
 
 | SDK | Package | Install | Docs |
 |-----|---------|---------|------|
-| **Node.js** | [`agentkernel`](https://www.npmjs.com/package/agentkernel) | `npm install agentkernel` | [Guide](docs/sdk-nodejs.md) |
-| **Python** | [`agentkernel-sdk`](https://pypi.org/project/agentkernel-sdk/) | `pip install agentkernel-sdk` | [Guide](docs/sdk-python.md) |
-| **Go** | [`agentkernel`](https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang) | `go get github.com/thrashr888/agentkernel/sdk/golang` | [Guide](docs/sdk-golang.md) |
-| **Rust** | [`agentkernel-sdk`](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` | [Guide](docs/sdk-rust.md) |
-| **Swift** | `AgentKernel` | Swift Package Manager | [Guide](docs/sdk-swift.md) |
+| **Node.js** | [`agentkernel`](https://www.npmjs.com/package/agentkernel) | `npm install agentkernel` | [Guide](docs/sdks/nodejs.md) |
+| **Python** | [`agentkernel-sdk`](https://pypi.org/project/agentkernel-sdk/) | `pip install agentkernel-sdk` | [Guide](docs/sdks/python.md) |
+| **Go** | [`agentkernel`](https://pkg.go.dev/github.com/thrashr888/agentkernel/sdk/golang) | `go get github.com/thrashr888/agentkernel/sdk/golang` | [Guide](docs/sdks/golang.md) |
+| **Rust** | [`agentkernel-sdk`](https://crates.io/crates/agentkernel-sdk) | `cargo add agentkernel-sdk` | [Guide](docs/sdks/rust.md) |
+| **Swift** | `AgentKernel` | Swift Package Manager | [Guide](docs/sdks/swift.md) |
 
 ```typescript
 import { AgentKernel } from "agentkernel";
@@ -449,7 +449,7 @@ await sandbox.exec(["npm", "install"]);
 const tests = await sandbox.exec(["npm", "test"]);
 ```
 
-All SDKs support sandbox sessions with automatic cleanup, streaming output (SSE), and configuration via environment variables or explicit options. See [SDK documentation](docs/sdks.md) for all languages.
+All SDKs support sandbox sessions with automatic cleanup, streaming output (SSE), and configuration via environment variables or explicit options. See [SDK documentation](docs/sdks/index.md) for all languages.
 
 ## Why agentkernel?
 
@@ -510,7 +510,7 @@ curl -fsSLO https://raw.githubusercontent.com/thrashr888/agentkernel/main/deploy
 nomad job run agentkernel.nomad.hcl
 ```
 
-Features: warm pools, NetworkPolicy/network isolation, Kubernetes CRDs (AgentSandbox, AgentSandboxPool), configurable resource limits. See [Orchestration docs](docs/orchestration.md) for details.
+Features: warm pools, NetworkPolicy/network isolation, Kubernetes CRDs (AgentSandbox, AgentSandboxPool), configurable resource limits. See [Orchestration docs](docs/operations/index.md) for details.
 
 ## Agent Plugins
 
@@ -619,21 +619,15 @@ See [BENCHMARK.md](BENCHMARK.md) for detailed Hyperlight benchmarks.
 
 ## Documentation
 
-- [Getting Started](docs/getting-started/index.md) - Installation and quick start
+- [Getting Started](docs/getting-started/index.md) - Installation, quick start, benchmarks
 - [Commands](docs/commands/index.md) - Full CLI reference
-- [Configuration](docs/config/index.md) - Config file format and backends
-- [Templates](docs/commands/templates.md) - Pre-configured sandbox environments
-- [Snapshots](docs/commands/snapshots.md) - Save and restore sandbox state
-- [Sessions](docs/commands/sessions.md) - Agent session lifecycle management
-- [Pipelines](docs/commands/pipelines.md) - Multi-step sandbox pipelines
-- [Parallel](docs/commands/parallel.md) - Concurrent job execution
-- [Execution Receipts](docs/commands/receipts.md) - Verify and replay command executions
-- [Secrets](docs/commands/secrets.md) - API key and credential management
-- [Agents](docs/agents/index.md) - Running Claude Code, Codex, Gemini CLI, OpenCode
-- [HTTP API](docs/api/index.md) - Programmatic access
-- [SDKs](docs/sdks/index.md) - Client libraries for Node.js, Python, Go, Rust, Swift
-- [Benchmarks](docs/getting-started/benchmarks.md) - Performance numbers for every backend
-- [Comparisons](docs/getting-started/comparisons.md) - How agentkernel compares to E2B, Daytona, Docker
+- [Features](docs/features/index.md) - Desktop app, browser automation, secrets, durable objects
+- [Agents](docs/agents/index.md) - Claude Code, OpenCode, Codex, Gemini, and more
+- [Configuration](docs/config/index.md) - `agentkernel.toml`, security profiles, backends
+- [API](docs/api/index.md) - HTTP API and MCP server
+- [SDKs](docs/sdks/index.md) - Node.js, Python, Go, Rust, Swift
+- [Operations](docs/operations/index.md) - Kubernetes, Nomad, deployment
+- [Changelog](docs/changelog.md)
 
 ## Examples
 
