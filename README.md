@@ -619,21 +619,21 @@ See [BENCHMARK.md](BENCHMARK.md) for detailed Hyperlight benchmarks.
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) - Your first sandbox
-- [Commands](docs/commands.md) - Full CLI reference
-- [Configuration](docs/configuration.md) - Config file format
-- [Templates](docs/cmd-templates.md) - Pre-configured sandbox environments
-- [Snapshots](docs/cmd-snapshots.md) - Save and restore sandbox state
-- [Sessions](docs/cmd-sessions.md) - Agent session lifecycle management
-- [Pipelines](docs/cmd-pipelines.md) - Multi-step sandbox pipelines
-- [Parallel](docs/cmd-parallel.md) - Concurrent job execution
+- [Getting Started](docs/getting-started/index.md) - Installation and quick start
+- [Commands](docs/commands/index.md) - Full CLI reference
+- [Configuration](docs/config/index.md) - Config file format and backends
+- [Templates](docs/commands/templates.md) - Pre-configured sandbox environments
+- [Snapshots](docs/commands/snapshots.md) - Save and restore sandbox state
+- [Sessions](docs/commands/sessions.md) - Agent session lifecycle management
+- [Pipelines](docs/commands/pipelines.md) - Multi-step sandbox pipelines
+- [Parallel](docs/commands/parallel.md) - Concurrent job execution
 - [Execution Receipts](docs/commands/receipts.md) - Verify and replay command executions
-- [Secrets](docs/cmd-secrets.md) - API key and credential management
-- [Agents](docs/agents.md) - Running Claude Code, Codex, Gemini CLI
-- [HTTP API](docs/api.md) - Programmatic access
-- [SDKs](docs/sdks.md) - Client libraries for Node.js, Python, Go, Rust, Swift
-- [Benchmarks](docs/benchmarks.md) - Performance numbers for every backend
-- [Comparisons](docs/comparisons.md) - How agentkernel compares to E2B, Daytona, Docker
+- [Secrets](docs/commands/secrets.md) - API key and credential management
+- [Agents](docs/agents/index.md) - Running Claude Code, Codex, Gemini CLI, OpenCode
+- [HTTP API](docs/api/index.md) - Programmatic access
+- [SDKs](docs/sdks/index.md) - Client libraries for Node.js, Python, Go, Rust, Swift
+- [Benchmarks](docs/getting-started/benchmarks.md) - Performance numbers for every backend
+- [Comparisons](docs/getting-started/comparisons.md) - How agentkernel compares to E2B, Daytona, Docker
 
 ## Examples
 
