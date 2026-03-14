@@ -53,8 +53,9 @@ pub async fn start_server(
         }
     }
 
-    let binary = find_agentkernel_binary()
-        .ok_or_else(|| "Could not find 'agentkernel' binary. Install it or add it to PATH.".to_string())?;
+    let binary = find_agentkernel_binary().ok_or_else(|| {
+        "Could not find 'agentkernel' binary. Install it or add it to PATH.".to_string()
+    })?;
 
     // Read settings to get the port from the active server URL
     let port = {
@@ -85,13 +86,13 @@ pub async fn start_server(
 
 /// Stop the running agentkernel server.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn stop_server(
-    server_process: State<'_, ServerProcess>,
-) -> Result<String, String> {
+pub async fn stop_server(server_process: State<'_, ServerProcess>) -> Result<String, String> {
     let mut child_lock = server_process.child.lock().map_err(|e| e.to_string())?;
 
     if let Some(ref mut child) = *child_lock {
-        child.kill().map_err(|e| format!("Failed to kill server: {e}"))?;
+        child
+            .kill()
+            .map_err(|e| format!("Failed to kill server: {e}"))?;
         let _ = child.wait();
         *child_lock = None;
         Ok("Server stopped".to_string())
@@ -102,14 +103,12 @@ pub async fn stop_server(
 
 /// Check if the managed server process is alive.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn server_status(
-    server_process: State<'_, ServerProcess>,
-) -> Result<bool, String> {
+pub async fn server_status(server_process: State<'_, ServerProcess>) -> Result<bool, String> {
     let mut child_lock = server_process.child.lock().map_err(|e| e.to_string())?;
 
     if let Some(ref mut child) = *child_lock {
         match child.try_wait() {
-            Ok(None) => Ok(true),  // still running
+            Ok(None) => Ok(true), // still running
             _ => {
                 *child_lock = None;
                 Ok(false)
