@@ -6,6 +6,23 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ---
 
+## Unreleased
+
+### Added
+
+- **Hermes Agent template** — built-in sandbox template for [Hermes Agent](https://github.com/NousResearch/hermes-agent) (NousResearch), an autonomous AI agent with 40+ tools, persistent memory, and skills system; uses `nikolaik/python-nodejs:python3.11-nodejs22` base image with full source install including mini-swe-agent and browser tools
+- **Symphony template** — built-in sandbox template for [OpenAI Symphony](https://github.com/openai/symphony), an Elixir-based orchestration daemon that monitors Linear issues and spawns Codex agents; uses `elixir:1.19-otp-28-slim` with Node.js 22 and `@openai/codex` CLI
+- **Hermes and Symphony agent types** — `AgentType::Hermes` and `AgentType::Symphony` with CLI aliases (`hermes`, `hermes-agent`, `symphony`, `openai-symphony`), adapters, and availability checks
+- **Agent examples** — `examples/agents/hermes/` and `examples/agents/symphony/` with Dockerfiles, agentkernel.toml configs, and READMEs
+- **Agent docs** — `docs/agents/hermes.md` and `docs/agents/symphony.md` with setup guides, configuration reference, and environment variable documentation
+
+### Fixed
+
+- **Missing copilot-sandbox in CLI** — `copilot-sandbox` template existed on disk and in the desktop app but was not registered in the CLI's `BUILTIN_TEMPLATES`; now included (34 built-in templates total)
+- **Desktop app template sync** — Tauri `BUILTIN_TOML` list updated to match CLI; both now include all 34 templates with consistent category groupings
+
+---
+
 ## [v0.17.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.17.0) — Multi-Server Desktop, Firecracker Fleet & Benchmark
 
 _March 2026_

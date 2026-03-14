@@ -1,0 +1,23 @@
+# Hermes Agent Configuration
+#
+# Use this config to create a sandbox with Hermes Agent pre-installed:
+#   agentkernel create my-project --config examples/agents/hermes/agentkernel.toml
+
+[sandbox]
+name = "hermes-sandbox"
+
+[build]
+# Build from Dockerfile in this directory
+dockerfile = "Dockerfile"
+
+[agent]
+preferred = "hermes"
+
+[resources]
+vcpus = 2
+memory_mb = 2048
+
+[security]
+profile = "moderate"
+network = true      # Hermes needs network for LLM API calls
+mount_cwd = true    # Mount project directory

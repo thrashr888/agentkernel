@@ -35,6 +35,18 @@ const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
     ),
     ("amp-sandbox", include_str!("../templates/amp-sandbox.toml")),
     ("pi-sandbox", include_str!("../templates/pi-sandbox.toml")),
+    (
+        "copilot-sandbox",
+        include_str!("../templates/copilot-sandbox.toml"),
+    ),
+    (
+        "hermes-sandbox",
+        include_str!("../templates/hermes-sandbox.toml"),
+    ),
+    (
+        "symphony-sandbox",
+        include_str!("../templates/symphony-sandbox.toml"),
+    ),
     // Language runtimes
     ("bash", include_str!("../templates/bash.toml")),
     ("c", include_str!("../templates/c.toml")),
@@ -390,7 +402,7 @@ mod tests {
 
     #[test]
     fn test_builtin_template_count() {
-        assert_eq!(BUILTIN_TEMPLATES.len(), 31);
+        assert_eq!(BUILTIN_TEMPLATES.len(), 34);
     }
 
     #[test]

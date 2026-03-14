@@ -1,0 +1,48 @@
+# Hermes Agent sandbox template
+# Pre-configured for running Hermes Agent (NousResearch) inside an isolated sandbox
+# https://github.com/NousResearch/hermes-agent
+
+[sandbox]
+name = "hermes-sandbox"
+base_image = "nikolaik/python-nodejs:python3.11-nodejs22"
+init_script = """
+set -e
+apt-get update && apt-get install -y --no-install-recommends git curl bash jq && rm -rf /var/lib/apt/lists/*
+pip install --no-cache-dir litellm openai anthropic python-dotenv fire httpx rich tenacity pyyaml requests jinja2 pydantic prompt_toolkit firecrawl-py edge-tts typer platformdirs
+git clone --depth 1 https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent
+cd /opt/hermes-agent
+git submodule update --init --depth 1
+pip install --no-cache-dir -e ".[all]"
+pip install --no-cache-dir -e "./mini-swe-agent"
+npm install
+ln -sf /opt/hermes-agent/.venv/bin/hermes /usr/local/bin/hermes 2>/dev/null || true
+"""
+
+[agent]
+preferred = "hermes"
+
+[resources]
+vcpus = 2
+memory_mb = 2048
+
+[secrets]
+OPENROUTER_API_KEY = "openrouter.ai"
+ANTHROPIC_API_KEY = "api.anthropic.com"
+
+[security]
+profile = "moderate"
+
+[security.domains]
+allow = ["openrouter.ai", "api.anthropic.com", "api.openai.com", "github.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org"]
+
+[template]
+description = "Hermes Agent (NousResearch) autonomous AI agent sandbox"
+category = "Agent Sandboxes"
+help_text = """
+How to use: Start the sandbox and run your workflow inside /workspace.
+Example command: cd /opt/hermes-agent && python -m hermes_cli.main --help
+Binaries available: python, pip, node, npm, git, hermes (if on PATH)
+Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
+Configuration: Set OPENROUTER_API_KEY or ANTHROPIC_API_KEY. Config lives at ~/.hermes/config.yaml.
+Docs: https://hermes-agent.nousresearch.com/
+"""

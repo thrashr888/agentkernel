@@ -79,13 +79,8 @@ const BUILTIN_TOML: &[&str] = &[
     include_str!("../../../../templates/opencode-sandbox.toml"),
     include_str!("../../../../templates/amp-sandbox.toml"),
     include_str!("../../../../templates/pi-sandbox.toml"),
-    // Infrastructure
-    include_str!("../../../../templates/terraform.toml"),
-    // Datastores
-    include_str!("../../../../templates/sqlite.toml"),
-    include_str!("../../../../templates/postgres.toml"),
-    include_str!("../../../../templates/mysql.toml"),
-    include_str!("../../../../templates/redis.toml"),
+    include_str!("../../../../templates/hermes-sandbox.toml"),
+    include_str!("../../../../templates/symphony-sandbox.toml"),
     // Languages
     include_str!("../../../../templates/bash.toml"),
     include_str!("../../../../templates/c.toml"),
@@ -105,6 +100,14 @@ const BUILTIN_TOML: &[&str] = &[
     include_str!("../../../../templates/node-fullstack.toml"),
     include_str!("../../../../templates/rust-ci.toml"),
     include_str!("../../../../templates/secure.toml"),
+    // Infrastructure
+    include_str!("../../../../templates/terraform.toml"),
+    // Datastores
+    include_str!("../../../../templates/sqlite.toml"),
+    include_str!("../../../../templates/postgres.toml"),
+    include_str!("../../../../templates/mysql.toml"),
+    include_str!("../../../../templates/redis.toml"),
+    // Dev Tools
     include_str!("../../../../templates/vscode.toml"),
     include_str!("../../../../templates/coder.toml"),
     include_str!("../../../../templates/gitea.toml"),

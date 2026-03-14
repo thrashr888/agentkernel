@@ -14,6 +14,8 @@ Images are built automatically from Dockerfiles when you create a sandbox.
 | Amp | `amp/` | `ANTHROPIC_API_KEY` |
 | Pi | `pi/` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
 | OpenCode | `opencode/` | Provider-specific |
+| Hermes Agent | `hermes/` | `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` |
+| Symphony | `symphony/` | `LINEAR_API_KEY` + `OPENAI_API_KEY` |
 
 ## Quick Start
 

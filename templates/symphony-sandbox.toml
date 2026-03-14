@@ -1,0 +1,45 @@
+# Symphony sandbox template
+# Pre-configured for running OpenAI Symphony orchestration daemon inside an isolated sandbox
+# https://github.com/openai/symphony
+
+[sandbox]
+name = "symphony-sandbox"
+base_image = "elixir:1.19-otp-28-slim"
+init_script = """
+set -e
+apt-get update && apt-get install -y --no-install-recommends git curl bash ca-certificates gnupg && rm -rf /var/lib/apt/lists/*
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt-get install -y --no-install-recommends nodejs && rm -rf /var/lib/apt/lists/*
+npm install -g @openai/codex
+git clone --depth 1 https://github.com/openai/symphony.git /opt/symphony
+cd /opt/symphony/elixir
+mix local.hex --force && mix local.rebar --force
+mix deps.get
+mix compile
+"""
+
+[resources]
+vcpus = 2
+memory_mb = 2048
+
+[secrets]
+LINEAR_API_KEY = "api.linear.app"
+OPENAI_API_KEY = "api.openai.com"
+
+[security]
+profile = "moderate"
+
+[security.domains]
+allow = ["api.openai.com", "api.linear.app", "github.com", "hex.pm", "repo.hex.pm", "builds.hex.pm", "registry.npmjs.org"]
+
+[template]
+description = "OpenAI Symphony orchestration daemon sandbox"
+category = "Agent Sandboxes"
+help_text = """
+How to use: Start the sandbox and configure a WORKFLOW.md, then run Symphony.
+Example command: cd /opt/symphony/elixir && mix run -- ./WORKFLOW.md
+Binaries available: elixir, mix, iex, node, npm, codex, git
+Services and ports: Dashboard available on port 4000 when started with --port 4000.
+Configuration: Requires LINEAR_API_KEY and OPENAI_API_KEY. Create a WORKFLOW.md with YAML front matter.
+Docs: https://github.com/openai/symphony
+"""

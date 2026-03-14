@@ -17,6 +17,8 @@ pub enum AgentType {
     OpenCode,
     Amp,
     Pi,
+    Hermes,
+    Symphony,
 }
 
 impl AgentType {
@@ -29,6 +31,8 @@ impl AgentType {
             "opencode" | "open-code" => Some(Self::OpenCode),
             "amp" | "ampcode" => Some(Self::Amp),
             "pi" | "pi-coding-agent" => Some(Self::Pi),
+            "hermes" | "hermes-agent" => Some(Self::Hermes),
+            "symphony" | "openai-symphony" => Some(Self::Symphony),
             _ => None,
         }
     }
@@ -42,6 +46,8 @@ impl AgentType {
             Self::OpenCode => "OpenCode",
             Self::Amp => "Amp",
             Self::Pi => "Pi",
+            Self::Hermes => "Hermes Agent",
+            Self::Symphony => "Symphony",
         }
     }
 
@@ -54,6 +60,8 @@ impl AgentType {
             Self::OpenCode => "opencode",
             Self::Amp => "amp",
             Self::Pi => "pi",
+            Self::Hermes => "hermes",
+            Self::Symphony => "symphony",
         }
     }
 }
@@ -378,6 +386,93 @@ impl Agent for PiAgent {
     }
 }
 
+/// Hermes Agent adapter
+pub struct HermesAgent {
+    config: AgentConfig,
+}
+
+impl HermesAgent {
+    pub fn new(config: AgentConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl Agent for HermesAgent {
+    fn agent_type(&self) -> AgentType {
+        AgentType::Hermes
+    }
+
+    fn launch_command(&self) -> Vec<String> {
+        let mut cmd = vec!["hermes".to_string()];
+        cmd.extend(self.config.args.clone());
+        cmd
+    }
+
+    fn env_vars(&self) -> &HashMap<String, String> {
+        &self.config.env_vars
+    }
+
+    fn api_key_env_var(&self) -> Option<&'static str> {
+        // Hermes supports multiple providers; OPENROUTER_API_KEY is the recommended default
+        None
+    }
+
+    fn is_available(&self) -> bool {
+        std::process::Command::new("hermes")
+            .arg("--help")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn install_instructions(&self) -> &'static str {
+        "Install Hermes Agent: curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
+    }
+}
+
+/// Symphony adapter
+pub struct SymphonyAgent {
+    config: AgentConfig,
+}
+
+impl SymphonyAgent {
+    pub fn new(config: AgentConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl Agent for SymphonyAgent {
+    fn agent_type(&self) -> AgentType {
+        AgentType::Symphony
+    }
+
+    fn launch_command(&self) -> Vec<String> {
+        let mut cmd = vec!["symphony".to_string()];
+        cmd.extend(self.config.args.clone());
+        cmd
+    }
+
+    fn env_vars(&self) -> &HashMap<String, String> {
+        &self.config.env_vars
+    }
+
+    fn api_key_env_var(&self) -> Option<&'static str> {
+        Some("OPENAI_API_KEY")
+    }
+
+    fn is_available(&self) -> bool {
+        std::process::Command::new("symphony")
+            .arg("--help")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn install_instructions(&self) -> &'static str {
+        "Install Symphony: git clone https://github.com/openai/symphony && cd symphony/elixir && mix setup && mix build"
+    }
+}
+
 /// Create an agent adapter from type
 pub fn create_agent(agent_type: AgentType, config: Option<AgentConfig>) -> Box<dyn Agent> {
     let config = config.unwrap_or_else(|| AgentConfig::for_agent(agent_type));
@@ -389,6 +484,8 @@ pub fn create_agent(agent_type: AgentType, config: Option<AgentConfig>) -> Box<d
         AgentType::OpenCode => Box::new(OpenCodeAgent::new(config)),
         AgentType::Amp => Box::new(AmpAgent::new(config)),
         AgentType::Pi => Box::new(PiAgent::new(config)),
+        AgentType::Hermes => Box::new(HermesAgent::new(config)),
+        AgentType::Symphony => Box::new(SymphonyAgent::new(config)),
     }
 }
 
@@ -459,6 +556,8 @@ pub fn list_agents() -> Vec<AgentStatus> {
         check_agent_availability(AgentType::OpenCode),
         check_agent_availability(AgentType::Amp),
         check_agent_availability(AgentType::Pi),
+        check_agent_availability(AgentType::Hermes),
+        check_agent_availability(AgentType::Symphony),
     ]
 }
 
@@ -477,6 +576,13 @@ mod tests {
         assert_eq!(AgentType::from_str("ampcode"), Some(AgentType::Amp));
         assert_eq!(AgentType::from_str("pi"), Some(AgentType::Pi));
         assert_eq!(AgentType::from_str("pi-coding-agent"), Some(AgentType::Pi));
+        assert_eq!(AgentType::from_str("hermes"), Some(AgentType::Hermes));
+        assert_eq!(AgentType::from_str("hermes-agent"), Some(AgentType::Hermes));
+        assert_eq!(AgentType::from_str("symphony"), Some(AgentType::Symphony));
+        assert_eq!(
+            AgentType::from_str("openai-symphony"),
+            Some(AgentType::Symphony)
+        );
         assert_eq!(AgentType::from_str("unknown"), None);
     }
 

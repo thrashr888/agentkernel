@@ -14,6 +14,8 @@ agentkernel provides pre-configured Docker images for popular AI coding agents. 
 | [Amp](amp.md) | `amp` | `ANTHROPIC_API_KEY` |
 | [Pi](pi.md) | `pi` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
 | [OpenCode](opencode.md) | `opencode` | Provider-specific |
+| [Hermes Agent](hermes.md) | `hermes` | `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` |
+| [Symphony](symphony.md) | `symphony` | `LINEAR_API_KEY` + `OPENAI_API_KEY` |
 
 ## Quick Start
 
