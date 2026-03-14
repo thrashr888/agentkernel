@@ -697,16 +697,17 @@ impl AppState {
         #[cfg(feature = "enterprise")]
         let (enterprise_config, policy_engine) = Self::init_enterprise();
 
+        let vm_manager = match VmManager::new() {
+            Ok(mgr) => Some(Arc::new(tokio::sync::RwLock::new(mgr))),
+            Err(_) => None,
+        };
         Self {
             api_keys,
             allow_sudo_exec,
             started_at: std::time::Instant::now(),
-            opencode: Arc::new(OpenCodeState::new()),
+            opencode: Arc::new(OpenCodeState::new(vm_manager.clone())),
             orchestration_store: Self::init_orchestration_store(),
-            vm_manager: match VmManager::new() {
-                Ok(mgr) => Some(Arc::new(tokio::sync::RwLock::new(mgr))),
-                Err(_) => None,
-            },
+            vm_manager,
             event_bus,
             otel_provider,
             #[cfg(feature = "enterprise")]
@@ -726,7 +727,7 @@ impl AppState {
             api_keys,
             allow_sudo_exec: false,
             started_at: std::time::Instant::now(),
-            opencode: Arc::new(OpenCodeState::new()),
+            opencode: Arc::new(OpenCodeState::new(None)),
             orchestration_store: Self::init_orchestration_store(),
             vm_manager: None,
             event_bus: None,

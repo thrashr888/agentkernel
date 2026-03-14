@@ -4,16 +4,16 @@ Run OpenCode commands in hardware-isolated microVM sandboxes via agentkernel.
 
 ## Quick Start
 
-**Option 1: Native API (recommended)**
+**Option 1: Attach mode (recommended)**
 
-agentkernel implements OpenCode's native HTTP API — no plugin needed:
+OpenCode's server runs inside an agentkernel sandbox — full TUI, full isolation:
 
 ```bash
 # Start agentkernel
 agentkernel serve
 
-# Connect OpenCode directly
-opencode --api-url http://localhost:18888/opencode
+# Connect OpenCode TUI to the sandboxed server
+opencode attach http://localhost:18888/opencode
 ```
 
 **Option 2: Plugin-based**
@@ -26,14 +26,14 @@ agentkernel plugin install opencode
 opencode
 ```
 
-## Native API vs Plugin
+## Attach vs Plugin
 
-| Feature | Native API | Plugin |
-|---------|-----------|--------|
-| Setup | Just `--api-url` flag | Install plugin files |
-| Session management | Automatic | Automatic |
-| Tool discovery | OpenCode's built-in tools | Adds custom tools |
-| Portability | Works anywhere | Per-project |
+| Feature | Attach Mode | Plugin |
+|---------|------------|--------|
+| Setup | Just `opencode attach <url>` | Install plugin files |
+| Where OpenCode runs | Inside sandbox (isolated) | On your machine |
+| Tools available | All OpenCode built-in tools | Adds sandbox tools |
+| LLM API calls | From inside sandbox | From your machine |
 
 ## Setup
 
@@ -58,8 +58,8 @@ agentkernel serve
 ### 3. Launch OpenCode
 
 ```bash
-# Native API (recommended)
-opencode --api-url http://localhost:18888/opencode
+# Attach mode (recommended)
+opencode attach http://localhost:18888/opencode
 
 # Or with plugin
 agentkernel plugin install opencode
@@ -85,7 +85,7 @@ When using the plugin, it adds three tools to OpenCode:
 
 ## How It Works
 
-- **Native API**: Sessions map directly to agentkernel sandboxes. Messages are executed as shell commands.
+- **Attach mode**: OpenCode's server runs inside an agentkernel sandbox. All requests proxy through to it.
 - **Plugin**: On `session.created`, a persistent sandbox is created. `sandbox_exec` runs commands in it.
 
 Each sandbox runs in its own microVM with a dedicated Linux kernel — not a shared kernel like containers.

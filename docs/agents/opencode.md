@@ -1,54 +1,33 @@
 
 # OpenCode
 
-Run [OpenCode](https://opencode.ai/) with agentkernel as the execution backend.
+Run [OpenCode](https://opencode.ai/) with agentkernel for isolated code execution.
 
-## Quick Start
+## Quick Start — `opencode attach` (Recommended)
 
-agentkernel implements OpenCode's native HTTP API, allowing OpenCode to connect directly without plugins.
+The fastest way to use OpenCode with agentkernel. OpenCode's full server runs inside an isolated sandbox, and you connect to it with `attach`:
 
 ```bash
-# 1. Start agentkernel API server (pick one)
-brew services start thrashr888/agentkernel/agentkernel   # runs in background, survives reboots
-agentkernel serve                 # or run manually in a terminal
+# 1. Start agentkernel
+agentkernel serve
 
-# 2. Launch OpenCode with agentkernel as the backend
-opencode --api-url http://localhost:18888/opencode
+# 2. Connect OpenCode TUI — sandbox is created automatically
+opencode attach http://localhost:18888/opencode
 ```
 
-## Native API Integration
-
-agentkernel implements OpenCode's server API at the `/opencode` path prefix. This provides seamless integration without any plugins or configuration files.
-
-### Endpoint Status
-
-| Endpoint | Status | Description |
-|----------|--------|-------------|
-| `GET /opencode/session` | ✓ | List all sessions |
-| `POST /opencode/session` | ✓ | Create a new session (creates sandbox) |
-| `GET /opencode/session/{id}` | ✓ | Get session details |
-| `POST /opencode/session/{id}/message` | ✓ | Execute command in sandbox |
-| `GET /opencode/session/{id}/message` | ✓ | Get message history |
-| `GET /opencode/event` | ✓ | SSE stream for session events |
-| `GET /opencode/global/event` | ✓ | SSE stream for global events |
-| `GET /opencode/permission` | ✓ | List pending permissions (auto-approved) |
-| `POST /opencode/permission/{id}/reply` | ✓ | Reply to permission |
-| `GET /opencode/question` | ✓ | List pending questions (none) |
-| `POST /opencode/question/{id}/reply` | ✓ | Reply to question |
-| `GET /opencode/provider` | − | Stub (returns empty) |
-| `GET /opencode/agent` | − | Stub |
-| `GET /opencode/config` | − | Stub |
+On first connect, agentkernel creates a sandbox from the `opencode-sandbox` template, installs OpenCode inside it, and starts `opencode serve`. All subsequent requests proxy through to the OpenCode server in the sandbox. First connect takes ~8s; after that it's instant.
 
 ### How It Works
 
-1. **Session = Sandbox**: Each OpenCode session maps to an agentkernel sandbox
-2. **Messages = Commands**: Sending a message executes it as a shell command in the sandbox
-3. **State persists**: Installed packages and files persist between commands within a session
-4. **Auto-approval**: All tool permissions are auto-approved (sandboxed execution is safe)
+1. `opencode attach` connects to agentkernel's `/opencode` proxy
+2. agentkernel provisions a sandbox using the built-in `opencode-sandbox` template
+3. OpenCode's own server (`opencode serve`) runs inside the sandbox on port 3000
+4. All OpenCode protocol requests (sessions, messages, SSE events) proxy through to it
+5. You get the full OpenCode TUI experience with sandbox isolation
 
 ## Alternative: Plugin Integration
 
-For users who prefer plugin-based integration, agentkernel also provides an OpenCode plugin.
+For users who prefer plugin-based integration, agentkernel also provides an OpenCode plugin that adds sandbox tools to OpenCode:
 
 ```bash
 # Install the plugin into your project
@@ -66,6 +45,24 @@ The plugin adds tools to OpenCode:
 | `sandbox_exec` | Run in the session's persistent sandbox (state persists) |
 | `sandbox_list` | List all active sandboxes |
 
+## Alternative: Manual Sandbox
+
+You can also create an OpenCode sandbox manually using the template or Dockerfile:
+
+```bash
+# Using the built-in template
+agentkernel sandbox create opencode-dev --template opencode-sandbox
+
+# Or using the example Dockerfile (pre-built image)
+docker build -t agentkernel/opencode examples/agents/opencode/
+agentkernel sandbox create opencode-dev --config examples/agents/opencode/agentkernel.toml
+
+# Attach to the sandbox and run OpenCode directly
+agentkernel attach opencode-dev
+# Inside the sandbox:
+opencode
+```
+
 ## Setup
 
 ### 1. Install agentkernel
@@ -82,47 +79,34 @@ brew tap thrashr888/agentkernel && brew install agentkernel
 brew services start thrashr888/agentkernel/agentkernel
 
 # Or run manually
-agentkernel serve --host 127.0.0.1 --port 18888
+agentkernel serve
 ```
 
-### 3. Launch OpenCode
+### 3. Connect OpenCode
 
 ```bash
-# Native API (recommended)
-opencode --api-url http://localhost:18888/opencode
+# Attach mode (recommended — full TUI, sandboxed)
+opencode attach http://localhost:18888/opencode
 
 # Or with plugin
 agentkernel plugin install opencode
 opencode
 ```
 
-## Sandbox-Based Workflow
-
-You can also run OpenCode itself inside a sandbox container:
-
-```bash
-# Create sandbox with OpenCode pre-installed
-agentkernel sandbox create opencode-dev --config examples/agents/opencode/agentkernel.toml
-
-# Start the sandbox
-agentkernel sandbox start opencode-dev
-
-# Run OpenCode inside the sandbox
-agentkernel attach opencode-dev
-# Inside the sandbox:
-opencode
-```
-
 ## Configuration
 
-Example config at `examples/agents/opencode/agentkernel.toml`:
+The built-in `opencode-sandbox` template:
 
 ```toml
 [sandbox]
 name = "opencode-sandbox"
-
-[build]
-dockerfile = "Dockerfile"
+base_image = "node:22-alpine"
+init_script = """
+set -e
+apk add --no-cache git bash curl python3 ripgrep fd jq
+curl -fsSL https://opencode.ai/install | bash
+export PATH="$HOME/.opencode/bin:$PATH"
+"""
 
 [agent]
 preferred = "opencode"
@@ -133,9 +117,12 @@ memory_mb = 1024
 
 [security]
 profile = "moderate"
-network = true      # OpenCode needs network for API calls
-mount_cwd = true    # Mount project directory
+
+[security.domains]
+allow = ["api.openai.com", "api.anthropic.com"]
 ```
+
+For custom setups, see `examples/agents/opencode/agentkernel.toml` and the Dockerfile.
 
 ## Environment Variables
 
@@ -144,14 +131,14 @@ mount_cwd = true    # Mount project directory
 | `AGENTKERNEL_BASE_URL` | `http://localhost:18888` | agentkernel API endpoint |
 | `AGENTKERNEL_API_KEY` | - | Optional Bearer token for API auth |
 
-OpenCode itself supports multiple LLM providers. Pass your provider's API key as usual — it stays on your machine and is not forwarded to the sandbox.
+OpenCode itself supports multiple LLM providers. Pass your provider's API key as usual (e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`).
 
 ## What's Included
 
-The sandbox image includes:
+The sandbox comes with:
 
 - **Node.js 22** — Runtime
-- **OpenCode CLI** — `opencode`
+- **OpenCode CLI** — installed via `opencode.ai/install`
 - **Git** — Version control
 - **Python 3** — For Python projects
 - **ripgrep** — Fast code search

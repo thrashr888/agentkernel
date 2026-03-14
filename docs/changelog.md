@@ -10,11 +10,20 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ### Added
 
+- **`opencode attach` support** — `opencode attach http://localhost:18888/opencode` now works; agentkernel provisions a sandbox from the `opencode-sandbox` template, starts `opencode serve` inside it, and proxies the full OpenCode protocol (sessions, messages, SSE events) through to it; first connect ~8s, instant after that
+- **OpenCode proxy module** — `src/opencode.rs` rewritten as a transparent proxy to OpenCode's own server running inside an agentkernel sandbox; supports SSE streaming passthrough for real-time TUI updates
 - **Hermes Agent template** — built-in sandbox template for [Hermes Agent](https://github.com/NousResearch/hermes-agent) (NousResearch), an autonomous AI agent with 40+ tools, persistent memory, and skills system; uses `nikolaik/python-nodejs:python3.11-nodejs22` base image with full source install including mini-swe-agent and browser tools
 - **Symphony template** — built-in sandbox template for [OpenAI Symphony](https://github.com/openai/symphony), an Elixir-based orchestration daemon that monitors Linear issues and spawns Codex agents; uses `elixir:1.19-otp-28-slim` with Node.js 22 and `@openai/codex` CLI
 - **Hermes and Symphony agent types** — `AgentType::Hermes` and `AgentType::Symphony` with CLI aliases (`hermes`, `hermes-agent`, `symphony`, `openai-symphony`), adapters, and availability checks
 - **Agent examples** — `examples/agents/hermes/` and `examples/agents/symphony/` with Dockerfiles, agentkernel.toml configs, and READMEs
 - **Agent docs** — `docs/agents/hermes.md` and `docs/agents/symphony.md` with setup guides, configuration reference, and environment variable documentation
+
+### Changed
+
+- **OpenCode template** — `opencode-sandbox` template now uses the official install script (`curl -fsSL https://opencode.ai/install | bash`) and installs git, bash, curl, python3, ripgrep, fd, jq in the init_script
+- **OpenCode Dockerfile** — `examples/agents/opencode/Dockerfile` updated to use the official install script
+- **OpenCode docs** — `docs/agents/opencode.md` rewritten with `opencode attach` as the recommended approach; plugin and manual sandbox documented as alternatives
+- **Shared VmManager for OpenCode** — `OpenCodeState` receives the shared `Arc<RwLock<VmManager>>` from `AppState` instead of creating a new one per request
 
 ### Fixed
 

@@ -6,7 +6,9 @@ name = "opencode-sandbox"
 base_image = "node:22-alpine"
 init_script = """
 set -e
-npm install -g opencode
+apk add --no-cache git bash curl python3 ripgrep fd jq
+curl -fsSL https://opencode.ai/install | bash
+export PATH="$HOME/.opencode/bin:$PATH"
 """
 
 [agent]
@@ -32,6 +34,6 @@ category = "Agent Sandboxes"
 help_text = """
 How to use: Start the sandbox and run your workflow inside /workspace.
 Example command: ls -la /workspace
-Binaries available: node, npm, npx, opencode
+Binaries available: node, npm, npx, opencode, git, python3, ripgrep, fd, jq
 Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
 """

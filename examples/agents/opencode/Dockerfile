@@ -26,8 +26,8 @@ RUN apk add --no-cache \
     jq \
     && rm -rf /var/cache/apk/*
 
-# Install OpenCode CLI globally
-RUN npm install -g opencode
+# Install OpenCode CLI
+RUN curl -fsSL https://opencode.ai/install | bash
 
 # Create workspace directory
 RUN mkdir -p /workspace
@@ -40,9 +40,10 @@ RUN adduser -D -h /home/developer developer \
 # Switch to non-root user
 USER developer
 
-# Set up shell
+# Set up shell and PATH for opencode
 ENV SHELL=/bin/bash
 ENV HOME=/home/developer
+ENV PATH="/root/.opencode/bin:$PATH"
 
 # Keep container running (for attach/exec)
 CMD ["tail", "-f", "/dev/null"]

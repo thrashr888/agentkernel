@@ -3,7 +3,7 @@
 
 AgentKernel includes a native macOS desktop app built with [Tauri 2](https://tauri.app/). It provides a GUI for managing sandboxes, snapshots, templates, and agents — all backed by the same HTTP API as the CLI.
 
-<img width="2474" height="1550" alt="AgentKernel Desktop App" src="https://github.com/user-attachments/assets/836e6b21-66c7-4915-b5a8-bf95a0824a99" />
+<img alt="AgentKernel Desktop App" src="../desktop.png" />
 
 ## Requirements
 
