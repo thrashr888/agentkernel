@@ -64,7 +64,7 @@ Install agentkernel:
 
 ```bash
 # Homebrew
-brew tap thrashr888/agentkernel && brew install agentkernel
+brew tap thrashr888/tap && brew install agentkernel
 
 # Cargo
 cargo install --git https://github.com/thrashr888/agentkernel

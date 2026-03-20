@@ -40,7 +40,7 @@ opencode
 ### 1. Install agentkernel
 
 ```bash
-brew tap thrashr888/agentkernel && brew install agentkernel
+brew tap thrashr888/tap && brew install agentkernel
 # or
 cargo install --git https://github.com/thrashr888/agentkernel
 ```

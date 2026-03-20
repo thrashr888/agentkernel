@@ -7,7 +7,7 @@ Use agentkernel as a sandbox backend for OpenAI Codex via MCP.
 1. Install agentkernel:
 
 ```bash
-brew tap thrashr888/agentkernel && brew install agentkernel
+brew tap thrashr888/tap && brew install agentkernel
 ```
 
 2. Install the MCP config into your project:

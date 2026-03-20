@@ -6,7 +6,7 @@ Route [Pi coding agent](https://github.com/badlogic/pi-mono) commands through [a
 
 ```bash
 # 1. Install and start agentkernel
-brew tap thrashr888/agentkernel && brew install agentkernel
+brew tap thrashr888/tap && brew install agentkernel
 brew services start thrashr888/agentkernel/agentkernel
 
 # 2. Install the extension

@@ -282,7 +282,7 @@ end
 1. Create `thrashr888/homebrew-agentkernel` repo
 2. Add `Formula/agentkernel.rb`
 3. Update `release.yml` to auto-update formula SHA on new releases
-4. Install: `brew tap thrashr888/agentkernel && brew install agentkernel`
+4. Install: `brew tap thrashr888/tap && brew install agentkernel`
 
 ---
 
@@ -490,7 +490,7 @@ cd sdk/nodejs && AGENTKERNEL_URL=http://localhost:18888 npm run test:integration
 
 ### Homebrew
 ```bash
-brew tap thrashr888/agentkernel && brew install agentkernel
+brew tap thrashr888/tap && brew install agentkernel
 agentkernel --version
 ```
 

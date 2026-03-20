@@ -29,7 +29,7 @@ If you've used Docker, you already know the CLI:
 
 ```bash
 # Install
-brew tap thrashr888/agentkernel && brew install agentkernel
+brew tap thrashr888/tap && brew install agentkernel
 # Or: curl -fsSL https://raw.githubusercontent.com/thrashr888/agentkernel/main/install.sh | sh
 agentkernel setup
 
@@ -259,7 +259,7 @@ Docker is a great tool for packaging and deploying applications. agentkernel is 
 ## Get started
 
 ```bash
-brew tap thrashr888/agentkernel && brew install agentkernel
+brew tap thrashr888/tap && brew install agentkernel
 # Or: curl -fsSL https://raw.githubusercontent.com/thrashr888/agentkernel/main/install.sh | sh
 agentkernel setup
 agentkernel run python3 -c "print('Hello from sandbox!')"

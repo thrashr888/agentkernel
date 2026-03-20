@@ -12,7 +12,7 @@
 ### Homebrew (Recommended)
 
 ```bash
-brew tap thrashr888/agentkernel && brew install agentkernel
+brew tap thrashr888/tap && brew install agentkernel
 ```
 
 ### Install Script

@@ -105,7 +105,7 @@ done
 #    Repo: https://github.com/thrashr888/homebrew-agentkernel
 
 # 3. Users install/upgrade via:
-brew tap thrashr888/agentkernel
+brew tap thrashr888/tap
 brew install agentkernel
 # or: brew upgrade agentkernel
 ```

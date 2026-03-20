@@ -22,7 +22,7 @@ agentkernel attach symphony-dev
 ### 1. Install agentkernel
 
 ```bash
-brew tap thrashr888/agentkernel && brew install agentkernel
+brew tap thrashr888/tap && brew install agentkernel
 # Or: curl -fsSL https://raw.githubusercontent.com/thrashr888/agentkernel/main/install.sh | sh
 ```
 
