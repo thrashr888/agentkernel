@@ -303,79 +303,65 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-
       - name: Compute SHA256 sums
         id: sha
         run: |
           echo "darwin_arm64=$(sha256sum artifacts/agentkernel-darwin-arm64/agentkernel-darwin-arm64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          echo "darwin_x64=$(sha256sum artifacts/agentkernel-darwin-x64/agentkernel-darwin-x64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "darwin_amd64=$(sha256sum artifacts/agentkernel-darwin-x64/agentkernel-darwin-x64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "linux_arm64=$(sha256sum artifacts/agentkernel-linux-arm64/agentkernel-linux-arm64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          echo "linux_x64=$(sha256sum artifacts/agentkernel-linux-x64/agentkernel-linux-x64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "linux_amd64=$(sha256sum artifacts/agentkernel-linux-x64/agentkernel-linux-x64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Update Homebrew formula
+        uses: thrashr888/homebrew-tap@main
+        with:
+          formula: agentkernel
+          tag: ${{ github.ref_name }}
+          tap-token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          darwin-arm64-sha256: ${{ steps.sha.outputs.darwin_arm64 }}
+          darwin-amd64-sha256: ${{ steps.sha.outputs.darwin_amd64 }}
+          linux-arm64-sha256: ${{ steps.sha.outputs.linux_arm64 }}
+          linux-amd64-sha256: ${{ steps.sha.outputs.linux_amd64 }}
+          template: |
+            class Agentkernel < Formula
+              desc "Run AI coding agents in secure, isolated microVMs"
+              homepage "https://thrashr888.github.io/agentkernel/"
+              version "${VERSION}"
+              license "MIT"
 
-      - name: Generate and push Homebrew formula
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          TAG_NAME: ${{ github.ref_name }}
-          SHA_DARWIN_ARM64: ${{ steps.sha.outputs.darwin_arm64 }}
-          SHA_DARWIN_X64: ${{ steps.sha.outputs.darwin_x64 }}
-          SHA_LINUX_ARM64: ${{ steps.sha.outputs.linux_arm64 }}
-          SHA_LINUX_X64: ${{ steps.sha.outputs.linux_x64 }}
-        run: |
-          VERSION="${TAG_NAME#v}"
-
-          cat > agentkernel.rb << FORMULA
-          class Agentkernel < Formula
-            desc "Run AI coding agents in secure, isolated microVMs"
-            homepage "https://thrashr888.github.io/agentkernel/"
-            version "${VERSION}"
-            license "MIT"
-
-            on_macos do
-              on_arm do
-                url "https://github.com/thrashr888/agentkernel/releases/download/${TAG_NAME}/agentkernel-darwin-arm64.tar.gz"
-                sha256 "${SHA_DARWIN_ARM64}"
+              on_macos do
+                on_arm do
+                  url "https://github.com/thrashr888/agentkernel/releases/download/${TAG}/agentkernel-darwin-arm64.tar.gz"
+                  sha256 "${SHA_DARWIN_ARM64}"
+                end
+                on_intel do
+                  url "https://github.com/thrashr888/agentkernel/releases/download/${TAG}/agentkernel-darwin-x64.tar.gz"
+                  sha256 "${SHA_DARWIN_AMD64}"
+                end
               end
-              on_intel do
-                url "https://github.com/thrashr888/agentkernel/releases/download/${TAG_NAME}/agentkernel-darwin-x64.tar.gz"
-                sha256 "${SHA_DARWIN_X64}"
+
+              on_linux do
+                on_arm do
+                  url "https://github.com/thrashr888/agentkernel/releases/download/${TAG}/agentkernel-linux-arm64.tar.gz"
+                  sha256 "${SHA_LINUX_ARM64}"
+                end
+                on_intel do
+                  url "https://github.com/thrashr888/agentkernel/releases/download/${TAG}/agentkernel-linux-x64.tar.gz"
+                  sha256 "${SHA_LINUX_AMD64}"
+                end
+              end
+
+              def install
+                bin.install "agentkernel"
+              end
+
+              service do
+                run [opt_bin/"agentkernel", "serve", "--host", "127.0.0.1", "--port", "18888"]
+                keep_alive true
+                log_path var/"log/agentkernel.log"
+                error_log_path var/"log/agentkernel.error.log"
+                working_dir HOMEBREW_PREFIX
+              end
+
+              test do
+                assert_match "agentkernel", shell_output("#{bin}/agentkernel --version")
               end
             end
-
-            on_linux do
-              on_arm do
-                url "https://github.com/thrashr888/agentkernel/releases/download/${TAG_NAME}/agentkernel-linux-arm64.tar.gz"
-                sha256 "${SHA_LINUX_ARM64}"
-              end
-              on_intel do
-                url "https://github.com/thrashr888/agentkernel/releases/download/${TAG_NAME}/agentkernel-linux-x64.tar.gz"
-                sha256 "${SHA_LINUX_X64}"
-              end
-            end
-
-            def install
-              bin.install "agentkernel"
-            end
-
-            service do
-              run [opt_bin/"agentkernel", "serve", "--host", "127.0.0.1", "--port", "18888"]
-              keep_alive true
-              log_path var/"log/agentkernel.log"
-              error_log_path var/"log/agentkernel.error.log"
-              working_dir HOMEBREW_PREFIX
-            end
-
-            test do
-              assert_match "agentkernel", shell_output("#{bin}/agentkernel --version")
-            end
-          end
-          FORMULA
-
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/thrashr888/homebrew-tap.git" /tmp/homebrew-tap
-          mkdir -p /tmp/homebrew-tap/Formula
-          cp agentkernel.rb /tmp/homebrew-tap/Formula/agentkernel.rb
-          cd /tmp/homebrew-tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/agentkernel.rb
-          git commit -m "Update agentkernel to ${TAG_NAME}"
-          git push
