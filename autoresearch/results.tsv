@@ -1,0 +1,2 @@
+timestamp	git_sha	backend	total_score	startup_avg_ms	total_avg_ms	throughput_per_second	note
+2026-03-23T16:00:30Z	ead25d0	docker	7.74	114.16	260.74	3.84	scaffold baseline on local docker

@@ -317,12 +317,21 @@ enum Commands {
         /// Comma-separated backends to test (default: all available)
         #[arg(short, long)]
         backends: Option<String>,
-        /// Number of iterations per backend (default: 1)
+        /// Number of measured iterations per backend (default: 1)
         #[arg(short, long, default_value = "1")]
         iterations: usize,
+        /// Number of unmeasured warmup iterations per backend (default: 1)
+        #[arg(long, default_value = "1")]
+        warmup: usize,
         /// Docker image to use for benchmark
         #[arg(long, default_value = "alpine:3.20")]
         image: String,
+        /// Output machine-readable JSON instead of the table view
+        #[arg(long)]
+        json: bool,
+        /// Optional file path to write the benchmark report JSON
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     /// Replay a recorded session (asciicast v2 format)
     Replay {
@@ -3355,7 +3364,10 @@ memory_mb = 512
         Commands::Benchmark {
             backends,
             iterations,
+            warmup,
             image,
+            json,
+            output,
         } => {
             let backend_list = if let Some(ref b) = backends {
                 benchmark::parse_backends(b)?
@@ -3365,7 +3377,9 @@ memory_mb = 512
             if backend_list.is_empty() {
                 bail!("No backends available to benchmark.");
             }
-            benchmark::run_benchmark(&backend_list, iterations, &image).await?;
+            let report =
+                benchmark::run_benchmark(&backend_list, iterations, warmup, &image, !json).await?;
+            benchmark::emit_report(&report, json, output.as_deref())?;
         }
         Commands::Parallel { job, backend } => {
             if job.is_empty() {

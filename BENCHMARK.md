@@ -2,6 +2,15 @@
 
 Performance measurements for sandbox lifecycle operations.
 
+Machine-readable benchmark runs:
+
+```bash
+agentkernel benchmark --backends docker --iterations 5 --warmup 1 --json --output benchmark.json
+./autoresearch/run_eval.sh
+```
+
+The JSON report includes per-backend startup, exec, total latency, throughput, and a single `total_score` scalar intended for autoresearch keep/discard loops.
+
 ## Quick Summary
 
 ### End-to-End Command Latency (`agentkernel run -- echo hello`)
