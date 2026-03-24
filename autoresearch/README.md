@@ -17,6 +17,7 @@ The primary optimization target is the scalar `total_score` emitted by the bench
 - `run_eval.sh` — canonical local eval entrypoint
 - `score_benchmark.py` — pretty-prints key metrics from a JSON report
 - `results.tsv` — append-only experiment log of kept baselines/improvements
+- `progress.png` — chart of score/latency/throughput history across runs
 - `latest-report.json` — most recent local benchmark output
 - `docker-report.json` — explicit docker comparison run artifact
 - `apple-report.json` — explicit apple comparison run artifact
@@ -56,6 +57,11 @@ Notes:
 Latest comparison artifacts:
 - docker: `autoresearch/docker-report.json` → total_score 7.17, total_avg_ms 196.05
 - apple: `autoresearch/apple-report.json` → total_score 2.57, total_avg_ms 719.67
+- broader history including repeat runs is visualized in `autoresearch/progress.png`
+
+Recent read from repeat runs:
+- docker remains much faster and more stable on this machine
+- apple now works end-to-end, but shows very high startup variance with occasional severe cold-start outliers
 
 ## What counts as startup work
 

@@ -1,0 +1,51 @@
+{
+  "generated_at": "2026-03-24T23:13:30.109472+00:00",
+  "image": "alpine:3.20",
+  "measured_iterations": 3,
+  "warmup_iterations": 0,
+  "primary_metric": "total_score",
+  "total_score": 6.26,
+  "backends": [
+    {
+      "backend": "docker",
+      "measured_iterations": 3,
+      "warmup_iterations": 0,
+      "startup": {
+        "min_ms": 131.85,
+        "avg_ms": 138.89,
+        "p50_ms": 141.81,
+        "p95_ms": 143.01,
+        "max_ms": 143.01
+      },
+      "exec": {
+        "min_ms": 46.53,
+        "avg_ms": 49.7,
+        "p50_ms": 50.09,
+        "p95_ms": 52.49,
+        "max_ms": 52.49
+      },
+      "lifecycle_total": {
+        "min_ms": 286.25,
+        "avg_ms": 289.33,
+        "p50_ms": 290.34,
+        "p95_ms": 291.41,
+        "max_ms": 291.41
+      },
+      "total": {
+        "min_ms": 205.13,
+        "avg_ms": 210.23,
+        "p50_ms": 211.55,
+        "p95_ms": 214.02,
+        "max_ms": 214.02
+      },
+      "throughput_per_second": 4.76,
+      "scores": {
+        "startup_score": 7.2,
+        "exec_score": 20.12,
+        "latency_score": 4.76,
+        "throughput_score": 4.76,
+        "total_score": 6.26
+      }
+    }
+  ]
+}
