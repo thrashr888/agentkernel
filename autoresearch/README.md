@@ -18,6 +18,8 @@ The primary optimization target is the scalar `total_score` emitted by the bench
 - `score_benchmark.py` — pretty-prints key metrics from a JSON report
 - `results.tsv` — append-only experiment log of kept baselines/improvements
 - `latest-report.json` — most recent local benchmark output
+- `docker-report.json` — explicit docker comparison run artifact
+- `apple-report.json` — explicit apple comparison run artifact
 
 ## Canonical eval command
 
@@ -49,6 +51,11 @@ From `latest-report.json`:
 Notes:
 - `total_avg_ms` now reflects end-to-end CLI `agentkernel run` timing from a temp working directory, not just internal lifecycle timing.
 - the JSON also includes `lifecycle_total` for the slower create/start/exec/stop/remove path used for backend diagnostics.
+- Apple end-to-end one-shot benchmarking now works via an Apple-native `container run --rm` fast path.
+
+Latest comparison artifacts:
+- docker: `autoresearch/docker-report.json` → total_score 7.17, total_avg_ms 196.05
+- apple: `autoresearch/apple-report.json` → total_score 2.57, total_avg_ms 719.67
 
 ## What counts as startup work
 

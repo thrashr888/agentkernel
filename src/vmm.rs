@@ -2580,6 +2580,20 @@ impl VmManager {
                     }
                     return Ok(format!("{}{}", stdout, stderr));
                 }
+                #[cfg(target_os = "macos")]
+                BackendType::Apple => {
+                    let result =
+                        crate::backend::apple::AppleSandbox::run_ephemeral_cmd(cmd, &config)?;
+                    if result.exit_code != 0 {
+                        bail!(
+                            "Command failed (exit {}): {}{}",
+                            result.exit_code,
+                            result.stdout,
+                            result.stderr
+                        );
+                    }
+                    return Ok(result.output());
+                }
                 _ => {}
             }
         }
