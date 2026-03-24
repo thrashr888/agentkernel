@@ -1,43 +1,50 @@
 {
-  "generated_at": "2026-03-23T16:00:30.147112+00:00",
+  "generated_at": "2026-03-24T22:54:19.471445+00:00",
   "image": "alpine:3.20",
   "measured_iterations": 5,
   "warmup_iterations": 1,
   "primary_metric": "total_score",
-  "total_score": 7.74,
+  "total_score": 4.43,
   "backends": [
     {
       "backend": "docker",
       "measured_iterations": 5,
       "warmup_iterations": 1,
       "startup": {
-        "min_ms": 101.6,
-        "avg_ms": 114.16,
-        "p50_ms": 103.96,
-        "p95_ms": 153.75,
-        "max_ms": 153.75
+        "min_ms": 159.24,
+        "avg_ms": 201.08,
+        "p50_ms": 205.05,
+        "p95_ms": 244.21,
+        "max_ms": 244.21
       },
       "exec": {
-        "min_ms": 38.0,
-        "avg_ms": 48.29,
-        "p50_ms": 50.64,
-        "p95_ms": 51.82,
-        "max_ms": 51.82
+        "min_ms": 54.76,
+        "avg_ms": 69.17,
+        "p50_ms": 67.59,
+        "p95_ms": 85.93,
+        "max_ms": 85.93
+      },
+      "lifecycle_total": {
+        "min_ms": 337.86,
+        "avg_ms": 404.06,
+        "p50_ms": 400.67,
+        "p95_ms": 477.23,
+        "max_ms": 477.23
       },
       "total": {
-        "min_ms": 228.75,
-        "avg_ms": 260.74,
-        "p50_ms": 248.18,
-        "p95_ms": 293.0,
-        "max_ms": 293.0
+        "min_ms": 277.97,
+        "avg_ms": 292.78,
+        "p50_ms": 288.14,
+        "p95_ms": 322.48,
+        "max_ms": 322.48
       },
-      "throughput_per_second": 3.84,
+      "throughput_per_second": 3.42,
       "scores": {
-        "startup_score": 8.76,
-        "exec_score": 20.71,
-        "latency_score": 3.84,
-        "throughput_score": 3.84,
-        "total_score": 7.74
+        "startup_score": 4.97,
+        "exec_score": 14.46,
+        "latency_score": 3.42,
+        "throughput_score": 3.42,
+        "total_score": 4.43
       }
     }
   ]

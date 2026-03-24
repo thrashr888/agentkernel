@@ -1,2 +1,4 @@
 timestamp	git_sha	backend	total_score	startup_avg_ms	total_avg_ms	throughput_per_second	note
 2026-03-23T16:00:30Z	ead25d0	docker	7.74	114.16	260.74	3.84	scaffold baseline on local docker
+2026-03-24T22:52:44Z	39afc83+dirty	docker	4.61	203.70	275.07	3.64	end-to-end score version; cached policy engine, cached runtime availability, and bypassed full VmManager init for one-shot run path
+2026-03-24T22:53:56Z	39afc83+dirty	docker	4.43	201.08	292.78	3.42	repeat run after score script update; shows current local variance and end-to-end metric behavior

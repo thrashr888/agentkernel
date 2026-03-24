@@ -1,8 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use serde::Serialize;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crate::backend::{self, BackendType};
@@ -15,6 +16,7 @@ struct IterResult {
     exec: Duration,
     stop: Duration,
     remove: Duration,
+    cli_total: Duration,
 }
 
 impl IterResult {
@@ -22,7 +24,7 @@ impl IterResult {
         self.create + self.start
     }
 
-    fn total(&self) -> Duration {
+    fn lifecycle_total(&self) -> Duration {
         self.create + self.start + self.exec + self.stop + self.remove
     }
 }
@@ -38,7 +40,8 @@ struct BenchmarkStats {
     stop: Vec<Duration>,
     remove: Vec<Duration>,
     startup: Vec<Duration>,
-    total: Vec<Duration>,
+    lifecycle_total: Vec<Duration>,
+    cli_total: Vec<Duration>,
 }
 
 impl BenchmarkStats {
@@ -53,7 +56,8 @@ impl BenchmarkStats {
             stop: Vec::new(),
             remove: Vec::new(),
             startup: Vec::new(),
-            total: Vec::new(),
+            lifecycle_total: Vec::new(),
+            cli_total: Vec::new(),
         }
     }
 
@@ -64,18 +68,20 @@ impl BenchmarkStats {
         self.stop.push(r.stop);
         self.remove.push(r.remove);
         self.startup.push(r.startup());
-        self.total.push(r.total());
+        self.lifecycle_total.push(r.lifecycle_total());
+        self.cli_total.push(r.cli_total);
         self.measured_iterations += 1;
     }
 
     fn total_wall_time(&self) -> Duration {
-        self.total.iter().copied().sum()
+        self.cli_total.iter().copied().sum()
     }
 
     fn to_report(&self) -> BackendBenchmarkReport {
         let startup = summarize(&self.startup);
         let exec = summarize(&self.exec);
-        let total = summarize(&self.total);
+        let lifecycle_total = summarize(&self.lifecycle_total);
+        let total = summarize(&self.cli_total);
         let throughput_per_second = if self.total_wall_time().is_zero() {
             0.0
         } else {
@@ -86,9 +92,9 @@ impl BenchmarkStats {
         let exec_score = inverse_ms_score(exec.avg_ms);
         let latency_score = inverse_ms_score(total.avg_ms);
         let throughput_score = throughput_per_second;
-        let total_score = startup_score * 0.45
-            + exec_score * 0.10
-            + latency_score * 0.30
+        let total_score = startup_score * 0.30
+            + exec_score * 0.05
+            + latency_score * 0.50
             + throughput_score * 0.15;
 
         BackendBenchmarkReport {
@@ -97,6 +103,7 @@ impl BenchmarkStats {
             warmup_iterations: self.warmup_iterations,
             startup,
             exec,
+            lifecycle_total,
             total,
             throughput_per_second,
             scores: ScoreBreakdown {
@@ -135,6 +142,7 @@ pub struct BackendBenchmarkReport {
     pub warmup_iterations: usize,
     pub startup: MetricSummary,
     pub exec: MetricSummary,
+    pub lifecycle_total: MetricSummary,
     pub total: MetricSummary,
     pub throughput_per_second: f64,
     pub scores: ScoreBreakdown,
@@ -213,6 +221,7 @@ fn round_scores(scores: &mut ScoreBreakdown) {
 fn round_backend_report(report: &mut BackendBenchmarkReport) {
     round_summary(&mut report.startup);
     round_summary(&mut report.exec);
+    round_summary(&mut report.lifecycle_total);
     round_summary(&mut report.total);
     report.throughput_per_second = round2(report.throughput_per_second);
     round_scores(&mut report.scores);
@@ -223,6 +232,41 @@ fn round_report(report: &mut BenchmarkReport) {
     for backend in &mut report.backends {
         round_backend_report(backend);
     }
+}
+
+fn run_cli_iteration(backend: BackendType, image: &str) -> Result<Duration> {
+    let backend_name = backend.to_string();
+    let exe = std::env::current_exe().context("failed to locate current agentkernel binary")?;
+    let temp_dir =
+        tempfile::tempdir().context("failed to create temp dir for end-to-end benchmark")?;
+    let started = Instant::now();
+    let output = Command::new(exe)
+        .current_dir(temp_dir.path())
+        .args([
+            "run",
+            "-B",
+            &backend_name,
+            "--image",
+            image,
+            "echo",
+            "hello",
+        ])
+        .output()
+        .context("failed to spawn end-to-end benchmark command")?;
+    let elapsed = started.elapsed();
+
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "end-to-end benchmark command failed for backend {}: {}{}",
+            backend_name,
+            stdout,
+            stderr
+        );
+    }
+
+    Ok(elapsed)
 }
 
 async fn run_single_iteration(
@@ -254,12 +298,15 @@ async fn run_single_iteration(
     manager.remove(&sandbox_name).await?;
     let remove = t.elapsed();
 
+    let cli_total = run_cli_iteration(backend, image)?;
+
     Ok(IterResult {
         create,
         start,
         exec,
         stop,
         remove,
+        cli_total,
     })
 }
 
@@ -271,7 +318,7 @@ pub async fn run_benchmark(
     render_progress: bool,
 ) -> Result<BenchmarkReport> {
     if iterations == 0 {
-        anyhow::bail!("iterations must be at least 1");
+        bail!("iterations must be at least 1");
     }
 
     if render_progress {
@@ -317,7 +364,7 @@ pub async fn run_benchmark(
     }
 
     if reports.is_empty() {
-        anyhow::bail!("No requested backends were available to benchmark");
+        bail!("No requested backends were available to benchmark");
     }
 
     let total_score = reports
@@ -410,7 +457,7 @@ pub fn parse_backends(input: &str) -> Result<Vec<BackendType>> {
                 "hyperlight" => Ok(BackendType::Hyperlight),
                 "kubernetes" | "k8s" => Ok(BackendType::Kubernetes),
                 "nomad" => Ok(BackendType::Nomad),
-                other => anyhow::bail!("Unknown backend: '{}'", other),
+                other => bail!("Unknown backend: '{}'", other),
             }
         })
         .collect()
@@ -470,9 +517,10 @@ mod tests {
             exec: Duration::from_millis(30),
             stop: Duration::from_millis(15),
             remove: Duration::from_millis(5),
+            cli_total: Duration::from_millis(100),
         };
         assert_eq!(r.startup(), Duration::from_millis(30));
-        assert_eq!(r.total(), Duration::from_millis(80));
+        assert_eq!(r.lifecycle_total(), Duration::from_millis(80));
     }
 
     #[test]
@@ -519,19 +567,26 @@ mod tests {
                     p95_ms: 15.0,
                     max_ms: 15.0,
                 },
-                total: MetricSummary {
+                lifecycle_total: MetricSummary {
                     min_ms: 120.0,
                     avg_ms: 130.0,
                     p50_ms: 128.0,
                     p95_ms: 140.0,
                     max_ms: 140.0,
                 },
-                throughput_per_second: 7.69,
+                total: MetricSummary {
+                    min_ms: 180.0,
+                    avg_ms: 190.0,
+                    p50_ms: 188.0,
+                    p95_ms: 200.0,
+                    max_ms: 200.0,
+                },
+                throughput_per_second: 5.26,
                 scores: ScoreBreakdown {
                     startup_score: 9.09,
                     exec_score: 83.33,
-                    latency_score: 7.69,
-                    throughput_score: 7.69,
+                    latency_score: 5.26,
+                    throughput_score: 5.26,
                     total_score: 12.34,
                 },
             }],
@@ -541,5 +596,6 @@ mod tests {
         let written = fs::read_to_string(path).unwrap();
         assert!(written.contains("\"total_score\": 12.34"));
         assert!(written.contains("\"backend\": \"docker\""));
+        assert!(written.contains("\"lifecycle_total\""));
     }
 }

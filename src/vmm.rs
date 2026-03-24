@@ -32,13 +32,42 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tokio::sync::RwLock;
 
 /// Global proxy handle registry. Proxy handles must outlive individual VmManager
 /// instances since VmManager is created fresh per HTTP request.
 static PROXY_HANDLES: std::sync::LazyLock<RwLock<HashMap<String, ProxyHandle>>> =
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+
+#[cfg(feature = "enterprise")]
+static POLICY_ENGINE_CACHE: LazyLock<Option<Arc<crate::policy::PolicyEngine>>> =
+    LazyLock::new(|| {
+        let default_config = PathBuf::from("agentkernel.toml");
+        if !default_config.exists() {
+            return None;
+        }
+
+        let cfg = match Config::from_file(&default_config) {
+            Ok(cfg) => cfg,
+            Err(_) => return None,
+        };
+
+        if !cfg.enterprise.enabled {
+            return None;
+        }
+
+        match crate::policy::PolicyEngine::new(&cfg.enterprise) {
+            Ok(engine) => {
+                eprintln!("[enterprise] Policy engine initialized");
+                Some(Arc::new(engine))
+            }
+            Err(e) => {
+                eprintln!("[enterprise] Failed to initialize policy engine: {}", e);
+                None
+            }
+        }
+    });
 use tokio::sync::OnceCell;
 
 /// Global container pool for fast ephemeral runs
@@ -257,7 +286,7 @@ pub struct VmManager {
     detached: HashMap<String, DetachedCommand>,
     /// Enterprise policy engine (when enterprise feature is enabled)
     #[cfg(feature = "enterprise")]
-    policy_engine: Option<crate::policy::PolicyEngine>,
+    policy_engine: Option<Arc<crate::policy::PolicyEngine>>,
 }
 
 /// Escape a string for use inside a single-quoted shell command.
@@ -317,33 +346,9 @@ impl VmManager {
         // Find next available CID
         let max_cid = sandboxes.values().map(|s| s.vsock_cid).max().unwrap_or(2);
 
-        // Initialize enterprise policy engine if configured
+        // Initialize enterprise policy engine once per process when configured
         #[cfg(feature = "enterprise")]
-        let policy_engine = {
-            let default_config = PathBuf::from("agentkernel.toml");
-            if default_config.exists() {
-                if let Ok(cfg) = Config::from_file(&default_config) {
-                    if cfg.enterprise.enabled {
-                        match crate::policy::PolicyEngine::new(&cfg.enterprise) {
-                            Ok(engine) => {
-                                eprintln!("[enterprise] Policy engine initialized");
-                                Some(engine)
-                            }
-                            Err(e) => {
-                                eprintln!("[enterprise] Failed to initialize policy engine: {}", e);
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
+        let policy_engine = POLICY_ENGINE_CACHE.clone();
 
         let mut manager = Self {
             backend,
@@ -2503,8 +2508,17 @@ impl VmManager {
         perms: &Permissions,
         files: &[FileInjection],
     ) -> Result<String> {
+        Self::run_ephemeral_with_backend(self.backend, image, cmd, perms, files).await
+    }
+
+    pub async fn run_ephemeral_with_backend(
+        backend: BackendType,
+        image: &str,
+        cmd: &[String],
+        perms: &Permissions,
+        files: &[FileInjection],
+    ) -> Result<String> {
         Self::enforce_command_policy(cmd)?;
-        // Build config from permissions
         let work_dir = if perms.mount_cwd {
             std::env::current_dir()
                 .ok()
@@ -2538,10 +2552,8 @@ impl VmManager {
             volumes: Vec::new(),
         };
 
-        // Use optimized `docker/podman run --rm` for container backends
-        // Note: File injection not supported in fast path; use generic path if files specified
         if files.is_empty() {
-            match self.backend {
+            match backend {
                 BackendType::Docker => {
                     use crate::docker_backend::{ContainerRuntime, ContainerSandbox};
                     let (exit_code, stdout, stderr) = ContainerSandbox::run_ephemeral_cmd(
@@ -2568,28 +2580,20 @@ impl VmManager {
                     }
                     return Ok(format!("{}{}", stdout, stderr));
                 }
-                _ => {
-                    // Fall through to generic start→exec→stop for other backends
-                }
+                _ => {}
             }
         }
 
-        // Generic path for non-container backends or when files need injection
         let name = format!("ephemeral-{}", &uuid::Uuid::new_v4().to_string()[..8]);
-        let mut sandbox = create_sandbox(self.backend, &name)?;
-
-        // Start sandbox
+        let mut sandbox = create_sandbox(backend, &name)?;
         sandbox.start(&config).await?;
 
-        // Inject files if specified
         if !files.is_empty() {
             sandbox.inject_files(files).await?;
         }
 
         let cmd_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
         let result = sandbox.exec(&cmd_refs).await;
-
-        // Always stop, even on error
         let _ = sandbox.stop().await;
 
         let result = result?;

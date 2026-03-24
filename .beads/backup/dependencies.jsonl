@@ -72,6 +72,7 @@
 {"created_at":"2026-02-08T01:41:07Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-a7u","issue_id":"agentkernel-a7u.2","metadata":"{}","type":"parent-child"}
 {"created_at":"2026-02-08T01:41:13Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-a7u","issue_id":"agentkernel-a7u.3","metadata":"{}","type":"parent-child"}
 {"created_at":"2026-02-08T01:41:20Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-a7u","issue_id":"agentkernel-a7u.4","metadata":"{}","type":"parent-child"}
+{"created_at":"2026-03-24T15:53:07Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-su2","issue_id":"agentkernel-aeqr","metadata":"{}","type":"discovered-from"}
 {"created_at":"2026-02-13T06:13:14Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-aki","issue_id":"agentkernel-aki.1","metadata":"{}","type":"parent-child"}
 {"created_at":"2026-02-13T06:13:16Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-aki","issue_id":"agentkernel-aki.2","metadata":"{}","type":"parent-child"}
 {"created_at":"2026-02-13T06:13:17Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-aki","issue_id":"agentkernel-aki.3","metadata":"{}","type":"parent-child"}
@@ -186,6 +187,7 @@
 {"created_at":"2026-02-08T01:48:47Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-r8i","issue_id":"agentkernel-r8i.8","metadata":"{}","type":"parent-child"}
 {"created_at":"2026-01-19T09:44:07Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-dyt","issue_id":"agentkernel-r8u","metadata":"{}","type":"blocks"}
 {"created_at":"2026-01-31T08:57:06Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-0jy","issue_id":"agentkernel-rti","metadata":"{}","type":"blocks"}
+{"created_at":"2026-03-23T09:02:58Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-ewr","issue_id":"agentkernel-su2","metadata":"{}","type":"discovered-from"}
 {"created_at":"2026-01-31T08:57:15Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-0jy","issue_id":"agentkernel-ux9","metadata":"{}","type":"blocks"}
 {"created_at":"2026-01-31T08:58:30Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-dj3","issue_id":"agentkernel-ux9","metadata":"{}","type":"blocks"}
 {"created_at":"2026-01-31T08:58:30Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-i03","issue_id":"agentkernel-ux9","metadata":"{}","type":"blocks"}

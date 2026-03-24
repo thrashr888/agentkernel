@@ -2284,7 +2284,15 @@ memory_mb = 512
             } else {
                 None
             };
-            let mut manager = VmManager::with_backend(backend_type)?;
+            let selected_backend = if let Some(bt) = backend_type {
+                bt
+            } else {
+                crate::backend::detect_best_backend().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No sandbox backend available. Need one of: KVM (Linux), Apple containers (macOS 26+), or Docker/Podman."
+                    )
+                })?
+            };
 
             // Optimized path: use run_ephemeral for single-operation execution
             // This is faster than create→start→exec→stop→remove cycle:
@@ -2292,9 +2300,14 @@ memory_mb = 512
             // - Apple containers: single `container run --rm` (~940ms vs ~2200ms)
             // Only used when --keep is not specified
             if !keep {
-                match manager
-                    .run_ephemeral_with_files(&docker_image, &command, &perms, &files)
-                    .await
+                match VmManager::run_ephemeral_with_backend(
+                    selected_backend,
+                    &docker_image,
+                    &command,
+                    &perms,
+                    &files,
+                )
+                .await
                 {
                     Ok(output) => {
                         print!("{}", output);
@@ -2302,7 +2315,7 @@ memory_mb = 512
                             write_run_receipt(
                                 path,
                                 Some(docker_image.clone()),
-                                Some(format!("{}", manager.backend())),
+                                Some(selected_backend.to_string()),
                                 0,
                                 &output,
                                 None,
@@ -2319,20 +2332,20 @@ memory_mb = 512
                                 write_run_receipt(
                                     path,
                                     Some(docker_image.clone()),
-                                    Some(format!("{}", manager.backend())),
+                                    Some(selected_backend.to_string()),
                                     exit_code,
                                     &combined_output,
                                     error_message,
                                 )?;
                                 eprintln!("Execution receipt written to {}", path.display());
                             }
-                            // Real error, bail out
                             bail!("{}", e);
                         }
-                        // Fall through to multi-step cycle for Firecracker
                     }
                 }
             }
+
+            let mut manager = VmManager::with_backend(Some(selected_backend))?;
 
             // Fallback: multi-step VM mode (for --keep or Firecracker backend)
             // Generate sandbox name: --branch derives from git, otherwise random
