@@ -145,6 +145,60 @@ impl Default for OrchestratorConfig {
     }
 }
 
+/// Shared configuration for hosted remote providers.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RemoteConfig {
+    /// Default runtime profile for remote sandboxes.
+    #[serde(default)]
+    pub default_profile: Option<String>,
+    /// Optional custom bridge executable or script path.
+    #[serde(default)]
+    pub bridge: Option<String>,
+    /// Workspace sync mode (currently "managed").
+    #[serde(default)]
+    pub sync_mode: Option<String>,
+    #[serde(default)]
+    pub daytona: RemoteProviderConfig,
+    #[serde(default)]
+    pub runloop: RemoteProviderConfig,
+    #[serde(default, rename = "e2b")]
+    pub e2b: RemoteProviderConfig,
+    #[serde(default, rename = "agentcomputer")]
+    pub agentcomputer: RemoteProviderConfig,
+    #[serde(default)]
+    pub profiles: std::collections::BTreeMap<String, RemoteProfileConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RemoteProviderConfig {
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub organization: Option<String>,
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RemoteProfileConfig {
+    #[serde(default)]
+    pub image: Option<String>,
+    #[serde(default)]
+    pub bootstrap: Option<String>,
+    #[serde(default)]
+    pub workspace_dir: Option<String>,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
 /// TLS configuration for the `[api.tls]` section in agentkernel.toml
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ApiTlsConfig {
@@ -310,6 +364,9 @@ pub struct Config {
     /// Orchestrator configuration for Kubernetes/Nomad backends
     #[serde(default)]
     pub orchestrator: OrchestratorConfig,
+    /// Remote provider configuration for hosted sandboxes
+    #[serde(default)]
+    pub remote: RemoteConfig,
     /// Enterprise policy management
     #[serde(default)]
     pub enterprise: EnterpriseConfig,
@@ -597,6 +654,7 @@ impl Config {
             build: BuildConfig::default(),
             files: Vec::new(),
             orchestrator: OrchestratorConfig::default(),
+            remote: RemoteConfig::default(),
             enterprise: EnterpriseConfig::default(),
             api: ApiConfig::default(),
             proxy: ProxyHooksConfig::default(),
@@ -859,6 +917,44 @@ mod tests {
         assert_eq!(config.resources.vcpus, 2);
         assert_eq!(config.resources.memory_mb, 1024);
         assert_eq!(config.network.vsock_cid, Some(5));
+    }
+
+    #[test]
+    fn test_parse_remote_config() {
+        let toml = r#"
+            [sandbox]
+            name = "remote-app"
+
+            [remote]
+            default_profile = "node-dev"
+            bridge = "./scripts/remote-bridge.mjs"
+            sync_mode = "managed"
+
+            [remote.daytona]
+            api_key_env = "DAYTONA_API_KEY"
+            organization = "acme"
+
+            [remote.profiles.node-dev]
+            image = "node:22"
+            workspace_dir = "/workspace"
+
+            [remote.profiles.node-dev.env]
+            NODE_ENV = "development"
+        "#;
+
+        let config = Config::from_str(toml).unwrap();
+        assert_eq!(config.remote.default_profile.as_deref(), Some("node-dev"));
+        assert_eq!(
+            config.remote.daytona.api_key_env.as_deref(),
+            Some("DAYTONA_API_KEY")
+        );
+        let profile = config.remote.profiles.get("node-dev").unwrap();
+        assert_eq!(profile.image.as_deref(), Some("node:22"));
+        assert_eq!(profile.workspace_dir.as_deref(), Some("/workspace"));
+        assert_eq!(
+            profile.env.get("NODE_ENV").map(String::as_str),
+            Some("development")
+        );
     }
 
     #[test]

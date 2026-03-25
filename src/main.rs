@@ -1075,14 +1075,26 @@ memory_mb = 512
                     validation::validate_git_ref(git_ref_val)?;
                 }
 
-                // Check setup status first
-                let status = check_installation();
-                if !status.is_ready() {
-                    bail!(
-                        "Agentkernel is not fully set up. Run 'agentkernel setup' first.\n\
-                     Missing: {}",
-                        missing_components(&status)
-                    );
+                // Parse backend option if provided
+                let backend_type = if let Some(ref b) = backend {
+                    Some(
+                        b.parse::<crate::backend::BackendType>()
+                            .map_err(|e| anyhow::anyhow!(e))?,
+                    )
+                } else {
+                    None
+                };
+
+                // Local runtimes require setup. Explicit remote backends do not.
+                if backend_type.is_none_or(|backend| !backend.is_remote()) {
+                    let status = check_installation();
+                    if !status.is_ready() {
+                        bail!(
+                            "Agentkernel is not fully set up. Run 'agentkernel setup' first.\n\
+                         Missing: {}",
+                            missing_components(&status)
+                        );
+                    }
                 }
 
                 // Load config: --config > --template > minimal default
@@ -1110,15 +1122,6 @@ memory_mb = 512
                     eprintln!("Warning: {}", warning);
                 }
 
-                // Parse backend option if provided
-                let backend_type = if let Some(ref b) = backend {
-                    Some(
-                        b.parse::<crate::backend::BackendType>()
-                            .map_err(|e| anyhow::anyhow!(e))?,
-                    )
-                } else {
-                    None
-                };
                 let mut manager = VmManager::with_backend(backend_type)?;
 
                 // Build from Dockerfile if configured, otherwise use base image
@@ -1418,11 +1421,6 @@ memory_mb = 512
             SandboxAction::Start { name, backend } => {
                 validation::validate_sandbox_name(&name)?;
 
-                let status = check_installation();
-                if !status.is_ready() {
-                    bail!("Agentkernel is not fully set up. Run 'agentkernel setup' first.");
-                }
-
                 // Parse backend option if provided
                 let backend_type = if let Some(ref b) = backend {
                     Some(
@@ -1433,6 +1431,17 @@ memory_mb = 512
                     None
                 };
                 let mut manager = VmManager::with_backend(backend_type)?;
+
+                let effective_backend = manager
+                    .get_state(&name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                if !effective_backend.is_remote() {
+                    let status = check_installation();
+                    if !status.is_ready() {
+                        bail!("Agentkernel is not fully set up. Run 'agentkernel setup' first.");
+                    }
+                }
 
                 if !manager.exists(&name) {
                     bail!(
@@ -4578,6 +4587,18 @@ fn run_info(name: &str) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ");
         println!("Ports:          {}", ports_str);
+    }
+    if !state.endpoints.is_empty() {
+        let endpoints_str = state
+            .endpoints
+            .iter()
+            .map(|endpoint| format!("{} -> {}", endpoint.container_port, endpoint.url))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("Endpoints:      {}", endpoints_str);
+    }
+    if let Some(ref revision) = state.workspace_revision {
+        println!("Workspace Rev:  {}", revision);
     }
     if !state.labels.is_empty() {
         let labels_str = state
