@@ -722,6 +722,29 @@ impl VmManager {
             .await
     }
 
+    /// Create a new sandbox with an explicit backend, without mutating the
+    /// manager's default backend for future operations.
+    pub async fn create_with_backend(
+        &mut self,
+        backend: BackendType,
+        name: &str,
+        image: &str,
+        vcpus: u32,
+        memory_mb: u64,
+    ) -> Result<()> {
+        self.create_internal(
+            backend,
+            name,
+            image,
+            vcpus,
+            memory_mb,
+            None,
+            Vec::new(),
+            None,
+        )
+        .await
+    }
+
     /// Create a new sandbox with an optional TTL
     pub async fn create_with_ttl(
         &mut self,
@@ -761,7 +784,36 @@ impl VmManager {
         ports: Vec<PortMapping>,
         agent: Option<String>,
     ) -> Result<()> {
+        self.create_internal(
+            self.backend,
+            name,
+            image,
+            vcpus,
+            memory_mb,
+            ttl_seconds,
+            ports,
+            agent,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_internal(
+        &mut self,
+        backend: BackendType,
+        name: &str,
+        image: &str,
+        vcpus: u32,
+        memory_mb: u64,
+        ttl_seconds: Option<u64>,
+        ports: Vec<PortMapping>,
+        agent: Option<String>,
+    ) -> Result<()> {
         let create_start = std::time::Instant::now();
+
+        if !crate::backend::backend_available(backend) {
+            bail!("Backend '{}' is not available on this system", backend);
+        }
 
         if self.sandboxes.contains_key(name) {
             bail!("Sandbox '{}' already exists", name);
@@ -778,7 +830,7 @@ impl VmManager {
         .await?;
 
         // For Firecracker, convert Docker image names to runtime names
-        let effective_image = if self.backend == BackendType::Firecracker {
+        let effective_image = if backend == BackendType::Firecracker {
             let runtime = docker_image_to_firecracker_runtime(image);
             self.rootfs_path(runtime)?;
             runtime.to_string()
@@ -802,7 +854,7 @@ impl VmManager {
             memory_mb,
             vsock_cid,
             created_at: created_at.clone(),
-            backend: Some(self.backend),
+            backend: Some(backend),
             remote_id: None,
             remote_namespace: None,
             remote_metadata: HashMap::new(),
@@ -837,7 +889,7 @@ impl VmManager {
         log_event(AuditEvent::SandboxCreated {
             name: name.to_string(),
             image: effective_image,
-            backend: self.backend.to_string(),
+            backend: backend.to_string(),
             labels: self
                 .sandboxes
                 .get(name)
@@ -846,7 +898,7 @@ impl VmManager {
         });
         crate::metrics::record_sandbox_lifecycle(
             "created",
-            &self.backend.to_string(),
+            &backend.to_string(),
             create_start.elapsed().as_secs_f64(),
         );
         crate::metrics::inc_active_sandboxes();
@@ -1021,6 +1073,26 @@ impl VmManager {
                 .get_mut(name)
                 .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
             state.placeholder_secrets = enabled;
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    /// Mark a sandbox so its next remote start restores from a provider-backed
+    /// snapshot handle.
+    pub fn set_remote_restore_snapshot(&mut self, name: &str, snapshot_handle: &str) -> Result<()> {
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state
+                .remote_metadata
+                .insert("restore_snapshot".to_string(), snapshot_handle.to_string());
         }
         let state = self
             .sandboxes

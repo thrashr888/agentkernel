@@ -1642,6 +1642,10 @@ impl McpServer {
                 .unwrap_or_else(|| "docker".to_string()),
             vcpus: sandbox_state.vcpus,
             memory_mb: sandbox_state.memory_mb,
+            remote_id: sandbox_state.remote_id.clone(),
+            remote_namespace: sandbox_state.remote_namespace.clone(),
+            remote_metadata: sandbox_state.remote_metadata.clone(),
+            workspace_revision: sandbox_state.workspace_revision.clone(),
         };
 
         let meta = crate::snapshot::take(sandbox, name, &input)?;
@@ -1689,9 +1693,29 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
-                manager
-                    .create(&restore_name, &meta.image_tag, meta.vcpus, meta.memory_mb)
-                    .await?;
+                if let Ok(snapshot_backend) = meta.backend.parse::<crate::backend::BackendType>() {
+                    manager
+                        .create_with_backend(
+                            snapshot_backend,
+                            &restore_name,
+                            meta.restore_image(),
+                            meta.vcpus,
+                            meta.memory_mb,
+                        )
+                        .await?;
+                } else {
+                    manager
+                        .create(
+                            &restore_name,
+                            meta.restore_image(),
+                            meta.vcpus,
+                            meta.memory_mb,
+                        )
+                        .await?;
+                }
+                if let Some(snapshot_handle) = meta.remote_snapshot.as_deref() {
+                    manager.set_remote_restore_snapshot(&restore_name, snapshot_handle)?;
+                }
                 Ok(format!(
                     "Restored snapshot '{}' as sandbox '{}'.",
                     name, restore_name

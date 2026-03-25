@@ -74,6 +74,9 @@ try {
     case "snapshot":
       respond(await takeSnapshot(request));
       break;
+    case "delete_snapshot":
+      respond(await deleteSnapshot(request));
+      break;
     case "restore":
       respond(await restoreSnapshot(request));
       break;
@@ -109,6 +112,25 @@ function nameMapPath(name) {
 
 function snapshotDir(remoteId, snapshotName) {
   return path.join(rootDir, "snapshots", remoteId, snapshotName);
+}
+
+function encodeSnapshotHandle(remoteId, snapshotName) {
+  return `${remoteId}:${snapshotName}`;
+}
+
+function decodeSnapshotHandle(handle, fallbackRemoteId) {
+  const separator = handle.indexOf(":");
+  if (separator === -1) {
+    if (!fallbackRemoteId) {
+      throw new Error("snapshot handle is missing its remote identifier");
+    }
+    return { remoteId: fallbackRemoteId, snapshotName: handle };
+  }
+
+  return {
+    remoteId: handle.slice(0, separator),
+    snapshotName: handle.slice(separator + 1),
+  };
 }
 
 async function loadSandbox(request) {
@@ -361,7 +383,7 @@ async function takeSnapshot(request) {
   return toResponse(state, {
     remote_metadata: {
       ...state.remoteMetadata,
-      snapshot_handle: snapshotName,
+      snapshot_handle: encodeSnapshotHandle(state.remoteId, snapshotName),
       last_known_status: state.running ? "running" : "stopped",
     },
   });
@@ -369,16 +391,33 @@ async function takeSnapshot(request) {
 
 async function restoreSnapshot(request) {
   const state = await loadSandbox(request);
-  const snapshotName = request.snapshot_name;
-  if (!snapshotName) {
+  const snapshotHandle = request.snapshot_name;
+  if (!snapshotHandle) {
     throw new Error("restore requires snapshot_name");
   }
-  const source = snapshotDir(state.remoteId, snapshotName);
+  const { remoteId, snapshotName } = decodeSnapshotHandle(
+    snapshotHandle,
+    state.remoteId,
+  );
+  const source = snapshotDir(remoteId, snapshotName);
   await fs.access(source);
   await mirrorDirectory(source, state.fsRoot, []);
   state.workspaceRevision = await hashTree(state.workspaceDir);
   await saveSandbox(state);
   return toResponse(state);
+}
+
+async function deleteSnapshot(request) {
+  const snapshotHandle = request.snapshot_name;
+  if (!snapshotHandle) {
+    throw new Error("delete_snapshot requires snapshot_name");
+  }
+  const { remoteId, snapshotName } = decodeSnapshotHandle(snapshotHandle);
+  await fs.rm(snapshotDir(remoteId, snapshotName), {
+    recursive: true,
+    force: true,
+  });
+  return { success: true };
 }
 
 function ensureRunning(state) {

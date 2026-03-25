@@ -3828,6 +3828,10 @@ memory_mb = 512
                         .unwrap_or_else(|| "docker".to_string()),
                     vcpus: state.vcpus,
                     memory_mb: state.memory_mb,
+                    remote_id: state.remote_id.clone(),
+                    remote_namespace: state.remote_namespace.clone(),
+                    remote_metadata: state.remote_metadata.clone(),
+                    workspace_revision: state.workspace_revision.clone(),
                 };
 
                 println!("Saving session '{}'...", name);
@@ -3839,7 +3843,19 @@ memory_mb = 512
                 let sess = session::get(&name)?
                     .ok_or_else(|| anyhow::anyhow!("Session '{}' not found", name))?;
 
-                let mut manager = VmManager::new()?;
+                let snapshot_backend = if sess.status == session::SessionStatus::Saved {
+                    if let Some(ref snap_name) = sess.snapshot {
+                        snapshot::get(snap_name)?.and_then(|meta| {
+                            meta.backend.parse::<crate::backend::BackendType>().ok()
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let mut manager = VmManager::with_backend(snapshot_backend)?;
 
                 if sess.status == session::SessionStatus::Saved {
                     // Restore from snapshot
@@ -3848,9 +3864,32 @@ memory_mb = 512
                             .ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", snap_name))?;
                         if !manager.exists(&sess.sandbox) {
                             println!("Restoring from snapshot '{}'...", snap_name);
-                            manager
-                                .create(&sess.sandbox, &meta.image_tag, meta.vcpus, meta.memory_mb)
-                                .await?;
+                            if let Ok(snapshot_backend) =
+                                meta.backend.parse::<crate::backend::BackendType>()
+                            {
+                                manager
+                                    .create_with_backend(
+                                        snapshot_backend,
+                                        &sess.sandbox,
+                                        meta.restore_image(),
+                                        meta.vcpus,
+                                        meta.memory_mb,
+                                    )
+                                    .await?;
+                            } else {
+                                manager
+                                    .create(
+                                        &sess.sandbox,
+                                        meta.restore_image(),
+                                        meta.vcpus,
+                                        meta.memory_mb,
+                                    )
+                                    .await?;
+                            }
+                            if let Some(snapshot_handle) = meta.remote_snapshot.as_deref() {
+                                manager
+                                    .set_remote_restore_snapshot(&sess.sandbox, snapshot_handle)?;
+                            }
                         }
                     }
                 }
@@ -3898,6 +3937,10 @@ memory_mb = 512
                         .unwrap_or_else(|| "docker".to_string()),
                     vcpus: state.vcpus,
                     memory_mb: state.memory_mb,
+                    remote_id: state.remote_id.clone(),
+                    remote_namespace: state.remote_namespace.clone(),
+                    remote_metadata: state.remote_metadata.clone(),
+                    workspace_revision: state.workspace_revision.clone(),
                 };
 
                 println!("Snapshotting '{}' → '{}'...", sandbox, snap_name);
@@ -3949,13 +3992,50 @@ memory_mb = 512
                 };
                 let mut manager = VmManager::with_backend(backend_type)?;
 
+                if let (Some(snapshot_handle), Some(explicit_backend)) =
+                    (meta.remote_snapshot.as_deref(), backend_type)
+                {
+                    let snapshot_backend = meta
+                        .backend
+                        .parse::<crate::backend::BackendType>()
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    if explicit_backend != snapshot_backend {
+                        anyhow::bail!(
+                            "Remote snapshot '{}' was created on backend '{}'; restoring to '{}' is not supported",
+                            snapshot_handle,
+                            snapshot_backend,
+                            explicit_backend
+                        );
+                    }
+                }
+
                 println!(
                     "Restoring snapshot '{}' as sandbox '{}'...",
                     name, restore_name
                 );
-                manager
-                    .create(&restore_name, &meta.image_tag, meta.vcpus, meta.memory_mb)
-                    .await?;
+                if let Ok(snapshot_backend) = meta.backend.parse::<crate::backend::BackendType>() {
+                    manager
+                        .create_with_backend(
+                            snapshot_backend,
+                            &restore_name,
+                            meta.restore_image(),
+                            meta.vcpus,
+                            meta.memory_mb,
+                        )
+                        .await?;
+                } else {
+                    manager
+                        .create(
+                            &restore_name,
+                            meta.restore_image(),
+                            meta.vcpus,
+                            meta.memory_mb,
+                        )
+                        .await?;
+                }
+                if let Some(snapshot_handle) = meta.remote_snapshot.as_deref() {
+                    manager.set_remote_restore_snapshot(&restore_name, snapshot_handle)?;
+                }
 
                 println!("Sandbox '{}' restored from snapshot.", restore_name);
                 println!("\nNext steps:");
