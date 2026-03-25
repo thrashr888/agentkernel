@@ -4394,6 +4394,10 @@ async fn handle_take_snapshot(req: Request<Incoming>, state: Arc<AppState>) -> R
             .unwrap_or_else(|| "docker".to_string()),
         vcpus: sandbox_state.vcpus,
         memory_mb: sandbox_state.memory_mb,
+        remote_id: sandbox_state.remote_id.clone(),
+        remote_namespace: sandbox_state.remote_namespace.clone(),
+        remote_metadata: sandbox_state.remote_metadata.clone(),
+        workspace_revision: sandbox_state.workspace_revision.clone(),
     };
 
     match crate::snapshot::take(&body.sandbox, &body.name, &input) {
@@ -4515,11 +4519,39 @@ async fn handle_restore_snapshot(
         }
     };
 
-    match manager
-        .create(&restore_name, &meta.image_tag, meta.vcpus, meta.memory_mb)
-        .await
-    {
+    let restore_result =
+        if let Ok(snapshot_backend) = meta.backend.parse::<crate::backend::BackendType>() {
+            manager
+                .create_with_backend(
+                    snapshot_backend,
+                    &restore_name,
+                    meta.restore_image(),
+                    meta.vcpus,
+                    meta.memory_mb,
+                )
+                .await
+        } else {
+            manager
+                .create(
+                    &restore_name,
+                    meta.restore_image(),
+                    meta.vcpus,
+                    meta.memory_mb,
+                )
+                .await
+        };
+
+    match restore_result {
         Ok(()) => {
+            if let Some(snapshot_handle) = meta.remote_snapshot.as_deref()
+                && let Err(e) = manager.set_remote_restore_snapshot(&restore_name, snapshot_handle)
+            {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(e.to_string()),
+                );
+            }
+
             // Build SandboxInfo from manager state
             let state_info = manager.get_state(&restore_name);
             let running = manager.is_running(&restore_name);
@@ -4541,7 +4573,9 @@ async fn handle_restore_snapshot(
                     status: sandbox_status(state_info, running),
                     backend: meta.backend.clone(),
                     ip,
-                    image: Some(meta.image_tag.clone()),
+                    image: state_info
+                        .map(|s| s.image.clone())
+                        .or_else(|| Some(meta.restore_image().to_string())),
                     vcpus: Some(meta.vcpus),
                     memory_mb: Some(meta.memory_mb),
                     created_at: state_info.map(|s| s.created_at.clone()),
