@@ -5,8 +5,9 @@
 
 use crate::audit::{AuditEvent, log_event};
 use crate::backend::{
-    BackendType, FileInjection, PortMapping, Sandbox, SandboxConfig, create_sandbox,
-    detect_best_backend,
+    BackendType, FileInjection, PortMapping, RemoteSandboxContext, ResolvedEndpoint, Sandbox,
+    SandboxConfig, SandboxRuntimeMetadata, backend_capabilities, create_sandbox,
+    create_sandbox_with_state, detect_best_backend,
 };
 use crate::config::Config;
 use crate::docker_backend::detect_container_runtime;
@@ -138,6 +139,15 @@ pub struct SandboxState {
     /// Remote namespace (K8s namespace or Nomad namespace)
     #[serde(default)]
     pub remote_namespace: Option<String>,
+    /// Provider-specific remote metadata used to reconnect and restore state.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub remote_metadata: HashMap<String, String>,
+    /// Managed workspace revision for remote sync conflict detection.
+    #[serde(default)]
+    pub workspace_revision: Option<String>,
+    /// Provider-resolved service endpoints for exposed ports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoints: Vec<ResolvedEndpoint>,
     /// Time-to-live in seconds (None = no expiry)
     #[serde(default)]
     pub ttl_seconds: Option<u64>,
@@ -233,6 +243,16 @@ impl SandboxState {
     fn archived_time(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         self.archived_at.as_deref().and_then(Self::parse_rfc3339)
     }
+
+    fn remote_context(&self) -> RemoteSandboxContext {
+        RemoteSandboxContext {
+            remote_id: self.remote_id.clone(),
+            remote_namespace: self.remote_namespace.clone(),
+            remote_metadata: self.remote_metadata.clone(),
+            workspace_revision: self.workspace_revision.clone(),
+            endpoints: self.endpoints.clone(),
+        }
+    }
 }
 
 /// Status of a detached command
@@ -318,6 +338,10 @@ impl VmManager {
         let sandboxes_dir = data_dir.join("sandboxes");
         std::fs::create_dir_all(&sandboxes_dir)?;
 
+        // Load existing sandboxes first so remote-only environments still have
+        // a backend anchor when no local runtime is installed.
+        let sandboxes = Self::load_sandboxes(&sandboxes_dir)?;
+
         // Use explicit backend or auto-detect
         let backend = if let Some(b) = explicit_backend {
             // Verify the requested backend is available
@@ -326,11 +350,13 @@ impl VmManager {
             }
             b
         } else {
-            detect_best_backend().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "No sandbox backend available. Need one of: KVM (Linux), Apple containers (macOS 26+), or Docker/Podman."
-                )
-            })?
+            detect_best_backend()
+                .or_else(|| sandboxes.values().find_map(|state| state.backend))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No sandbox backend available. Need one of: KVM (Linux), Apple containers (macOS 26+), Docker/Podman, or a configured remote backend."
+                    )
+                })?
         };
 
         // Find rootfs path (only needed for Firecracker)
@@ -339,9 +365,6 @@ impl VmManager {
         } else {
             None
         };
-
-        // Load existing sandboxes
-        let sandboxes = Self::load_sandboxes(&sandboxes_dir)?;
 
         // Find next available CID
         let max_cid = sandboxes.values().map(|s| s.vsock_cid).max().unwrap_or(2);
@@ -463,12 +486,16 @@ impl VmManager {
 
         // Create sandbox objects for running sandboxes
         for name in running_set {
-            let backend = self
-                .sandboxes
-                .get(&name)
-                .and_then(|s| s.backend)
-                .unwrap_or(self.backend);
-            if let Ok(sandbox) = create_sandbox(backend, &name) {
+            let Some(state) = self.sandboxes.get(&name) else {
+                continue;
+            };
+            let backend = state.backend.unwrap_or(self.backend);
+            if let Ok(sandbox) = create_sandbox_with_state(
+                backend,
+                &name,
+                &crate::config::OrchestratorConfig::default(),
+                backend.is_remote().then(|| state.remote_context()),
+            ) {
                 self.running.insert(name, sandbox);
             }
         }
@@ -541,6 +568,65 @@ impl VmManager {
         if path.exists() {
             std::fs::remove_file(path)?;
         }
+        Ok(())
+    }
+
+    fn apply_runtime_metadata(state: &mut SandboxState, metadata: &SandboxRuntimeMetadata) {
+        state.remote_id = metadata.remote_id.clone();
+        state.remote_namespace = metadata.remote_namespace.clone();
+        state.remote_metadata = metadata.remote_metadata.clone();
+        state.workspace_revision = metadata.workspace_revision.clone();
+        state.endpoints = metadata.endpoints.clone();
+    }
+
+    fn sync_runtime_metadata(&mut self, name: &str) -> Result<()> {
+        let metadata = self
+            .running
+            .get(name)
+            .and_then(|sandbox| sandbox.runtime_metadata());
+
+        if let Some(metadata) = metadata {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            Self::apply_runtime_metadata(state, &metadata);
+            let snapshot = state.clone();
+            self.save_sandbox(&snapshot)?;
+        }
+
+        Ok(())
+    }
+
+    fn hydrate_remote_runtime(&mut self, name: &str) -> Result<()> {
+        if self.running.contains_key(name) {
+            return Ok(());
+        }
+
+        let Some(state) = self.sandboxes.get(name).cloned() else {
+            bail!("Sandbox '{}' not found", name);
+        };
+
+        let backend = state.backend.unwrap_or(self.backend);
+        if !backend.is_remote() {
+            return Ok(());
+        }
+
+        let running = state
+            .remote_metadata
+            .get("last_known_status")
+            .is_some_and(|value| value == "running");
+        if !running {
+            return Ok(());
+        }
+
+        let sandbox = create_sandbox_with_state(
+            backend,
+            name,
+            &crate::config::OrchestratorConfig::default(),
+            Some(state.remote_context()),
+        )?;
+        self.running.insert(name.to_string(), sandbox);
         Ok(())
     }
 
@@ -719,6 +805,9 @@ impl VmManager {
             backend: Some(self.backend),
             remote_id: None,
             remote_namespace: None,
+            remote_metadata: HashMap::new(),
+            workspace_revision: None,
+            endpoints: Vec::new(),
             ttl_seconds,
             expires_at,
             ports,
@@ -1199,9 +1288,34 @@ impl VmManager {
 
         // Use the backend from stored state, or fall back to current backend
         let backend = state.backend.unwrap_or(self.backend);
+        let capabilities = backend_capabilities(backend);
+
+        if perms.mount_home && !capabilities.mount_home {
+            bail!(
+                "Backend '{}' does not support mounting the host home directory",
+                backend
+            );
+        }
+        if state.ssh_enabled && !capabilities.ssh {
+            bail!("Backend '{}' does not support SSH exposure", backend);
+        }
+        if !state.volumes.is_empty() && !capabilities.host_volumes {
+            bail!("Backend '{}' does not support host volume mounts", backend);
+        }
+        if !state.secret_bindings.is_empty() && !capabilities.proxy_secret_bindings {
+            bail!(
+                "Backend '{}' does not support proxy-based secret bindings; use secret env vars or secret files instead",
+                backend
+            );
+        }
 
         // Create sandbox using unified factory
-        let mut sandbox = create_sandbox(backend, name)?;
+        let mut sandbox = create_sandbox_with_state(
+            backend,
+            name,
+            &crate::config::OrchestratorConfig::default(),
+            backend.is_remote().then(|| state.remote_context()),
+        )?;
 
         // Convert permissions to SandboxConfig
         let work_dir = if perms.mount_cwd {
@@ -1573,6 +1687,13 @@ impl VmManager {
         };
 
         sandbox.start(&config).await?;
+        if let Some(metadata) = sandbox.runtime_metadata()
+            && let Some(persisted) = self.sandboxes.get_mut(name)
+        {
+            Self::apply_runtime_metadata(persisted, &metadata);
+            let snapshot = persisted.clone();
+            self.save_sandbox(&snapshot)?;
+        }
 
         // Inject non-SSH files first
         if !files.is_empty() {
@@ -1813,6 +1934,7 @@ impl VmManager {
         }
 
         self.running.insert(name.to_string(), sandbox);
+        let _ = self.sync_runtime_metadata(name);
         self.touch_activity(name)?;
 
         log_event(AuditEvent::SandboxStarted {
@@ -1892,6 +2014,7 @@ impl VmManager {
                 .await?;
         }
 
+        let _ = self.hydrate_remote_runtime(name);
         let sandbox = self.running.get_mut(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Sandbox '{}' is not running. Start it with: agentkernel start {}",
@@ -1904,6 +2027,7 @@ impl VmManager {
 
         let exec_start = std::time::Instant::now();
         let result = sandbox.exec_with_options(&cmd_refs, opts).await?;
+        let _ = self.sync_runtime_metadata(name);
         crate::metrics::record_command(
             &self.backend.to_string(),
             exec_start.elapsed().as_secs_f64(),
@@ -1953,6 +2077,7 @@ impl VmManager {
                 .await?;
         }
 
+        let _ = self.hydrate_remote_runtime(name);
         let sandbox = self.running.get_mut(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Sandbox '{}' is not running. Start it with: agentkernel start {}",
@@ -2027,6 +2152,7 @@ impl VmManager {
 
         let exit_path = format!("/tmp/ak-{}.exit", cmd_id);
         let pid_str = cmd.pid.to_string();
+        let _ = self.hydrate_remote_runtime(&cmd.sandbox);
         let sandbox = self
             .running
             .get_mut(&cmd.sandbox)
@@ -2084,6 +2210,7 @@ impl VmManager {
             .ok_or_else(|| anyhow::anyhow!("Detached command '{}' not found", cmd_id))?
             .clone();
 
+        let _ = self.hydrate_remote_runtime(&cmd.sandbox);
         let sandbox = self
             .running
             .get_mut(&cmd.sandbox)
@@ -2116,6 +2243,7 @@ impl VmManager {
             return Ok(());
         }
 
+        let _ = self.hydrate_remote_runtime(&cmd.sandbox);
         let sandbox = self
             .running
             .get_mut(&cmd.sandbox)
@@ -2149,6 +2277,7 @@ impl VmManager {
             sandbox: name.to_string(),
         });
 
+        let _ = self.hydrate_remote_runtime(name);
         let result = {
             let sandbox = self.running.get_mut(name).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -2161,6 +2290,7 @@ impl VmManager {
         };
 
         if result.is_ok() {
+            let _ = self.sync_runtime_metadata(name);
             let _ = self.touch_activity(name);
         }
 
@@ -2170,12 +2300,20 @@ impl VmManager {
     /// Stop a sandbox
     pub async fn stop(&mut self, name: &str) -> Result<()> {
         let stop_start = std::time::Instant::now();
+        let _ = self.hydrate_remote_runtime(name);
         // Shut down the proxy if running
         if let Some(handle) = PROXY_HANDLES.write().await.remove(name) {
             let _ = handle.shutdown_tx.send(());
         }
         if let Some(mut sandbox) = self.running.remove(name) {
             sandbox.stop().await?;
+            if let Some(metadata) = sandbox.runtime_metadata()
+                && let Some(state) = self.sandboxes.get_mut(name)
+            {
+                Self::apply_runtime_metadata(state, &metadata);
+                let snapshot = state.clone();
+                self.save_sandbox(&snapshot)?;
+            }
             log_event(AuditEvent::SandboxStopped {
                 name: name.to_string(),
             });
@@ -2196,7 +2334,17 @@ impl VmManager {
             let _ = handle.shutdown_tx.send(());
         }
         if let Some(mut sandbox) = self.running.remove(name) {
-            let _ = sandbox.stop().await;
+            let _ = sandbox.remove().await;
+        } else if let Some(state) = self.sandboxes.get(name).cloned() {
+            let backend = state.backend.unwrap_or(self.backend);
+            if let Ok(mut sandbox) = create_sandbox_with_state(
+                backend,
+                name,
+                &crate::config::OrchestratorConfig::default(),
+                backend.is_remote().then(|| state.remote_context()),
+            ) {
+                let _ = sandbox.remove().await;
+            }
         }
 
         self.delete_sandbox(name)?;
@@ -2406,7 +2554,13 @@ impl VmManager {
                     .running
                     .get(name)
                     .map(|s| s.is_running())
-                    .unwrap_or(false);
+                    .unwrap_or_else(|| {
+                        state.backend.is_some_and(|backend| backend.is_remote())
+                            && state
+                                .remote_metadata
+                                .get("last_known_status")
+                                .is_some_and(|value| value == "running")
+                    });
                 (name.as_str(), running, state.backend)
             })
             .collect()
@@ -2423,7 +2577,15 @@ impl VmManager {
         self.running
             .get(name)
             .map(|s| s.is_running())
-            .unwrap_or(false)
+            .unwrap_or_else(|| {
+                self.sandboxes.get(name).is_some_and(|state| {
+                    state.backend.is_some_and(|backend| backend.is_remote())
+                        && state
+                            .remote_metadata
+                            .get("last_known_status")
+                            .is_some_and(|value| value == "running")
+                })
+            })
     }
 
     /// Update persisted sandbox resource values without recreating.
@@ -2629,6 +2791,7 @@ impl VmManager {
 
     /// Write a file to a running sandbox
     pub async fn write_file(&mut self, name: &str, path: &str, content: &[u8]) -> Result<()> {
+        let _ = self.hydrate_remote_runtime(name);
         let sandbox = self.running.get_mut(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Sandbox '{}' is not running. Start it with: agentkernel start {}",
@@ -2638,6 +2801,7 @@ impl VmManager {
         })?;
 
         sandbox.write_file(path, content).await?;
+        let _ = self.sync_runtime_metadata(name);
 
         log_event(AuditEvent::FileWritten {
             sandbox: name.to_string(),
@@ -2688,13 +2852,23 @@ impl VmManager {
 
     /// Delete a file from a running sandbox
     pub async fn delete_file(&mut self, name: &str, path: &str) -> Result<()> {
-        let cmd = vec!["rm".to_string(), "-f".to_string(), path.to_string()];
-        self.exec_cmd(name, &cmd).await?;
+        let _ = self.hydrate_remote_runtime(name);
+        let sandbox = self.running.get_mut(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Sandbox '{}' is not running. Start it with: agentkernel start {}",
+                name,
+                name
+            )
+        })?;
+
+        sandbox.remove_file(path).await?;
+        let _ = self.sync_runtime_metadata(name);
         Ok(())
     }
 
     /// Read a file from a running sandbox
     pub async fn read_file(&mut self, name: &str, path: &str) -> Result<Vec<u8>> {
+        let _ = self.hydrate_remote_runtime(name);
         let sandbox = self.running.get_mut(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Sandbox '{}' is not running. Start it with: agentkernel start {}",
@@ -2704,6 +2878,7 @@ impl VmManager {
         })?;
 
         let content = sandbox.read_file(path).await?;
+        let _ = self.sync_runtime_metadata(name);
 
         log_event(AuditEvent::FileRead {
             sandbox: name.to_string(),
@@ -2736,6 +2911,9 @@ mod tests {
             backend: None,
             remote_id: None,
             remote_namespace: None,
+            remote_metadata: HashMap::new(),
+            workspace_revision: None,
+            endpoints: Vec::new(),
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -2797,6 +2975,9 @@ mod tests {
             backend: None,
             remote_id: None,
             remote_namespace: None,
+            remote_metadata: HashMap::new(),
+            workspace_revision: None,
+            endpoints: Vec::new(),
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -2868,6 +3049,9 @@ mod tests {
             backend: None,
             remote_id: None,
             remote_namespace: None,
+            remote_metadata: HashMap::new(),
+            workspace_revision: None,
+            endpoints: Vec::new(),
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -2955,6 +3139,9 @@ mod tests {
                 backend: None,
                 remote_id: None,
                 remote_namespace: None,
+                remote_metadata: HashMap::new(),
+                workspace_revision: None,
+                endpoints: Vec::new(),
                 ttl_seconds: None,
                 expires_at: None,
                 ports: Vec::new(),
@@ -3023,6 +3210,9 @@ mod tests {
             backend: None,
             remote_id: None,
             remote_namespace: None,
+            remote_metadata: HashMap::new(),
+            workspace_revision: None,
+            endpoints: Vec::new(),
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3091,6 +3281,9 @@ mod tests {
                 backend: None,
                 remote_id: None,
                 remote_namespace: None,
+                remote_metadata: HashMap::new(),
+                workspace_revision: None,
+                endpoints: Vec::new(),
                 ttl_seconds: None,
                 expires_at: None,
                 ports: Vec::new(),
@@ -3160,6 +3353,9 @@ mod tests {
             backend: None,
             remote_id: None,
             remote_namespace: None,
+            remote_metadata: HashMap::new(),
+            workspace_revision: None,
+            endpoints: Vec::new(),
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3225,6 +3421,9 @@ mod tests {
             backend: None,
             remote_id: None,
             remote_namespace: None,
+            remote_metadata: HashMap::new(),
+            workspace_revision: None,
+            endpoints: Vec::new(),
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3286,6 +3485,9 @@ mod tests {
             backend: None,
             remote_id: None,
             remote_namespace: None,
+            remote_metadata: HashMap::new(),
+            workspace_revision: None,
+            endpoints: Vec::new(),
             ttl_seconds: Some(3600),
             expires_at: Some("2026-01-01T01:00:00Z".to_string()),
             ports: Vec::new(),

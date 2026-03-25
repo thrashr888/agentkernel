@@ -224,6 +224,67 @@ max_sandboxes = 200                  # Hard cap on total sandboxes
 
 See the [Orchestration Guide](../operations/index.md) for detailed usage and deployment instructions.
 
+## [remote]
+
+Configuration for hosted remote backends (`daytona`, `runloop`, `e2b`, `agentcomputer`).
+
+```toml
+[remote]
+default_profile = "node-dev"
+bridge = "./scripts/remote-bridge.mjs"
+sync_mode = "managed"
+
+[remote.daytona]
+api_key_env = "DAYTONA_API_KEY"
+organization = "acme"
+
+[remote.runloop]
+api_key_env = "RUNLOOP_API_KEY"
+
+[remote.e2b]
+api_key_env = "E2B_API_KEY"
+
+[remote.agentcomputer]
+api_key_env = "AGENTCOMPUTER_API_KEY"
+
+[remote.profiles.node-dev]
+image = "node:22"
+workspace_dir = "/workspace"
+bootstrap = "npm install"
+
+[remote.profiles.node-dev.env]
+NODE_ENV = "development"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `default_profile` | string | none | Remote runtime profile used when no profile is selected |
+| `bridge` | string | `scripts/remote-bridge.mjs` | Custom remote bridge executable or script |
+| `sync_mode` | string | `managed` | Remote workspace sync mode |
+
+### [remote.<provider>]
+
+Supported providers: `daytona`, `runloop`, `e2b`, `agentcomputer`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `api_key` | string | none | Inline provider API key |
+| `api_key_env` | string | none | Environment variable containing the API key |
+| `base_url` | string | provider default | Override API base URL |
+| `organization` | string | none | Provider organization or team |
+| `project` | string | none | Provider project/workspace name |
+| `region` | string | none | Default provider region |
+| `profile` | string | none | Provider-specific default runtime profile |
+
+### [remote.profiles.<name>]
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `image` | string | none | Provider-neutral runtime hint used by the bridge |
+| `workspace_dir` | string | `/workspace` | Workspace root inside the remote sandbox |
+| `bootstrap` | string | none | Startup/bootstrap command for the remote runtime |
+| `env` | table | `{}` | Environment variables injected into the remote runtime |
+
 ## Full Example
 
 ```toml
