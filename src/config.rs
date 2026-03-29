@@ -163,6 +163,8 @@ pub struct RemoteConfig {
     pub runloop: RemoteProviderConfig,
     #[serde(default, rename = "e2b")]
     pub e2b: RemoteProviderConfig,
+    #[serde(default)]
+    pub modal: RemoteProviderConfig,
     #[serde(default, rename = "agentcomputer")]
     pub agentcomputer: RemoteProviderConfig,
     #[serde(default)]
@@ -176,7 +178,17 @@ pub struct RemoteProviderConfig {
     #[serde(default)]
     pub api_key_env: Option<String>,
     #[serde(default)]
+    pub token_id: Option<String>,
+    #[serde(default)]
+    pub token_id_env: Option<String>,
+    #[serde(default)]
+    pub token_secret: Option<String>,
+    #[serde(default)]
+    pub token_secret_env: Option<String>,
+    #[serde(default)]
     pub base_url: Option<String>,
+    #[serde(default)]
+    pub environment: Option<String>,
     #[serde(default)]
     pub organization: Option<String>,
     #[serde(default)]
@@ -783,6 +795,7 @@ impl Config {
             ("daytona", &self.remote.daytona),
             ("runloop", &self.remote.runloop),
             ("e2b", &self.remote.e2b),
+            ("modal", &self.remote.modal),
             ("agentcomputer", &self.remote.agentcomputer),
         ];
         for (name, provider) in &remote_providers {
@@ -791,6 +804,14 @@ impl Config {
                     "Remote provider '[remote.{}]' has 'api_key' set directly in the config \
                      file. This risks committing secrets to version control. \
                      Use 'api_key_env' to reference an environment variable instead.",
+                    name
+                ));
+            }
+            if provider.token_id.is_some() || provider.token_secret.is_some() {
+                warnings.push(format!(
+                    "Remote provider '[remote.{}]' has Modal-style token fields set directly in the \
+                     config file. This risks committing secrets to version control. \
+                     Use 'token_id_env' and 'token_secret_env' instead.",
                     name
                 ));
             }
@@ -953,6 +974,11 @@ mod tests {
             api_key_env = "DAYTONA_API_KEY"
             organization = "acme"
 
+            [remote.modal]
+            token_id_env = "MODAL_TOKEN_ID"
+            token_secret_env = "MODAL_TOKEN_SECRET"
+            project = "agentkernel"
+
             [remote.profiles.node-dev]
             image = "node:22"
             workspace_dir = "/workspace"
@@ -967,6 +993,15 @@ mod tests {
             config.remote.daytona.api_key_env.as_deref(),
             Some("DAYTONA_API_KEY")
         );
+        assert_eq!(
+            config.remote.modal.token_id_env.as_deref(),
+            Some("MODAL_TOKEN_ID")
+        );
+        assert_eq!(
+            config.remote.modal.token_secret_env.as_deref(),
+            Some("MODAL_TOKEN_SECRET")
+        );
+        assert_eq!(config.remote.modal.project.as_deref(), Some("agentkernel"));
         let profile = config.remote.profiles.get("node-dev").unwrap();
         assert_eq!(profile.image.as_deref(), Some("node:22"));
         assert_eq!(profile.workspace_dir.as_deref(), Some("/workspace"));

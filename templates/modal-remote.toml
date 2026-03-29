@@ -1,0 +1,30 @@
+# Modal remote sandbox template
+
+[sandbox]
+name = "modal-remote"
+base_image = "base"
+
+[security]
+profile = "moderate"
+mount_cwd = true
+network = true
+
+[network]
+ports = ["3000"]
+
+[remote]
+bridge = "./scripts/remote-bridge.mjs"
+
+[remote.modal]
+token_id_env = "MODAL_TOKEN_ID"
+token_secret_env = "MODAL_TOKEN_SECRET"
+project = "agentkernel"
+
+[template]
+description = "Remote Modal sandbox with managed /workspace sync"
+category = "Remote"
+help_text = """
+How to use: create with --backend modal.
+Example command: agentkernel sandbox create my-modal --template modal-remote --backend modal
+Provider auth: export MODAL_TOKEN_ID and MODAL_TOKEN_SECRET before starting the sandbox.
+"""

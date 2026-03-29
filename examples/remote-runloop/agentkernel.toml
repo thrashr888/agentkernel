@@ -12,7 +12,7 @@ network = true
 ports = ["3000"]
 
 [remote]
-bridge = "./scripts/remote-bridge.mjs"
+bridge = "../../scripts/remote-bridge.mjs"
 
 [remote.runloop]
 api_key_env = "RUNLOOP_API_KEY"

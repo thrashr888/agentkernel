@@ -69,6 +69,8 @@ pub enum BackendType {
     Runloop,
     /// E2B hosted sandboxes
     E2B,
+    /// Modal hosted sandboxes
+    Modal,
     /// Agent Computer hosted machines
     AgentComputer,
 }
@@ -86,6 +88,7 @@ impl fmt::Display for BackendType {
             BackendType::Daytona => write!(f, "daytona"),
             BackendType::Runloop => write!(f, "runloop"),
             BackendType::E2B => write!(f, "e2b"),
+            BackendType::Modal => write!(f, "modal"),
             BackendType::AgentComputer => write!(f, "agentcomputer"),
         }
     }
@@ -106,9 +109,10 @@ impl std::str::FromStr for BackendType {
             "daytona" => Ok(BackendType::Daytona),
             "runloop" => Ok(BackendType::Runloop),
             "e2b" => Ok(BackendType::E2B),
+            "modal" => Ok(BackendType::Modal),
             "agentcomputer" | "agent-computer" => Ok(BackendType::AgentComputer),
             _ => Err(format!(
-                "Unknown backend '{}'. Valid options: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad, daytona, runloop, e2b, agentcomputer",
+                "Unknown backend '{}'. Valid options: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer",
                 s
             )),
         }
@@ -122,6 +126,7 @@ impl BackendType {
             BackendType::Daytona
                 | BackendType::Runloop
                 | BackendType::E2B
+                | BackendType::Modal
                 | BackendType::AgentComputer
         )
     }
@@ -727,6 +732,7 @@ pub fn backend_available(backend: BackendType) -> bool {
         BackendType::Daytona
         | BackendType::Runloop
         | BackendType::E2B
+        | BackendType::Modal
         | BackendType::AgentComputer => remote_bridge_available(),
     }
 }
@@ -805,6 +811,11 @@ pub fn create_sandbox_with_state(
             name,
             remote.unwrap_or_default(),
         ))),
+        BackendType::Modal => Ok(Box::new(RemoteSandbox::new(
+            RemoteProvider::Modal,
+            name,
+            remote.unwrap_or_default(),
+        ))),
         BackendType::AgentComputer => Ok(Box::new(RemoteSandbox::new(
             RemoteProvider::AgentComputer,
             name,
@@ -831,6 +842,7 @@ mod tests {
         assert_eq!(format!("{}", BackendType::Daytona), "daytona");
         assert_eq!(format!("{}", BackendType::Runloop), "runloop");
         assert_eq!(format!("{}", BackendType::E2B), "e2b");
+        assert_eq!(format!("{}", BackendType::Modal), "modal");
         assert_eq!(format!("{}", BackendType::AgentComputer), "agentcomputer");
     }
 
@@ -871,6 +883,7 @@ mod tests {
             BackendType::Runloop
         );
         assert_eq!("e2b".parse::<BackendType>().unwrap(), BackendType::E2B);
+        assert_eq!("modal".parse::<BackendType>().unwrap(), BackendType::Modal);
         assert_eq!(
             "agentcomputer".parse::<BackendType>().unwrap(),
             BackendType::AgentComputer

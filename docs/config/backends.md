@@ -177,12 +177,13 @@ See the [Orchestration Guide](../operations/index.md) for full configuration and
 
 ## Remote Backends
 
-`daytona`, `runloop`, `e2b`, and `agentcomputer` use the shared remote sandbox substrate. They keep the same CLI and HTTP verbs as local backends, but route sandbox lifecycle, workspace sync, and service publishing through the remote bridge.
+`daytona`, `runloop`, `e2b`, `modal`, and `agentcomputer` use the shared remote sandbox substrate. They keep the same CLI and HTTP verbs as local backends, but route sandbox lifecycle, workspace sync, and service publishing through the remote bridge.
 
 ```bash
 agentkernel sandbox create my-sandbox --backend daytona
 agentkernel sandbox create my-sandbox --backend runloop
 agentkernel sandbox create my-sandbox --backend e2b
+agentkernel sandbox create my-sandbox --backend modal
 agentkernel sandbox create my-sandbox --backend agentcomputer
 ```
 
@@ -202,8 +203,9 @@ agentkernel sandbox create my-sandbox --backend agentcomputer
 - `daytona` is wired in the bundled bridge via `@daytonaio/sdk`
 - `runloop` is wired in the bundled bridge via `@runloop/api-client`
 - `e2b` is wired in the bundled bridge via the official `e2b` SDK
+- `modal` is wired in the bundled bridge via the official `modal` SDK
 - all shipped adapters support live lifecycle, `exec`, `attach`, file operations, managed `mount_cwd` sync, resolved endpoints, and workspace-level snapshot/restore
-- credentials can come from exported provider env vars or from `[remote.daytona]` / `[remote.runloop]` / `[remote.e2b]` in `agentkernel.toml`
+- credentials can come from exported provider env vars or from `[remote.daytona]` / `[remote.runloop]` / `[remote.e2b]` / `[remote.modal]` in `agentkernel.toml`
 - explicit `-c path/to/agentkernel.toml` is persisted with the sandbox so later `start`, `exec`, and snapshot flows can reconnect with the same remote config
 - set `[remote].bridge` when you run `agentkernel` outside the repository root and still want to use the bundled `scripts/remote-bridge.mjs`
 - the bundled bridge still supports `AGENTKERNEL_REMOTE_BRIDGE_MODE=mock` for local testing

@@ -61,6 +61,7 @@ agentkernel ships with 26 built-in templates:
 | `daytona-remote` | Daytona | Managed `/workspace` sync on Daytona |
 | `runloop-remote` | Runloop | Managed `/workspace` sync on Runloop |
 | `e2b-remote` | E2B | Managed `/workspace` sync on E2B |
+| `modal-remote` | Modal | Managed `/workspace` sync on Modal |
 
 ## Examples
 
@@ -84,6 +85,7 @@ my-custom            local      ubuntu:24.04
 agentkernel sandbox create my-sandbox --template python
 agentkernel sandbox create ci-runner --template rust-ci -B docker
 agentkernel sandbox create remote-dev --template e2b-remote -B e2b
+agentkernel sandbox create remote-modal --template modal-remote -B modal
 agentkernel sandbox create remote-runloop --template runloop-remote -B runloop
 ```
 

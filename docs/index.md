@@ -135,11 +135,12 @@ agentkernel covers local, cluster, and hosted backends behind the same CLI and H
 | Daytona | `daytona` | Hosted sandbox with managed `/workspace` sync |
 | Runloop | `runloop` | Hosted devbox with tunnels, attach, and snapshot/restore |
 | E2B | `e2b` | Hosted sandbox with file APIs, PTY attach, and snapshots |
+| Modal | `modal` | Hosted sandbox with tunnels, attach, and workspace snapshots |
 | Agent Computer | `agentcomputer` | Contract wired; live bundled adapter still pending |
 
 On Linux with KVM, you get Firecracker -- the same microVM technology that powers AWS Lambda and Fargate. On macOS 26+, Apple Containers provide native VM isolation. On older macOS or systems without KVM, Docker and Podman provide container-level isolation as a fallback. For team and cloud environments, deploy on [Kubernetes](operations/kubernetes.md) or [Nomad](operations/nomad.md) with warm pools, CRDs, and Helm/Nomad Pack support.
 
-For team and multi-tenant deployments, Kubernetes, Nomad, Daytona, Runloop, and E2B keep the same sandbox lifecycle and command surface while moving execution off your laptop. See the [Backends Guide](config/backends.md) for the full matrix and the [Remote Backends Guide](operations/remote.md) for hosted setup, templates, and examples.
+For team and multi-tenant deployments, Kubernetes, Nomad, Daytona, Runloop, E2B, and Modal keep the same sandbox lifecycle and command surface while moving execution off your laptop. See the [Backends Guide](config/backends.md) for the full matrix and the [Remote Backends Guide](operations/remote.md) for hosted setup, templates, and examples.
 
 ```bash
 # Run on Kubernetes
@@ -156,6 +157,9 @@ agentkernel sandbox create remote-runloop --backend runloop
 
 # Run on E2B
 agentkernel sandbox create remote-e2b --backend e2b
+
+# Run on Modal
+agentkernel sandbox create remote-modal --backend modal
 ```
 
 Cluster backends support warm pools for fast acquisition (~570ms one-shot latency) and scale to dozens of concurrent sandboxes per node. Hosted backends use the same sandbox lifecycle, with provider-side execution and managed `/workspace` sync.
