@@ -228,9 +228,9 @@ See the [Orchestration Guide](../operations/index.md) for detailed usage and dep
 
 Configuration for hosted remote backends (`daytona`, `runloop`, `e2b`, `agentcomputer`).
 
-Current note: the shipped live bridge reads Daytona credentials from `DAYTONA_*`
-environment variables today. The provider blocks below define the intended
-config shape, but only `daytona` has a live bundled adapter at the moment.
+Current note: `daytona` is the only shipped live adapter today. The bundled
+bridge now reads Daytona credentials and routing from `[remote.daytona]`, or
+from `DAYTONA_*` environment variables when you prefer env-based setup.
 
 ```toml
 [remote]
@@ -240,7 +240,9 @@ sync_mode = "managed"
 
 [remote.daytona]
 api_key_env = "DAYTONA_API_KEY"
+base_url = "https://app.daytona.io/api"
 organization = "acme"
+region = "us"
 
 [remote.runloop]
 api_key_env = "RUNLOOP_API_KEY"
@@ -263,7 +265,7 @@ NODE_ENV = "development"
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `default_profile` | string | none | Remote runtime profile used when no profile is selected |
-| `bridge` | string | `scripts/remote-bridge.mjs` | Custom remote bridge executable or script |
+| `bridge` | string | `scripts/remote-bridge.mjs` | Custom remote bridge executable or script; set this when running outside the repo root and still using the bundled bridge |
 | `sync_mode` | string | `managed` | Remote workspace sync mode |
 
 ### [remote.<provider>]

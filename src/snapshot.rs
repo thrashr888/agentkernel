@@ -3,7 +3,10 @@
 //! Save sandbox state (Docker: `docker commit` + metadata) and restore later.
 //! Snapshots are stored in `~/.local/share/agentkernel/snapshots/`.
 
-use crate::backend::BackendType;
+use crate::backend::{
+    BackendType,
+    remote::{remote_bridge_command, remote_bridge_env},
+};
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
@@ -362,12 +365,13 @@ fn remote_snapshot_request(
         serde_json::to_vec(request).context("Failed to serialize remote snapshot request")?,
     );
 
-    let (program, mut args) = bridge_command()?;
+    let (program, mut args) = remote_bridge_command()?;
     args.push(provider.to_string());
     args.push(payload);
 
     let output = std::process::Command::new(program)
         .args(args)
+        .envs(remote_bridge_env(provider))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -401,46 +405,6 @@ fn remote_snapshot_request(
 
     Ok(response)
 }
-
-fn bridge_command() -> Result<(String, Vec<String>)> {
-    if let Ok(custom) = std::env::var("AGENTKERNEL_REMOTE_BRIDGE") {
-        if custom.ends_with(".js") || custom.ends_with(".mjs") {
-            return Ok(("node".to_string(), vec![custom]));
-        }
-        return Ok((custom, Vec::new()));
-    }
-
-    let script = resolve_default_bridge_path()?;
-    Ok((
-        "node".to_string(),
-        vec![script.to_string_lossy().to_string()],
-    ))
-}
-
-fn resolve_default_bridge_path() -> Result<PathBuf> {
-    let candidates = [
-        PathBuf::from("scripts/remote-bridge.mjs"),
-        std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|p| p.join("../scripts/remote-bridge.mjs")))
-            .unwrap_or_default(),
-        std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|p| p.join("scripts/remote-bridge.mjs")))
-            .unwrap_or_default(),
-    ];
-
-    for candidate in candidates {
-        if !candidate.as_os_str().is_empty() && candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-
-    bail!(
-        "Remote bridge script not found. Set AGENTKERNEL_REMOTE_BRIDGE or ensure scripts/remote-bridge.mjs exists."
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

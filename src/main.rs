@@ -1122,6 +1122,13 @@ memory_mb = 512
                     eprintln!("Warning: {}", warning);
                 }
 
+                let start_perms = cfg.get_permissions();
+                let start_files = if let Some(ref base_dir) = config_base_dir {
+                    cfg.load_files(base_dir)?
+                } else {
+                    Vec::new()
+                };
+
                 let mut manager = VmManager::with_backend(backend_type)?;
 
                 // Build from Dockerfile if configured, otherwise use base image
@@ -1348,8 +1355,10 @@ memory_mb = 512
                             name
                         );
                     } else {
-                        // No secrets — start locally (no proxy needed)
-                        manager.start(&name).await?;
+                        // No secrets — start locally with config-derived permissions/files.
+                        manager
+                            .start_with_permissions_and_files(&name, &start_perms, &start_files)
+                            .await?;
                     }
 
                     // If --source provided, clone the repo into the
@@ -1484,8 +1493,24 @@ memory_mb = 512
                     }
                 }
 
+                let config_path = std::path::PathBuf::from("agentkernel.toml");
+                let (start_perms, start_files) = if config_path.exists() {
+                    let cfg = Config::from_file(&config_path)?;
+                    for warning in cfg.validate() {
+                        eprintln!("Warning: {}", warning);
+                    }
+                    let config_dir = config_path
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new("."));
+                    (cfg.get_permissions(), cfg.load_files(config_dir)?)
+                } else {
+                    (crate::permissions::Permissions::default(), Vec::new())
+                };
+
                 println!("Starting sandbox '{}'...", name);
-                manager.start(&name).await?;
+                manager
+                    .start_with_permissions_and_files(&name, &start_perms, &start_files)
+                    .await?;
                 println!("Sandbox '{}' started.", name);
                 if manager
                     .get_sandbox_state(&name)

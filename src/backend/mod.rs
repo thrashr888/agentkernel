@@ -189,6 +189,7 @@ pub struct RemoteSandboxContext {
     pub remote_metadata: HashMap<String, String>,
     pub workspace_revision: Option<String>,
     pub endpoints: Vec<ResolvedEndpoint>,
+    pub local_workspace: Option<String>,
 }
 
 /// Outcome-level backend capabilities used for compatibility checks.

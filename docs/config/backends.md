@@ -200,10 +200,9 @@ agentkernel sandbox create my-sandbox --backend agentcomputer
 
 **Current provider support:**
 - `daytona` is wired in the bundled bridge via `@daytonaio/sdk`
-- export `DAYTONA_API_KEY`
-- export `DAYTONA_API_URL` if you are not using the default `https://app.daytona.io/api`
-- export `DAYTONA_TARGET` to choose the Daytona target region (`us` is a common default)
-- export `DAYTONA_ORGANIZATION_ID` or `DAYTONA_ORG_ID` if your setup requires an explicit org id
+- supports live lifecycle, `exec`, `attach`, file operations, managed `mount_cwd` sync, preview endpoints, and workspace-level snapshot/restore
+- credentials can come from exported `DAYTONA_*` variables or from `[remote.daytona]` in `agentkernel.toml`
+- set `[remote].bridge` when you run `agentkernel` outside the repository root and still want to use the bundled `scripts/remote-bridge.mjs`
 - the bundled bridge still supports `AGENTKERNEL_REMOTE_BRIDGE_MODE=mock` for local testing
 - `runloop`, `e2b`, and `agentcomputer` still need provider-specific live adapters
 

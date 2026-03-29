@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
 
+use crate::config::{Config, RemoteProviderConfig};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteProvider {
@@ -36,6 +38,16 @@ impl RemoteProvider {
             Self::Runloop => "runloop",
             Self::E2B => "e2b",
             Self::AgentComputer => "agentcomputer",
+        }
+    }
+
+    fn from_provider_name(name: &str) -> Option<Self> {
+        match name {
+            "daytona" => Some(Self::Daytona),
+            "runloop" => Some(Self::Runloop),
+            "e2b" => Some(Self::E2B),
+            "agentcomputer" => Some(Self::AgentComputer),
+            _ => None,
         }
     }
 }
@@ -132,12 +144,13 @@ impl RemoteBridgeClient {
             serde_json::to_vec(request).context("Failed to serialize remote bridge request")?,
         );
 
-        let (program, mut args) = bridge_command()?;
+        let (program, mut args) = remote_bridge_command()?;
         args.push(self.provider.as_str().to_string());
         args.push(payload);
 
         let output = Command::new(program)
             .args(args)
+            .envs(remote_bridge_env(self.provider.as_str()))
             .output()
             .await
             .context("Failed to execute remote bridge")?;
@@ -179,7 +192,7 @@ impl RemoteBridgeClient {
             serde_json::to_vec(request).context("Failed to serialize remote attach request")?,
         );
 
-        let (program, mut args) = bridge_command()?;
+        let (program, mut args) = remote_bridge_command()?;
         args.push(self.provider.as_str().to_string());
         args.push(payload);
 
@@ -188,6 +201,7 @@ impl RemoteBridgeClient {
         command.stdin(Stdio::inherit());
         command.stdout(Stdio::inherit());
         command.stderr(Stdio::inherit());
+        command.envs(remote_bridge_env(self.provider.as_str()));
         command.envs(env.iter());
 
         let status = command
@@ -198,8 +212,17 @@ impl RemoteBridgeClient {
     }
 }
 
-fn bridge_command() -> Result<(String, Vec<String>)> {
+pub(crate) fn remote_bridge_command() -> Result<(String, Vec<String>)> {
     if let Ok(custom) = std::env::var("AGENTKERNEL_REMOTE_BRIDGE") {
+        if custom.ends_with(".js") || custom.ends_with(".mjs") {
+            return Ok(("node".to_string(), vec![custom]));
+        }
+        return Ok((custom, Vec::new()));
+    }
+
+    if let Some(config) = load_project_config()
+        && let Some(custom) = config.remote.bridge
+    {
         if custom.ends_with(".js") || custom.ends_with(".mjs") {
             return Ok(("node".to_string(), vec![custom]));
         }
@@ -211,6 +234,72 @@ fn bridge_command() -> Result<(String, Vec<String>)> {
         "node".to_string(),
         vec![script.to_string_lossy().to_string()],
     ))
+}
+
+pub(crate) fn remote_bridge_env(provider_name: &str) -> HashMap<String, String> {
+    let Some(config) = load_project_config() else {
+        return HashMap::new();
+    };
+
+    let Some(provider) = RemoteProvider::from_provider_name(provider_name) else {
+        return HashMap::new();
+    };
+
+    provider_bridge_env(provider, &config)
+}
+
+fn load_project_config() -> Option<Config> {
+    let path = PathBuf::from("agentkernel.toml");
+    if !path.exists() {
+        return None;
+    }
+    Config::from_file(&path).ok()
+}
+
+fn provider_bridge_env(provider: RemoteProvider, config: &Config) -> HashMap<String, String> {
+    let provider_config = match provider {
+        RemoteProvider::Daytona => &config.remote.daytona,
+        RemoteProvider::Runloop => &config.remote.runloop,
+        RemoteProvider::E2B => &config.remote.e2b,
+        RemoteProvider::AgentComputer => &config.remote.agentcomputer,
+    };
+
+    match provider {
+        RemoteProvider::Daytona => daytona_bridge_env(provider_config),
+        RemoteProvider::Runloop | RemoteProvider::E2B | RemoteProvider::AgentComputer => {
+            HashMap::new()
+        }
+    }
+}
+
+fn daytona_bridge_env(config: &RemoteProviderConfig) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+
+    if let Some(api_key) = resolve_provider_secret(config) {
+        env.insert("DAYTONA_API_KEY".to_string(), api_key);
+    }
+    if let Some(base_url) = &config.base_url {
+        env.insert("DAYTONA_API_URL".to_string(), base_url.clone());
+    }
+    if let Some(organization) = &config.organization {
+        env.insert("DAYTONA_ORGANIZATION_ID".to_string(), organization.clone());
+    }
+    if let Some(region) = &config.region {
+        env.insert("DAYTONA_TARGET".to_string(), region.clone());
+    }
+
+    env
+}
+
+fn resolve_provider_secret(config: &RemoteProviderConfig) -> Option<String> {
+    if let Some(api_key) = &config.api_key {
+        return Some(api_key.clone());
+    }
+
+    config
+        .api_key_env
+        .as_ref()
+        .and_then(|key| std::env::var(key).ok())
 }
 
 fn resolve_default_bridge_path() -> Result<PathBuf> {
@@ -238,7 +327,7 @@ fn resolve_default_bridge_path() -> Result<PathBuf> {
 }
 
 pub fn remote_bridge_available() -> bool {
-    if bridge_command().is_err() {
+    if remote_bridge_command().is_err() {
         return false;
     }
 
@@ -281,7 +370,7 @@ impl RemoteSandbox {
             workspace_revision: state.workspace_revision,
             endpoints: state.endpoints,
             running,
-            local_workspace: None,
+            local_workspace: state.local_workspace,
         }
     }
 
@@ -582,6 +671,7 @@ impl Sandbox for RemoteSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
 
     #[test]
     fn test_remote_provider_backend_mapping() {
@@ -611,6 +701,7 @@ mod tests {
                     protocol: super::super::PortProtocol::Tcp,
                     url: "https://example.test".to_string(),
                 }],
+                local_workspace: Some("/tmp/demo".to_string()),
             },
         );
 
@@ -619,5 +710,37 @@ mod tests {
         assert_eq!(runtime.workspace_revision.as_deref(), Some("rev-1"));
         assert_eq!(runtime.endpoints.len(), 1);
         assert_eq!(runtime.remote_metadata, remote_metadata);
+    }
+
+    #[test]
+    fn test_daytona_bridge_env_from_config() {
+        let config = Config::from_str(
+            r#"
+            [sandbox]
+            name = "remote-app"
+
+            [remote.daytona]
+            api_key = "daytona-secret"
+            base_url = "https://example.invalid/api"
+            organization = "org-123"
+            region = "eu"
+        "#,
+        )
+        .unwrap();
+
+        let env = provider_bridge_env(RemoteProvider::Daytona, &config);
+        assert_eq!(
+            env.get("DAYTONA_API_KEY"),
+            Some(&"daytona-secret".to_string())
+        );
+        assert_eq!(
+            env.get("DAYTONA_API_URL"),
+            Some(&"https://example.invalid/api".to_string())
+        );
+        assert_eq!(
+            env.get("DAYTONA_ORGANIZATION_ID"),
+            Some(&"org-123".to_string())
+        );
+        assert_eq!(env.get("DAYTONA_TARGET"), Some(&"eu".to_string()));
     }
 }
