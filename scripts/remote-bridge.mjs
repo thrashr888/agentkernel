@@ -1658,6 +1658,30 @@ async function ensureRunloopOperational(devbox, providerRequest) {
   return ensureRunloopTunnel(devbox, await devbox.getInfo(), providerRequest);
 }
 
+async function ensureRunloopShutdown(devbox, options = {}) {
+  const force = options.force ?? true;
+  let info = await devbox.getInfo();
+
+  if (info.status !== "shutdown") {
+    await devbox.shutdown({ force });
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      info = await devbox.getInfo();
+      if (info.status === "shutdown") {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+
+  if (info.status !== "shutdown") {
+    throw new Error(
+      `Runloop devbox '${info.id}' is still in state '${info.status}' after shutdown`,
+    );
+  }
+
+  return info;
+}
+
 async function runloopEndpoints(devbox, info, providerRequest) {
   if (!info.tunnel) {
     return [];
@@ -1843,17 +1867,14 @@ async function destroyRunloopSandbox(providerRequest) {
   return withRunloopSdk(async (sdk) => {
     const devbox = getRunloopDevbox(sdk, providerRequest);
     const remoteId = getRunloopRemoteId(providerRequest);
-    try {
-      await devbox.shutdown();
-    } catch {
-      // Treat an already-shutdown devbox as removed.
-    }
+    const info = await ensureRunloopShutdown(devbox, { force: true });
     return {
       success: true,
       remote_id: remoteId,
       remote_metadata: {
         ...(providerRequest.remote_metadata || {}),
         runloop_id: remoteId,
+        devbox_status: info.status || "shutdown",
         last_known_status: "stopped",
       },
       running: false,
@@ -1973,6 +1994,17 @@ async function syncPushRunloop(providerRequest) {
     }
 
     const ignoreRules = await loadIgnoreRules(localPath);
+    const remoteRevision = await hashRunloopWorkspace(
+      devbox,
+      providerRequest,
+      ignoreRules,
+    );
+    if (
+      providerRequest.workspace_revision &&
+      remoteRevision !== providerRequest.workspace_revision
+    ) {
+      throw new Error("workspace sync conflict: remote workspace changed since last sync");
+    }
     const { tmpRoot, archivePath } = await createLocalArchiveFromWorkspace(
       localPath,
       ignoreRules,
@@ -2006,6 +2038,13 @@ async function syncPullRunloop(providerRequest) {
     }
 
     const ignoreRules = await loadIgnoreRules(localPath);
+    const localRevision = await hashTree(localPath, ignoreRules);
+    if (
+      providerRequest.workspace_revision &&
+      localRevision !== providerRequest.workspace_revision
+    ) {
+      throw new Error("workspace sync conflict: local workspace changed since last sync");
+    }
 
     const tmpRoot = await fs.mkdtemp(
       path.join(bridgeTempRoot(), "agentkernel-runloop-pull-"),
@@ -2112,7 +2151,7 @@ async function restoreRunloopSnapshot(providerRequest) {
       await replaceRunloopWorkspace(target, providerRequest);
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
-      await source.shutdown().catch(() => {});
+      await ensureRunloopShutdown(source, { force: true }).catch(() => {});
     }
 
     return runloopResponse(target, providerRequest, await target.getInfo(), {
