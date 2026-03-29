@@ -108,6 +108,7 @@
 {"created_at":"2026-01-29T23:56:36Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-ebz","issue_id":"agentkernel-duz","metadata":"{}","type":"blocks"}
 {"created_at":"2026-02-01T10:22:31Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-dqq","issue_id":"agentkernel-gmq","metadata":"{}","type":"blocks"}
 {"created_at":"2026-02-01T10:22:30Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-h1y","issue_id":"agentkernel-gmq","metadata":"{}","type":"blocks"}
+{"created_at":"2026-03-29T10:35:33Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-wlpb","issue_id":"agentkernel-hk3t","metadata":"{}","type":"discovered-from"}
 {"created_at":"2026-01-31T09:08:38Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-ya6","issue_id":"agentkernel-hp2","metadata":"{}","type":"parent-child"}
 {"created_at":"2026-01-31T09:09:48Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-zw3","issue_id":"agentkernel-hp2","metadata":"{}","type":"blocks"}
 {"created_at":"2026-02-08T01:40:36Z","created_by":"Paul Thrasher","depends_on_id":"agentkernel-hx7","issue_id":"agentkernel-hx7.1","metadata":"{}","type":"parent-child"}
