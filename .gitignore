@@ -34,3 +34,6 @@ scripts/node_modules/
 .dolt/
 *.db
 .beads/dolt-monitor.pid.lock
+
+# Beads / Dolt files (added by bd init)
+.beads-credential-key

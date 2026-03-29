@@ -9,7 +9,7 @@ bd ready              # Find available work
 bd show <id>          # View issue details
 bd update <id> --status in_progress  # Claim work
 bd close <id>         # Complete work
-bd sync               # Sync with git
+bd dolt commit        # Persist pending bd changes to Dolt
 ```
 
 ## Landing the Plane (Session Completion)
@@ -24,7 +24,8 @@ bd sync               # Sync with git
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
+   bd dolt commit
+   bd dolt push  # If a Dolt remote is configured
    git push
    git status  # MUST show "up to date with origin"
    ```
@@ -136,7 +137,8 @@ For more details, see README.md and docs/QUICKSTART.md.
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
+   bd dolt commit
+   bd dolt push  # If a Dolt remote is configured
    git push
    git status  # MUST show "up to date with origin"
    ```
