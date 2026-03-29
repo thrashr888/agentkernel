@@ -110,7 +110,9 @@ The sandbox sees placeholder env vars so tools pass existence checks, but the re
 
 ## It runs everywhere
 
-agentkernel picks the best available backend automatically:
+agentkernel covers local, cluster, and hosted backends behind the same CLI and HTTP API.
+
+### Local backends
 
 | Platform | Backend | Isolation |
 |----------|---------|-----------|
@@ -118,12 +120,26 @@ agentkernel picks the best available backend automatically:
 | Linux (x86_64, aarch64) | Hyperlight Wasm | Hypervisor + Wasm sandbox (experimental) |
 | macOS 26+ (Apple Silicon) | Apple Containers | Full VM isolation |
 | macOS (Apple Silicon, Intel) | Docker / Podman | Container isolation |
+
+### Cluster backends
+
+| Target | Backend | Isolation |
+|--------|---------|-----------|
 | Kubernetes cluster | K8s Pods | Pod isolation + NetworkPolicy |
 | Nomad cluster | Nomad Jobs | Job allocation isolation |
 
+### Hosted remote backends
+
+| Provider | Backend | Notes |
+|----------|---------|-------|
+| Daytona | `daytona` | Hosted sandbox with managed `/workspace` sync |
+| Runloop | `runloop` | Hosted devbox with tunnels, attach, and snapshot/restore |
+| E2B | `e2b` | Hosted sandbox with file APIs, PTY attach, and snapshots |
+| Agent Computer | `agentcomputer` | Contract wired; live bundled adapter still pending |
+
 On Linux with KVM, you get Firecracker -- the same microVM technology that powers AWS Lambda and Fargate. On macOS 26+, Apple Containers provide native VM isolation. On older macOS or systems without KVM, Docker and Podman provide container-level isolation as a fallback. For team and cloud environments, deploy on [Kubernetes](operations/kubernetes.md) or [Nomad](operations/nomad.md) with warm pools, CRDs, and Helm/Nomad Pack support.
 
-For team and multi-tenant deployments, Kubernetes and Nomad backends run sandboxes on remote clusters. Same CLI, same API -- sandboxes just run on your cluster instead of your laptop.
+For team and multi-tenant deployments, Kubernetes, Nomad, Daytona, Runloop, and E2B keep the same sandbox lifecycle and command surface while moving execution off your laptop. See the [Backends Guide](config/backends.md) for the full matrix and the [Remote Backends Guide](operations/remote.md) for hosted setup, templates, and examples.
 
 ```bash
 # Run on Kubernetes
@@ -131,9 +147,18 @@ agentkernel run --backend kubernetes -- python3 -c "print('hello from k8s')"
 
 # Run on Nomad
 agentkernel run --backend nomad -- echo "hello from nomad"
+
+# Run on Daytona
+agentkernel sandbox create remote-daytona --backend daytona
+
+# Run on Runloop
+agentkernel sandbox create remote-runloop --backend runloop
+
+# Run on E2B
+agentkernel sandbox create remote-e2b --backend e2b
 ```
 
-Both backends support warm pools for fast acquisition (~570ms one-shot latency) and scale to dozens of concurrent sandboxes per node.
+Cluster backends support warm pools for fast acquisition (~570ms one-shot latency) and scale to dozens of concurrent sandboxes per node. Hosted backends use the same sandbox lifecycle, with provider-side execution and managed `/workspace` sync.
 
 ## It has a complete workflow
 
