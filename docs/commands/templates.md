@@ -14,7 +14,7 @@ Manage sandbox templates. Templates are pre-configured `agentkernel.toml` config
 
 ## Built-in Templates
 
-agentkernel ships with 25 built-in templates:
+agentkernel ships with 26 built-in templates:
 
 ### Language Runtimes
 

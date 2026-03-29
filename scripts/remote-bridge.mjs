@@ -34,6 +34,9 @@ let daytonaSdkPromise;
 let e2bSdkPromise;
 let runloopSdkPromise;
 
+// Maximum number of files per batch for provider SDK upload/download calls.
+const FILE_BATCH_SIZE = 32;
+
 function bridgeTempRoot() {
   if (process.platform !== "win32") {
     return process.env.AGENTKERNEL_REMOTE_TMPDIR || "/tmp";
@@ -537,8 +540,8 @@ async function mirrorLocalToDaytona(sandbox, sourceDir, remoteBasePath, ignoreRu
       source: path.join(sourceDir, relPath),
       destination: daytonaPosixPath(remoteBasePath, relPath),
     }));
-  for (let index = 0; index < fileUploads.length; index += 32) {
-    await sandbox.fs.uploadFiles(fileUploads.slice(index, index + 32));
+  for (let index = 0; index < fileUploads.length; index += FILE_BATCH_SIZE) {
+    await sandbox.fs.uploadFiles(fileUploads.slice(index, index + FILE_BATCH_SIZE));
   }
 }
 
@@ -568,8 +571,8 @@ async function mirrorDaytonaToLocal(sandbox, remoteBasePath, targetDir, ignoreRu
       destination: path.join(targetDir, relPath),
     }));
 
-  for (let index = 0; index < downloads.length; index += 32) {
-    const batch = downloads.slice(index, index + 32);
+  for (let index = 0; index < downloads.length; index += FILE_BATCH_SIZE) {
+    const batch = downloads.slice(index, index + FILE_BATCH_SIZE);
     const results = await sandbox.fs.downloadFiles(batch);
     const error = results.find((result) => result.error);
     if (error) {
@@ -1102,8 +1105,8 @@ async function mirrorLocalToE2b(sandbox, sourceDir, remoteBasePath, ignoreRules)
     });
   }
 
-  for (let index = 0; index < fileUploads.length; index += 32) {
-    await sandbox.files.write(fileUploads.slice(index, index + 32));
+  for (let index = 0; index < fileUploads.length; index += FILE_BATCH_SIZE) {
+    await sandbox.files.write(fileUploads.slice(index, index + FILE_BATCH_SIZE));
   }
 }
 

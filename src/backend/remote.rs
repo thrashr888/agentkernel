@@ -52,6 +52,12 @@ impl RemoteProvider {
     }
 }
 
+impl std::fmt::Display for RemoteProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct BridgeRequest {
