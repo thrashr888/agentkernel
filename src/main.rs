@@ -1028,7 +1028,7 @@ memory_mb = 512
                 name,
                 agent,
                 config,
-                dir: _,
+                dir,
                 backend,
                 template: tmpl,
                 ttl,
@@ -1119,7 +1119,8 @@ memory_mb = 512
                 let stored_config_path = config
                     .as_ref()
                     .map(|path| path.to_string_lossy().to_string());
-                let workspace_root = config_base_dir.clone().unwrap_or(std::env::current_dir()?);
+                let workspace_root =
+                    resolve_workspace_root(config_base_dir.as_deref(), dir.as_deref())?;
 
                 // Validate config and print warnings
                 for warning in cfg.validate() {
@@ -4942,6 +4943,41 @@ fn parse_ttl(s: &str) -> Result<u64> {
     Ok(value * multiplier)
 }
 
+fn resolve_workspace_root(config_base_dir: Option<&Path>, dir: Option<&Path>) -> Result<PathBuf> {
+    if let Some(dir) = dir {
+        let workspace = if dir.is_absolute() {
+            dir.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(dir)
+        };
+        if !workspace.exists() {
+            bail!(
+                "Workspace directory '{}' does not exist",
+                workspace.display()
+            );
+        }
+        if !workspace.is_dir() {
+            bail!(
+                "Workspace path '{}' is not a directory",
+                workspace.display()
+            );
+        }
+        return Ok(workspace.canonicalize().unwrap_or(workspace));
+    }
+
+    let workspace = if let Some(config_base_dir) = config_base_dir {
+        if config_base_dir.is_absolute() {
+            config_base_dir.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(config_base_dir)
+        }
+    } else {
+        std::env::current_dir()?
+    };
+
+    Ok(workspace.canonicalize().unwrap_or(workspace))
+}
+
 fn extract_template_help_text(content: &str) -> Option<String> {
     let value: toml::Value = toml::from_str(content).ok()?;
     value
@@ -5018,5 +5054,42 @@ async fn delegate_start_to_server(host: &str, port: u16, name: &str) -> Result<(
             .map(|c| String::from_utf8_lossy(&c.to_bytes()).to_string())
             .unwrap_or_default();
         bail!("Server returned {} when starting sandbox: {}", status, body);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_workspace_root;
+    use tempfile::TempDir;
+
+    #[test]
+    fn resolve_workspace_root_prefers_explicit_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let resolved = resolve_workspace_root(None, Some(&workspace)).unwrap();
+        let expected = workspace.canonicalize().unwrap_or(workspace);
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn resolve_workspace_root_uses_config_base_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+
+        let resolved = resolve_workspace_root(Some(&config_dir), None).unwrap();
+        let expected = config_dir.canonicalize().unwrap_or(config_dir);
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn resolve_workspace_root_rejects_missing_explicit_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let missing = temp_dir.path().join("missing");
+
+        let error = resolve_workspace_root(None, Some(&missing)).unwrap_err();
+        assert!(error.to_string().contains("Workspace directory"));
     }
 }
