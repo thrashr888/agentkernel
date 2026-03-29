@@ -195,11 +195,17 @@ agentkernel sandbox create my-sandbox --backend agentcomputer
 **Requirements:**
 - Node.js 20+ available on the host
 - `scripts/remote-bridge.mjs` present, or `AGENTKERNEL_REMOTE_BRIDGE` set
-- provider credentials configured in `[remote]`
+- provider bridge dependencies installed with `npm install --prefix scripts`
+- provider credentials exported in the environment
 
-**Current development mode:**
-- the bundled bridge supports `AGENTKERNEL_REMOTE_BRIDGE_MODE=mock` for local testing
-- provider-specific API bindings plug into the same bridge protocol
+**Current provider support:**
+- `daytona` is wired in the bundled bridge via `@daytonaio/sdk`
+- export `DAYTONA_API_KEY`
+- export `DAYTONA_API_URL` if you are not using the default `https://app.daytona.io/api`
+- export `DAYTONA_TARGET` to choose the Daytona target region (`us` is a common default)
+- export `DAYTONA_ORGANIZATION_ID` or `DAYTONA_ORG_ID` if your setup requires an explicit org id
+- the bundled bridge still supports `AGENTKERNEL_REMOTE_BRIDGE_MODE=mock` for local testing
+- `runloop`, `e2b`, and `agentcomputer` still need provider-specific live adapters
 
 ## Auto-Detection
 
