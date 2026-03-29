@@ -130,14 +130,20 @@ async function handleProviderRequest(providerName, providerRequest) {
         respond(await mkdirDaytona(providerRequest));
         return;
       case "sync_push":
+        respond(await syncPushDaytona(providerRequest));
+        return;
       case "sync_pull":
+        respond(await syncPullDaytona(providerRequest));
+        return;
       case "snapshot":
+        respond(await takeDaytonaSnapshot(providerRequest));
+        return;
       case "delete_snapshot":
+        respond(await deleteDaytonaSnapshot(providerRequest));
+        return;
       case "restore":
-        throw new Error(
-          `Daytona bridge does not yet support '${providerRequest.operation}'. ` +
-            "Use the backend without mount_cwd sync or snapshots for now.",
-        );
+        respond(await restoreDaytonaSnapshot(providerRequest));
+        return;
       default:
         throw new Error(
           `unsupported Daytona bridge operation: ${providerRequest.operation}`,
@@ -211,6 +217,149 @@ function daytonaPortSpec(port) {
 
 function daytonaRunning(state) {
   return state === "started" || state === "running";
+}
+
+function daytonaWorkspacePath(providerRequest) {
+  return providerRequest.path || "/workspace";
+}
+
+function daytonaPosixPath(basePath, relPath = "") {
+  const normalizedBase = path.posix.normalize(basePath || "/workspace");
+  return relPath ? path.posix.join(normalizedBase, relPath) : normalizedBase;
+}
+
+async function ensureDaytonaFolder(sandbox, folderPath) {
+  try {
+    await sandbox.fs.createFolder(folderPath, "755");
+  } catch {
+    // Treat existing folders as success.
+  }
+}
+
+function deleteSort(relPaths) {
+  return [...relPaths].sort((left, right) => {
+    const leftDepth = left.split("/").length;
+    const rightDepth = right.split("/").length;
+    if (leftDepth !== rightDepth) {
+      return rightDepth - leftDepth;
+    }
+    return right.length - left.length;
+  });
+}
+
+async function collectDaytonaEntries(sandbox, basePath, ignoreRules) {
+  const entries = new Map();
+  await walkDaytona(sandbox, daytonaPosixPath(basePath), "", entries, ignoreRules);
+  return entries;
+}
+
+async function walkDaytona(sandbox, basePath, relDir, entries, ignoreRules) {
+  const currentPath = relDir ? daytonaPosixPath(basePath, relDir) : basePath;
+  let children = [];
+  try {
+    children = await sandbox.fs.listFiles(currentPath);
+  } catch {
+    return;
+  }
+
+  for (const child of children) {
+    const relPath = relDir ? path.posix.join(relDir, child.name) : child.name;
+    if (shouldIgnore(relPath, ignoreRules)) {
+      continue;
+    }
+    if (child.isDir) {
+      entries.set(relPath, { kind: "dir" });
+      await walkDaytona(sandbox, basePath, relPath, entries, ignoreRules);
+    } else {
+      entries.set(relPath, { kind: "file" });
+    }
+  }
+}
+
+async function hashDaytonaTree(sandbox, basePath, ignoreRules = []) {
+  const entries = await collectDaytonaEntries(sandbox, basePath, ignoreRules);
+  const hasher = crypto.createHash("sha256");
+  for (const relPath of [...entries.keys()].sort()) {
+    const entry = entries.get(relPath);
+    hasher.update(relPath);
+    hasher.update(entry.kind);
+    if (entry.kind === "file") {
+      const content = await sandbox.fs.downloadFile(daytonaPosixPath(basePath, relPath));
+      hasher.update(content);
+    }
+  }
+  return hasher.digest("hex");
+}
+
+async function mirrorLocalToDaytona(sandbox, sourceDir, remoteBasePath, ignoreRules) {
+  const sourceEntries = await collectEntries(sourceDir, ignoreRules);
+  const remoteEntries = await collectDaytonaEntries(sandbox, remoteBasePath, ignoreRules);
+
+  for (const relPath of deleteSort(remoteEntries.keys())) {
+    if (!sourceEntries.has(relPath)) {
+      const entry = remoteEntries.get(relPath);
+      await sandbox.fs.deleteFile(
+        daytonaPosixPath(remoteBasePath, relPath),
+        entry?.kind === "dir",
+      );
+    }
+  }
+
+  await ensureDaytonaFolder(sandbox, daytonaPosixPath(remoteBasePath));
+
+  const directories = [...sourceEntries.entries()]
+    .filter(([, entry]) => entry.kind === "dir")
+    .map(([relPath]) => relPath)
+    .sort();
+  for (const relPath of directories) {
+    await ensureDaytonaFolder(sandbox, daytonaPosixPath(remoteBasePath, relPath));
+  }
+
+  const fileUploads = [...sourceEntries.entries()]
+    .filter(([, entry]) => entry.kind === "file")
+    .map(([relPath]) => ({
+      source: path.join(sourceDir, relPath),
+      destination: daytonaPosixPath(remoteBasePath, relPath),
+    }));
+  for (let index = 0; index < fileUploads.length; index += 32) {
+    await sandbox.fs.uploadFiles(fileUploads.slice(index, index + 32));
+  }
+}
+
+async function mirrorDaytonaToLocal(sandbox, remoteBasePath, targetDir, ignoreRules) {
+  await fs.mkdir(targetDir, { recursive: true });
+  const remoteEntries = await collectDaytonaEntries(sandbox, remoteBasePath, ignoreRules);
+  const localEntries = await collectEntries(targetDir, ignoreRules);
+
+  for (const relPath of deleteSort(localEntries.keys())) {
+    if (!remoteEntries.has(relPath)) {
+      await fs.rm(path.join(targetDir, relPath), { recursive: true, force: true });
+    }
+  }
+
+  const directories = [...remoteEntries.entries()]
+    .filter(([, entry]) => entry.kind === "dir")
+    .map(([relPath]) => relPath)
+    .sort();
+  for (const relPath of directories) {
+    await fs.mkdir(path.join(targetDir, relPath), { recursive: true });
+  }
+
+  const downloads = [...remoteEntries.entries()]
+    .filter(([, entry]) => entry.kind === "file")
+    .map(([relPath]) => ({
+      source: daytonaPosixPath(remoteBasePath, relPath),
+      destination: path.join(targetDir, relPath),
+    }));
+
+  for (let index = 0; index < downloads.length; index += 32) {
+    const batch = downloads.slice(index, index + 32);
+    const results = await sandbox.fs.downloadFiles(batch);
+    const error = results.find((result) => result.error);
+    if (error) {
+      throw new Error(`failed to download ${error.source}: ${error.error}`);
+    }
+  }
 }
 
 async function getDaytonaSandbox(daytona, providerRequest) {
@@ -396,6 +545,105 @@ async function mkdirDaytona(providerRequest) {
     );
     return daytonaResponse(sandbox, providerRequest);
   });
+}
+
+async function syncPushDaytona(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await getDaytonaSandbox(daytona, providerRequest);
+    const localPath = providerRequest.local_path;
+    if (!localPath) {
+      throw new Error("sync_push requires local_path");
+    }
+
+    const ignoreRules = await loadIgnoreRules(localPath);
+    const workspacePath = daytonaWorkspacePath(providerRequest);
+    const remoteRevision = await hashDaytonaTree(sandbox, workspacePath, ignoreRules);
+    if (providerRequest.workspace_revision && remoteRevision !== providerRequest.workspace_revision) {
+      throw new Error("workspace sync conflict: remote workspace changed since last sync");
+    }
+
+    await mirrorLocalToDaytona(sandbox, localPath, workspacePath, ignoreRules);
+    const workspaceRevision = await hashDaytonaTree(sandbox, workspacePath, ignoreRules);
+    return daytonaResponse(sandbox, providerRequest, { workspace_revision: workspaceRevision });
+  });
+}
+
+async function syncPullDaytona(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await getDaytonaSandbox(daytona, providerRequest);
+    const localPath = providerRequest.local_path;
+    if (!localPath) {
+      throw new Error("sync_pull requires local_path");
+    }
+
+    const ignoreRules = await loadIgnoreRules(localPath);
+    const localRevision = await hashTree(localPath, ignoreRules);
+    if (providerRequest.workspace_revision && localRevision !== providerRequest.workspace_revision) {
+      throw new Error("workspace sync conflict: local workspace changed since last sync");
+    }
+
+    const workspacePath = daytonaWorkspacePath(providerRequest);
+    await mirrorDaytonaToLocal(sandbox, workspacePath, localPath, ignoreRules);
+    const workspaceRevision = await hashDaytonaTree(sandbox, workspacePath, ignoreRules);
+    return daytonaResponse(sandbox, providerRequest, { workspace_revision: workspaceRevision });
+  });
+}
+
+async function takeDaytonaSnapshot(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await getDaytonaSandbox(daytona, providerRequest);
+    const snapshotName = providerRequest.snapshot_name || `snapshot-${Date.now()}`;
+    const destination = snapshotDir(sandbox.id, snapshotName);
+    await fs.rm(destination, { recursive: true, force: true });
+    await fs.mkdir(destination, { recursive: true });
+
+    const workspacePath = daytonaWorkspacePath(providerRequest);
+    await mirrorDaytonaToLocal(sandbox, workspacePath, destination, []);
+    const workspaceRevision = await hashDaytonaTree(sandbox, workspacePath, []);
+    const response = await daytonaResponse(sandbox, providerRequest, {
+      workspace_revision: workspaceRevision,
+    });
+    response.remote_metadata = {
+      ...response.remote_metadata,
+      snapshot_handle: encodeSnapshotHandle(sandbox.id, snapshotName),
+    };
+    return response;
+  });
+}
+
+async function restoreDaytonaSnapshot(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await getDaytonaSandbox(daytona, providerRequest);
+    const snapshotHandle = providerRequest.snapshot_name;
+    if (!snapshotHandle) {
+      throw new Error("restore requires snapshot_name");
+    }
+
+    const { remoteId, snapshotName } = decodeSnapshotHandle(
+      snapshotHandle,
+      sandbox.id,
+    );
+    const source = snapshotDir(remoteId, snapshotName);
+    await fs.access(source);
+
+    const workspacePath = daytonaWorkspacePath(providerRequest);
+    await mirrorLocalToDaytona(sandbox, source, workspacePath, []);
+    const workspaceRevision = await hashDaytonaTree(sandbox, workspacePath, []);
+    return daytonaResponse(sandbox, providerRequest, { workspace_revision: workspaceRevision });
+  });
+}
+
+async function deleteDaytonaSnapshot(providerRequest) {
+  const snapshotHandle = providerRequest.snapshot_name;
+  if (!snapshotHandle) {
+    throw new Error("delete_snapshot requires snapshot_name");
+  }
+  const { remoteId, snapshotName } = decodeSnapshotHandle(snapshotHandle);
+  await fs.rm(snapshotDir(remoteId, snapshotName), {
+    recursive: true,
+    force: true,
+  });
+  return { success: true };
 }
 
 async function attachDaytonaSandbox(providerRequest) {
@@ -688,14 +936,14 @@ async function syncPush(request) {
     throw new Error("sync_push requires local_path");
   }
 
-  const remoteRevision = await hashTree(state.workspaceDir);
+  const ignoreRules = await loadIgnoreRules(localPath);
+  const remoteRevision = await hashTree(state.workspaceDir, ignoreRules);
   if (request.workspace_revision && remoteRevision !== request.workspace_revision) {
     throw new Error("workspace sync conflict: remote workspace changed since last sync");
   }
 
-  const ignoreRules = await loadIgnoreRules(localPath);
   await mirrorDirectory(localPath, state.workspaceDir, ignoreRules);
-  state.workspaceRevision = await hashTree(state.workspaceDir);
+  state.workspaceRevision = await hashTree(state.workspaceDir, ignoreRules);
   await saveSandbox(state);
   return toResponse(state);
 }
@@ -708,14 +956,14 @@ async function syncPull(request) {
     throw new Error("sync_pull requires local_path");
   }
 
-  const localRevision = await hashTree(localPath);
+  const ignoreRules = await loadIgnoreRules(localPath);
+  const localRevision = await hashTree(localPath, ignoreRules);
   if (request.workspace_revision && localRevision !== request.workspace_revision) {
     throw new Error("workspace sync conflict: local workspace changed since last sync");
   }
 
-  const ignoreRules = await loadIgnoreRules(localPath);
   await mirrorDirectory(state.workspaceDir, localPath, ignoreRules);
-  state.workspaceRevision = await hashTree(state.workspaceDir);
+  state.workspaceRevision = await hashTree(state.workspaceDir, ignoreRules);
   await saveSandbox(state);
   return toResponse(state);
 }
@@ -890,8 +1138,8 @@ async function walk(baseDir, relDir, entries, ignoreRules) {
   }
 }
 
-async function hashTree(baseDir) {
-  const entries = await collectEntries(baseDir, []);
+async function hashTree(baseDir, ignoreRules = []) {
+  const entries = await collectEntries(baseDir, ignoreRules);
   const hasher = crypto.createHash("sha256");
   for (const relPath of [...entries.keys()].sort()) {
     const entry = entries.get(relPath);

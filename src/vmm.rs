@@ -148,6 +148,9 @@ pub struct SandboxState {
     /// Provider-resolved service endpoints for exposed ports.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub endpoints: Vec<ResolvedEndpoint>,
+    /// Local workspace path used for mount_cwd or managed remote sync.
+    #[serde(default)]
+    pub work_dir: Option<String>,
     /// Time-to-live in seconds (None = no expiry)
     #[serde(default)]
     pub ttl_seconds: Option<u64>,
@@ -251,6 +254,7 @@ impl SandboxState {
             remote_metadata: self.remote_metadata.clone(),
             workspace_revision: self.workspace_revision.clone(),
             endpoints: self.endpoints.clone(),
+            local_workspace: self.work_dir.clone(),
         }
     }
 }
@@ -860,6 +864,7 @@ impl VmManager {
             remote_metadata: HashMap::new(),
             workspace_revision: None,
             endpoints: Vec::new(),
+            work_dir: None,
             ttl_seconds,
             expires_at,
             ports,
@@ -1759,10 +1764,11 @@ impl VmManager {
         };
 
         sandbox.start(&config).await?;
-        if let Some(metadata) = sandbox.runtime_metadata()
-            && let Some(persisted) = self.sandboxes.get_mut(name)
-        {
-            Self::apply_runtime_metadata(persisted, &metadata);
+        if let Some(persisted) = self.sandboxes.get_mut(name) {
+            persisted.work_dir = config.work_dir.clone();
+            if let Some(metadata) = sandbox.runtime_metadata() {
+                Self::apply_runtime_metadata(persisted, &metadata);
+            }
             let snapshot = persisted.clone();
             self.save_sandbox(&snapshot)?;
         }
@@ -2986,6 +2992,7 @@ mod tests {
             remote_metadata: HashMap::new(),
             workspace_revision: None,
             endpoints: Vec::new(),
+            work_dir: None,
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3050,6 +3057,7 @@ mod tests {
             remote_metadata: HashMap::new(),
             workspace_revision: None,
             endpoints: Vec::new(),
+            work_dir: None,
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3124,6 +3132,7 @@ mod tests {
             remote_metadata: HashMap::new(),
             workspace_revision: None,
             endpoints: Vec::new(),
+            work_dir: None,
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3214,6 +3223,7 @@ mod tests {
                 remote_metadata: HashMap::new(),
                 workspace_revision: None,
                 endpoints: Vec::new(),
+                work_dir: None,
                 ttl_seconds: None,
                 expires_at: None,
                 ports: Vec::new(),
@@ -3285,6 +3295,7 @@ mod tests {
             remote_metadata: HashMap::new(),
             workspace_revision: None,
             endpoints: Vec::new(),
+            work_dir: None,
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3356,6 +3367,7 @@ mod tests {
                 remote_metadata: HashMap::new(),
                 workspace_revision: None,
                 endpoints: Vec::new(),
+                work_dir: None,
                 ttl_seconds: None,
                 expires_at: None,
                 ports: Vec::new(),
@@ -3428,6 +3440,7 @@ mod tests {
             remote_metadata: HashMap::new(),
             workspace_revision: None,
             endpoints: Vec::new(),
+            work_dir: None,
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3496,6 +3509,7 @@ mod tests {
             remote_metadata: HashMap::new(),
             workspace_revision: None,
             endpoints: Vec::new(),
+            work_dir: None,
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3560,6 +3574,7 @@ mod tests {
             remote_metadata: HashMap::new(),
             workspace_revision: None,
             endpoints: Vec::new(),
+            work_dir: None,
             ttl_seconds: Some(3600),
             expires_at: Some("2026-01-01T01:00:00Z".to_string()),
             ports: Vec::new(),
