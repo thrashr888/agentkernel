@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+"$hook_dir/bootstrap-worktree.sh" || true
 # --- BEGIN BEADS INTEGRATION v0.62.0 ---
 # This section is managed by beads. Do not remove these markers.
 if command -v bd >/dev/null 2>&1; then
