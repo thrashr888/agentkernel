@@ -228,9 +228,9 @@ See the [Orchestration Guide](../operations/index.md) for detailed usage and dep
 
 Configuration for hosted remote backends (`daytona`, `runloop`, `e2b`, `agentcomputer`).
 
-Current note: `daytona` is the only shipped live adapter today. The bundled
-bridge now reads Daytona credentials and routing from `[remote.daytona]`, or
-from `DAYTONA_*` environment variables when you prefer env-based setup.
+Current note: `daytona`, `runloop`, and `e2b` are the shipped live adapters today. The bundled
+bridge reads provider credentials and routing from `[remote.<provider>]`, or
+from exported provider environment variables when you prefer env-based setup.
 
 ```toml
 [remote]
@@ -281,6 +281,13 @@ Supported providers: `daytona`, `runloop`, `e2b`, `agentcomputer`.
 | `project` | string | none | Provider project/workspace name |
 | `region` | string | none | Default provider region |
 | `profile` | string | none | Provider-specific default runtime profile |
+
+For the bundled live adapters today:
+
+- `daytona` uses `api_key`, `api_key_env`, `base_url`, `organization`, and `region`
+- `runloop` uses `api_key` / `api_key_env` and optionally `base_url`
+- `e2b` uses `api_key` / `api_key_env` and optionally `base_url`
+- `agentcomputer` config can be declared now, but the bundled bridge does not ship its live adapter yet
 
 ### [remote.profiles.<name>]
 

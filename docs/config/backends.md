@@ -200,11 +200,15 @@ agentkernel sandbox create my-sandbox --backend agentcomputer
 
 **Current provider support:**
 - `daytona` is wired in the bundled bridge via `@daytonaio/sdk`
-- supports live lifecycle, `exec`, `attach`, file operations, managed `mount_cwd` sync, preview endpoints, and workspace-level snapshot/restore
-- credentials can come from exported `DAYTONA_*` variables or from `[remote.daytona]` in `agentkernel.toml`
+- `runloop` is wired in the bundled bridge via `@runloop/api-client`
+- `e2b` is wired in the bundled bridge via the official `e2b` SDK
+- all shipped adapters support live lifecycle, `exec`, `attach`, file operations, managed `mount_cwd` sync, resolved endpoints, and workspace-level snapshot/restore
+- credentials can come from exported provider env vars or from `[remote.daytona]` / `[remote.runloop]` / `[remote.e2b]` in `agentkernel.toml`
+- explicit `-c path/to/agentkernel.toml` is persisted with the sandbox so later `start`, `exec`, and snapshot flows can reconnect with the same remote config
 - set `[remote].bridge` when you run `agentkernel` outside the repository root and still want to use the bundled `scripts/remote-bridge.mjs`
 - the bundled bridge still supports `AGENTKERNEL_REMOTE_BRIDGE_MODE=mock` for local testing
-- `runloop`, `e2b`, and `agentcomputer` still need provider-specific live adapters
+- `agentcomputer` still needs a provider-specific live adapter
+- see the [Remote Backends Guide](../operations/remote.md) for setup and runnable examples
 
 ## Auto-Detection
 

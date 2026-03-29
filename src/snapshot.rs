@@ -5,7 +5,7 @@
 
 use crate::backend::{
     BackendType,
-    remote::{remote_bridge_command, remote_bridge_env},
+    remote::{remote_bridge_command_for, remote_bridge_env_for},
 };
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -36,6 +36,12 @@ pub struct SnapshotMeta {
     /// Opaque remote-provider snapshot handle for remote backends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_snapshot: Option<String>,
+    /// Original project workspace root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_dir: Option<String>,
+    /// Original config file path used to reach provider credentials/settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
 }
 
 /// Directory where snapshot metadata lives.
@@ -108,6 +114,8 @@ pub fn take(
         memory_mb: state.memory_mb,
         created_at: chrono::Utc::now().to_rfc3339(),
         remote_snapshot,
+        work_dir: state.work_dir.clone(),
+        config_path: state.config_path.clone(),
     };
 
     // Save metadata
@@ -236,6 +244,8 @@ pub struct SnapshotInput {
     pub remote_namespace: Option<String>,
     pub remote_metadata: HashMap<String, String>,
     pub workspace_revision: Option<String>,
+    pub work_dir: Option<String>,
+    pub config_path: Option<String>,
 }
 
 impl SnapshotMeta {
@@ -332,6 +342,7 @@ fn take_remote_snapshot(
             workspace_revision: state.workspace_revision.clone(),
             snapshot_name: Some(snapshot_name.to_string()),
         },
+        state.config_path.as_deref(),
     )?;
 
     response
@@ -353,6 +364,7 @@ fn delete_remote_snapshot(meta: &SnapshotMeta, snapshot_handle: &str) -> Result<
             workspace_revision: None,
             snapshot_name: Some(snapshot_handle.to_string()),
         },
+        meta.config_path.as_deref(),
     )?;
     Ok(())
 }
@@ -360,18 +372,19 @@ fn delete_remote_snapshot(meta: &SnapshotMeta, snapshot_handle: &str) -> Result<
 fn remote_snapshot_request(
     provider: &str,
     request: &RemoteSnapshotRequest,
+    config_path: Option<&str>,
 ) -> Result<RemoteSnapshotResponse> {
     let payload = STANDARD.encode(
         serde_json::to_vec(request).context("Failed to serialize remote snapshot request")?,
     );
 
-    let (program, mut args) = remote_bridge_command()?;
+    let (program, mut args) = remote_bridge_command_for(config_path)?;
     args.push(provider.to_string());
     args.push(payload);
 
     let output = std::process::Command::new(program)
         .args(args)
-        .envs(remote_bridge_env(provider))
+        .envs(remote_bridge_env_for(provider, config_path))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -446,6 +459,8 @@ mod tests {
             memory_mb: 512,
             created_at: "2026-02-01T00:00:00Z".to_string(),
             remote_snapshot: None,
+            work_dir: None,
+            config_path: None,
         };
 
         let json = serde_json::to_string(&meta).unwrap();
@@ -467,6 +482,8 @@ mod tests {
             memory_mb: 256,
             created_at: "2026-01-01T12:00:00Z".to_string(),
             remote_snapshot: None,
+            work_dir: None,
+            config_path: None,
         };
 
         let json = serde_json::to_string_pretty(&meta).unwrap();
@@ -487,6 +504,8 @@ mod tests {
             memory_mb: 256,
             created_at: "2026-03-24T00:00:00Z".to_string(),
             remote_snapshot: Some("remote-1:remote-snap".to_string()),
+            work_dir: None,
+            config_path: None,
         };
 
         assert_eq!(meta.restore_image(), "default");

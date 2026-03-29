@@ -1,0 +1,28 @@
+# E2B remote sandbox template
+
+[sandbox]
+name = "e2b-remote"
+base_image = "base"
+
+[security]
+profile = "moderate"
+mount_cwd = true
+network = true
+
+[network]
+ports = ["3000"]
+
+[remote]
+bridge = "./scripts/remote-bridge.mjs"
+
+[remote.e2b]
+api_key_env = "E2B_API_KEY"
+
+[template]
+description = "Remote E2B sandbox with managed /workspace sync"
+category = "Remote"
+help_text = """
+How to use: create with --backend e2b.
+Example command: agentkernel sandbox create my-e2b --template e2b-remote --backend e2b
+Provider auth: export E2B_API_KEY before starting the sandbox.
+"""

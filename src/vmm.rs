@@ -151,6 +151,9 @@ pub struct SandboxState {
     /// Local workspace path used for mount_cwd or managed remote sync.
     #[serde(default)]
     pub work_dir: Option<String>,
+    /// Original config file path used to create or start this sandbox.
+    #[serde(default)]
+    pub config_path: Option<String>,
     /// Time-to-live in seconds (None = no expiry)
     #[serde(default)]
     pub ttl_seconds: Option<u64>,
@@ -255,6 +258,7 @@ impl SandboxState {
             workspace_revision: self.workspace_revision.clone(),
             endpoints: self.endpoints.clone(),
             local_workspace: self.work_dir.clone(),
+            config_path: self.config_path.clone(),
         }
     }
 }
@@ -865,6 +869,7 @@ impl VmManager {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            config_path: None,
             ttl_seconds,
             expires_at,
             ports,
@@ -919,6 +924,38 @@ impl VmManager {
                 .get_mut(name)
                 .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
             state.ssh_enabled = enabled;
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    pub fn set_work_dir(&mut self, name: &str, work_dir: Option<String>) -> Result<()> {
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.work_dir = work_dir;
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    pub fn set_config_path(&mut self, name: &str, config_path: Option<String>) -> Result<()> {
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.config_path = config_path;
         }
         let state = self
             .sandboxes
@@ -1396,9 +1433,11 @@ impl VmManager {
 
         // Convert permissions to SandboxConfig
         let work_dir = if perms.mount_cwd {
-            std::env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string())
+            state.work_dir.clone().or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .map(|p| p.to_string_lossy().to_string())
+            })
         } else {
             None
         };
@@ -2993,6 +3032,7 @@ mod tests {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            config_path: None,
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3058,6 +3098,7 @@ mod tests {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            config_path: None,
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3133,6 +3174,7 @@ mod tests {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            config_path: None,
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3224,6 +3266,7 @@ mod tests {
                 workspace_revision: None,
                 endpoints: Vec::new(),
                 work_dir: None,
+                config_path: None,
                 ttl_seconds: None,
                 expires_at: None,
                 ports: Vec::new(),
@@ -3296,6 +3339,7 @@ mod tests {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            config_path: None,
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3368,6 +3412,7 @@ mod tests {
                 workspace_revision: None,
                 endpoints: Vec::new(),
                 work_dir: None,
+                config_path: None,
                 ttl_seconds: None,
                 expires_at: None,
                 ports: Vec::new(),
@@ -3441,6 +3486,7 @@ mod tests {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            config_path: None,
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3510,6 +3556,7 @@ mod tests {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            config_path: None,
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
@@ -3575,6 +3622,7 @@ mod tests {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            config_path: None,
             ttl_seconds: Some(3600),
             expires_at: Some("2026-01-01T01:00:00Z".to_string()),
             ports: Vec::new(),
