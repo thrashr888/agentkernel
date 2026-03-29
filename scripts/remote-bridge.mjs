@@ -14,6 +14,15 @@ if (!provider || !payload) {
   process.exit(1);
 }
 
+// Validate that a string is safe to use as a path component (no separators, no traversal).
+function validatePathComponent(value, label) {
+  if (!value || /[/\\]|^\.\.?$/.test(value)) {
+    throw new Error(`Invalid ${label}: '${value}' must not contain path separators or be a traversal component`);
+  }
+}
+
+validatePathComponent(provider, "provider");
+
 const request = JSON.parse(Buffer.from(payload, "base64").toString("utf8"));
 const mode = process.env.AGENTKERNEL_REMOTE_BRIDGE_MODE ?? "";
 try {
@@ -99,8 +108,31 @@ try {
 } catch (error) {
   respond({
     success: false,
-    error: error instanceof Error ? error.message : String(error),
+    error: scrubSecrets(error instanceof Error ? error.message : String(error)),
   });
+}
+
+/**
+ * Replace known API key values in a string with redacted placeholders so that
+ * provider SDK errors (which sometimes include the bearer token in the message)
+ * do not leak credentials to the caller.
+ */
+function scrubSecrets(text) {
+  const sensitiveEnvs = [
+    "DAYTONA_API_KEY",
+    "RUNLOOP_API_KEY",
+    "E2B_API_KEY",
+    "AGENTKERNEL_API_KEY",
+    "AGENTCOMPUTER_API_KEY",
+  ];
+  let result = text;
+  for (const envName of sensitiveEnvs) {
+    const value = process.env[envName];
+    if (value && value.length >= 8) {
+      result = result.replaceAll(value, "[REDACTED]");
+    }
+  }
+  return result;
 }
 
 function respond(body) {
@@ -2152,14 +2184,18 @@ function sandboxesDir() {
 }
 
 function sandboxStatePath(remoteId) {
+  validatePathComponent(remoteId, "remoteId");
   return path.join(sandboxesDir(), `${remoteId}.json`);
 }
 
 function nameMapPath(name) {
+  validatePathComponent(name, "sandbox name");
   return path.join(rootDir, "names", `${name}.json`);
 }
 
 function snapshotDir(remoteId, snapshotName) {
+  validatePathComponent(remoteId, "remoteId");
+  validatePathComponent(snapshotName, "snapshot name");
   return path.join(rootDir, "snapshots", remoteId, snapshotName);
 }
 

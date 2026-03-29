@@ -9,7 +9,7 @@ This implementation introduces:
 - new backend enum values and CLI parsing
 - persisted remote runtime metadata (`remote_id`, `remote_metadata`, `workspace_revision`, `endpoints`)
 - a shared `RemoteSandbox` backend implementation
-- a JSON-over-stdio Node bridge at [`scripts/remote-bridge.mjs`](/Users/thrashr888/Workspace/agentkernel-remote-backends-v1/scripts/remote-bridge.mjs)
+- a JSON-over-stdio Node bridge at [`scripts/remote-bridge.mjs`](../scripts/remote-bridge.mjs)
 - managed `/workspace` sync for remote backends
 - structured endpoint exposure in the HTTP API and `agentkernel info`
 
