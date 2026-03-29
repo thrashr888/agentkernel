@@ -228,6 +228,10 @@ See the [Orchestration Guide](../operations/index.md) for detailed usage and dep
 
 Configuration for hosted remote backends (`daytona`, `runloop`, `e2b`, `agentcomputer`).
 
+Current note: the shipped live bridge reads Daytona credentials from `DAYTONA_*`
+environment variables today. The provider blocks below define the intended
+config shape, but only `daytona` has a live bundled adapter at the moment.
+
 ```toml
 [remote]
 default_profile = "node-dev"

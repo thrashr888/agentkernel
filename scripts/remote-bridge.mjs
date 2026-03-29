@@ -16,75 +16,70 @@ if (!provider || !payload) {
 
 const request = JSON.parse(Buffer.from(payload, "base64").toString("utf8"));
 const mode = process.env.AGENTKERNEL_REMOTE_BRIDGE_MODE ?? "";
-
-if (mode !== "mock") {
-  respond({
-    success: false,
-    error:
-      `Remote provider bridge for '${provider}' is not configured. ` +
-      `Set AGENTKERNEL_REMOTE_BRIDGE_MODE=mock for local testing or point ` +
-      `AGENTKERNEL_REMOTE_BRIDGE at a provider-aware bridge.`,
-  });
-}
+let daytonaSdkPromise;
 
 const rootDir = path.join(os.tmpdir(), "agentkernel-remote-bridge", provider);
 await fs.mkdir(rootDir, { recursive: true });
 
 try {
-  switch (request.operation) {
-    case "create":
-      respond(await createSandbox(provider, request));
-      break;
-    case "resume":
-      respond(await resumeSandbox(request));
-      break;
-    case "status":
-      respond(await statusSandbox(request));
-      break;
-    case "stop":
-      respond(await stopSandbox(request));
-      break;
-    case "destroy":
-      respond(await destroySandbox(request));
-      break;
-    case "exec":
-      respond(await execSandbox(request));
-      break;
-    case "attach":
-      process.exit(await attachSandbox(request));
-      break;
-    case "write_file":
-      respond(await writeSandboxFile(request));
-      break;
-    case "read_file":
-      respond(await readSandboxFile(request));
-      break;
-    case "remove_file":
-      respond(await removeSandboxFile(request));
-      break;
-    case "mkdir":
-      respond(await mkdirSandbox(request));
-      break;
-    case "sync_push":
-      respond(await syncPush(request));
-      break;
-    case "sync_pull":
-      respond(await syncPull(request));
-      break;
-    case "snapshot":
-      respond(await takeSnapshot(request));
-      break;
-    case "delete_snapshot":
-      respond(await deleteSnapshot(request));
-      break;
-    case "restore":
-      respond(await restoreSnapshot(request));
-      break;
-    default:
-      respond({
-        success: false,
-        error: `unsupported remote bridge operation: ${request.operation}`,
-      });
+  if (mode === "mock") {
+    switch (request.operation) {
+      case "create":
+        respond(await createSandbox(provider, request));
+        break;
+      case "resume":
+        respond(await resumeSandbox(request));
+        break;
+      case "status":
+        respond(await statusSandbox(request));
+        break;
+      case "stop":
+        respond(await stopSandbox(request));
+        break;
+      case "destroy":
+        respond(await destroySandbox(request));
+        break;
+      case "exec":
+        respond(await execSandbox(request));
+        break;
+      case "attach":
+        process.exit(await attachSandbox(request));
+        break;
+      case "write_file":
+        respond(await writeSandboxFile(request));
+        break;
+      case "read_file":
+        respond(await readSandboxFile(request));
+        break;
+      case "remove_file":
+        respond(await removeSandboxFile(request));
+        break;
+      case "mkdir":
+        respond(await mkdirSandbox(request));
+        break;
+      case "sync_push":
+        respond(await syncPush(request));
+        break;
+      case "sync_pull":
+        respond(await syncPull(request));
+        break;
+      case "snapshot":
+        respond(await takeSnapshot(request));
+        break;
+      case "delete_snapshot":
+        respond(await deleteSnapshot(request));
+        break;
+      case "restore":
+        respond(await restoreSnapshot(request));
+        break;
+      default:
+        respond({
+          success: false,
+          error: `unsupported remote bridge operation: ${request.operation}`,
+        });
+    }
+  } else {
+    await handleProviderRequest(provider, request);
   }
 } catch (error) {
   respond({
@@ -96,6 +91,358 @@ try {
 function respond(body) {
   process.stdout.write(`${JSON.stringify(body)}\n`);
   process.exit(body.success === false ? 1 : 0);
+}
+
+async function handleProviderRequest(providerName, providerRequest) {
+  if (providerName === "daytona") {
+    switch (providerRequest.operation) {
+      case "create":
+        respond(await createDaytonaSandbox(providerRequest));
+        return;
+      case "resume":
+        respond(await resumeDaytonaSandbox(providerRequest));
+        return;
+      case "status":
+        respond(await statusDaytonaSandbox(providerRequest));
+        return;
+      case "stop":
+        respond(await stopDaytonaSandbox(providerRequest));
+        return;
+      case "destroy":
+        respond(await destroyDaytonaSandbox(providerRequest));
+        return;
+      case "exec":
+        respond(await execDaytonaSandbox(providerRequest));
+        return;
+      case "attach":
+        process.exit(await attachDaytonaSandbox(providerRequest));
+        return;
+      case "write_file":
+        respond(await writeDaytonaFile(providerRequest));
+        return;
+      case "read_file":
+        respond(await readDaytonaFile(providerRequest));
+        return;
+      case "remove_file":
+        respond(await removeDaytonaFile(providerRequest));
+        return;
+      case "mkdir":
+        respond(await mkdirDaytona(providerRequest));
+        return;
+      case "sync_push":
+      case "sync_pull":
+      case "snapshot":
+      case "delete_snapshot":
+      case "restore":
+        throw new Error(
+          `Daytona bridge does not yet support '${providerRequest.operation}'. ` +
+            "Use the backend without mount_cwd sync or snapshots for now.",
+        );
+      default:
+        throw new Error(
+          `unsupported Daytona bridge operation: ${providerRequest.operation}`,
+        );
+    }
+  }
+
+  respond({
+    success: false,
+    error:
+      `Remote provider bridge for '${providerName}' is not configured. ` +
+      `Set AGENTKERNEL_REMOTE_BRIDGE_MODE=mock for local testing or install a provider-aware bridge.`,
+  });
+}
+
+async function loadDaytonaSdk() {
+  if (!daytonaSdkPromise) {
+    daytonaSdkPromise = import("@daytonaio/sdk").catch((error) => {
+      throw new Error(
+        "Daytona support requires '@daytonaio/sdk'. Run 'npm install --prefix scripts' first. " +
+          `(${error.message})`,
+      );
+    });
+  }
+  return daytonaSdkPromise;
+}
+
+async function withDaytonaClient(fn) {
+  const { Daytona } = await loadDaytonaSdk();
+  const client = new Daytona({
+    apiKey: process.env.DAYTONA_API_KEY,
+    apiUrl: process.env.DAYTONA_API_URL,
+    target: process.env.DAYTONA_TARGET || "us",
+    organizationId:
+      process.env.DAYTONA_ORGANIZATION_ID || process.env.DAYTONA_ORG_ID,
+  });
+
+  try {
+    return await fn(client);
+  } finally {
+    if (client[Symbol.asyncDispose]) {
+      await client[Symbol.asyncDispose]();
+    }
+  }
+}
+
+function daytonaEnvMap(values = {}) {
+  return Object.fromEntries(
+    Object.entries(values).map(([key, value]) => [key, String(value)]),
+  );
+}
+
+function daytonaShellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function daytonaCommand(argv = []) {
+  return argv.map(daytonaShellQuote).join(" ");
+}
+
+function daytonaMemoryGiB(memoryMb) {
+  if (!memoryMb || Number.isNaN(Number(memoryMb))) {
+    return undefined;
+  }
+  return Math.max(1, Math.ceil(Number(memoryMb) / 1024));
+}
+
+function daytonaPortSpec(port) {
+  return `${port.container_port}/${port.protocol ?? "tcp"}`;
+}
+
+function daytonaRunning(state) {
+  return state === "started" || state === "running";
+}
+
+async function getDaytonaSandbox(daytona, providerRequest) {
+  const remoteId =
+    providerRequest.remote_id || providerRequest.remote_metadata?.daytona_id;
+  if (!remoteId) {
+    throw new Error("missing remote_id for Daytona sandbox");
+  }
+  return daytona.get(remoteId);
+}
+
+async function daytonaEndpoints(sandbox, providerRequest) {
+  const portSpecs =
+    providerRequest.remote_metadata?.published_ports?.split(",").filter(Boolean) ??
+    (providerRequest.ports || []).map(daytonaPortSpec);
+
+  const endpoints = [];
+  for (const spec of portSpecs) {
+    const [portString, protocol = "tcp"] = spec.split("/");
+    const port = Number.parseInt(portString, 10);
+    if (!Number.isFinite(port)) {
+      continue;
+    }
+
+    try {
+      const preview = await sandbox.getPreviewLink(port);
+      endpoints.push({
+        container_port: port,
+        protocol,
+        url: preview.url,
+      });
+    } catch {
+      // Leave the endpoint absent if Daytona cannot open a preview yet.
+    }
+  }
+  return endpoints;
+}
+
+async function daytonaResponse(sandbox, providerRequest, extra = {}) {
+  const endpoints =
+    extra.endpoints ?? (await daytonaEndpoints(sandbox, providerRequest));
+
+  return {
+    success: true,
+    remote_id: sandbox.id,
+    remote_metadata: {
+      ...(providerRequest.remote_metadata || {}),
+      daytona_id: sandbox.id,
+      sandbox_state: sandbox.state || "",
+      profile_name:
+        providerRequest.profile || providerRequest.image || sandbox.image || "default",
+      published_ports:
+        providerRequest.remote_metadata?.published_ports ||
+        (providerRequest.ports || []).map(daytonaPortSpec).join(","),
+      last_known_status: daytonaRunning(sandbox.state) ? "running" : "stopped",
+    },
+    endpoints,
+    running: daytonaRunning(sandbox.state),
+    ...extra,
+  };
+}
+
+async function createDaytonaSandbox(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await daytona.create({
+      name: providerRequest.sandbox_name,
+      image: providerRequest.image || "alpine:3.20",
+      envVars: daytonaEnvMap(providerRequest.env),
+      resources: {
+        cpu: providerRequest.vcpus || 1,
+        memory: daytonaMemoryGiB(providerRequest.memory_mb),
+      },
+      autoStopInterval: 15,
+      public: Boolean(providerRequest.ports?.length),
+    });
+    return daytonaResponse(sandbox, providerRequest);
+  });
+}
+
+async function resumeDaytonaSandbox(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await getDaytonaSandbox(daytona, providerRequest);
+    if (!daytonaRunning(sandbox.state)) {
+      await sandbox.start();
+    }
+    await sandbox.refreshDataSafe();
+    return daytonaResponse(sandbox, providerRequest);
+  });
+}
+
+async function statusDaytonaSandbox(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await getDaytonaSandbox(daytona, providerRequest);
+    await sandbox.refreshDataSafe();
+    return daytonaResponse(sandbox, providerRequest);
+  });
+}
+
+async function stopDaytonaSandbox(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await getDaytonaSandbox(daytona, providerRequest);
+    if (daytonaRunning(sandbox.state)) {
+      await sandbox.stop();
+      await sandbox.refreshDataSafe();
+    }
+    return daytonaResponse(sandbox, providerRequest);
+  });
+}
+
+async function destroyDaytonaSandbox(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await getDaytonaSandbox(daytona, providerRequest);
+    await sandbox.delete();
+    return {
+      success: true,
+      remote_id: sandbox.id,
+      remote_metadata: {
+        ...(providerRequest.remote_metadata || {}),
+        daytona_id: sandbox.id,
+        last_known_status: "stopped",
+      },
+      running: false,
+      endpoints: [],
+    };
+  });
+}
+
+async function execDaytonaSandbox(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await getDaytonaSandbox(daytona, providerRequest);
+    const result = await sandbox.process.executeCommand(
+      daytonaCommand(providerRequest.command || []),
+      providerRequest.workdir,
+      daytonaEnvMap(providerRequest.env),
+    );
+
+    return daytonaResponse(sandbox, providerRequest, {
+      exit_code: result.exitCode ?? 0,
+      stdout:
+        result.result || result.artifacts?.stdout || result.stdout || "",
+      stderr: result.stderr || result.artifacts?.stderr || "",
+    });
+  });
+}
+
+async function writeDaytonaFile(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await getDaytonaSandbox(daytona, providerRequest);
+    await sandbox.fs.uploadFile(
+      Buffer.from(providerRequest.content_base64 || "", "base64"),
+      providerRequest.path,
+    );
+    return daytonaResponse(sandbox, providerRequest);
+  });
+}
+
+async function readDaytonaFile(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await getDaytonaSandbox(daytona, providerRequest);
+    const content = await sandbox.fs.downloadFile(providerRequest.path);
+    return daytonaResponse(sandbox, providerRequest, {
+      content_base64: Buffer.from(content).toString("base64"),
+    });
+  });
+}
+
+async function removeDaytonaFile(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await getDaytonaSandbox(daytona, providerRequest);
+    await sandbox.process.executeCommand(
+      `rm -rf -- ${daytonaShellQuote(providerRequest.path)}`,
+    );
+    return daytonaResponse(sandbox, providerRequest);
+  });
+}
+
+async function mkdirDaytona(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await getDaytonaSandbox(daytona, providerRequest);
+    const flag = providerRequest.recursive ? "-p " : "";
+    await sandbox.process.executeCommand(
+      `mkdir ${flag}-- ${daytonaShellQuote(providerRequest.path)}`,
+    );
+    return daytonaResponse(sandbox, providerRequest);
+  });
+}
+
+async function attachDaytonaSandbox(providerRequest) {
+  return withDaytonaClient(async (daytona) => {
+    const sandbox = await getDaytonaSandbox(daytona, providerRequest);
+    const pty = await sandbox.process.createPty({
+      id: `agentkernel-${Date.now()}`,
+      cwd: providerRequest.workdir,
+      envs: daytonaEnvMap(providerRequest.env),
+      cols: process.stdout.columns || 120,
+      rows: process.stdout.rows || 30,
+      onData: (data) => {
+        process.stdout.write(Buffer.from(data));
+      },
+    });
+
+    await pty.waitForConnection();
+
+    const resize = async () => {
+      if (process.stdout.isTTY) {
+        await pty.resize(process.stdout.columns || 120, process.stdout.rows || 30);
+      }
+    };
+
+    const onData = (chunk) => {
+      void pty.sendInput(chunk);
+    };
+
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(true);
+    }
+    process.stdin.resume();
+    process.stdin.on("data", onData);
+    process.stdout.on("resize", resize);
+
+    try {
+      const result = await pty.wait();
+      return result.exitCode ?? 0;
+    } finally {
+      process.stdin.off("data", onData);
+      process.stdout.off("resize", resize);
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(false);
+      }
+      await pty.disconnect().catch(() => {});
+    }
+  });
 }
 
 function sandboxesDir() {

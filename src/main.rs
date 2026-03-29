@@ -109,7 +109,7 @@ enum Commands {
         /// Use container pool for faster execution (skips create/destroy overhead)
         #[arg(short = 'F', long)]
         fast: bool,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad, daytona, runloop, e2b, agentcomputer (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
         /// Template to use (built-in name, local name, github:owner/repo/path, or file path)
@@ -444,7 +444,7 @@ enum SandboxAction {
         /// Project directory to mount into sandbox
         #[arg(short, long)]
         dir: Option<PathBuf>,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad, daytona, runloop, e2b, agentcomputer (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
         /// Template to use (built-in name, local name, github:owner/repo/path, or file path)
@@ -491,7 +491,7 @@ enum SandboxAction {
     Start {
         /// Name of the sandbox to start
         name: String,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad, daytona, runloop, e2b, agentcomputer (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
     },

@@ -1,0 +1,7 @@
+{
+  "name": "agentkernel-remote-bridge",
+  "private": true,
+  "dependencies": {
+    "@daytonaio/sdk": "^0.158.0"
+  }
+}

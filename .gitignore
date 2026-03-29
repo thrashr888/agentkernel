@@ -25,6 +25,7 @@ benchmark-results/*.txt
 app/src-tauri/target/
 app/node_modules/
 app/dist/
+scripts/node_modules/
 
 # Local Homebrew formula repo (separate repo: thrashr888/homebrew-agentkernel)
 /homebrew-agentkernel/
