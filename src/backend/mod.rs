@@ -190,6 +190,7 @@ pub struct RemoteSandboxContext {
     pub workspace_revision: Option<String>,
     pub endpoints: Vec<ResolvedEndpoint>,
     pub local_workspace: Option<String>,
+    pub config_path: Option<String>,
 }
 
 /// Outcome-level backend capabilities used for compatibility checks.

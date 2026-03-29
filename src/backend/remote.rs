@@ -139,18 +139,31 @@ impl RemoteBridgeClient {
         Self { provider }
     }
 
-    async fn request(&self, request: &BridgeRequest) -> Result<BridgeResponse> {
+    async fn request(
+        &self,
+        request: &BridgeRequest,
+        project_dir: Option<&str>,
+        config_path: Option<&str>,
+    ) -> Result<BridgeResponse> {
         let payload = STANDARD.encode(
             serde_json::to_vec(request).context("Failed to serialize remote bridge request")?,
         );
 
-        let (program, mut args) = remote_bridge_command()?;
+        let (program, mut args) = remote_bridge_command_for(config_path)?;
         args.push(self.provider.as_str().to_string());
         args.push(payload);
 
-        let output = Command::new(program)
-            .args(args)
-            .envs(remote_bridge_env(self.provider.as_str()))
+        let mut command = Command::new(program);
+        command.args(args);
+        command.envs(remote_bridge_env_for(self.provider.as_str(), config_path));
+        let current_dir = project_dir.map(PathBuf::from).or_else(|| {
+            config_path.and_then(|path| PathBuf::from(path).parent().map(PathBuf::from))
+        });
+        if let Some(project_dir) = current_dir {
+            command.current_dir(project_dir);
+        }
+
+        let output = command
             .output()
             .await
             .context("Failed to execute remote bridge")?;
@@ -187,12 +200,18 @@ impl RemoteBridgeClient {
         Ok(response)
     }
 
-    async fn attach(&self, request: &BridgeRequest, env: &HashMap<String, String>) -> Result<i32> {
+    async fn attach(
+        &self,
+        request: &BridgeRequest,
+        env: &HashMap<String, String>,
+        project_dir: Option<&str>,
+        config_path: Option<&str>,
+    ) -> Result<i32> {
         let payload = STANDARD.encode(
             serde_json::to_vec(request).context("Failed to serialize remote attach request")?,
         );
 
-        let (program, mut args) = remote_bridge_command()?;
+        let (program, mut args) = remote_bridge_command_for(config_path)?;
         args.push(self.provider.as_str().to_string());
         args.push(payload);
 
@@ -201,8 +220,14 @@ impl RemoteBridgeClient {
         command.stdin(Stdio::inherit());
         command.stdout(Stdio::inherit());
         command.stderr(Stdio::inherit());
-        command.envs(remote_bridge_env(self.provider.as_str()));
+        command.envs(remote_bridge_env_for(self.provider.as_str(), config_path));
         command.envs(env.iter());
+        let current_dir = project_dir.map(PathBuf::from).or_else(|| {
+            config_path.and_then(|path| PathBuf::from(path).parent().map(PathBuf::from))
+        });
+        if let Some(project_dir) = current_dir {
+            command.current_dir(project_dir);
+        }
 
         let status = command
             .status()
@@ -213,6 +238,12 @@ impl RemoteBridgeClient {
 }
 
 pub(crate) fn remote_bridge_command() -> Result<(String, Vec<String>)> {
+    remote_bridge_command_for(None)
+}
+
+pub(crate) fn remote_bridge_command_for(
+    config_path: Option<&str>,
+) -> Result<(String, Vec<String>)> {
     if let Ok(custom) = std::env::var("AGENTKERNEL_REMOTE_BRIDGE") {
         if custom.ends_with(".js") || custom.ends_with(".mjs") {
             return Ok(("node".to_string(), vec![custom]));
@@ -220,11 +251,15 @@ pub(crate) fn remote_bridge_command() -> Result<(String, Vec<String>)> {
         return Ok((custom, Vec::new()));
     }
 
-    if let Some(config) = load_project_config()
+    if let Some(config) = load_project_config(config_path)
         && let Some(custom) = config.remote.bridge
     {
         if custom.ends_with(".js") || custom.ends_with(".mjs") {
-            return Ok(("node".to_string(), vec![custom]));
+            let script = resolve_bridge_path(&custom, config_path);
+            return Ok((
+                "node".to_string(),
+                vec![script.to_string_lossy().to_string()],
+            ));
         }
         return Ok((custom, Vec::new()));
     }
@@ -237,7 +272,14 @@ pub(crate) fn remote_bridge_command() -> Result<(String, Vec<String>)> {
 }
 
 pub(crate) fn remote_bridge_env(provider_name: &str) -> HashMap<String, String> {
-    let Some(config) = load_project_config() else {
+    remote_bridge_env_for(provider_name, None)
+}
+
+pub(crate) fn remote_bridge_env_for(
+    provider_name: &str,
+    config_path: Option<&str>,
+) -> HashMap<String, String> {
+    let Some(config) = load_project_config(config_path) else {
         return HashMap::new();
     };
 
@@ -248,8 +290,10 @@ pub(crate) fn remote_bridge_env(provider_name: &str) -> HashMap<String, String> 
     provider_bridge_env(provider, &config)
 }
 
-fn load_project_config() -> Option<Config> {
-    let path = PathBuf::from("agentkernel.toml");
+fn load_project_config(config_path: Option<&str>) -> Option<Config> {
+    let path = config_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("agentkernel.toml"));
     if !path.exists() {
         return None;
     }
@@ -266,9 +310,9 @@ fn provider_bridge_env(provider: RemoteProvider, config: &Config) -> HashMap<Str
 
     match provider {
         RemoteProvider::Daytona => daytona_bridge_env(provider_config),
-        RemoteProvider::Runloop | RemoteProvider::E2B | RemoteProvider::AgentComputer => {
-            HashMap::new()
-        }
+        RemoteProvider::Runloop => runloop_bridge_env(provider_config),
+        RemoteProvider::E2B => e2b_bridge_env(provider_config),
+        RemoteProvider::AgentComputer => HashMap::new(),
     }
 }
 
@@ -286,6 +330,32 @@ fn daytona_bridge_env(config: &RemoteProviderConfig) -> HashMap<String, String> 
     }
     if let Some(region) = &config.region {
         env.insert("DAYTONA_TARGET".to_string(), region.clone());
+    }
+
+    env
+}
+
+fn e2b_bridge_env(config: &RemoteProviderConfig) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+
+    if let Some(api_key) = resolve_provider_secret(config) {
+        env.insert("E2B_API_KEY".to_string(), api_key);
+    }
+    if let Some(base_url) = &config.base_url {
+        env.insert("E2B_API_URL".to_string(), base_url.clone());
+    }
+
+    env
+}
+
+fn runloop_bridge_env(config: &RemoteProviderConfig) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+
+    if let Some(api_key) = resolve_provider_secret(config) {
+        env.insert("RUNLOOP_API_KEY".to_string(), api_key);
+    }
+    if let Some(base_url) = &config.base_url {
+        env.insert("RUNLOOP_BASE_URL".to_string(), base_url.clone());
     }
 
     env
@@ -317,13 +387,32 @@ fn resolve_default_bridge_path() -> Result<PathBuf> {
 
     for candidate in candidates {
         if !candidate.as_os_str().is_empty() && candidate.exists() {
-            return Ok(candidate);
+            return Ok(candidate.canonicalize().unwrap_or(candidate));
         }
     }
 
     bail!(
         "Remote bridge script not found. Set AGENTKERNEL_REMOTE_BRIDGE or ensure scripts/remote-bridge.mjs exists."
     )
+}
+
+fn resolve_bridge_path(script: &str, config_path: Option<&str>) -> PathBuf {
+    let path = PathBuf::from(script);
+    if path.is_absolute() {
+        return path;
+    }
+
+    if let Some(config_path) = config_path
+        && let Some(parent) = PathBuf::from(config_path).parent()
+    {
+        let resolved = parent.join(&path);
+        if resolved.exists() {
+            return resolved.canonicalize().unwrap_or(resolved);
+        }
+        return resolved;
+    }
+
+    path
 }
 
 pub fn remote_bridge_available() -> bool {
@@ -351,6 +440,7 @@ pub struct RemoteSandbox {
     endpoints: Vec<ResolvedEndpoint>,
     running: bool,
     local_workspace: Option<String>,
+    config_path: Option<String>,
 }
 
 impl RemoteSandbox {
@@ -371,6 +461,7 @@ impl RemoteSandbox {
             endpoints: state.endpoints,
             running,
             local_workspace: state.local_workspace,
+            config_path: state.config_path,
         }
     }
 
@@ -458,7 +549,14 @@ impl RemoteSandbox {
         let mut request = self.new_request("sync_push");
         request.local_path = Some(local_workspace);
         request.path = Some("/workspace".to_string());
-        let response = self.bridge.request(&request).await?;
+        let response = self
+            .bridge
+            .request(
+                &request,
+                self.local_workspace.as_deref(),
+                self.config_path.as_deref(),
+            )
+            .await?;
         self.apply_response(&response);
         Ok(())
     }
@@ -471,14 +569,28 @@ impl RemoteSandbox {
         let mut request = self.new_request("sync_pull");
         request.local_path = Some(local_workspace);
         request.path = Some("/workspace".to_string());
-        let response = self.bridge.request(&request).await?;
+        let response = self
+            .bridge
+            .request(
+                &request,
+                self.local_workspace.as_deref(),
+                self.config_path.as_deref(),
+            )
+            .await?;
         self.apply_response(&response);
         Ok(())
     }
 
     async fn refresh_status(&mut self) -> Result<()> {
         let request = self.new_request("status");
-        let response = self.bridge.request(&request).await?;
+        let response = self
+            .bridge
+            .request(
+                &request,
+                self.local_workspace.as_deref(),
+                self.config_path.as_deref(),
+            )
+            .await?;
         self.apply_response(&response);
         Ok(())
     }
@@ -493,6 +605,7 @@ impl Sandbox for RemoteSandbox {
                 .clone()
                 .unwrap_or_else(|| "/workspace".to_string())
         });
+        let requested_restore_snapshot = self.remote_metadata.get("restore_snapshot").cloned();
 
         let mut request = self.new_request(if self.remote_id.is_some() {
             "resume"
@@ -509,18 +622,36 @@ impl Sandbox for RemoteSandbox {
         request.ports = config.ports.clone();
         request.path = Some("/workspace".to_string());
 
-        let response = self.bridge.request(&request).await?;
+        let response = self
+            .bridge
+            .request(
+                &request,
+                self.local_workspace.as_deref(),
+                self.config_path.as_deref(),
+            )
+            .await?;
         self.apply_response(&response);
 
         if let Some(snapshot_handle) = self.remote_metadata.get("restore_snapshot").cloned() {
             let mut restore = self.new_request("restore");
             restore.snapshot_name = Some(snapshot_handle);
-            let restored = self.bridge.request(&restore).await?;
+            let restored = self
+                .bridge
+                .request(
+                    &restore,
+                    self.local_workspace.as_deref(),
+                    self.config_path.as_deref(),
+                )
+                .await?;
             self.apply_response(&restored);
             self.remote_metadata.remove("restore_snapshot");
         }
 
-        self.sync_push().await?;
+        if requested_restore_snapshot.is_some() {
+            self.sync_pull().await?;
+        } else {
+            self.sync_push().await?;
+        }
         self.running = true;
         self.remote_metadata
             .insert("last_known_status".to_string(), "running".to_string());
@@ -558,7 +689,14 @@ impl Sandbox for RemoteSandbox {
         request.command = Some(cmd.iter().map(|part| (*part).to_string()).collect());
         request.workdir = opts.workdir.clone();
         request.env = Self::env_strings_map(&opts.env);
-        let response = self.bridge.request(&request).await?;
+        let response = self
+            .bridge
+            .request(
+                &request,
+                self.local_workspace.as_deref(),
+                self.config_path.as_deref(),
+            )
+            .await?;
         self.apply_response(&response);
         self.sync_pull().await?;
 
@@ -572,7 +710,14 @@ impl Sandbox for RemoteSandbox {
     async fn stop(&mut self) -> Result<()> {
         let _ = self.sync_pull().await;
         let request = self.new_request("stop");
-        let response = self.bridge.request(&request).await?;
+        let response = self
+            .bridge
+            .request(
+                &request,
+                self.local_workspace.as_deref(),
+                self.config_path.as_deref(),
+            )
+            .await?;
         self.apply_response(&response);
         self.running = false;
         self.remote_metadata
@@ -582,7 +727,14 @@ impl Sandbox for RemoteSandbox {
 
     async fn remove(&mut self) -> Result<()> {
         let request = self.new_request("destroy");
-        let response = self.bridge.request(&request).await?;
+        let response = self
+            .bridge
+            .request(
+                &request,
+                self.local_workspace.as_deref(),
+                self.config_path.as_deref(),
+            )
+            .await?;
         self.apply_response(&response);
         self.running = false;
         Ok(())
@@ -604,7 +756,14 @@ impl Sandbox for RemoteSandbox {
         let mut request = self.new_request("write_file");
         request.path = Some(path.to_string());
         request.content_base64 = Some(STANDARD.encode(content));
-        let response = self.bridge.request(&request).await?;
+        let response = self
+            .bridge
+            .request(
+                &request,
+                self.local_workspace.as_deref(),
+                self.config_path.as_deref(),
+            )
+            .await?;
         self.apply_response(&response);
         Ok(())
     }
@@ -612,7 +771,14 @@ impl Sandbox for RemoteSandbox {
     async fn read_file_unchecked(&mut self, path: &str) -> Result<Vec<u8>> {
         let mut request = self.new_request("read_file");
         request.path = Some(path.to_string());
-        let response = self.bridge.request(&request).await?;
+        let response = self
+            .bridge
+            .request(
+                &request,
+                self.local_workspace.as_deref(),
+                self.config_path.as_deref(),
+            )
+            .await?;
         self.apply_response(&response);
         let payload = response
             .content_base64
@@ -625,7 +791,14 @@ impl Sandbox for RemoteSandbox {
     async fn remove_file_unchecked(&mut self, path: &str) -> Result<()> {
         let mut request = self.new_request("remove_file");
         request.path = Some(path.to_string());
-        let response = self.bridge.request(&request).await?;
+        let response = self
+            .bridge
+            .request(
+                &request,
+                self.local_workspace.as_deref(),
+                self.config_path.as_deref(),
+            )
+            .await?;
         self.apply_response(&response);
         Ok(())
     }
@@ -634,7 +807,14 @@ impl Sandbox for RemoteSandbox {
         let mut request = self.new_request("mkdir");
         request.path = Some(path.to_string());
         request.recursive = Some(recursive);
-        let response = self.bridge.request(&request).await?;
+        let response = self
+            .bridge
+            .request(
+                &request,
+                self.local_workspace.as_deref(),
+                self.config_path.as_deref(),
+            )
+            .await?;
         self.apply_response(&response);
         Ok(())
     }
@@ -649,7 +829,17 @@ impl Sandbox for RemoteSandbox {
         let mut request = self.new_request("attach");
         request.shell = shell.map(|value| value.to_string());
         let env_map = Self::env_strings_map(env);
-        let exit_code = self.bridge.attach(&request, &env_map).await?;
+        request.env = env_map.clone();
+        request.workdir = Some("/workspace".to_string());
+        let exit_code = self
+            .bridge
+            .attach(
+                &request,
+                &env_map,
+                self.local_workspace.as_deref(),
+                self.config_path.as_deref(),
+            )
+            .await?;
 
         let _ = self.sync_pull().await;
         let _ = self.refresh_status().await;
@@ -702,6 +892,7 @@ mod tests {
                     url: "https://example.test".to_string(),
                 }],
                 local_workspace: Some("/tmp/demo".to_string()),
+                config_path: Some("/tmp/demo/agentkernel.toml".to_string()),
             },
         );
 
@@ -742,5 +933,52 @@ mod tests {
             Some(&"org-123".to_string())
         );
         assert_eq!(env.get("DAYTONA_TARGET"), Some(&"eu".to_string()));
+    }
+
+    #[test]
+    fn test_e2b_bridge_env_from_config() {
+        let config = Config::from_str(
+            r#"
+            [sandbox]
+            name = "remote-app"
+
+            [remote.e2b]
+            api_key = "e2b-secret"
+            base_url = "https://api.e2b.invalid"
+        "#,
+        )
+        .unwrap();
+
+        let env = provider_bridge_env(RemoteProvider::E2B, &config);
+        assert_eq!(env.get("E2B_API_KEY"), Some(&"e2b-secret".to_string()));
+        assert_eq!(
+            env.get("E2B_API_URL"),
+            Some(&"https://api.e2b.invalid".to_string())
+        );
+    }
+
+    #[test]
+    fn test_runloop_bridge_env_from_config() {
+        let config = Config::from_str(
+            r#"
+            [sandbox]
+            name = "remote-app"
+
+            [remote.runloop]
+            api_key = "runloop-secret"
+            base_url = "https://api.runloop.invalid"
+        "#,
+        )
+        .unwrap();
+
+        let env = provider_bridge_env(RemoteProvider::Runloop, &config);
+        assert_eq!(
+            env.get("RUNLOOP_API_KEY"),
+            Some(&"runloop-secret".to_string())
+        );
+        assert_eq!(
+            env.get("RUNLOOP_BASE_URL"),
+            Some(&"https://api.runloop.invalid".to_string())
+        );
     }
 }

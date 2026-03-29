@@ -1116,6 +1116,10 @@ memory_mb = 512
                 } else {
                     (Config::minimal(&name, &agent), None)
                 };
+                let stored_config_path = config
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().to_string());
+                let workspace_root = config_base_dir.clone().unwrap_or(std::env::current_dir()?);
 
                 // Validate config and print warnings
                 for warning in cfg.validate() {
@@ -1237,6 +1241,11 @@ memory_mb = 512
                         ports,
                     )
                     .await?;
+                manager.set_config_path(&name, stored_config_path)?;
+                if start_perms.mount_cwd {
+                    manager
+                        .set_work_dir(&name, Some(workspace_root.to_string_lossy().to_string()))?;
+                }
 
                 // Parse and set labels
                 if !label_args.is_empty() {
@@ -1493,7 +1502,13 @@ memory_mb = 512
                     }
                 }
 
-                let config_path = std::path::PathBuf::from("agentkernel.toml");
+                let sandbox_config_path = manager
+                    .get_state(&name)
+                    .and_then(|state| state.config_path.clone())
+                    .map(std::path::PathBuf::from);
+                let config_path = sandbox_config_path
+                    .filter(|path| path.exists())
+                    .unwrap_or_else(|| std::path::PathBuf::from("agentkernel.toml"));
                 let (start_perms, start_files) = if config_path.exists() {
                     let cfg = Config::from_file(&config_path)?;
                     for warning in cfg.validate() {
@@ -3857,6 +3872,8 @@ memory_mb = 512
                     remote_namespace: state.remote_namespace.clone(),
                     remote_metadata: state.remote_metadata.clone(),
                     workspace_revision: state.workspace_revision.clone(),
+                    work_dir: state.work_dir.clone(),
+                    config_path: state.config_path.clone(),
                 };
 
                 println!("Saving session '{}'...", name);
@@ -3911,6 +3928,8 @@ memory_mb = 512
                                     )
                                     .await?;
                             }
+                            manager.set_work_dir(&sess.sandbox, meta.work_dir.clone())?;
+                            manager.set_config_path(&sess.sandbox, meta.config_path.clone())?;
                             if let Some(snapshot_handle) = meta.remote_snapshot.as_deref() {
                                 manager
                                     .set_remote_restore_snapshot(&sess.sandbox, snapshot_handle)?;
@@ -3966,6 +3985,8 @@ memory_mb = 512
                     remote_namespace: state.remote_namespace.clone(),
                     remote_metadata: state.remote_metadata.clone(),
                     workspace_revision: state.workspace_revision.clone(),
+                    work_dir: state.work_dir.clone(),
+                    config_path: state.config_path.clone(),
                 };
 
                 println!("Snapshotting '{}' → '{}'...", sandbox, snap_name);
@@ -4058,6 +4079,8 @@ memory_mb = 512
                         )
                         .await?;
                 }
+                manager.set_work_dir(&restore_name, meta.work_dir.clone())?;
+                manager.set_config_path(&restore_name, meta.config_path.clone())?;
                 if let Some(snapshot_handle) = meta.remote_snapshot.as_deref() {
                     manager.set_remote_restore_snapshot(&restore_name, snapshot_handle)?;
                 }

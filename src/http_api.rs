@@ -4398,6 +4398,8 @@ async fn handle_take_snapshot(req: Request<Incoming>, state: Arc<AppState>) -> R
         remote_namespace: sandbox_state.remote_namespace.clone(),
         remote_metadata: sandbox_state.remote_metadata.clone(),
         workspace_revision: sandbox_state.workspace_revision.clone(),
+        work_dir: sandbox_state.work_dir.clone(),
+        config_path: sandbox_state.config_path.clone(),
     };
 
     match crate::snapshot::take(&body.sandbox, &body.name, &input) {
@@ -4543,6 +4545,18 @@ async fn handle_restore_snapshot(
 
     match restore_result {
         Ok(()) => {
+            if let Err(e) = manager.set_work_dir(&restore_name, meta.work_dir.clone()) {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(e.to_string()),
+                );
+            }
+            if let Err(e) = manager.set_config_path(&restore_name, meta.config_path.clone()) {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(e.to_string()),
+                );
+            }
             if let Some(snapshot_handle) = meta.remote_snapshot.as_deref()
                 && let Err(e) = manager.set_remote_restore_snapshot(&restore_name, snapshot_handle)
             {

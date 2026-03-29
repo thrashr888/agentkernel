@@ -1646,6 +1646,8 @@ impl McpServer {
             remote_namespace: sandbox_state.remote_namespace.clone(),
             remote_metadata: sandbox_state.remote_metadata.clone(),
             workspace_revision: sandbox_state.workspace_revision.clone(),
+            work_dir: sandbox_state.work_dir.clone(),
+            config_path: sandbox_state.config_path.clone(),
         };
 
         let meta = crate::snapshot::take(sandbox, name, &input)?;
@@ -1713,6 +1715,8 @@ impl McpServer {
                         )
                         .await?;
                 }
+                manager.set_work_dir(&restore_name, meta.work_dir.clone())?;
+                manager.set_config_path(&restore_name, meta.config_path.clone())?;
                 if let Some(snapshot_handle) = meta.remote_snapshot.as_deref() {
                     manager.set_remote_restore_snapshot(&restore_name, snapshot_handle)?;
                 }
