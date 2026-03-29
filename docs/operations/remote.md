@@ -118,6 +118,6 @@ agentkernel snapshot take my-runloop --name my-runloop-snap
 
 ## Examples
 
-- [examples/remote-daytona/README.md](/Users/thrashr888/Workspace/agentkernel-remote-backends-v1/examples/remote-daytona/README.md)
-- [examples/remote-runloop/README.md](/Users/thrashr888/Workspace/agentkernel-remote-backends-v1/examples/remote-runloop/README.md)
-- [examples/remote-e2b/README.md](/Users/thrashr888/Workspace/agentkernel-remote-backends-v1/examples/remote-e2b/README.md)
+- [examples/remote-daytona/README.md](../../examples/remote-daytona/README.md)
+- [examples/remote-runloop/README.md](../../examples/remote-runloop/README.md)
+- [examples/remote-e2b/README.md](../../examples/remote-e2b/README.md)

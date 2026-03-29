@@ -777,6 +777,25 @@ impl Config {
             );
         }
 
+        // Warn if any remote provider has an inline api_key (prefer api_key_env
+        // to avoid committing secrets into agentkernel.toml).
+        let remote_providers = [
+            ("daytona", &self.remote.daytona),
+            ("runloop", &self.remote.runloop),
+            ("e2b", &self.remote.e2b),
+            ("agentcomputer", &self.remote.agentcomputer),
+        ];
+        for (name, provider) in &remote_providers {
+            if provider.api_key.is_some() {
+                warnings.push(format!(
+                    "Remote provider '[remote.{}]' has 'api_key' set directly in the config \
+                     file. This risks committing secrets to version control. \
+                     Use 'api_key_env' to reference an environment variable instead.",
+                    name
+                ));
+            }
+        }
+
         warnings
     }
 

@@ -523,8 +523,10 @@ impl RemoteSandbox {
         if let Some(remote_namespace) = &response.remote_namespace {
             self.remote_namespace = Some(remote_namespace.clone());
         }
-        if !response.remote_metadata.is_empty() {
-            self.remote_metadata = response.remote_metadata.clone();
+        // Merge (not replace) so that Rust-side keys like `restore_snapshot`
+        // and `last_known_status` are not lost when the bridge omits them.
+        for (k, v) in &response.remote_metadata {
+            self.remote_metadata.insert(k.clone(), v.clone());
         }
         if let Some(workspace_revision) = &response.workspace_revision {
             self.workspace_revision = Some(workspace_revision.clone());
@@ -632,7 +634,10 @@ impl Sandbox for RemoteSandbox {
             .await?;
         self.apply_response(&response);
 
-        if let Some(snapshot_handle) = self.remote_metadata.get("restore_snapshot").cloned() {
+        // Use the snapshot handle captured *before* apply_response() potentially
+        // replaced remote_metadata, to avoid a race where the bridge response
+        // re-inserts or clears the key.
+        if let Some(snapshot_handle) = requested_restore_snapshot.clone() {
             let mut restore = self.new_request("restore");
             restore.snapshot_name = Some(snapshot_handle);
             let restored = self

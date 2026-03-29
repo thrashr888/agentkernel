@@ -2051,7 +2051,12 @@ impl VmManager {
         }
 
         self.running.insert(name.to_string(), sandbox);
-        let _ = self.sync_runtime_metadata(name);
+        if let Err(e) = self.sync_runtime_metadata(name) {
+            eprintln!(
+                "Warning: failed to sync remote metadata for '{}': {}",
+                name, e
+            );
+        }
         self.touch_activity(name)?;
 
         log_event(AuditEvent::SandboxStarted {
@@ -2131,7 +2136,12 @@ impl VmManager {
                 .await?;
         }
 
-        let _ = self.hydrate_remote_runtime(name);
+        if let Err(e) = self.hydrate_remote_runtime(name) {
+            eprintln!(
+                "Warning: failed to hydrate remote runtime for '{}': {}",
+                name, e
+            );
+        }
         let sandbox = self.running.get_mut(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Sandbox '{}' is not running. Start it with: agentkernel start {}",
@@ -2144,7 +2154,12 @@ impl VmManager {
 
         let exec_start = std::time::Instant::now();
         let result = sandbox.exec_with_options(&cmd_refs, opts).await?;
-        let _ = self.sync_runtime_metadata(name);
+        if let Err(e) = self.sync_runtime_metadata(name) {
+            eprintln!(
+                "Warning: failed to sync remote metadata for '{}': {}",
+                name, e
+            );
+        }
         crate::metrics::record_command(
             &self.backend.to_string(),
             exec_start.elapsed().as_secs_f64(),
@@ -2194,7 +2209,12 @@ impl VmManager {
                 .await?;
         }
 
-        let _ = self.hydrate_remote_runtime(name);
+        if let Err(e) = self.hydrate_remote_runtime(name) {
+            eprintln!(
+                "Warning: failed to hydrate remote runtime for '{}': {}",
+                name, e
+            );
+        }
         let sandbox = self.running.get_mut(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Sandbox '{}' is not running. Start it with: agentkernel start {}",
@@ -2269,7 +2289,12 @@ impl VmManager {
 
         let exit_path = format!("/tmp/ak-{}.exit", cmd_id);
         let pid_str = cmd.pid.to_string();
-        let _ = self.hydrate_remote_runtime(&cmd.sandbox);
+        if let Err(e) = self.hydrate_remote_runtime(&cmd.sandbox) {
+            eprintln!(
+                "Warning: failed to hydrate remote runtime for '{}': {}",
+                cmd.sandbox, e
+            );
+        }
         let sandbox = self
             .running
             .get_mut(&cmd.sandbox)
@@ -2327,7 +2352,12 @@ impl VmManager {
             .ok_or_else(|| anyhow::anyhow!("Detached command '{}' not found", cmd_id))?
             .clone();
 
-        let _ = self.hydrate_remote_runtime(&cmd.sandbox);
+        if let Err(e) = self.hydrate_remote_runtime(&cmd.sandbox) {
+            eprintln!(
+                "Warning: failed to hydrate remote runtime for '{}': {}",
+                cmd.sandbox, e
+            );
+        }
         let sandbox = self
             .running
             .get_mut(&cmd.sandbox)
@@ -2360,7 +2390,12 @@ impl VmManager {
             return Ok(());
         }
 
-        let _ = self.hydrate_remote_runtime(&cmd.sandbox);
+        if let Err(e) = self.hydrate_remote_runtime(&cmd.sandbox) {
+            eprintln!(
+                "Warning: failed to hydrate remote runtime for '{}': {}",
+                cmd.sandbox, e
+            );
+        }
         let sandbox = self
             .running
             .get_mut(&cmd.sandbox)
@@ -2394,7 +2429,12 @@ impl VmManager {
             sandbox: name.to_string(),
         });
 
-        let _ = self.hydrate_remote_runtime(name);
+        if let Err(e) = self.hydrate_remote_runtime(name) {
+            eprintln!(
+                "Warning: failed to hydrate remote runtime for '{}': {}",
+                name, e
+            );
+        }
         let result = {
             let sandbox = self.running.get_mut(name).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -2407,7 +2447,12 @@ impl VmManager {
         };
 
         if result.is_ok() {
-            let _ = self.sync_runtime_metadata(name);
+            if let Err(e) = self.sync_runtime_metadata(name) {
+                eprintln!(
+                    "Warning: failed to sync remote metadata for '{}': {}",
+                    name, e
+                );
+            }
             let _ = self.touch_activity(name);
         }
 
@@ -2417,7 +2462,12 @@ impl VmManager {
     /// Stop a sandbox
     pub async fn stop(&mut self, name: &str) -> Result<()> {
         let stop_start = std::time::Instant::now();
-        let _ = self.hydrate_remote_runtime(name);
+        if let Err(e) = self.hydrate_remote_runtime(name) {
+            eprintln!(
+                "Warning: failed to hydrate remote runtime for '{}': {}",
+                name, e
+            );
+        }
         // Shut down the proxy if running
         if let Some(handle) = PROXY_HANDLES.write().await.remove(name) {
             let _ = handle.shutdown_tx.send(());
@@ -2908,7 +2958,12 @@ impl VmManager {
 
     /// Write a file to a running sandbox
     pub async fn write_file(&mut self, name: &str, path: &str, content: &[u8]) -> Result<()> {
-        let _ = self.hydrate_remote_runtime(name);
+        if let Err(e) = self.hydrate_remote_runtime(name) {
+            eprintln!(
+                "Warning: failed to hydrate remote runtime for '{}': {}",
+                name, e
+            );
+        }
         let sandbox = self.running.get_mut(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Sandbox '{}' is not running. Start it with: agentkernel start {}",
@@ -2918,7 +2973,12 @@ impl VmManager {
         })?;
 
         sandbox.write_file(path, content).await?;
-        let _ = self.sync_runtime_metadata(name);
+        if let Err(e) = self.sync_runtime_metadata(name) {
+            eprintln!(
+                "Warning: failed to sync remote metadata for '{}': {}",
+                name, e
+            );
+        }
 
         log_event(AuditEvent::FileWritten {
             sandbox: name.to_string(),
@@ -2969,7 +3029,12 @@ impl VmManager {
 
     /// Delete a file from a running sandbox
     pub async fn delete_file(&mut self, name: &str, path: &str) -> Result<()> {
-        let _ = self.hydrate_remote_runtime(name);
+        if let Err(e) = self.hydrate_remote_runtime(name) {
+            eprintln!(
+                "Warning: failed to hydrate remote runtime for '{}': {}",
+                name, e
+            );
+        }
         let sandbox = self.running.get_mut(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Sandbox '{}' is not running. Start it with: agentkernel start {}",
@@ -2979,13 +3044,23 @@ impl VmManager {
         })?;
 
         sandbox.remove_file(path).await?;
-        let _ = self.sync_runtime_metadata(name);
+        if let Err(e) = self.sync_runtime_metadata(name) {
+            eprintln!(
+                "Warning: failed to sync remote metadata for '{}': {}",
+                name, e
+            );
+        }
         Ok(())
     }
 
     /// Read a file from a running sandbox
     pub async fn read_file(&mut self, name: &str, path: &str) -> Result<Vec<u8>> {
-        let _ = self.hydrate_remote_runtime(name);
+        if let Err(e) = self.hydrate_remote_runtime(name) {
+            eprintln!(
+                "Warning: failed to hydrate remote runtime for '{}': {}",
+                name, e
+            );
+        }
         let sandbox = self.running.get_mut(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Sandbox '{}' is not running. Start it with: agentkernel start {}",
@@ -2995,7 +3070,12 @@ impl VmManager {
         })?;
 
         let content = sandbox.read_file(path).await?;
-        let _ = self.sync_runtime_metadata(name);
+        if let Err(e) = self.sync_runtime_metadata(name) {
+            eprintln!(
+                "Warning: failed to sync remote metadata for '{}': {}",
+                name, e
+            );
+        }
 
         log_event(AuditEvent::FileRead {
             sandbox: name.to_string(),
