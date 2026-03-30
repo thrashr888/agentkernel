@@ -1,0 +1,10 @@
+timestamp	git_sha	backend	total_score	startup_avg_ms	total_avg_ms	throughput_per_second	note
+2026-03-23T16:00:30Z	ead25d0	docker	7.74	114.16	260.74	3.84	scaffold baseline on local docker
+2026-03-24T22:52:44Z	39afc83+dirty	docker	4.61	203.70	275.07	3.64	end-to-end score version; cached policy engine, cached runtime availability, and bypassed full VmManager init for one-shot run path
+2026-03-24T22:53:56Z	39afc83+dirty	docker	4.43	201.08	292.78	3.42	repeat run after score script update; shows current local variance and end-to-end metric behavior
+2026-03-24T23:00:10Z	e01f18e+dirty	apple	2.57	646.23	719.67	1.39	apple end-to-end one-shot path now works via container run --rm fast path
+2026-03-24T23:00:33Z	e01f18e+dirty	docker	7.17	112.36	196.05	5.10	docker 3-iteration comparison run after apple fast-path fix
+2026-03-24T23:13:30Z	17f4350+dirty	docker	6.26	138.89	210.23	4.76	docker repeat comparison run
+2026-03-24T23:14:19Z	17f4350+dirty	apple	0.71	5201.06	1454.66	0.69	apple repeat comparison run with major cold-start outlier
+2026-03-24T23:14:21Z	17f4350+dirty	docker	4.73	193.99	279.38	3.58	docker repeat comparison run with slower local conditions
+2026-03-24T23:14:40Z	17f4350+dirty	apple	1.41	2382.86	2059.39	0.49	apple repeat comparison run with large startup variance

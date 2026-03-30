@@ -1,0 +1,51 @@
+{
+  "generated_at": "2026-03-24T23:05:34.148908+00:00",
+  "image": "alpine:3.20",
+  "measured_iterations": 3,
+  "warmup_iterations": 0,
+  "primary_metric": "total_score",
+  "total_score": 2.57,
+  "backends": [
+    {
+      "backend": "apple",
+      "measured_iterations": 3,
+      "warmup_iterations": 0,
+      "startup": {
+        "min_ms": 639.83,
+        "avg_ms": 646.23,
+        "p50_ms": 647.09,
+        "p95_ms": 651.77,
+        "max_ms": 651.77
+      },
+      "exec": {
+        "min_ms": 40.85,
+        "avg_ms": 41.46,
+        "p50_ms": 41.49,
+        "p95_ms": 42.02,
+        "max_ms": 42.02
+      },
+      "lifecycle_total": {
+        "min_ms": 1880.77,
+        "avg_ms": 1897.98,
+        "p50_ms": 1896.65,
+        "p95_ms": 1916.54,
+        "max_ms": 1916.54
+      },
+      "total": {
+        "min_ms": 710.34,
+        "avg_ms": 719.67,
+        "p50_ms": 720.88,
+        "p95_ms": 727.79,
+        "max_ms": 727.79
+      },
+      "throughput_per_second": 1.39,
+      "scores": {
+        "startup_score": 1.55,
+        "exec_score": 24.12,
+        "latency_score": 1.39,
+        "throughput_score": 1.39,
+        "total_score": 2.57
+      }
+    }
+  ]
+}

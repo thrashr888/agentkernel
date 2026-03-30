@@ -104,8 +104,6 @@ Most sandboxes are **cloud-hosted services** -- you send code to someone else's 
 
 **[justbash.dev](https://justbash.dev)** -- Pure TypeScript bash interpreter with in-memory virtual filesystem. ~0ms cold start but no real isolation, no binary execution. Vercel Sandbox API-compatible upgrade path confirms the lightweight→VM isolation spectrum.
 
-**[OpenAI Symphony](https://github.com/openai/symphony)** -- Issue-to-PR orchestration in Elixir. Polls Linear, spawns agents, manages multi-turn lifecycle. Its spec explicitly calls for "external isolation layers" — the infrastructure agentkernel provides.
-
 **[Fly.io Machines](https://fly.io/machines)** -- Firecracker-based VMs with millisecond boot times. General-purpose compute, usable as a sandbox backend.
 
 **[Rivet Sandbox Agent SDK](https://www.rivet.dev/)** -- Universal API normalizing interactions across multiple sandbox providers (Daytona, E2B, Vercel, Docker). An abstraction layer rather than infrastructure.

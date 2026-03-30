@@ -1,0 +1,31 @@
+# Daytona remote sandbox template
+
+[sandbox]
+name = "daytona-remote"
+base_image = "node:22"
+
+[security]
+profile = "moderate"
+mount_cwd = true
+network = true
+
+[network]
+ports = ["3000"]
+
+[remote]
+bridge = "./scripts/remote-bridge.mjs"
+
+[remote.daytona]
+api_key_env = "DAYTONA_API_KEY"
+base_url = "https://app.daytona.io/api"
+organization = "your-daytona-org-id"
+region = "us"
+
+[template]
+description = "Remote Daytona sandbox with managed /workspace sync"
+category = "Remote"
+help_text = """
+How to use: create with --backend daytona and edit the organization first.
+Example command: agentkernel sandbox create my-daytona --template daytona-remote --backend daytona
+Provider auth: export DAYTONA_API_KEY and set your Daytona organization id.
+"""

@@ -3,6 +3,7 @@
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use std::process::Command;
+use std::sync::LazyLock;
 
 use super::{BackendType, ExecOptions, ExecResult, Sandbox, SandboxConfig};
 
@@ -31,22 +32,30 @@ impl ContainerRuntime {
     }
 }
 
-/// Check if Docker is available
-pub fn docker_available() -> bool {
+static DOCKER_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
     Command::new("docker")
         .arg("version")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
-}
+});
 
-/// Check if Podman is available
-pub fn podman_available() -> bool {
+static PODMAN_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
     Command::new("podman")
         .arg("version")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+});
+
+/// Check if Docker is available
+pub fn docker_available() -> bool {
+    *DOCKER_AVAILABLE
+}
+
+/// Check if Podman is available
+pub fn podman_available() -> bool {
+    *PODMAN_AVAILABLE
 }
 
 /// Get the IP address of a running container by name.

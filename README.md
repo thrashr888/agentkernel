@@ -315,7 +315,9 @@ agentkernel stats
 
 # Performance benchmarking
 agentkernel benchmark
-agentkernel benchmark --backends docker,podman
+agentkernel benchmark --backends docker,podman --iterations 5 --warmup 1
+agentkernel benchmark --backends docker --json --output benchmark.json
+./autoresearch/run_eval.sh
 
 # Shell completions
 agentkernel completions bash > /etc/bash_completion.d/agentkernel

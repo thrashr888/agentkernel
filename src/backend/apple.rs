@@ -206,6 +206,61 @@ impl AppleSandbox {
     fn container_name(&self) -> String {
         format!("agentkernel-{}", self.name)
     }
+
+    /// Run a command in a temporary Apple container using `container run --rm`
+    pub fn run_ephemeral_cmd(cmd: &[String], config: &SandboxConfig) -> Result<ExecResult> {
+        start_apple_system()?;
+
+        if is_local_image(&config.image) && !apple_image_exists(&config.image) {
+            import_image_from_docker(&config.image)?;
+        }
+
+        let mut args = vec!["run".to_string(), "--rm".to_string()];
+        args.push("--cpus".to_string());
+        args.push(config.vcpus.to_string());
+        args.push("--memory".to_string());
+        args.push(format!("{}M", config.memory_mb));
+
+        if config.mount_cwd
+            && let Some(ref work_dir) = config.work_dir
+        {
+            args.push("-v".to_string());
+            args.push(format!("{}:/workspace", work_dir));
+            args.push("-w".to_string());
+            args.push("/workspace".to_string());
+        }
+
+        if config.mount_home
+            && let Some(home) = std::env::var_os("HOME")
+        {
+            args.push("-v".to_string());
+            args.push(format!("{}:/home/user", home.to_string_lossy()));
+        }
+
+        for (key, value) in &config.env {
+            args.push("-e".to_string());
+            args.push(format!("{}={}", key, value));
+        }
+
+        for pm in &config.ports {
+            args.push("-p".to_string());
+            args.push(pm.to_string());
+        }
+
+        args.push(config.image.clone());
+        args.extend(cmd.iter().cloned());
+
+        let output = Command::new("container")
+            .args(&args)
+            .output()
+            .context("Failed to run Apple container")?;
+
+        Ok(ExecResult {
+            exit_code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        })
+    }
 }
 
 #[async_trait]

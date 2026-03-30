@@ -3,9 +3,16 @@
 //! Save sandbox state (Docker: `docker commit` + metadata) and restore later.
 //! Snapshots are stored in `~/.local/share/agentkernel/snapshots/`.
 
+use crate::backend::{
+    BackendType,
+    remote::{remote_bridge_command_for, remote_bridge_env_for},
+};
 use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Stdio;
 
 /// Snapshot metadata persisted alongside the committed image.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +33,15 @@ pub struct SnapshotMeta {
     pub memory_mb: u64,
     /// When the snapshot was taken (RFC3339)
     pub created_at: String,
+    /// Opaque remote-provider snapshot handle for remote backends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_snapshot: Option<String>,
+    /// Original project workspace root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_dir: Option<String>,
+    /// Original config file path used to reach provider credentials/settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
 }
 
 /// Directory where snapshot metadata lives.
@@ -67,13 +83,26 @@ pub fn take(
     snapshot_name: &str,
     state: &SnapshotInput,
 ) -> Result<SnapshotMeta> {
-    let image_tag = format!("agentkernel-snap:{}", snapshot_name);
-    let container_name = format!("agentkernel-{}", sandbox_name);
+    let backend = state
+        .backend
+        .parse::<BackendType>()
+        .unwrap_or(BackendType::Docker);
+    let (image_tag, remote_snapshot) = if backend.is_remote() {
+        (
+            state.image.clone(),
+            Some(take_remote_snapshot(sandbox_name, snapshot_name, state)?),
+        )
+    } else {
+        let image_tag = format!("agentkernel-snap:{}", snapshot_name);
+        let container_name = format!("agentkernel-{}", sandbox_name);
 
-    match state.backend.as_str() {
-        "apple" => take_apple(&container_name, &image_tag)?,
-        _ => take_docker(&container_name, &image_tag)?,
-    }
+        match state.backend.as_str() {
+            "apple" => take_apple(&container_name, &image_tag)?,
+            _ => take_docker(&container_name, &image_tag)?,
+        }
+
+        (image_tag, None)
+    };
 
     let meta = SnapshotMeta {
         name: snapshot_name.to_string(),
@@ -84,6 +113,9 @@ pub fn take(
         vcpus: state.vcpus,
         memory_mb: state.memory_mb,
         created_at: chrono::Utc::now().to_rfc3339(),
+        remote_snapshot,
+        work_dir: state.work_dir.clone(),
+        config_path: state.config_path.clone(),
     };
 
     // Save metadata
@@ -208,6 +240,22 @@ pub struct SnapshotInput {
     pub backend: String,
     pub vcpus: u32,
     pub memory_mb: u64,
+    pub remote_id: Option<String>,
+    pub remote_namespace: Option<String>,
+    pub remote_metadata: HashMap<String, String>,
+    pub workspace_revision: Option<String>,
+    pub work_dir: Option<String>,
+    pub config_path: Option<String>,
+}
+
+impl SnapshotMeta {
+    pub fn restore_image(&self) -> &str {
+        if self.remote_snapshot.is_some() {
+            &self.base_image
+        } else {
+            &self.image_tag
+        }
+    }
 }
 
 /// Get a snapshot by name.
@@ -226,16 +274,20 @@ pub fn delete(name: &str) -> Result<()> {
     let meta = get(name)?.ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", name))?;
 
     // Remove image from the backend that created it
-    match meta.backend.as_str() {
-        "apple" => {
-            let _ = std::process::Command::new("container")
-                .args(["image", "rm", &meta.image_tag])
-                .output();
-        }
-        _ => {
-            let _ = std::process::Command::new("docker")
-                .args(["rmi", &meta.image_tag])
-                .output();
+    if let Some(snapshot_handle) = meta.remote_snapshot.as_deref() {
+        let _ = delete_remote_snapshot(&meta, snapshot_handle);
+    } else {
+        match meta.backend.as_str() {
+            "apple" => {
+                let _ = std::process::Command::new("container")
+                    .args(["image", "rm", &meta.image_tag])
+                    .output();
+            }
+            _ => {
+                let _ = std::process::Command::new("docker")
+                    .args(["rmi", &meta.image_tag])
+                    .output();
+            }
         }
     }
 
@@ -248,6 +300,124 @@ pub fn delete(name: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct RemoteSnapshotRequest {
+    operation: String,
+    sandbox_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_namespace: Option<String>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    remote_metadata: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshot_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteSnapshotResponse {
+    success: bool,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    remote_metadata: HashMap<String, String>,
+}
+
+fn take_remote_snapshot(
+    sandbox_name: &str,
+    snapshot_name: &str,
+    state: &SnapshotInput,
+) -> Result<String> {
+    let response = remote_snapshot_request(
+        &state.backend,
+        &RemoteSnapshotRequest {
+            operation: "snapshot".to_string(),
+            sandbox_name: sandbox_name.to_string(),
+            remote_id: state.remote_id.clone(),
+            remote_namespace: state.remote_namespace.clone(),
+            remote_metadata: state.remote_metadata.clone(),
+            workspace_revision: state.workspace_revision.clone(),
+            snapshot_name: Some(snapshot_name.to_string()),
+        },
+        state.config_path.as_deref(),
+    )?;
+
+    response
+        .remote_metadata
+        .get("snapshot_handle")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Remote backend did not return a snapshot handle"))
+}
+
+fn delete_remote_snapshot(meta: &SnapshotMeta, snapshot_handle: &str) -> Result<()> {
+    let _ = remote_snapshot_request(
+        &meta.backend,
+        &RemoteSnapshotRequest {
+            operation: "delete_snapshot".to_string(),
+            sandbox_name: meta.sandbox.clone(),
+            remote_id: None,
+            remote_namespace: None,
+            remote_metadata: HashMap::new(),
+            workspace_revision: None,
+            snapshot_name: Some(snapshot_handle.to_string()),
+        },
+        meta.config_path.as_deref(),
+    )?;
+    Ok(())
+}
+
+fn remote_snapshot_request(
+    provider: &str,
+    request: &RemoteSnapshotRequest,
+    config_path: Option<&str>,
+) -> Result<RemoteSnapshotResponse> {
+    let payload = STANDARD.encode(
+        serde_json::to_vec(request).context("Failed to serialize remote snapshot request")?,
+    );
+
+    let (program, mut args) = remote_bridge_command_for(config_path)?;
+    args.push(provider.to_string());
+    args.push(payload);
+
+    let output = std::process::Command::new(program)
+        .args(args)
+        .envs(remote_bridge_env_for(provider, config_path))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .context("Failed to execute remote bridge")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let message = if !stderr.is_empty() { stderr } else { stdout };
+        bail!("Remote bridge request failed for {}: {}", provider, message);
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("Remote bridge returned non-utf8")?;
+    let response: RemoteSnapshotResponse =
+        serde_json::from_str(stdout.trim()).with_context(|| {
+            format!(
+                "Failed to parse remote bridge snapshot response for {}",
+                provider
+            )
+        })?;
+
+    if !response.success {
+        bail!(
+            "{} backend error: {}",
+            provider,
+            response
+                .error
+                .unwrap_or_else(|| "unknown error".to_string())
+        );
+    }
+
+    Ok(response)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,6 +458,9 @@ mod tests {
             vcpus: 2,
             memory_mb: 512,
             created_at: "2026-02-01T00:00:00Z".to_string(),
+            remote_snapshot: None,
+            work_dir: None,
+            config_path: None,
         };
 
         let json = serde_json::to_string(&meta).unwrap();
@@ -308,11 +481,33 @@ mod tests {
             vcpus: 1,
             memory_mb: 256,
             created_at: "2026-01-01T12:00:00Z".to_string(),
+            remote_snapshot: None,
+            work_dir: None,
+            config_path: None,
         };
 
         let json = serde_json::to_string_pretty(&meta).unwrap();
         assert!(json.contains("\"name\": \"snap1\""));
         assert!(json.contains("\"sandbox\": \"sb1\""));
         assert!(json.contains("\"image_tag\": \"agentkernel-snap:snap1\""));
+    }
+
+    #[test]
+    fn test_remote_snapshot_uses_base_image_for_restore() {
+        let meta = SnapshotMeta {
+            name: "remote-snap".to_string(),
+            sandbox: "remote-sandbox".to_string(),
+            image_tag: "ignored-for-remote".to_string(),
+            backend: "daytona".to_string(),
+            base_image: "default".to_string(),
+            vcpus: 1,
+            memory_mb: 256,
+            created_at: "2026-03-24T00:00:00Z".to_string(),
+            remote_snapshot: Some("remote-1:remote-snap".to_string()),
+            work_dir: None,
+            config_path: None,
+        };
+
+        assert_eq!(meta.restore_image(), "default");
     }
 }
