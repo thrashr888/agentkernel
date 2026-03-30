@@ -14,6 +14,10 @@ agentkernel supports multiple isolation backends. Each provides different tradeo
 | Apple | Container | ~940ms | macOS 26+ | Beta |
 | Kubernetes | Pod | ~2-5s | Any K8s cluster | Stable |
 | Nomad | Job allocation | ~2-5s | Any Nomad cluster | Stable |
+| Daytona | Hosted sandbox | Provider-dependent | Hosted | Experimental |
+| Runloop | Hosted devbox | Provider-dependent | Hosted | Experimental |
+| E2B | Hosted sandbox | Provider-dependent | Hosted | Experimental |
+| Agent Computer | Hosted machine | Provider-dependent | Hosted | Experimental |
 
 ## Docker
 
@@ -171,6 +175,41 @@ agentkernel sandbox create my-sandbox --backend nomad --image alpine:3.20
 
 See the [Orchestration Guide](../operations/index.md) for full configuration and deployment details.
 
+## Remote Backends
+
+`daytona`, `runloop`, `e2b`, and `agentcomputer` use the shared remote sandbox substrate. They keep the same CLI and HTTP verbs as local backends, but route sandbox lifecycle, workspace sync, and service publishing through the remote bridge.
+
+```bash
+agentkernel sandbox create my-sandbox --backend daytona
+agentkernel sandbox create my-sandbox --backend runloop
+agentkernel sandbox create my-sandbox --backend e2b
+agentkernel sandbox create my-sandbox --backend agentcomputer
+```
+
+**Common behavior:**
+- `mount_cwd` syncs the local project into `/workspace`
+- declared `ports` resolve to provider `endpoints`
+- `attach` uses the shared remote sandbox session path
+- persisted sandboxes reconnect by provider `remote_id`
+
+**Requirements:**
+- Node.js 20+ available on the host
+- `scripts/remote-bridge.mjs` present, or `AGENTKERNEL_REMOTE_BRIDGE` set
+- provider bridge dependencies installed with `npm install --prefix scripts`
+- provider credentials exported in the environment
+
+**Current provider support:**
+- `daytona` is wired in the bundled bridge via `@daytonaio/sdk`
+- `runloop` is wired in the bundled bridge via `@runloop/api-client`
+- `e2b` is wired in the bundled bridge via the official `e2b` SDK
+- all shipped adapters support live lifecycle, `exec`, `attach`, file operations, managed `mount_cwd` sync, resolved endpoints, and workspace-level snapshot/restore
+- credentials can come from exported provider env vars or from `[remote.daytona]` / `[remote.runloop]` / `[remote.e2b]` in `agentkernel.toml`
+- explicit `-c path/to/agentkernel.toml` is persisted with the sandbox so later `start`, `exec`, and snapshot flows can reconnect with the same remote config
+- set `[remote].bridge` when you run `agentkernel` outside the repository root and still want to use the bundled `scripts/remote-bridge.mjs`
+- the bundled bridge still supports `AGENTKERNEL_REMOTE_BRIDGE_MODE=mock` for local testing
+- `agentcomputer` still needs a provider-specific live adapter
+- see the [Remote Backends Guide](../operations/remote.md) for setup and runnable examples
+
 ## Auto-Detection
 
 By default, agentkernel selects the best available *local* backend:
@@ -181,7 +220,7 @@ By default, agentkernel selects the best available *local* backend:
 4. **Docker** - If Docker is installed
 5. **Podman** - If Podman is installed
 
-Kubernetes and Nomad are never auto-detected. They must be specified explicitly with `--backend kubernetes` or `--backend nomad`.
+Kubernetes, Nomad, and all hosted remote backends are never auto-detected. They must be specified explicitly with `--backend ...`.
 
 ```bash
 # Check which backend is selected
