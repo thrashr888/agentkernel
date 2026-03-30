@@ -14,7 +14,7 @@ Manage sandbox templates. Templates are pre-configured `agentkernel.toml` config
 
 ## Built-in Templates
 
-agentkernel ships with 23 built-in templates:
+agentkernel ships with 26 built-in templates:
 
 ### Language Runtimes
 
@@ -54,6 +54,14 @@ agentkernel ships with 23 built-in templates:
 | `coder` | `codercom/code-server` | 8080 | Browser-based VS Code IDE |
 | `gitea` | `gitea/gitea` | 3000, 2222 | Self-hosted Git service |
 
+### Remote Hosted
+
+| Template | Provider | Use Case |
+|----------|----------|----------|
+| `daytona-remote` | Daytona | Managed `/workspace` sync on Daytona |
+| `runloop-remote` | Runloop | Managed `/workspace` sync on Runloop |
+| `e2b-remote` | E2B | Managed `/workspace` sync on E2B |
+
 ## Examples
 
 ### List templates
@@ -75,6 +83,8 @@ my-custom            local      ubuntu:24.04
 ```bash
 agentkernel sandbox create my-sandbox --template python
 agentkernel sandbox create ci-runner --template rust-ci -B docker
+agentkernel sandbox create remote-dev --template e2b-remote -B e2b
+agentkernel sandbox create remote-runloop --template runloop-remote -B runloop
 ```
 
 ### Spin up a browser IDE

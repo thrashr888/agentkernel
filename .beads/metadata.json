@@ -2,5 +2,6 @@
   "database": "dolt",
   "backend": "dolt",
   "dolt_mode": "server",
-  "dolt_database": "agentkernel"
+  "dolt_database": "agentkernel",
+  "project_id": "ccd263f4-7456-43b9-acf7-32d883d806ce"
 }

@@ -36,7 +36,7 @@ Files you may edit
 
 Files you should avoid editing unless a human explicitly asks
 - unrelated product/API features
-- issue tracking files except for normal bd sync noise
+- issue tracking files except for normal bd or Dolt metadata noise
 - large docs/plans outside benchmark/autoresearch scope
 
 Loop

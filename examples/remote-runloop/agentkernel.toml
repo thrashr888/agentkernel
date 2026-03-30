@@ -1,0 +1,18 @@
+# Remote Runloop example
+
+[sandbox]
+name = "remote-runloop"
+base_image = "default"
+
+[security]
+mount_cwd = true
+network = true
+
+[network]
+ports = ["3000"]
+
+[remote]
+bridge = "./scripts/remote-bridge.mjs"
+
+[remote.runloop]
+api_key_env = "RUNLOOP_API_KEY"

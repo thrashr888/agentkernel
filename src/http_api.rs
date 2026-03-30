@@ -545,6 +545,8 @@ struct SandboxInfo {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     ports: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    endpoints: Vec<crate::backend::ResolvedEndpoint>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     secret_files: Vec<String>,
     #[serde(default)]
     placeholder_secrets: bool,
@@ -562,6 +564,9 @@ struct SandboxInfo {
     /// Last observed sandbox activity.
     #[serde(skip_serializing_if = "Option::is_none")]
     last_activity_at: Option<String>,
+    /// Last synchronized remote workspace revision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_revision: Option<String>,
     /// When sandbox was archived.
     #[serde(skip_serializing_if = "Option::is_none")]
     archived_at: Option<String>,
@@ -2791,6 +2796,7 @@ async fn handle_list_sandboxes(req: Request<Incoming>, state: Arc<AppState>) -> 
                 created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
                 template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
                 ports,
+                endpoints: state_info.map(|s| s.endpoints.clone()).unwrap_or_default(),
                 secret_files: state_info
                     .map(|s| s.secret_files.clone())
                     .unwrap_or_default(),
@@ -2800,6 +2806,7 @@ async fn handle_list_sandboxes(req: Request<Incoming>, state: Arc<AppState>) -> 
                 labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
                 description: state_info.and_then(|s| s.description.clone()),
                 last_activity_at: state_info.and_then(|s| s.last_activity_at.clone()),
+                workspace_revision: state_info.and_then(|s| s.workspace_revision.clone()),
                 archived_at: state_info.and_then(|s| s.archived_at.clone()),
                 archived_reason: state_info.and_then(|s| s.archived_reason.clone()),
                 lifecycle: state_info.and_then(|s| s.lifecycle_policy.clone()),
@@ -3145,6 +3152,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
             template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
             ports: port_strings,
+            endpoints: state_info.map(|s| s.endpoints.clone()).unwrap_or_default(),
             secret_files: body.secret_files.clone(),
             placeholder_secrets: body.placeholder_secrets,
             proxy_port: state_info.and_then(|s| s.proxy_port),
@@ -3156,6 +3164,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             labels: body.labels.clone(),
             description: body.description.clone(),
             last_activity_at: state_info.and_then(|s| s.last_activity_at.clone()),
+            workspace_revision: state_info.and_then(|s| s.workspace_revision.clone()),
             archived_at: state_info.and_then(|s| s.archived_at.clone()),
             archived_reason: state_info.and_then(|s| s.archived_reason.clone()),
             lifecycle: state_info.and_then(|s| s.lifecycle_policy.clone()),
@@ -3213,6 +3222,7 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                     created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
                     template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
                     ports,
+                    endpoints: state_info.map(|s| s.endpoints.clone()).unwrap_or_default(),
                     secret_files: state_info
                         .map(|s| s.secret_files.clone())
                         .unwrap_or_default(),
@@ -3222,6 +3232,7 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
                     labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
                     description: state_info.and_then(|s| s.description.clone()),
                     last_activity_at: state_info.and_then(|s| s.last_activity_at.clone()),
+                    workspace_revision: state_info.and_then(|s| s.workspace_revision.clone()),
                     archived_at: state_info.and_then(|s| s.archived_at.clone()),
                     archived_reason: state_info.and_then(|s| s.archived_reason.clone()),
                     lifecycle: state_info.and_then(|s| s.lifecycle_policy.clone()),
@@ -3289,6 +3300,7 @@ async fn handle_get_sandbox_by_uuid(uuid: &str, state: Arc<AppState>) -> Respons
             created_from_template: state_info.created_from_template.clone(),
             template_help_text: state_info.template_help_text.clone(),
             ports,
+            endpoints: state_info.endpoints.clone(),
             secret_files: state_info.secret_files.clone(),
             placeholder_secrets: state_info.placeholder_secrets,
             proxy_port: state_info.proxy_port,
@@ -3296,6 +3308,7 @@ async fn handle_get_sandbox_by_uuid(uuid: &str, state: Arc<AppState>) -> Respons
             labels: state_info.labels.clone(),
             description: state_info.description.clone(),
             last_activity_at: state_info.last_activity_at.clone(),
+            workspace_revision: state_info.workspace_revision.clone(),
             archived_at: state_info.archived_at.clone(),
             archived_reason: state_info.archived_reason.clone(),
             lifecycle: state_info.lifecycle_policy.clone(),
@@ -4035,6 +4048,7 @@ async fn handle_resize_sandbox(
             created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
             template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
             ports: result_ports,
+            endpoints: state_info.map(|s| s.endpoints.clone()).unwrap_or_default(),
             secret_files: state_info
                 .map(|s| s.secret_files.clone())
                 .unwrap_or_default(),
@@ -4047,6 +4061,7 @@ async fn handle_resize_sandbox(
             labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
             description: state_info.and_then(|s| s.description.clone()),
             last_activity_at: state_info.and_then(|s| s.last_activity_at.clone()),
+            workspace_revision: state_info.and_then(|s| s.workspace_revision.clone()),
             archived_at: state_info.and_then(|s| s.archived_at.clone()),
             archived_reason: state_info.and_then(|s| s.archived_reason.clone()),
             lifecycle: state_info.and_then(|s| s.lifecycle_policy.clone()),
@@ -4159,6 +4174,7 @@ async fn handle_patch_sandbox(
             created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
             template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
             ports: result_ports,
+            endpoints: state_info.map(|s| s.endpoints.clone()).unwrap_or_default(),
             secret_files: state_info
                 .map(|s| s.secret_files.clone())
                 .unwrap_or_default(),
@@ -4171,6 +4187,7 @@ async fn handle_patch_sandbox(
             labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
             description: state_info.and_then(|s| s.description.clone()),
             last_activity_at: state_info.and_then(|s| s.last_activity_at.clone()),
+            workspace_revision: state_info.and_then(|s| s.workspace_revision.clone()),
             archived_at: state_info.and_then(|s| s.archived_at.clone()),
             archived_reason: state_info.and_then(|s| s.archived_reason.clone()),
             lifecycle: state_info.and_then(|s| s.lifecycle_policy.clone()),
@@ -4248,6 +4265,7 @@ async fn handle_recover_sandbox(
             created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
             template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
             ports,
+            endpoints: state_info.map(|s| s.endpoints.clone()).unwrap_or_default(),
             secret_files: state_info
                 .map(|s| s.secret_files.clone())
                 .unwrap_or_default(),
@@ -4257,6 +4275,7 @@ async fn handle_recover_sandbox(
             labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
             description: state_info.and_then(|s| s.description.clone()),
             last_activity_at: state_info.and_then(|s| s.last_activity_at.clone()),
+            workspace_revision: state_info.and_then(|s| s.workspace_revision.clone()),
             archived_at: state_info.and_then(|s| s.archived_at.clone()),
             archived_reason: state_info.and_then(|s| s.archived_reason.clone()),
             lifecycle: state_info.and_then(|s| s.lifecycle_policy.clone()),
@@ -4375,6 +4394,12 @@ async fn handle_take_snapshot(req: Request<Incoming>, state: Arc<AppState>) -> R
             .unwrap_or_else(|| "docker".to_string()),
         vcpus: sandbox_state.vcpus,
         memory_mb: sandbox_state.memory_mb,
+        remote_id: sandbox_state.remote_id.clone(),
+        remote_namespace: sandbox_state.remote_namespace.clone(),
+        remote_metadata: sandbox_state.remote_metadata.clone(),
+        workspace_revision: sandbox_state.workspace_revision.clone(),
+        work_dir: sandbox_state.work_dir.clone(),
+        config_path: sandbox_state.config_path.clone(),
     };
 
     match crate::snapshot::take(&body.sandbox, &body.name, &input) {
@@ -4496,11 +4521,51 @@ async fn handle_restore_snapshot(
         }
     };
 
-    match manager
-        .create(&restore_name, &meta.image_tag, meta.vcpus, meta.memory_mb)
-        .await
-    {
+    let restore_result =
+        if let Ok(snapshot_backend) = meta.backend.parse::<crate::backend::BackendType>() {
+            manager
+                .create_with_backend(
+                    snapshot_backend,
+                    &restore_name,
+                    meta.restore_image(),
+                    meta.vcpus,
+                    meta.memory_mb,
+                )
+                .await
+        } else {
+            manager
+                .create(
+                    &restore_name,
+                    meta.restore_image(),
+                    meta.vcpus,
+                    meta.memory_mb,
+                )
+                .await
+        };
+
+    match restore_result {
         Ok(()) => {
+            if let Err(e) = manager.set_work_dir(&restore_name, meta.work_dir.clone()) {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(e.to_string()),
+                );
+            }
+            if let Err(e) = manager.set_config_path(&restore_name, meta.config_path.clone()) {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(e.to_string()),
+                );
+            }
+            if let Some(snapshot_handle) = meta.remote_snapshot.as_deref()
+                && let Err(e) = manager.set_remote_restore_snapshot(&restore_name, snapshot_handle)
+            {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(e.to_string()),
+                );
+            }
+
             // Build SandboxInfo from manager state
             let state_info = manager.get_state(&restore_name);
             let running = manager.is_running(&restore_name);
@@ -4522,13 +4587,16 @@ async fn handle_restore_snapshot(
                     status: sandbox_status(state_info, running),
                     backend: meta.backend.clone(),
                     ip,
-                    image: Some(meta.image_tag.clone()),
+                    image: state_info
+                        .map(|s| s.image.clone())
+                        .or_else(|| Some(meta.restore_image().to_string())),
                     vcpus: Some(meta.vcpus),
                     memory_mb: Some(meta.memory_mb),
                     created_at: state_info.map(|s| s.created_at.clone()),
                     created_from_template: state_info.and_then(|s| s.created_from_template.clone()),
                     template_help_text: state_info.and_then(|s| s.template_help_text.clone()),
                     ports,
+                    endpoints: state_info.map(|s| s.endpoints.clone()).unwrap_or_default(),
                     secret_files: state_info
                         .map(|s| s.secret_files.clone())
                         .unwrap_or_default(),
@@ -4538,6 +4606,7 @@ async fn handle_restore_snapshot(
                     labels: state_info.map(|s| s.labels.clone()).unwrap_or_default(),
                     description: state_info.and_then(|s| s.description.clone()),
                     last_activity_at: state_info.and_then(|s| s.last_activity_at.clone()),
+                    workspace_revision: state_info.and_then(|s| s.workspace_revision.clone()),
                     archived_at: state_info.and_then(|s| s.archived_at.clone()),
                     archived_reason: state_info.and_then(|s| s.archived_reason.clone()),
                     lifecycle: state_info.and_then(|s| s.lifecycle_policy.clone()),
@@ -7149,6 +7218,10 @@ async fn handle_import_sandbox_config(
             created_from_template: None,
             template_help_text: None,
             ports: vec![],
+            endpoints: manager
+                .get_state(name)
+                .map(|s| s.endpoints.clone())
+                .unwrap_or_default(),
             secret_files: vec![],
             placeholder_secrets: false,
             proxy_port: None,
@@ -7156,6 +7229,9 @@ async fn handle_import_sandbox_config(
             labels: std::collections::HashMap::new(),
             description: None,
             last_activity_at: None,
+            workspace_revision: manager
+                .get_state(name)
+                .and_then(|s| s.workspace_revision.clone()),
             archived_at: None,
             archived_reason: None,
             lifecycle: None,
@@ -7394,6 +7470,7 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             ports: vec![],
+            endpoints: vec![],
             secret_files: vec![],
             placeholder_secrets: false,
             proxy_port: None,
@@ -7401,6 +7478,7 @@ mod tests {
             labels: std::collections::HashMap::new(),
             description: None,
             last_activity_at: None,
+            workspace_revision: None,
             archived_at: None,
             archived_reason: None,
             lifecycle: None,
@@ -7479,6 +7557,7 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             ports: vec![],
+            endpoints: vec![],
             secret_files: vec![],
             placeholder_secrets: false,
             proxy_port: None,
@@ -7486,6 +7565,7 @@ mod tests {
             labels: std::collections::HashMap::new(),
             description: None,
             last_activity_at: None,
+            workspace_revision: None,
             archived_at: None,
             archived_reason: None,
             lifecycle: None,
@@ -7818,6 +7898,7 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             ports: vec![],
+            endpoints: vec![],
             secret_files: vec![],
             placeholder_secrets: false,
             proxy_port: None,
@@ -7825,6 +7906,7 @@ mod tests {
             labels: std::collections::HashMap::new(),
             description: None,
             last_activity_at: None,
+            workspace_revision: None,
             archived_at: None,
             archived_reason: None,
             lifecycle: None,
@@ -7851,6 +7933,7 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             ports: vec![],
+            endpoints: vec![],
             secret_files: vec![],
             placeholder_secrets: false,
             proxy_port: None,
@@ -7858,6 +7941,7 @@ mod tests {
             labels: std::collections::HashMap::new(),
             description: None,
             last_activity_at: None,
+            workspace_revision: None,
             archived_at: None,
             archived_reason: None,
             lifecycle: None,

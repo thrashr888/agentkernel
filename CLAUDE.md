@@ -177,5 +177,6 @@ bd ready              # Show unblocked work
 bd show <id>          # View issue details
 bd update <id> --status in_progress
 bd close <id>
-bd sync               # Sync with git (run at session end)
+bd dolt commit        # Persist pending bd changes
+bd dolt push          # Push to Dolt remote when configured
 ```
