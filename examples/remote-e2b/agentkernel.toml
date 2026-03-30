@@ -1,0 +1,18 @@
+# Remote E2B example
+
+[sandbox]
+name = "remote-e2b"
+base_image = "base"
+
+[security]
+mount_cwd = true
+network = true
+
+[network]
+ports = ["3000"]
+
+[remote]
+bridge = "./scripts/remote-bridge.mjs"
+
+[remote.e2b]
+api_key_env = "E2B_API_KEY"

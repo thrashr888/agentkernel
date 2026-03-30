@@ -1,0 +1,28 @@
+# Runloop remote sandbox template
+
+[sandbox]
+name = "runloop-remote"
+base_image = "default"
+
+[security]
+profile = "moderate"
+mount_cwd = true
+network = true
+
+[network]
+ports = ["3000"]
+
+[remote]
+bridge = "./scripts/remote-bridge.mjs"
+
+[remote.runloop]
+api_key_env = "RUNLOOP_API_KEY"
+
+[template]
+description = "Remote Runloop sandbox with managed /workspace sync"
+category = "Remote"
+help_text = """
+How to use: create with --backend runloop.
+Example command: agentkernel sandbox create my-runloop --template runloop-remote --backend runloop
+Provider auth: export RUNLOOP_API_KEY before starting the sandbox.
+"""

@@ -25,10 +25,12 @@ pub mod kubernetes_pool;
 pub mod nomad;
 #[cfg(feature = "nomad")]
 pub mod nomad_pool;
+pub mod remote;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
 
 use crate::ssh::SshConfig;
@@ -42,6 +44,7 @@ pub use hyperlight::HyperlightSandbox;
 pub use kubernetes::KubernetesSandbox;
 #[cfg(feature = "nomad")]
 pub use nomad::NomadSandbox;
+pub use remote::{RemoteProvider, RemoteSandbox, remote_bridge_available};
 
 /// Backend type identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +63,14 @@ pub enum BackendType {
     Kubernetes,
     /// HashiCorp Nomad jobs (requires --features nomad)
     Nomad,
+    /// Daytona hosted sandboxes
+    Daytona,
+    /// Runloop hosted devboxes
+    Runloop,
+    /// E2B hosted sandboxes
+    E2B,
+    /// Agent Computer hosted machines
+    AgentComputer,
 }
 
 impl fmt::Display for BackendType {
@@ -72,6 +83,10 @@ impl fmt::Display for BackendType {
             BackendType::Hyperlight => write!(f, "hyperlight"),
             BackendType::Kubernetes => write!(f, "kubernetes"),
             BackendType::Nomad => write!(f, "nomad"),
+            BackendType::Daytona => write!(f, "daytona"),
+            BackendType::Runloop => write!(f, "runloop"),
+            BackendType::E2B => write!(f, "e2b"),
+            BackendType::AgentComputer => write!(f, "agentcomputer"),
         }
     }
 }
@@ -88,11 +103,27 @@ impl std::str::FromStr for BackendType {
             "hyperlight" => Ok(BackendType::Hyperlight),
             "kubernetes" | "k8s" => Ok(BackendType::Kubernetes),
             "nomad" => Ok(BackendType::Nomad),
+            "daytona" => Ok(BackendType::Daytona),
+            "runloop" => Ok(BackendType::Runloop),
+            "e2b" => Ok(BackendType::E2B),
+            "agentcomputer" | "agent-computer" => Ok(BackendType::AgentComputer),
             _ => Err(format!(
-                "Unknown backend '{}'. Valid options: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad",
+                "Unknown backend '{}'. Valid options: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad, daytona, runloop, e2b, agentcomputer",
                 s
             )),
         }
+    }
+}
+
+impl BackendType {
+    pub fn is_remote(self) -> bool {
+        matches!(
+            self,
+            BackendType::Daytona
+                | BackendType::Runloop
+                | BackendType::E2B
+                | BackendType::AgentComputer
+        )
     }
 }
 
@@ -124,6 +155,87 @@ pub struct PortMapping {
     /// Protocol (default: tcp)
     #[serde(default)]
     pub protocol: PortProtocol,
+}
+
+/// Provider-resolved endpoint for an exposed sandbox port.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ResolvedEndpoint {
+    pub container_port: u16,
+    #[serde(default)]
+    pub protocol: PortProtocol,
+    pub url: String,
+}
+
+/// Provider/runtime state discovered while a sandbox is running.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SandboxRuntimeMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub remote_metadata: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoints: Vec<ResolvedEndpoint>,
+}
+
+/// Persisted remote state used to reconnect to a remote sandbox.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RemoteSandboxContext {
+    pub remote_id: Option<String>,
+    pub remote_namespace: Option<String>,
+    pub remote_metadata: HashMap<String, String>,
+    pub workspace_revision: Option<String>,
+    pub endpoints: Vec<ResolvedEndpoint>,
+    pub local_workspace: Option<String>,
+    pub config_path: Option<String>,
+}
+
+/// Outcome-level backend capabilities used for compatibility checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackendCapabilities {
+    pub mount_cwd: bool,
+    pub mount_home: bool,
+    pub attach: bool,
+    pub host_volumes: bool,
+    pub ssh: bool,
+    pub proxy_secret_bindings: bool,
+    pub secret_files: bool,
+    pub snapshots: bool,
+    pub resume: bool,
+    pub endpoints: bool,
+}
+
+pub fn backend_capabilities(backend: BackendType) -> BackendCapabilities {
+    if backend.is_remote() {
+        return BackendCapabilities {
+            mount_cwd: true,
+            mount_home: false,
+            attach: true,
+            host_volumes: false,
+            ssh: false,
+            proxy_secret_bindings: false,
+            secret_files: true,
+            snapshots: true,
+            resume: true,
+            endpoints: true,
+        };
+    }
+
+    BackendCapabilities {
+        mount_cwd: true,
+        mount_home: true,
+        attach: !matches!(backend, BackendType::Hyperlight),
+        host_volumes: true,
+        ssh: true,
+        proxy_secret_bindings: true,
+        secret_files: true,
+        snapshots: !matches!(backend, BackendType::Hyperlight),
+        resume: !matches!(backend, BackendType::Hyperlight),
+        endpoints: true,
+    }
 }
 
 impl PortMapping {
@@ -384,6 +496,11 @@ pub trait Sandbox: Send + Sync {
     /// Stop the sandbox and clean up resources
     async fn stop(&mut self) -> Result<()>;
 
+    /// Permanently delete the sandbox and provider-side resources.
+    async fn remove(&mut self) -> Result<()> {
+        self.stop().await
+    }
+
     /// Attempt to resize sandbox resources in-place.
     ///
     /// Returns:
@@ -508,6 +625,11 @@ pub trait Sandbox: Send + Sync {
         }
         self.attach(shell).await
     }
+
+    /// Runtime metadata for provider-backed sandboxes.
+    fn runtime_metadata(&self) -> Option<SandboxRuntimeMetadata> {
+        None
+    }
 }
 
 /// Validate a path for sandbox file operations
@@ -602,6 +724,10 @@ pub fn backend_available(backend: BackendType) -> bool {
         BackendType::Nomad => true,
         #[cfg(not(feature = "nomad"))]
         BackendType::Nomad => false,
+        BackendType::Daytona
+        | BackendType::Runloop
+        | BackendType::E2B
+        | BackendType::AgentComputer => remote_bridge_available(),
     }
 }
 
@@ -611,7 +737,12 @@ pub fn backend_available(backend: BackendType) -> bool {
 /// This is needed because the Sandbox trait workflow (create/start/stop/attach)
 /// expects containers to persist between CLI invocations.
 pub fn create_sandbox(backend: BackendType, name: &str) -> Result<Box<dyn Sandbox>> {
-    create_sandbox_with_config(backend, name, &crate::config::OrchestratorConfig::default())
+    create_sandbox_with_state(
+        backend,
+        name,
+        &crate::config::OrchestratorConfig::default(),
+        None,
+    )
 }
 
 /// Create a sandbox with orchestrator configuration
@@ -621,6 +752,15 @@ pub fn create_sandbox_with_config(
     backend: BackendType,
     name: &str,
     #[allow(unused_variables)] orch_config: &crate::config::OrchestratorConfig,
+) -> Result<Box<dyn Sandbox>> {
+    create_sandbox_with_state(backend, name, orch_config, None)
+}
+
+pub fn create_sandbox_with_state(
+    backend: BackendType,
+    name: &str,
+    #[allow(unused_variables)] orch_config: &crate::config::OrchestratorConfig,
+    remote: Option<RemoteSandboxContext>,
 ) -> Result<Box<dyn Sandbox>> {
     match backend {
         // Use new_persistent for Docker/Podman so containers survive CLI exit
@@ -650,6 +790,26 @@ pub fn create_sandbox_with_config(
         BackendType::Nomad => {
             anyhow::bail!("Nomad backend not compiled. Rebuild with --features nomad")
         }
+        BackendType::Daytona => Ok(Box::new(RemoteSandbox::new(
+            RemoteProvider::Daytona,
+            name,
+            remote.unwrap_or_default(),
+        ))),
+        BackendType::Runloop => Ok(Box::new(RemoteSandbox::new(
+            RemoteProvider::Runloop,
+            name,
+            remote.unwrap_or_default(),
+        ))),
+        BackendType::E2B => Ok(Box::new(RemoteSandbox::new(
+            RemoteProvider::E2B,
+            name,
+            remote.unwrap_or_default(),
+        ))),
+        BackendType::AgentComputer => Ok(Box::new(RemoteSandbox::new(
+            RemoteProvider::AgentComputer,
+            name,
+            remote.unwrap_or_default(),
+        ))),
     }
 }
 
@@ -668,6 +828,10 @@ mod tests {
         assert_eq!(format!("{}", BackendType::Hyperlight), "hyperlight");
         assert_eq!(format!("{}", BackendType::Kubernetes), "kubernetes");
         assert_eq!(format!("{}", BackendType::Nomad), "nomad");
+        assert_eq!(format!("{}", BackendType::Daytona), "daytona");
+        assert_eq!(format!("{}", BackendType::Runloop), "runloop");
+        assert_eq!(format!("{}", BackendType::E2B), "e2b");
+        assert_eq!(format!("{}", BackendType::AgentComputer), "agentcomputer");
     }
 
     #[test]
@@ -698,6 +862,19 @@ mod tests {
             BackendType::Kubernetes
         );
         assert_eq!("nomad".parse::<BackendType>().unwrap(), BackendType::Nomad);
+        assert_eq!(
+            "daytona".parse::<BackendType>().unwrap(),
+            BackendType::Daytona
+        );
+        assert_eq!(
+            "runloop".parse::<BackendType>().unwrap(),
+            BackendType::Runloop
+        );
+        assert_eq!("e2b".parse::<BackendType>().unwrap(), BackendType::E2B);
+        assert_eq!(
+            "agentcomputer".parse::<BackendType>().unwrap(),
+            BackendType::AgentComputer
+        );
     }
 
     #[test]
@@ -734,6 +911,16 @@ mod tests {
     fn test_backend_type_deserialize() {
         let backend: BackendType = serde_json::from_str("\"Podman\"").unwrap();
         assert_eq!(backend, BackendType::Podman);
+    }
+
+    #[test]
+    fn test_backend_capabilities_remote() {
+        let caps = backend_capabilities(BackendType::Daytona);
+        assert!(caps.mount_cwd);
+        assert!(caps.attach);
+        assert!(caps.snapshots);
+        assert!(!caps.proxy_secret_bindings);
+        assert!(!caps.host_volumes);
     }
 
     // === SandboxConfig tests ===

@@ -153,6 +153,39 @@ agentkernel exec nomad-sandbox -- echo "hello from nomad"
 
 **Features**: Docker/exec/raw_exec drivers, warm pool, Consul/Vault integration
 
+### Remote Daytona
+Run a hosted sandbox through the bundled Daytona bridge.
+
+```bash
+npm install --prefix scripts
+agentkernel sandbox create remote-daytona --backend daytona -c examples/remote-daytona/agentkernel.toml
+agentkernel exec remote-daytona -- sh -lc 'node -v'
+```
+
+**Features**: managed `/workspace` sync, resolved preview endpoints, live snapshot/restore
+
+### Remote Runloop
+Run a hosted sandbox through the bundled Runloop bridge.
+
+```bash
+npm install --prefix scripts
+agentkernel sandbox create remote-runloop --backend runloop -c examples/remote-runloop/agentkernel.toml
+agentkernel exec remote-runloop -- sh -lc 'pwd && ls -la /workspace'
+```
+
+**Features**: managed `/workspace` sync, tunnel-backed endpoints, interactive attach, live snapshot/restore
+
+### Remote E2B
+Run a hosted sandbox through the bundled E2B bridge.
+
+```bash
+npm install --prefix scripts
+agentkernel sandbox create remote-e2b --backend e2b -c examples/remote-e2b/agentkernel.toml
+agentkernel exec remote-e2b -- sh -lc 'python3 --version || node -v'
+```
+
+**Features**: managed `/workspace` sync, file APIs, PTY attach, live snapshot/restore
+
 ### Enterprise Policies
 Centralized Cedar policy management with RBAC, MFA enforcement, and runtime restrictions. Requires `--features enterprise`.
 

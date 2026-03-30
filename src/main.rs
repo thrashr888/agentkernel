@@ -109,7 +109,7 @@ enum Commands {
         /// Use container pool for faster execution (skips create/destroy overhead)
         #[arg(short = 'F', long)]
         fast: bool,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad, daytona, runloop, e2b, agentcomputer (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
         /// Template to use (built-in name, local name, github:owner/repo/path, or file path)
@@ -444,7 +444,7 @@ enum SandboxAction {
         /// Project directory to mount into sandbox
         #[arg(short, long)]
         dir: Option<PathBuf>,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad, daytona, runloop, e2b, agentcomputer (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
         /// Template to use (built-in name, local name, github:owner/repo/path, or file path)
@@ -491,7 +491,7 @@ enum SandboxAction {
     Start {
         /// Name of the sandbox to start
         name: String,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad, daytona, runloop, e2b, agentcomputer (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
     },
@@ -1075,14 +1075,26 @@ memory_mb = 512
                     validation::validate_git_ref(git_ref_val)?;
                 }
 
-                // Check setup status first
-                let status = check_installation();
-                if !status.is_ready() {
-                    bail!(
-                        "Agentkernel is not fully set up. Run 'agentkernel setup' first.\n\
-                     Missing: {}",
-                        missing_components(&status)
-                    );
+                // Parse backend option if provided
+                let backend_type = if let Some(ref b) = backend {
+                    Some(
+                        b.parse::<crate::backend::BackendType>()
+                            .map_err(|e| anyhow::anyhow!(e))?,
+                    )
+                } else {
+                    None
+                };
+
+                // Local runtimes require setup. Explicit remote backends do not.
+                if backend_type.is_none_or(|backend| !backend.is_remote()) {
+                    let status = check_installation();
+                    if !status.is_ready() {
+                        bail!(
+                            "Agentkernel is not fully set up. Run 'agentkernel setup' first.\n\
+                         Missing: {}",
+                            missing_components(&status)
+                        );
+                    }
                 }
 
                 // Load config: --config > --template > minimal default
@@ -1104,21 +1116,23 @@ memory_mb = 512
                 } else {
                     (Config::minimal(&name, &agent), None)
                 };
+                let stored_config_path = config
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().to_string());
+                let workspace_root = config_base_dir.clone().unwrap_or(std::env::current_dir()?);
 
                 // Validate config and print warnings
                 for warning in cfg.validate() {
                     eprintln!("Warning: {}", warning);
                 }
 
-                // Parse backend option if provided
-                let backend_type = if let Some(ref b) = backend {
-                    Some(
-                        b.parse::<crate::backend::BackendType>()
-                            .map_err(|e| anyhow::anyhow!(e))?,
-                    )
+                let start_perms = cfg.get_permissions();
+                let start_files = if let Some(ref base_dir) = config_base_dir {
+                    cfg.load_files(base_dir)?
                 } else {
-                    None
+                    Vec::new()
                 };
+
                 let mut manager = VmManager::with_backend(backend_type)?;
 
                 // Build from Dockerfile if configured, otherwise use base image
@@ -1227,6 +1241,11 @@ memory_mb = 512
                         ports,
                     )
                     .await?;
+                manager.set_config_path(&name, stored_config_path)?;
+                if start_perms.mount_cwd {
+                    manager
+                        .set_work_dir(&name, Some(workspace_root.to_string_lossy().to_string()))?;
+                }
 
                 // Parse and set labels
                 if !label_args.is_empty() {
@@ -1345,8 +1364,10 @@ memory_mb = 512
                             name
                         );
                     } else {
-                        // No secrets — start locally (no proxy needed)
-                        manager.start(&name).await?;
+                        // No secrets — start locally with config-derived permissions/files.
+                        manager
+                            .start_with_permissions_and_files(&name, &start_perms, &start_files)
+                            .await?;
                     }
 
                     // If --source provided, clone the repo into the
@@ -1418,11 +1439,6 @@ memory_mb = 512
             SandboxAction::Start { name, backend } => {
                 validation::validate_sandbox_name(&name)?;
 
-                let status = check_installation();
-                if !status.is_ready() {
-                    bail!("Agentkernel is not fully set up. Run 'agentkernel setup' first.");
-                }
-
                 // Parse backend option if provided
                 let backend_type = if let Some(ref b) = backend {
                     Some(
@@ -1433,6 +1449,17 @@ memory_mb = 512
                     None
                 };
                 let mut manager = VmManager::with_backend(backend_type)?;
+
+                let effective_backend = manager
+                    .get_state(&name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                if !effective_backend.is_remote() {
+                    let status = check_installation();
+                    if !status.is_ready() {
+                        bail!("Agentkernel is not fully set up. Run 'agentkernel setup' first.");
+                    }
+                }
 
                 if !manager.exists(&name) {
                     bail!(
@@ -1475,8 +1502,30 @@ memory_mb = 512
                     }
                 }
 
+                let sandbox_config_path = manager
+                    .get_state(&name)
+                    .and_then(|state| state.config_path.clone())
+                    .map(std::path::PathBuf::from);
+                let config_path = sandbox_config_path
+                    .filter(|path| path.exists())
+                    .unwrap_or_else(|| std::path::PathBuf::from("agentkernel.toml"));
+                let (start_perms, start_files) = if config_path.exists() {
+                    let cfg = Config::from_file(&config_path)?;
+                    for warning in cfg.validate() {
+                        eprintln!("Warning: {}", warning);
+                    }
+                    let config_dir = config_path
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new("."));
+                    (cfg.get_permissions(), cfg.load_files(config_dir)?)
+                } else {
+                    (crate::permissions::Permissions::default(), Vec::new())
+                };
+
                 println!("Starting sandbox '{}'...", name);
-                manager.start(&name).await?;
+                manager
+                    .start_with_permissions_and_files(&name, &start_perms, &start_files)
+                    .await?;
                 println!("Sandbox '{}' started.", name);
                 if manager
                     .get_sandbox_state(&name)
@@ -3819,6 +3868,12 @@ memory_mb = 512
                         .unwrap_or_else(|| "docker".to_string()),
                     vcpus: state.vcpus,
                     memory_mb: state.memory_mb,
+                    remote_id: state.remote_id.clone(),
+                    remote_namespace: state.remote_namespace.clone(),
+                    remote_metadata: state.remote_metadata.clone(),
+                    workspace_revision: state.workspace_revision.clone(),
+                    work_dir: state.work_dir.clone(),
+                    config_path: state.config_path.clone(),
                 };
 
                 println!("Saving session '{}'...", name);
@@ -3830,7 +3885,19 @@ memory_mb = 512
                 let sess = session::get(&name)?
                     .ok_or_else(|| anyhow::anyhow!("Session '{}' not found", name))?;
 
-                let mut manager = VmManager::new()?;
+                let snapshot_backend = if sess.status == session::SessionStatus::Saved {
+                    if let Some(ref snap_name) = sess.snapshot {
+                        snapshot::get(snap_name)?.and_then(|meta| {
+                            meta.backend.parse::<crate::backend::BackendType>().ok()
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let mut manager = VmManager::with_backend(snapshot_backend)?;
 
                 if sess.status == session::SessionStatus::Saved {
                     // Restore from snapshot
@@ -3839,9 +3906,34 @@ memory_mb = 512
                             .ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", snap_name))?;
                         if !manager.exists(&sess.sandbox) {
                             println!("Restoring from snapshot '{}'...", snap_name);
-                            manager
-                                .create(&sess.sandbox, &meta.image_tag, meta.vcpus, meta.memory_mb)
-                                .await?;
+                            if let Ok(snapshot_backend) =
+                                meta.backend.parse::<crate::backend::BackendType>()
+                            {
+                                manager
+                                    .create_with_backend(
+                                        snapshot_backend,
+                                        &sess.sandbox,
+                                        meta.restore_image(),
+                                        meta.vcpus,
+                                        meta.memory_mb,
+                                    )
+                                    .await?;
+                            } else {
+                                manager
+                                    .create(
+                                        &sess.sandbox,
+                                        meta.restore_image(),
+                                        meta.vcpus,
+                                        meta.memory_mb,
+                                    )
+                                    .await?;
+                            }
+                            manager.set_work_dir(&sess.sandbox, meta.work_dir.clone())?;
+                            manager.set_config_path(&sess.sandbox, meta.config_path.clone())?;
+                            if let Some(snapshot_handle) = meta.remote_snapshot.as_deref() {
+                                manager
+                                    .set_remote_restore_snapshot(&sess.sandbox, snapshot_handle)?;
+                            }
                         }
                     }
                 }
@@ -3889,6 +3981,12 @@ memory_mb = 512
                         .unwrap_or_else(|| "docker".to_string()),
                     vcpus: state.vcpus,
                     memory_mb: state.memory_mb,
+                    remote_id: state.remote_id.clone(),
+                    remote_namespace: state.remote_namespace.clone(),
+                    remote_metadata: state.remote_metadata.clone(),
+                    workspace_revision: state.workspace_revision.clone(),
+                    work_dir: state.work_dir.clone(),
+                    config_path: state.config_path.clone(),
                 };
 
                 println!("Snapshotting '{}' → '{}'...", sandbox, snap_name);
@@ -3940,13 +4038,52 @@ memory_mb = 512
                 };
                 let mut manager = VmManager::with_backend(backend_type)?;
 
+                if let (Some(snapshot_handle), Some(explicit_backend)) =
+                    (meta.remote_snapshot.as_deref(), backend_type)
+                {
+                    let snapshot_backend = meta
+                        .backend
+                        .parse::<crate::backend::BackendType>()
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    if explicit_backend != snapshot_backend {
+                        anyhow::bail!(
+                            "Remote snapshot '{}' was created on backend '{}'; restoring to '{}' is not supported",
+                            snapshot_handle,
+                            snapshot_backend,
+                            explicit_backend
+                        );
+                    }
+                }
+
                 println!(
                     "Restoring snapshot '{}' as sandbox '{}'...",
                     name, restore_name
                 );
-                manager
-                    .create(&restore_name, &meta.image_tag, meta.vcpus, meta.memory_mb)
-                    .await?;
+                if let Ok(snapshot_backend) = meta.backend.parse::<crate::backend::BackendType>() {
+                    manager
+                        .create_with_backend(
+                            snapshot_backend,
+                            &restore_name,
+                            meta.restore_image(),
+                            meta.vcpus,
+                            meta.memory_mb,
+                        )
+                        .await?;
+                } else {
+                    manager
+                        .create(
+                            &restore_name,
+                            meta.restore_image(),
+                            meta.vcpus,
+                            meta.memory_mb,
+                        )
+                        .await?;
+                }
+                manager.set_work_dir(&restore_name, meta.work_dir.clone())?;
+                manager.set_config_path(&restore_name, meta.config_path.clone())?;
+                if let Some(snapshot_handle) = meta.remote_snapshot.as_deref() {
+                    manager.set_remote_restore_snapshot(&restore_name, snapshot_handle)?;
+                }
 
                 println!("Sandbox '{}' restored from snapshot.", restore_name);
                 println!("\nNext steps:");
@@ -4578,6 +4715,18 @@ fn run_info(name: &str) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ");
         println!("Ports:          {}", ports_str);
+    }
+    if !state.endpoints.is_empty() {
+        let endpoints_str = state
+            .endpoints
+            .iter()
+            .map(|endpoint| format!("{} -> {}", endpoint.container_port, endpoint.url))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("Endpoints:      {}", endpoints_str);
+    }
+    if let Some(ref revision) = state.workspace_revision {
+        println!("Workspace Rev:  {}", revision);
     }
     if !state.labels.is_empty() {
         let labels_str = state

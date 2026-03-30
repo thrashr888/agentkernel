@@ -1,0 +1,13 @@
+{
+  "name": "agentkernel-remote-bridge",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@daytonaio/sdk": "^0.158.0",
+    "@runloop/api-client": "^1.14.1",
+    "e2b": "^2.18.0"
+  }
+}

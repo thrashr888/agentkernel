@@ -1,0 +1,21 @@
+# Remote Daytona example
+
+[sandbox]
+name = "remote-daytona"
+base_image = "node:22"
+
+[security]
+mount_cwd = true
+network = true
+
+[network]
+ports = ["3000"]
+
+[remote]
+bridge = "./scripts/remote-bridge.mjs"
+
+[remote.daytona]
+api_key_env = "DAYTONA_API_KEY"
+base_url = "https://app.daytona.io/api"
+organization = "your-daytona-org-id"
+region = "us"
