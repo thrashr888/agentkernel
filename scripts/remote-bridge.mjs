@@ -33,6 +33,7 @@ try {
 let daytonaSdkPromise;
 let e2bSdkPromise;
 let runloopSdkPromise;
+let modalSdkPromise;
 
 // Maximum number of files per batch for provider SDK upload/download calls.
 const FILE_BATCH_SIZE = 32;
@@ -125,6 +126,8 @@ function scrubSecrets(text) {
     "DAYTONA_API_KEY",
     "RUNLOOP_API_KEY",
     "E2B_API_KEY",
+    "MODAL_TOKEN_ID",
+    "MODAL_TOKEN_SECRET",
     "AGENTKERNEL_API_KEY",
     "AGENTCOMPUTER_API_KEY",
   ];
@@ -163,6 +166,12 @@ function normalizeProviderEnvAliases() {
   ]);
   promoteEnvAlias("E2B_API_KEY", ["E2B_key", "e2b_api_key"]);
   promoteEnvAlias("RUNLOOP_API_KEY", ["runloop_api_key"]);
+  promoteEnvAlias("MODAL_TOKEN_ID", ["modal_token_id"]);
+  promoteEnvAlias("MODAL_TOKEN_SECRET", ["modal_token_secret"]);
+  promoteEnvAlias("MODAL_ENDPOINT", ["modal_endpoint"]);
+  promoteEnvAlias("MODAL_APP_NAME", ["modal_app_name"]);
+  promoteEnvAlias("MODAL_ENVIRONMENT", ["modal_environment"]);
+  promoteEnvAlias("MODAL_REGION", ["modal_region"]);
 }
 
 async function handleProviderRequest(providerName, providerRequest) {
@@ -337,6 +346,63 @@ async function handleProviderRequest(providerName, providerRequest) {
     }
   }
 
+  if (providerName === "modal") {
+    switch (providerRequest.operation) {
+      case "create":
+        respond(await createModalSandbox(providerRequest));
+        return;
+      case "resume":
+        respond(await resumeModalSandbox(providerRequest));
+        return;
+      case "status":
+        respond(await statusModalSandbox(providerRequest));
+        return;
+      case "stop":
+        respond(await stopModalSandbox(providerRequest));
+        return;
+      case "destroy":
+        respond(await destroyModalSandbox(providerRequest));
+        return;
+      case "exec":
+        respond(await execModalSandbox(providerRequest));
+        return;
+      case "attach":
+        process.exit(await attachModalSandbox(providerRequest));
+        return;
+      case "write_file":
+        respond(await writeModalFile(providerRequest));
+        return;
+      case "read_file":
+        respond(await readModalFile(providerRequest));
+        return;
+      case "remove_file":
+        respond(await removeModalFile(providerRequest));
+        return;
+      case "mkdir":
+        respond(await mkdirModal(providerRequest));
+        return;
+      case "sync_push":
+        respond(await syncPushModal(providerRequest));
+        return;
+      case "sync_pull":
+        respond(await syncPullModal(providerRequest));
+        return;
+      case "snapshot":
+        respond(await takeModalSnapshot(providerRequest));
+        return;
+      case "delete_snapshot":
+        respond(await deleteModalSnapshot(providerRequest));
+        return;
+      case "restore":
+        respond(await restoreModalSnapshot(providerRequest));
+        return;
+      default:
+        throw new Error(
+          `unsupported Modal bridge operation: ${providerRequest.operation}`,
+        );
+    }
+  }
+
   respond({
     success: false,
     error:
@@ -381,6 +447,18 @@ async function loadRunloopSdk() {
   return runloopSdkPromise;
 }
 
+async function loadModalSdk() {
+  if (!modalSdkPromise) {
+    modalSdkPromise = import("modal").catch((error) => {
+      throw new Error(
+        "Modal support requires 'modal'. Run 'npm install --prefix scripts' first. " +
+          `(${error.message})`,
+      );
+    });
+  }
+  return modalSdkPromise;
+}
+
 async function withDaytonaClient(fn) {
   const { Daytona } = await loadDaytonaSdk();
   const client = new Daytona({
@@ -407,6 +485,24 @@ async function withRunloopSdk(fn) {
     baseURL: process.env.RUNLOOP_BASE_URL || undefined,
   });
   return fn(sdk, { toFile });
+}
+
+async function withModalClient(fn) {
+  const { ModalClient } = await loadModalSdk();
+  const tokenId = process.env.MODAL_TOKEN_ID || undefined;
+  const tokenSecret = process.env.MODAL_TOKEN_SECRET || undefined;
+  const environment = process.env.MODAL_ENVIRONMENT || undefined;
+  const endpoint = process.env.MODAL_ENDPOINT || undefined;
+  const client =
+    tokenId || tokenSecret || environment || endpoint
+      ? new ModalClient({ tokenId, tokenSecret, environment, endpoint })
+      : new ModalClient();
+
+  try {
+    return await fn(client);
+  } finally {
+    client.close();
+  }
 }
 
 function daytonaEnvMap(values = {}) {
@@ -1420,6 +1516,731 @@ async function attachE2bSandbox(providerRequest) {
     }
     await pty.disconnect().catch(() => {});
   }
+}
+
+function modalWorkspacePath(providerRequest) {
+  return providerRequest.path || "/workspace";
+}
+
+function modalAppName(providerRequest) {
+  return (
+    providerRequest.remote_metadata?.modal_app_name ||
+    process.env.MODAL_APP_NAME ||
+    "agentkernel"
+  );
+}
+
+function modalEnvironment(providerRequest) {
+  return (
+    providerRequest.remote_metadata?.modal_environment ||
+    process.env.MODAL_ENVIRONMENT ||
+    undefined
+  );
+}
+
+function modalImageRef(providerRequest) {
+  const requested =
+    providerRequest.remote_metadata?.image_ref ||
+    providerRequest.image ||
+    providerRequest.profile ||
+    "alpine:3.20";
+  if (!requested || requested === "base" || requested === "default") {
+    return "alpine:3.20";
+  }
+  return requested;
+}
+
+function modalPublishedPorts(providerRequest) {
+  return (
+    providerRequest.remote_metadata?.published_ports?.split(",").filter(Boolean) ??
+    (providerRequest.ports || []).map(daytonaPortSpec)
+  );
+}
+
+function modalTunnelPorts(providerRequest) {
+  return modalPublishedPorts(providerRequest)
+    .map((spec) => {
+      const [portString, protocol = "tcp"] = spec.split("/");
+      return {
+        port: Number.parseInt(portString, 10),
+        protocol,
+      };
+    })
+    .filter(
+      ({ port, protocol }) =>
+        Number.isFinite(port) && String(protocol).toLowerCase() !== "udp",
+    );
+}
+
+function modalRegions() {
+  const raw = process.env.MODAL_REGION || "";
+  const regions = raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return regions.length ? regions : undefined;
+}
+
+function modalCreateParams(providerRequest) {
+  const encryptedPorts = modalTunnelPorts(providerRequest).map(({ port }) => port);
+  return {
+    name: providerRequest.sandbox_name,
+    env: daytonaEnvMap(providerRequest.env),
+    workdir: modalWorkspacePath(providerRequest),
+    cpu: providerRequest.vcpus || 1,
+    memoryMiB: providerRequest.memory_mb || 512,
+    timeoutMs: 24 * 60 * 60 * 1000,
+    idleTimeoutMs: 30 * 60 * 1000,
+    encryptedPorts: encryptedPorts.length ? encryptedPorts : undefined,
+    blockNetwork: providerRequest.network === false,
+    regions: modalRegions(),
+  };
+}
+
+function modalArchivePath(providerRequest) {
+  return `/tmp/agentkernel-${providerRequest.sandbox_name}-workspace.tgz`;
+}
+
+function modalRestoreMountPath(providerRequest) {
+  return `/tmp/agentkernel-${providerRequest.sandbox_name}-restore-${Date.now()}`;
+}
+
+function modalNamespace(providerRequest) {
+  return modalEnvironment(providerRequest) || modalAppName(providerRequest);
+}
+
+function modalStoppedResponse(providerRequest, remoteId) {
+  const remoteMetadata = {
+    ...(providerRequest.remote_metadata || {}),
+    modal_id: remoteId || providerRequest.remote_id || providerRequest.remote_metadata?.modal_id,
+    modal_app_name: modalAppName(providerRequest),
+    image_ref: modalImageRef(providerRequest),
+    profile_name:
+      providerRequest.profile ||
+      providerRequest.image ||
+      providerRequest.remote_metadata?.profile_name ||
+      "default",
+    published_ports:
+      providerRequest.remote_metadata?.published_ports ||
+      modalPublishedPorts(providerRequest).join(","),
+    last_known_status: "stopped",
+  };
+  const environment = modalEnvironment(providerRequest);
+  if (environment) {
+    remoteMetadata.modal_environment = environment;
+  }
+
+  return {
+    success: true,
+    remote_id:
+      remoteId ||
+      providerRequest.remote_id ||
+      providerRequest.remote_metadata?.modal_id ||
+      null,
+    remote_namespace: modalNamespace(providerRequest),
+    remote_metadata: remoteMetadata,
+    endpoints: [],
+    running: false,
+  };
+}
+
+function isModalNotFound(error) {
+  return (
+    error?.name === "NotFoundError" ||
+    error?.constructor?.name === "NotFoundError" ||
+    /not found/i.test(String(error?.message || ""))
+  );
+}
+
+async function getModalApp(modal, providerRequest, createIfMissing = true) {
+  return modal.apps.fromName(modalAppName(providerRequest), {
+    createIfMissing,
+    environment: modalEnvironment(providerRequest),
+  });
+}
+
+async function getModalImage(modal, providerRequest) {
+  const imageRef = modalImageRef(providerRequest);
+  if (imageRef.startsWith("im-")) {
+    return await modal.images.fromId(imageRef);
+  }
+  return modal.images.fromRegistry(imageRef);
+}
+
+async function getModalSandbox(modal, providerRequest) {
+  const remoteId =
+    providerRequest.remote_id || providerRequest.remote_metadata?.modal_id;
+  if (remoteId) {
+    return await modal.sandboxes.fromId(remoteId);
+  }
+
+  return await modal.sandboxes.fromName(
+    modalAppName(providerRequest),
+    providerRequest.sandbox_name,
+    { environment: modalEnvironment(providerRequest) },
+  );
+}
+
+async function modalPoll(sandbox) {
+  return await sandbox.poll();
+}
+
+async function ensureModalRunning(sandbox, providerRequest) {
+  const exitCode = await modalPoll(sandbox);
+  if (exitCode !== null) {
+    throw new Error(
+      `remote sandbox '${providerRequest.sandbox_name}' is not running`,
+    );
+  }
+}
+
+async function modalExec(sandbox, command, options = {}) {
+  const proc = await sandbox.exec(command, {
+    stdout: "pipe",
+    stderr: "pipe",
+    ...options,
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    proc.stdout.readText(),
+    proc.stderr.readText(),
+    proc.wait(),
+  ]);
+  return { stdout, stderr, exitCode };
+}
+
+async function modalExecScript(sandbox, script, options = {}) {
+  return await modalExec(sandbox, ["sh", "-lc", script], options);
+}
+
+async function ensureModalWorkspace(sandbox, providerRequest) {
+  const workspacePath = modalWorkspacePath(providerRequest);
+  const result = await modalExecScript(
+    sandbox,
+    `mkdir -p -- ${daytonaShellQuote(workspacePath)}`,
+    { workdir: "/" },
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `failed to prepare Modal workspace: ${result.stderr || result.stdout}`,
+    );
+  }
+}
+
+async function readModalFileBuffer(sandbox, filePath) {
+  const file = await sandbox.open(filePath, "r");
+  try {
+    return Buffer.from(await file.read());
+  } finally {
+    await file.close().catch(() => {});
+  }
+}
+
+async function writeModalFileBuffer(sandbox, filePath, content) {
+  const file = await sandbox.open(filePath, "w");
+  try {
+    await file.write(content);
+  } finally {
+    await file.close().catch(() => {});
+  }
+}
+
+async function createModalWorkspaceArchive(sandbox, providerRequest) {
+  const archivePath = modalArchivePath(providerRequest);
+  const workspacePath = modalWorkspacePath(providerRequest);
+  const result = await modalExecScript(
+    sandbox,
+    [
+      `AK_ARCHIVE=${daytonaShellQuote(archivePath)}`,
+      `AK_WORKSPACE=${daytonaShellQuote(workspacePath)}`,
+      'mkdir -p "$(dirname "$AK_ARCHIVE")" "$AK_WORKSPACE"',
+      'tar -czf "$AK_ARCHIVE" -C "$AK_WORKSPACE" .',
+    ].join("\n"),
+    { workdir: "/" },
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `failed to create Modal workspace archive: ${result.stderr || result.stdout}`,
+    );
+  }
+  return archivePath;
+}
+
+async function downloadModalWorkspaceArchiveBuffer(sandbox, providerRequest) {
+  const archivePath = await createModalWorkspaceArchive(sandbox, providerRequest);
+  return await readModalFileBuffer(sandbox, archivePath);
+}
+
+async function hashModalWorkspace(sandbox, providerRequest, ignoreRules = []) {
+  const tmpRoot = await fs.mkdtemp(
+    path.join(bridgeTempRoot(), "agentkernel-modal-hash-"),
+  );
+  const archivePath = path.join(tmpRoot, "workspace.tgz");
+  const extractDir = path.join(tmpRoot, "workspace");
+  try {
+    await fs.writeFile(
+      archivePath,
+      await downloadModalWorkspaceArchiveBuffer(sandbox, providerRequest),
+    );
+    await extractLocalArchiveToDir(archivePath, extractDir);
+    return await hashTree(extractDir, ignoreRules);
+  } finally {
+    await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function replaceModalWorkspace(sandbox, providerRequest, archivePath) {
+  const remoteArchivePath = modalArchivePath(providerRequest);
+  const workspacePath = modalWorkspacePath(providerRequest);
+  await writeModalFileBuffer(sandbox, remoteArchivePath, await fs.readFile(archivePath));
+  const result = await modalExecScript(
+    sandbox,
+    [
+      `AK_ARCHIVE=${daytonaShellQuote(remoteArchivePath)}`,
+      `AK_WORKSPACE=${daytonaShellQuote(workspacePath)}`,
+      'mkdir -p "$(dirname "$AK_ARCHIVE")" "$AK_WORKSPACE"',
+      '(cd "$AK_WORKSPACE" && find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +)',
+      'tar -xzf "$AK_ARCHIVE" -C "$AK_WORKSPACE"',
+      'rm -f -- "$AK_ARCHIVE"',
+    ].join("\n"),
+    { workdir: "/" },
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `failed to replace Modal workspace: ${result.stderr || result.stdout}`,
+    );
+  }
+}
+
+async function modalEndpoints(sandbox, providerRequest, running) {
+  if (!running) {
+    return [];
+  }
+
+  const requestedPorts = modalTunnelPorts(providerRequest);
+  if (requestedPorts.length === 0) {
+    return [];
+  }
+
+  try {
+    const tunnels = await sandbox.tunnels(20_000);
+    return requestedPorts
+      .map(({ port, protocol }) => {
+        const tunnel = tunnels[port];
+        if (!tunnel) {
+          return null;
+        }
+        return {
+          container_port: port,
+          protocol,
+          url: tunnel.url,
+        };
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function modalResponse(modal, sandbox, providerRequest, extra = {}) {
+  const { remote_metadata: _ignoredRemoteMetadata, ...rest } = extra;
+  const running = extra.running ?? (await modalPoll(sandbox)) === null;
+  const remoteMetadata = {
+    ...(providerRequest.remote_metadata || {}),
+    ...(extra.remote_metadata || {}),
+    modal_id: sandbox.sandboxId,
+    modal_app_name: modalAppName(providerRequest),
+    image_ref: modalImageRef(providerRequest),
+    profile_name:
+      providerRequest.profile ||
+      providerRequest.image ||
+      providerRequest.remote_metadata?.profile_name ||
+      "default",
+    published_ports:
+      providerRequest.remote_metadata?.published_ports ||
+      modalPublishedPorts(providerRequest).join(","),
+    last_known_status: running ? "running" : "stopped",
+  };
+  const environment = modalEnvironment(providerRequest);
+  if (environment) {
+    remoteMetadata.modal_environment = environment;
+  }
+
+  return {
+    success: true,
+    remote_id: sandbox.sandboxId,
+    remote_namespace: modalNamespace(providerRequest),
+    remote_metadata: remoteMetadata,
+    endpoints:
+      extra.endpoints ?? (await modalEndpoints(sandbox, providerRequest, running)),
+    running,
+    ...rest,
+  };
+}
+
+async function createModalSandbox(providerRequest) {
+  return withModalClient(async (modal) => {
+    const app = await getModalApp(modal, providerRequest, true);
+    const image = await getModalImage(modal, providerRequest);
+    const sandbox = await modal.sandboxes.create(
+      app,
+      image,
+      modalCreateParams(providerRequest),
+    );
+    await ensureModalWorkspace(sandbox, providerRequest);
+    return await modalResponse(modal, sandbox, providerRequest);
+  });
+}
+
+async function resumeModalSandbox(providerRequest) {
+  return withModalClient(async (modal) => {
+    try {
+      const existing = await getModalSandbox(modal, providerRequest);
+      if ((await modalPoll(existing)) === null) {
+        return await modalResponse(modal, existing, providerRequest);
+      }
+    } catch (error) {
+      if (!isModalNotFound(error)) {
+        throw error;
+      }
+    }
+
+    const app = await getModalApp(modal, providerRequest, true);
+    const image = await getModalImage(modal, providerRequest);
+    const sandbox = await modal.sandboxes.create(
+      app,
+      image,
+      modalCreateParams(providerRequest),
+    );
+    await ensureModalWorkspace(sandbox, providerRequest);
+    return await modalResponse(modal, sandbox, providerRequest);
+  });
+}
+
+async function statusModalSandbox(providerRequest) {
+  return withModalClient(async (modal) => {
+    const sandbox = await getModalSandbox(modal, providerRequest);
+    return await modalResponse(modal, sandbox, providerRequest);
+  });
+}
+
+async function stopModalSandbox(providerRequest) {
+  return withModalClient(async (modal) => {
+    const sandbox = await getModalSandbox(modal, providerRequest);
+    if ((await modalPoll(sandbox)) === null) {
+      await sandbox.terminate();
+    }
+    return modalStoppedResponse(providerRequest, sandbox.sandboxId);
+  });
+}
+
+async function destroyModalSandbox(providerRequest) {
+  return withModalClient(async (modal) => {
+    try {
+      const sandbox = await getModalSandbox(modal, providerRequest);
+      if ((await modalPoll(sandbox)) === null) {
+        await sandbox.terminate();
+      }
+      return modalStoppedResponse(providerRequest, sandbox.sandboxId);
+    } catch (error) {
+      if (!isModalNotFound(error)) {
+        throw error;
+      }
+      return modalStoppedResponse(providerRequest);
+    }
+  });
+}
+
+async function execModalSandbox(providerRequest) {
+  return withModalClient(async (modal) => {
+    const sandbox = await getModalSandbox(modal, providerRequest);
+    await ensureModalRunning(sandbox, providerRequest);
+    const result = await modalExec(sandbox, providerRequest.command || [], {
+      env: daytonaEnvMap(providerRequest.env),
+      workdir: providerRequest.workdir || "/workspace",
+    });
+    return await modalResponse(modal, sandbox, providerRequest, {
+      exit_code: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
+  });
+}
+
+async function writeModalFile(providerRequest) {
+  return withModalClient(async (modal) => {
+    const sandbox = await getModalSandbox(modal, providerRequest);
+    await ensureModalRunning(sandbox, providerRequest);
+    const target = providerRequest.path;
+    await modalExecScript(
+      sandbox,
+      `mkdir -p -- ${daytonaShellQuote(path.posix.dirname(target))}`,
+      { workdir: "/" },
+    );
+    await writeModalFileBuffer(
+      sandbox,
+      target,
+      Buffer.from(providerRequest.content_base64 || "", "base64"),
+    );
+    return await modalResponse(modal, sandbox, providerRequest);
+  });
+}
+
+async function readModalFile(providerRequest) {
+  return withModalClient(async (modal) => {
+    const sandbox = await getModalSandbox(modal, providerRequest);
+    await ensureModalRunning(sandbox, providerRequest);
+    const content = await readModalFileBuffer(sandbox, providerRequest.path);
+    return await modalResponse(modal, sandbox, providerRequest, {
+      content_base64: content.toString("base64"),
+    });
+  });
+}
+
+async function removeModalFile(providerRequest) {
+  return withModalClient(async (modal) => {
+    const sandbox = await getModalSandbox(modal, providerRequest);
+    await ensureModalRunning(sandbox, providerRequest);
+    await modalExecScript(
+      sandbox,
+      `rm -rf -- ${daytonaShellQuote(providerRequest.path)}`,
+      { workdir: "/" },
+    );
+    return await modalResponse(modal, sandbox, providerRequest);
+  });
+}
+
+async function mkdirModal(providerRequest) {
+  return withModalClient(async (modal) => {
+    const sandbox = await getModalSandbox(modal, providerRequest);
+    await ensureModalRunning(sandbox, providerRequest);
+    const flag = providerRequest.recursive ? "-p " : "";
+    await modalExecScript(
+      sandbox,
+      `mkdir ${flag}-- ${daytonaShellQuote(providerRequest.path)}`,
+      { workdir: "/" },
+    );
+    return await modalResponse(modal, sandbox, providerRequest);
+  });
+}
+
+async function syncPushModal(providerRequest) {
+  return withModalClient(async (modal) => {
+    const sandbox = await getModalSandbox(modal, providerRequest);
+    await ensureModalRunning(sandbox, providerRequest);
+
+    const localPath = providerRequest.local_path;
+    if (!localPath) {
+      throw new Error("sync_push requires local_path");
+    }
+
+    const ignoreRules = await loadIgnoreRules(localPath);
+    const remoteRevision = await hashModalWorkspace(
+      sandbox,
+      providerRequest,
+      ignoreRules,
+    );
+    if (
+      providerRequest.workspace_revision &&
+      remoteRevision !== providerRequest.workspace_revision
+    ) {
+      throw new Error("workspace sync conflict: remote workspace changed since last sync");
+    }
+
+    const { tmpRoot, archivePath } = await createLocalArchiveFromWorkspace(
+      localPath,
+      ignoreRules,
+    );
+    try {
+      await replaceModalWorkspace(sandbox, providerRequest, archivePath);
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+    }
+
+    const workspaceRevision = await hashTree(localPath, ignoreRules);
+    return await modalResponse(modal, sandbox, providerRequest, {
+      workspace_revision: workspaceRevision,
+    });
+  });
+}
+
+async function syncPullModal(providerRequest) {
+  return withModalClient(async (modal) => {
+    const sandbox = await getModalSandbox(modal, providerRequest);
+    await ensureModalRunning(sandbox, providerRequest);
+
+    const localPath = providerRequest.local_path;
+    if (!localPath) {
+      throw new Error("sync_pull requires local_path");
+    }
+
+    const ignoreRules = await loadIgnoreRules(localPath);
+    const localRevision = await hashTree(localPath, ignoreRules);
+    if (
+      providerRequest.workspace_revision &&
+      localRevision !== providerRequest.workspace_revision
+    ) {
+      throw new Error("workspace sync conflict: local workspace changed since last sync");
+    }
+
+    const tmpRoot = await fs.mkdtemp(
+      path.join(bridgeTempRoot(), "agentkernel-modal-pull-"),
+    );
+    const archivePath = path.join(tmpRoot, "workspace.tgz");
+    const extractDir = path.join(tmpRoot, "workspace");
+    try {
+      await fs.writeFile(
+        archivePath,
+        await downloadModalWorkspaceArchiveBuffer(sandbox, providerRequest),
+      );
+      await extractLocalArchiveToDir(archivePath, extractDir);
+      await mirrorDirectory(extractDir, localPath, ignoreRules);
+      const workspaceRevision = await hashTree(extractDir, ignoreRules);
+      return await modalResponse(modal, sandbox, providerRequest, {
+        workspace_revision: workspaceRevision,
+      });
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+}
+
+async function takeModalSnapshot(providerRequest) {
+  return withModalClient(async (modal) => {
+    const sandbox = await getModalSandbox(modal, providerRequest);
+    await ensureModalRunning(sandbox, providerRequest);
+    const image = await sandbox.snapshotDirectory(modalWorkspacePath(providerRequest));
+    const workspaceRevision = await hashModalWorkspace(
+      sandbox,
+      providerRequest,
+      [],
+    );
+    return await modalResponse(modal, sandbox, providerRequest, {
+      workspace_revision: workspaceRevision,
+      remote_metadata: {
+        snapshot_handle: image.imageId,
+      },
+    });
+  });
+}
+
+async function deleteModalSnapshot(providerRequest) {
+  return withModalClient(async (modal) => {
+    const snapshotHandle = providerRequest.snapshot_name;
+    if (!snapshotHandle) {
+      throw new Error("delete_snapshot requires snapshot_name");
+    }
+    await modal.images.delete(snapshotHandle);
+    return { success: true };
+  });
+}
+
+async function restoreModalSnapshot(providerRequest) {
+  return withModalClient(async (modal) => {
+    const snapshotHandle = providerRequest.snapshot_name;
+    if (!snapshotHandle) {
+      throw new Error("restore requires snapshot_name");
+    }
+
+    const sandbox = await getModalSandbox(modal, providerRequest);
+    await ensureModalRunning(sandbox, providerRequest);
+
+    const mountPath = modalRestoreMountPath(providerRequest);
+    const image = await modal.images.fromId(snapshotHandle);
+    const workspacePath = modalWorkspacePath(providerRequest);
+    await modalExecScript(
+      sandbox,
+      `rm -rf -- ${daytonaShellQuote(mountPath)} && mkdir -p -- ${daytonaShellQuote(mountPath)}`,
+      { workdir: "/" },
+    );
+    await sandbox.mountImage(mountPath, image);
+    const result = await modalExecScript(
+      sandbox,
+      [
+        `AK_RESTORE=${daytonaShellQuote(mountPath)}`,
+        `AK_WORKSPACE=${daytonaShellQuote(workspacePath)}`,
+        'mkdir -p "$AK_WORKSPACE"',
+        '(cd "$AK_WORKSPACE" && find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +)',
+        'cp -a "$AK_RESTORE"/. "$AK_WORKSPACE"/',
+      ].join("\n"),
+      { workdir: "/" },
+    );
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `failed to restore Modal workspace snapshot: ${result.stderr || result.stdout}`,
+      );
+    }
+
+    const workspaceRevision = await hashModalWorkspace(
+      sandbox,
+      providerRequest,
+      [],
+    );
+    return await modalResponse(modal, sandbox, providerRequest, {
+      workspace_revision: workspaceRevision,
+    });
+  });
+}
+
+async function streamModalOutput(stream, writable) {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        return;
+      }
+      if (typeof value === "string") {
+        writable.write(value);
+      } else if (value) {
+        writable.write(Buffer.from(value));
+      }
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+}
+
+async function attachModalSandbox(providerRequest) {
+  return withModalClient(async (modal) => {
+    const sandbox = await getModalSandbox(modal, providerRequest);
+    await ensureModalRunning(sandbox, providerRequest);
+
+    const shellProgram = providerRequest.shell || process.env.SHELL || "/bin/sh";
+    const proc = await sandbox.exec(
+      ["sh", "-lc", `exec ${daytonaShellQuote(shellProgram)} -li`],
+      {
+        env: daytonaEnvMap(providerRequest.env),
+        workdir: providerRequest.workdir || "/workspace",
+        pty: true,
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+
+    const stdoutPromise = streamModalOutput(proc.stdout, process.stdout);
+    const stderrPromise = streamModalOutput(proc.stderr, process.stderr);
+    const onData = (chunk) => {
+      const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      void proc.stdin.writeText(text).catch(() => {});
+    };
+
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(true);
+    }
+    process.stdin.resume();
+    process.stdin.on("data", onData);
+
+    try {
+      const exitCode = await proc.wait();
+      await Promise.allSettled([stdoutPromise, stderrPromise]);
+      return exitCode ?? 0;
+    } finally {
+      process.stdin.off("data", onData);
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(false);
+      }
+    }
+  });
 }
 
 function runloopRunning(status) {

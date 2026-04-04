@@ -1,7 +1,7 @@
-# Remote E2B example
+# Remote Modal example
 
 [sandbox]
-name = "remote-e2b"
+name = "remote-modal"
 base_image = "base"
 
 [security]
@@ -14,5 +14,7 @@ ports = ["3000"]
 [remote]
 bridge = "../../scripts/remote-bridge.mjs"
 
-[remote.e2b]
-api_key_env = "E2B_API_KEY"
+[remote.modal]
+token_id_env = "MODAL_TOKEN_ID"
+token_secret_env = "MODAL_TOKEN_SECRET"
+project = "agentkernel"

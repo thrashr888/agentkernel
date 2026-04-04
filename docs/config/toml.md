@@ -226,9 +226,9 @@ See the [Orchestration Guide](../operations/index.md) for detailed usage and dep
 
 ## [remote]
 
-Configuration for hosted remote backends (`daytona`, `runloop`, `e2b`, `agentcomputer`).
+Configuration for hosted remote backends (`daytona`, `runloop`, `e2b`, `modal`, `agentcomputer`).
 
-Current note: `daytona`, `runloop`, and `e2b` are the shipped live adapters today. The bundled
+Current note: `daytona`, `runloop`, `e2b`, and `modal` are the shipped live adapters today. The bundled
 bridge reads provider credentials and routing from `[remote.<provider>]`, or
 from exported provider environment variables when you prefer env-based setup.
 
@@ -250,6 +250,11 @@ api_key_env = "RUNLOOP_API_KEY"
 [remote.e2b]
 api_key_env = "E2B_API_KEY"
 
+[remote.modal]
+token_id_env = "MODAL_TOKEN_ID"
+token_secret_env = "MODAL_TOKEN_SECRET"
+project = "agentkernel"
+
 [remote.agentcomputer]
 api_key_env = "AGENTCOMPUTER_API_KEY"
 
@@ -270,13 +275,18 @@ NODE_ENV = "development"
 
 ### [remote.<provider>]
 
-Supported providers: `daytona`, `runloop`, `e2b`, `agentcomputer`.
+Supported providers: `daytona`, `runloop`, `e2b`, `modal`, `agentcomputer`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `api_key` | string | none | Inline provider API key |
 | `api_key_env` | string | none | Environment variable containing the API key |
+| `token_id` | string | none | Inline provider token ID |
+| `token_id_env` | string | none | Environment variable containing the provider token ID |
+| `token_secret` | string | none | Inline provider token secret |
+| `token_secret_env` | string | none | Environment variable containing the provider token secret |
 | `base_url` | string | provider default | Override API base URL |
+| `environment` | string | provider default | Provider environment or workspace environment name |
 | `organization` | string | none | Provider organization or team |
 | `project` | string | none | Provider project/workspace name |
 | `region` | string | none | Default provider region |
@@ -287,6 +297,7 @@ For the bundled live adapters today:
 - `daytona` uses `api_key`, `api_key_env`, `base_url`, `organization`, and `region`
 - `runloop` uses `api_key` / `api_key_env` and optionally `base_url`
 - `e2b` uses `api_key` / `api_key_env` and optionally `base_url`
+- `modal` uses `token_id`, `token_id_env`, `token_secret`, `token_secret_env`, and optionally `base_url`, `environment`, `project`, and `region`
 - `agentcomputer` config can be declared now, but the bundled bridge does not ship its live adapter yet
 
 ### [remote.profiles.<name>]

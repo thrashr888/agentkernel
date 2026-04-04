@@ -8,6 +8,7 @@
   "dependencies": {
     "@daytonaio/sdk": "^0.158.0",
     "@runloop/api-client": "^1.14.1",
-    "e2b": "^2.18.0"
+    "e2b": "^2.18.0",
+    "modal": "^0.7.3"
   }
 }

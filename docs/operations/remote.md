@@ -7,6 +7,7 @@ The bundled bridge currently ships live adapters for:
 - `daytona`
 - `runloop`
 - `e2b`
+- `modal`
 
 `agentcomputer` is parsed as a backend value and keeps the same contract shape, but the bundled live adapter is not landed yet.
 
@@ -17,7 +18,7 @@ npm install --prefix scripts
 node --version   # Node.js 20+
 ```
 
-Provider credentials can come from exported environment variables or from `api_key_env` names in `agentkernel.toml`.
+Provider credentials can come from exported environment variables or from `api_key_env` / `token_*_env` names in `agentkernel.toml`.
 
 ## Common Behavior
 
@@ -85,6 +86,39 @@ agentkernel exec my-e2b -- sh -lc 'python3 --version || node -v'
 agentkernel snapshot take my-e2b --name my-e2b-snap
 ```
 
+## Modal
+
+Example config:
+
+```toml
+[sandbox]
+name = "modal-demo"
+base_image = "base"
+
+[security]
+mount_cwd = true
+network = true
+
+[network]
+ports = ["3000"]
+
+[remote]
+bridge = "./scripts/remote-bridge.mjs"
+
+[remote.modal]
+token_id_env = "MODAL_TOKEN_ID"
+token_secret_env = "MODAL_TOKEN_SECRET"
+project = "agentkernel"
+```
+
+Run it:
+
+```bash
+agentkernel sandbox create my-modal --backend modal -c agentkernel.toml
+agentkernel exec my-modal -- sh -lc 'pwd && ls -la /workspace'
+agentkernel snapshot take my-modal --name my-modal-snap
+```
+
 ## Runloop
 
 Example config:
@@ -121,3 +155,4 @@ agentkernel snapshot take my-runloop --name my-runloop-snap
 - [examples/remote-daytona/README.md](../../examples/remote-daytona/README.md)
 - [examples/remote-runloop/README.md](../../examples/remote-runloop/README.md)
 - [examples/remote-e2b/README.md](../../examples/remote-e2b/README.md)
+- [examples/remote-modal/README.md](../../examples/remote-modal/README.md)

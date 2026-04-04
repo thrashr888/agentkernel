@@ -12,7 +12,7 @@ network = true
 ports = ["3000"]
 
 [remote]
-bridge = "./scripts/remote-bridge.mjs"
+bridge = "../../scripts/remote-bridge.mjs"
 
 [remote.daytona]
 api_key_env = "DAYTONA_API_KEY"

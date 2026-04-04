@@ -19,6 +19,7 @@ pub enum RemoteProvider {
     Daytona,
     Runloop,
     E2B,
+    Modal,
     AgentComputer,
 }
 
@@ -28,6 +29,7 @@ impl RemoteProvider {
             Self::Daytona => BackendType::Daytona,
             Self::Runloop => BackendType::Runloop,
             Self::E2B => BackendType::E2B,
+            Self::Modal => BackendType::Modal,
             Self::AgentComputer => BackendType::AgentComputer,
         }
     }
@@ -37,6 +39,7 @@ impl RemoteProvider {
             Self::Daytona => "daytona",
             Self::Runloop => "runloop",
             Self::E2B => "e2b",
+            Self::Modal => "modal",
             Self::AgentComputer => "agentcomputer",
         }
     }
@@ -46,6 +49,7 @@ impl RemoteProvider {
             "daytona" => Some(Self::Daytona),
             "runloop" => Some(Self::Runloop),
             "e2b" => Some(Self::E2B),
+            "modal" => Some(Self::Modal),
             "agentcomputer" => Some(Self::AgentComputer),
             _ => None,
         }
@@ -311,6 +315,7 @@ fn provider_bridge_env(provider: RemoteProvider, config: &Config) -> HashMap<Str
         RemoteProvider::Daytona => &config.remote.daytona,
         RemoteProvider::Runloop => &config.remote.runloop,
         RemoteProvider::E2B => &config.remote.e2b,
+        RemoteProvider::Modal => &config.remote.modal,
         RemoteProvider::AgentComputer => &config.remote.agentcomputer,
     };
 
@@ -318,6 +323,7 @@ fn provider_bridge_env(provider: RemoteProvider, config: &Config) -> HashMap<Str
         RemoteProvider::Daytona => daytona_bridge_env(provider_config),
         RemoteProvider::Runloop => runloop_bridge_env(provider_config),
         RemoteProvider::E2B => e2b_bridge_env(provider_config),
+        RemoteProvider::Modal => modal_bridge_env(provider_config),
         RemoteProvider::AgentComputer => HashMap::new(),
     }
 }
@@ -367,6 +373,31 @@ fn runloop_bridge_env(config: &RemoteProviderConfig) -> HashMap<String, String> 
     env
 }
 
+fn modal_bridge_env(config: &RemoteProviderConfig) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+
+    if let Some(token_id) = resolve_provider_token_id(config) {
+        env.insert("MODAL_TOKEN_ID".to_string(), token_id);
+    }
+    if let Some(token_secret) = resolve_provider_token_secret(config) {
+        env.insert("MODAL_TOKEN_SECRET".to_string(), token_secret);
+    }
+    if let Some(base_url) = &config.base_url {
+        env.insert("MODAL_ENDPOINT".to_string(), base_url.clone());
+    }
+    if let Some(environment) = &config.environment {
+        env.insert("MODAL_ENVIRONMENT".to_string(), environment.clone());
+    }
+    if let Some(project) = &config.project {
+        env.insert("MODAL_APP_NAME".to_string(), project.clone());
+    }
+    if let Some(region) = &config.region {
+        env.insert("MODAL_REGION".to_string(), region.clone());
+    }
+
+    env
+}
+
 fn resolve_provider_secret(config: &RemoteProviderConfig) -> Option<String> {
     if let Some(api_key) = &config.api_key {
         return Some(api_key.clone());
@@ -374,6 +405,28 @@ fn resolve_provider_secret(config: &RemoteProviderConfig) -> Option<String> {
 
     config
         .api_key_env
+        .as_ref()
+        .and_then(|key| std::env::var(key).ok())
+}
+
+fn resolve_provider_token_id(config: &RemoteProviderConfig) -> Option<String> {
+    if let Some(token_id) = &config.token_id {
+        return Some(token_id.clone());
+    }
+
+    config
+        .token_id_env
+        .as_ref()
+        .and_then(|key| std::env::var(key).ok())
+}
+
+fn resolve_provider_token_secret(config: &RemoteProviderConfig) -> Option<String> {
+    if let Some(token_secret) = &config.token_secret {
+        return Some(token_secret.clone());
+    }
+
+    config
+        .token_secret_env
         .as_ref()
         .and_then(|key| std::env::var(key).ok())
 }
@@ -539,6 +592,8 @@ impl RemoteSandbox {
         }
         if !response.endpoints.is_empty() {
             self.endpoints = response.endpoints.clone();
+        } else if response.running == Some(false) {
+            self.endpoints.clear();
         }
         if let Some(running) = response.running {
             self.running = running;
@@ -879,6 +934,7 @@ mod tests {
         assert_eq!(RemoteProvider::Daytona.backend_type(), BackendType::Daytona);
         assert_eq!(RemoteProvider::Runloop.backend_type(), BackendType::Runloop);
         assert_eq!(RemoteProvider::E2B.backend_type(), BackendType::E2B);
+        assert_eq!(RemoteProvider::Modal.backend_type(), BackendType::Modal);
         assert_eq!(
             RemoteProvider::AgentComputer.backend_type(),
             BackendType::AgentComputer
@@ -991,5 +1047,41 @@ mod tests {
             env.get("RUNLOOP_BASE_URL"),
             Some(&"https://api.runloop.invalid".to_string())
         );
+    }
+
+    #[test]
+    fn test_modal_bridge_env_from_config() {
+        let config = Config::from_str(
+            r#"
+            [sandbox]
+            name = "remote-app"
+
+            [remote.modal]
+            token_id = "modal-token-id"
+            token_secret = "modal-token-secret"
+            base_url = "https://modal.invalid"
+            environment = "main"
+            project = "agentkernel"
+            region = "us-east-1"
+        "#,
+        )
+        .unwrap();
+
+        let env = provider_bridge_env(RemoteProvider::Modal, &config);
+        assert_eq!(
+            env.get("MODAL_TOKEN_ID"),
+            Some(&"modal-token-id".to_string())
+        );
+        assert_eq!(
+            env.get("MODAL_TOKEN_SECRET"),
+            Some(&"modal-token-secret".to_string())
+        );
+        assert_eq!(
+            env.get("MODAL_ENDPOINT"),
+            Some(&"https://modal.invalid".to_string())
+        );
+        assert_eq!(env.get("MODAL_ENVIRONMENT"), Some(&"main".to_string()));
+        assert_eq!(env.get("MODAL_APP_NAME"), Some(&"agentkernel".to_string()));
+        assert_eq!(env.get("MODAL_REGION"), Some(&"us-east-1".to_string()));
     }
 }

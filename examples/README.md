@@ -186,6 +186,17 @@ agentkernel exec remote-e2b -- sh -lc 'python3 --version || node -v'
 
 **Features**: managed `/workspace` sync, file APIs, PTY attach, live snapshot/restore
 
+### Remote Modal
+Run a hosted sandbox through the bundled Modal bridge.
+
+```bash
+npm install --prefix scripts
+agentkernel sandbox create remote-modal --backend modal -c examples/remote-modal/agentkernel.toml
+agentkernel exec remote-modal -- sh -lc 'pwd && ls -la /workspace'
+```
+
+**Features**: managed `/workspace` sync, tunnel-backed endpoints, interactive attach, live snapshot/restore
+
 ### Enterprise Policies
 Centralized Cedar policy management with RBAC, MFA enforcement, and runtime restrictions. Requires `--features enterprise`.
 

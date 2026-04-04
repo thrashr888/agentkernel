@@ -3191,14 +3191,13 @@ mod tests {
     #[test]
     fn test_normalize_persisted_path_makes_relative_absolute() {
         let current = std::env::current_dir().unwrap();
+        let expected = std::fs::canonicalize(current.join("examples/remote-modal"))
+            .unwrap_or_else(|_| current.join("examples/remote-modal"));
         let normalized = normalize_persisted_path(Some("examples/remote-modal".to_string()))
             .unwrap()
             .unwrap();
         assert!(std::path::Path::new(&normalized).is_absolute());
-        assert_eq!(
-            std::path::PathBuf::from(normalized),
-            current.join("examples/remote-modal")
-        );
+        assert_eq!(std::path::PathBuf::from(normalized), expected);
     }
 
     #[test]
