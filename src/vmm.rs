@@ -257,10 +257,35 @@ impl SandboxState {
             remote_metadata: self.remote_metadata.clone(),
             workspace_revision: self.workspace_revision.clone(),
             endpoints: self.endpoints.clone(),
-            local_workspace: self.work_dir.clone(),
-            config_path: self.config_path.clone(),
+            local_workspace: normalize_persisted_path(self.work_dir.clone())
+                .ok()
+                .flatten(),
+            config_path: normalize_persisted_path(self.config_path.clone())
+                .ok()
+                .flatten(),
         }
     }
+}
+
+fn normalize_persisted_path(value: Option<String>) -> Result<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    let path = PathBuf::from(&value);
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+
+    Ok(Some(
+        absolute
+            .canonicalize()
+            .unwrap_or(absolute)
+            .to_string_lossy()
+            .to_string(),
+    ))
 }
 
 /// Status of a detached command
@@ -934,6 +959,7 @@ impl VmManager {
     }
 
     pub fn set_work_dir(&mut self, name: &str, work_dir: Option<String>) -> Result<()> {
+        let work_dir = normalize_persisted_path(work_dir)?;
         {
             let state = self
                 .sandboxes
@@ -950,6 +976,7 @@ impl VmManager {
     }
 
     pub fn set_config_path(&mut self, name: &str, config_path: Option<String>) -> Result<()> {
+        let config_path = normalize_persisted_path(config_path)?;
         {
             let state = self
                 .sandboxes
@@ -3159,6 +3186,29 @@ mod tests {
         assert_eq!(state.vcpus, 4);
         assert_eq!(state.memory_mb, 2048);
         assert_eq!(state.vsock_cid, 10);
+    }
+
+    #[test]
+    fn test_normalize_persisted_path_makes_relative_absolute() {
+        let current = std::env::current_dir().unwrap();
+        let normalized = normalize_persisted_path(Some("examples/remote-modal".to_string()))
+            .unwrap()
+            .unwrap();
+        assert!(std::path::Path::new(&normalized).is_absolute());
+        assert_eq!(
+            std::path::PathBuf::from(normalized),
+            current.join("examples/remote-modal")
+        );
+    }
+
+    #[test]
+    fn test_normalize_persisted_path_preserves_absolute() {
+        let temp_dir = TempDir::new().unwrap();
+        let absolute = temp_dir.path().join("agentkernel.toml");
+        let normalized = normalize_persisted_path(Some(absolute.to_string_lossy().to_string()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::path::PathBuf::from(normalized), absolute);
     }
 
     #[test]
