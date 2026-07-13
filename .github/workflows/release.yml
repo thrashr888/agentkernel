@@ -412,7 +412,7 @@ jobs:
             desc "Desktop app for managing AI coding agent sandboxes"
             homepage "https://thrashr888.github.io/agentkernel/"
 
-            depends_on macos: ">= :ventura"
+            depends_on macos: :ventura
 
             app "AgentKernel.app"
 
