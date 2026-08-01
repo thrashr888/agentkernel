@@ -655,6 +655,31 @@ CMD ["6.1.70"]
     Ok(())
 }
 
+const GUEST_AGENT_MAIN_SOURCE: &str = include_str!("embedded/guest_agent_main.rs");
+const GUEST_AGENT_PTY_SOURCE: &str = include_str!("embedded/guest_agent_pty.rs");
+const GUEST_AGENT_CARGO_SOURCE: &str = include_str!("embedded/guest_agent_cargo.toml");
+
+fn write_guest_agent_build_context(build_dir: &Path) -> Result<()> {
+    for (relative_path, contents) in [
+        ("Cargo.toml", GUEST_AGENT_CARGO_SOURCE),
+        ("src/main.rs", GUEST_AGENT_MAIN_SOURCE),
+        ("src/pty.rs", GUEST_AGENT_PTY_SOURCE),
+    ] {
+        let path = build_dir.join(relative_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, contents).with_context(|| {
+            format!(
+                "Failed to write embedded guest agent source: {}",
+                path.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
 /// Build the guest agent binary for inclusion in rootfs
 ///
 /// Cross-compiles the guest agent to x86_64-unknown-linux-musl for static linking.
@@ -662,18 +687,10 @@ async fn build_guest_agent(data_dir: &Path) -> Result<()> {
     let bin_dir = data_dir.join("bin");
     std::fs::create_dir_all(&bin_dir)?;
 
-    // Embedded guest agent source
-    let guest_agent_source = include_str!("embedded/guest_agent_main.rs");
-    let guest_agent_cargo = include_str!("embedded/guest_agent_cargo.toml");
-
-    // Create temp directory for build
-    let temp_dir = std::env::temp_dir().join("agentkernel-guest-build");
-    std::fs::create_dir_all(&temp_dir)?;
-    std::fs::create_dir_all(temp_dir.join("src"))?;
-
-    // Write source files
-    std::fs::write(temp_dir.join("src/main.rs"), guest_agent_source)?;
-    std::fs::write(temp_dir.join("Cargo.toml"), guest_agent_cargo)?;
+    // Create a clean build context so stale source files cannot mask packaging errors.
+    let temp_dir =
+        tempfile::tempdir().context("Failed to create temporary guest agent build directory")?;
+    write_guest_agent_build_context(temp_dir.path())?;
 
     // Dockerfile for building with musl
     let dockerfile = r#"
@@ -689,12 +706,12 @@ COPY --from=builder /agent /agent
 CMD ["/agent"]
 "#;
 
-    std::fs::write(temp_dir.join("Dockerfile"), dockerfile)?;
+    std::fs::write(temp_dir.path().join("Dockerfile"), dockerfile)?;
 
     // Build in Docker
     let status = Command::new("docker")
         .args(["build", "-t", "agentkernel-guest-builder", "."])
-        .current_dir(&temp_dir)
+        .current_dir(temp_dir.path())
         .status()
         .context("Failed to build guest agent Docker image")?;
 
@@ -1189,4 +1206,35 @@ async fn install_firecracker_binary(data_dir: &Path) -> Result<()> {
     println!("  export PATH=\"{}:$PATH\"", bin_dir.display());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guest_agent_build_context_materializes_declared_modules() {
+        let temp_dir = tempfile::tempdir().expect("create temporary build context");
+        write_guest_agent_build_context(temp_dir.path()).expect("write guest agent build context");
+
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let main_rs = temp_dir.path().join("src/main.rs");
+        assert!(cargo_toml.is_file());
+        assert!(main_rs.is_file());
+
+        let main_source = std::fs::read_to_string(main_rs).expect("read staged main.rs");
+        for module in main_source.lines().filter_map(|line| {
+            line.trim()
+                .strip_prefix("mod ")
+                .and_then(|module| module.strip_suffix(';'))
+        }) {
+            let source_dir = temp_dir.path().join("src");
+            let flat_module = source_dir.join(format!("{module}.rs"));
+            let nested_module = source_dir.join(module).join("mod.rs");
+            assert!(
+                flat_module.is_file() || nested_module.is_file(),
+                "declared module `{module}` was not materialized in the build context"
+            );
+        }
+    }
 }
