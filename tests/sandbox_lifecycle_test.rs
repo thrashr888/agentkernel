@@ -257,8 +257,9 @@ fn test_exec_on_stopped_sandbox() {
     let name = unique_sandbox_name();
     cleanup_sandbox(&name);
 
-    // Create but don't start
+    // Ensure the sandbox is stopped before testing exec's stopped-state error.
     run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&["sandbox", "stop", &name]);
 
     // Exec should fail
     let (exit_code, _, stderr) = run_cmd(&["exec", &name, "--", "echo", "hello"]);
