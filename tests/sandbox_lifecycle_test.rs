@@ -71,8 +71,14 @@ fn test_full_lifecycle_docker() {
     cleanup_sandbox(&name);
 
     // Create
-    let (exit_code, _stdout, stderr) =
-        run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    let (exit_code, _stdout, stderr) = run_cmd(&[
+        "sandbox",
+        "create",
+        &name,
+        "--backend",
+        "docker",
+        "--no-start",
+    ]);
     assert_eq!(exit_code, 0, "Create failed: {}", stderr);
 
     // Verify it appears in list
@@ -139,7 +145,14 @@ fn test_exec_multiple_commands() {
     cleanup_sandbox(&name);
 
     // Setup
-    run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    run_cmd(&[
+        "sandbox",
+        "create",
+        &name,
+        "--backend",
+        "docker",
+        "--no-start",
+    ]);
     run_cmd(&["sandbox", "start", &name]);
 
     // Run multiple exec commands
