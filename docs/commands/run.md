@@ -14,6 +14,7 @@ agentkernel run [OPTIONS] <COMMAND>...
 | Option | Description |
 |--------|-------------|
 | `-i, --image <IMAGE>` | Docker image to use (auto-detected if not specified) |
+| `--build` | Build and use the current project's Dockerfile. Conflicts with `--image` and `--fast`. |
 | `-p, --profile <PROFILE>` | Security profile: `permissive`, `moderate`, `restrictive` |
 | `-k, --keep` | Keep the sandbox after execution (for debugging) |
 | `-F, --fast` | Use container pool for faster startup (default: true) |
@@ -54,6 +55,16 @@ agentkernel run --image python:3.11-alpine python3 --version
 # Use Ubuntu
 agentkernel run --image ubuntu:24.04 cat /etc/os-release
 ```
+
+### Build the project image
+
+Bare `run` commands select an image from the command or project files and do not implicitly build an ambient Dockerfile. Request the project build when you want it:
+
+```bash
+agentkernel run --build -- npm test
+```
+
+An explicit config or template keeps its configured Dockerfile build behavior.
 
 ### Security profiles
 
@@ -132,7 +143,7 @@ The `run` command automatically selects an appropriate Docker image based on you
 | `ruby`, `gem`, `bundle` | `ruby:3.3-alpine` |
 | Others | `alpine:3.20` |
 
-Override with `--image` when needed.
+Override with `--image` when needed, or pass `--build` to build the current project's Dockerfile first.
 
 ## Exit Codes
 

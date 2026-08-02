@@ -1,0 +1,21 @@
+# Keep the build context limited to inputs copied by the root Dockerfile.
+**
+!Cargo.toml
+!Cargo.lock
+!src/
+!src/**
+!tests/
+!tests/**
+!guest-agent/
+!guest-agent/**
+!claude-plugin/
+!claude-plugin/**
+!plugins/
+!plugins/**
+!templates/
+!templates/**
+!images/
+!images/build/
+!images/build/**
+!images/kernel/
+!images/kernel/microvm.config

@@ -100,6 +100,9 @@ enum Commands {
         /// Docker image to use (overrides config)
         #[arg(short, long)]
         image: Option<String>,
+        /// Build the current project's Dockerfile before running
+        #[arg(long, conflicts_with_all = ["image", "fast"])]
+        build: bool,
         /// Security profile: permissive, moderate (default), restrictive
         #[arg(short, long, default_value = "moderate")]
         profile: String,
@@ -2056,6 +2059,7 @@ memory_mb = 512
             config,
             keep,
             image,
+            build: build_image,
             profile,
             no_network,
             fast,
@@ -2170,7 +2174,7 @@ memory_mb = 512
 
             // Daemon path: try daemon VM pool first (single round-trip)
             // Skip is_available() check - just try and fall back on error
-            if !keep {
+            if !keep && !build_image {
                 let daemon_client = daemon::DaemonClient::new();
 
                 // Determine runtime from image/config
@@ -2214,55 +2218,66 @@ memory_mb = 512
                 // Daemon not available or failed, fall through to ephemeral mode
             }
 
-            // Determine Docker image: --image > --config > --template > Dockerfile > command > ./agentkernel.toml > project files > default
+            // Determine Docker image: --image > --config > --template > command > ./agentkernel.toml > project files > default
             // For `run`, command detection has higher priority than project files
             // because user is explicitly specifying what to run
             let explicit_image = image.is_some();
-            let (docker_image, cfg_for_build) = if let Some(img) = image {
-                (img, None)
+            let (docker_image, cfg_for_build, honor_config_dockerfile) = if let Some(img) = image {
+                (img, None, false)
             } else if let Some(ref config_path) = config {
                 let cfg = Config::from_file(config_path)?;
-                (cfg.docker_image(), Some(cfg))
+                (cfg.docker_image(), Some(cfg), true)
             } else if let Some(ref tmpl_name) = tmpl {
                 let resolved = template::resolve(tmpl_name)?;
                 eprintln!("Using template '{}' ({})", resolved.name, resolved.source);
                 let cfg = resolved.parse()?;
-                (cfg.docker_image(), Some(cfg))
+                (cfg.docker_image(), Some(cfg), true)
             } else if let Some(img) = languages::detect_from_command(&command) {
                 // Command-based detection first for `run`
-                (img, None)
+                (img, None, false)
             } else {
                 // Try current directory config
                 let default_config = PathBuf::from("agentkernel.toml");
                 if default_config.exists() {
                     let cfg = Config::from_file(&default_config)?;
-                    (cfg.docker_image(), Some(cfg))
+                    let has_build_settings = config_has_build_settings(&cfg);
+                    (cfg.docker_image(), Some(cfg), has_build_settings)
                 } else {
                     // Fall back to project file detection or default
-                    (languages::detect_image(&command), None)
+                    (languages::detect_image(&command), None, false)
                 }
             };
 
-            // Check for Dockerfile and build if present
+            // Resolve whether this invocation intentionally selects a Dockerfile build
             let current_dir = std::env::current_dir()?;
             let is_firecracker_backend = backend
                 .as_ref()
                 .is_some_and(|b| b == "firecracker" || b == "fc");
 
-            // Build from Dockerfile if configured or auto-detected
-            let docker_image = if explicit_image {
-                docker_image
-            } else if let Some(ref cfg) = cfg_for_build {
-                // Use config's build settings
-                if cfg.requires_build(&current_dir) {
+            // Build only when configuration selected a Dockerfile or the user
+            // explicitly requested an ambient Dockerfile with --build. A plain
+            // command-driven run must not turn into a potentially multi-minute
+            // project image build just because the working directory has one.
+            let should_build_image = should_build_run_image(
+                explicit_image,
+                build_image,
+                honor_config_dockerfile,
+                cfg_for_build.as_ref(),
+                &current_dir,
+            );
+            if build_image && !should_build_image {
+                bail!(
+                    "--build requested but no Dockerfile was found in {}",
+                    current_dir.display()
+                );
+            }
+
+            let docker_image = if should_build_image {
+                if let Some(ref cfg) = cfg_for_build {
+                    // Use config's build settings
                     let project_name = &cfg.sandbox.name;
                     build::build_or_use_image(project_name, &docker_image, &current_dir, cfg)?
                 } else {
-                    docker_image
-                }
-            } else {
-                // Auto-detect Dockerfile in current directory
-                if languages::detect_dockerfile(&current_dir).is_some() {
                     let project_name = current_dir
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
@@ -2274,9 +2289,9 @@ memory_mb = 512
                         &current_dir,
                         &default_cfg,
                     )?
-                } else {
-                    docker_image
                 }
+            } else {
+                docker_image
             };
 
             // For Firecracker backend with custom images, convert to rootfs
@@ -4981,6 +4996,39 @@ fn resolve_workspace_root(config_base_dir: Option<&Path>, dir: Option<&Path>) ->
     Ok(workspace.canonicalize().unwrap_or(workspace))
 }
 
+/// Decide whether `run` should build a project image before execution.
+///
+/// Explicit images always win. Config and template runs preserve their
+/// Dockerfile behavior, while command-driven runs require an explicit
+/// `--build` before an ambient Dockerfile is considered.
+fn should_build_run_image(
+    explicit_image: bool,
+    build_requested: bool,
+    honor_config_dockerfile: bool,
+    config: Option<&Config>,
+    current_dir: &Path,
+) -> bool {
+    if explicit_image {
+        return false;
+    }
+
+    let dockerfile_available = config
+        .map(|config| config.requires_build(current_dir))
+        .unwrap_or_else(|| languages::detect_dockerfile(current_dir).is_some());
+
+    (build_requested || honor_config_dockerfile) && dockerfile_available
+}
+
+/// Whether an implicitly loaded project config contains intentional build
+/// settings, rather than merely sharing a directory with a Dockerfile.
+fn config_has_build_settings(config: &Config) -> bool {
+    config.build.dockerfile.is_some()
+        || config.build.context.is_some()
+        || config.build.target.is_some()
+        || !config.build.args.is_empty()
+        || config.build.no_cache
+}
+
 fn extract_template_help_text(content: &str) -> Option<String> {
     let value: toml::Value = toml::from_str(content).ok()?;
     value
@@ -5062,8 +5110,15 @@ async fn delegate_start_to_server(host: &str, port: u16, name: &str) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_workspace_root;
+    use super::{config_has_build_settings, resolve_workspace_root, should_build_run_image};
+    use crate::config::Config;
     use tempfile::TempDir;
+
+    fn project_with_dockerfile() -> TempDir {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("Dockerfile"), "FROM alpine:3.20\n").unwrap();
+        temp_dir
+    }
 
     #[test]
     fn resolve_workspace_root_prefers_explicit_dir() {
@@ -5094,5 +5149,90 @@ mod tests {
 
         let error = resolve_workspace_root(None, Some(&missing)).unwrap_err();
         assert!(error.to_string().contains("Workspace directory"));
+    }
+
+    #[test]
+    fn command_run_skips_ambient_dockerfile() {
+        let project = project_with_dockerfile();
+
+        assert!(!should_build_run_image(
+            false,
+            false,
+            false,
+            None,
+            project.path()
+        ));
+    }
+
+    #[test]
+    fn build_flag_enables_ambient_dockerfile() {
+        let project = project_with_dockerfile();
+
+        assert!(should_build_run_image(
+            false,
+            true,
+            false,
+            None,
+            project.path()
+        ));
+    }
+
+    #[test]
+    fn explicitly_selected_config_preserves_dockerfile_build() {
+        let project = project_with_dockerfile();
+        let config = Config::minimal("test-project", "claude");
+
+        assert!(should_build_run_image(
+            false,
+            false,
+            true,
+            Some(&config),
+            project.path()
+        ));
+    }
+
+    #[test]
+    fn implicitly_loaded_config_skips_ambient_dockerfile() {
+        let project = project_with_dockerfile();
+        let config = Config::minimal("test-project", "claude");
+
+        assert!(!config_has_build_settings(&config));
+        assert!(!should_build_run_image(
+            false,
+            false,
+            config_has_build_settings(&config),
+            Some(&config),
+            project.path()
+        ));
+    }
+
+    #[test]
+    fn implicit_config_with_build_settings_preserves_dockerfile_build() {
+        let project = project_with_dockerfile();
+        let mut config = Config::minimal("test-project", "claude");
+        config.build.context = Some(".".to_string());
+
+        assert!(config_has_build_settings(&config));
+        assert!(should_build_run_image(
+            false,
+            false,
+            config_has_build_settings(&config),
+            Some(&config),
+            project.path()
+        ));
+    }
+
+    #[test]
+    fn explicit_image_bypasses_dockerfile_build() {
+        let project = project_with_dockerfile();
+        let config = Config::minimal("test-project", "claude");
+
+        assert!(!should_build_run_image(
+            true,
+            true,
+            true,
+            Some(&config),
+            project.path()
+        ));
     }
 }
