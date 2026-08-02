@@ -8,6 +8,10 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ## Unreleased
 
+## [v0.19.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.19.0) — Agent Sandbox Expansion
+
+_August 2026_
+
 ### Added
 
 - **`opencode attach` support** — `opencode attach http://localhost:18888/opencode` now works; agentkernel provisions a sandbox from the `opencode-sandbox` template, starts `opencode serve` inside it, and proxies the full OpenCode protocol (sessions, messages, SSE events) through to it; first connect ~8s, instant after that
