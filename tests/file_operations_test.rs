@@ -491,6 +491,10 @@ fn test_run_with_file_creation() {
     ]);
     assert_eq!(exit_code, 0, "Run with file failed: {}", stderr);
     assert!(
+        !stderr.contains("Building image from"),
+        "Command-driven run unexpectedly built the ambient Dockerfile: {stderr}"
+    );
+    assert!(
         stdout.contains("ephemeral"),
         "Expected output not found: {}",
         stdout
@@ -506,7 +510,7 @@ fn test_run_file_isolation() {
     }
 
     // Create a file in one run
-    let (exit_code, _, _) = run_cmd(&[
+    let (exit_code, _, first_stderr) = run_cmd(&[
         "run",
         "--backend",
         "docker",
@@ -516,9 +520,13 @@ fn test_run_file_isolation() {
         "echo 'secret' > /tmp/isolated.txt",
     ]);
     assert_eq!(exit_code, 0);
+    assert!(
+        !first_stderr.contains("Building image from"),
+        "Command-driven run unexpectedly built the ambient Dockerfile: {first_stderr}"
+    );
 
     // Try to read it in another run - should fail since sandboxes are isolated
-    let (exit_code, _stdout, _stderr) = run_cmd(&[
+    let (exit_code, _stdout, second_stderr) = run_cmd(&[
         "run",
         "--backend",
         "docker",
@@ -529,4 +537,8 @@ fn test_run_file_isolation() {
 
     // Should fail because each run gets a fresh sandbox
     assert_ne!(exit_code, 0, "File should not persist across runs");
+    assert!(
+        !second_stderr.contains("Building image from"),
+        "Command-driven run unexpectedly built the ambient Dockerfile: {second_stderr}"
+    );
 }

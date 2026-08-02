@@ -59,6 +59,9 @@ agentkernel run go build               # Uses golang:1.23-alpine
 # Override with explicit image
 agentkernel run --image ubuntu:24.04 apt-get --version
 
+# Explicitly build and use the current project's Dockerfile
+agentkernel run --build -- npm test
+
 # Keep the sandbox after execution for debugging
 agentkernel run --keep npm test
 
@@ -79,6 +82,8 @@ agentkernel automatically selects the right Docker image based on:
 2. **Project files** - Detects from files in your directory
 3. **Procfile** - Parses Heroku-style Procfiles
 4. **Config file** - Uses `agentkernel.toml` if present
+
+Command-driven runs do not implicitly build a Dockerfile found in the working directory. Use `--build`, or select a Dockerfile through a config or template, when you want a project image build.
 
 ### Supported Languages
 

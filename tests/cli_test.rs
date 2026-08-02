@@ -91,6 +91,18 @@ fn test_run_help() {
     let (exit_code, stdout, _stderr) = run_cmd(&["run", "--help"]);
     assert_eq!(exit_code, 0);
     assert!(stdout.contains("Run a command in a temporary sandbox"));
+    assert!(stdout.contains("--build"));
+}
+
+#[test]
+fn test_run_build_conflicts_with_explicit_image() {
+    let (exit_code, _stdout, stderr) =
+        run_cmd(&["run", "--build", "--image", "alpine:3.20", "echo", "hello"]);
+    assert_ne!(exit_code, 0);
+    assert!(
+        stderr.contains("cannot be used with"),
+        "stderr was: {stderr}"
+    );
 }
 
 #[test]
