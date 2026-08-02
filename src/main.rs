@@ -2222,28 +2222,29 @@ memory_mb = 512
             // For `run`, command detection has higher priority than project files
             // because user is explicitly specifying what to run
             let explicit_image = image.is_some();
-            let (docker_image, cfg_for_build) = if let Some(img) = image {
-                (img, None)
+            let (docker_image, cfg_for_build, honor_config_dockerfile) = if let Some(img) = image {
+                (img, None, false)
             } else if let Some(ref config_path) = config {
                 let cfg = Config::from_file(config_path)?;
-                (cfg.docker_image(), Some(cfg))
+                (cfg.docker_image(), Some(cfg), true)
             } else if let Some(ref tmpl_name) = tmpl {
                 let resolved = template::resolve(tmpl_name)?;
                 eprintln!("Using template '{}' ({})", resolved.name, resolved.source);
                 let cfg = resolved.parse()?;
-                (cfg.docker_image(), Some(cfg))
+                (cfg.docker_image(), Some(cfg), true)
             } else if let Some(img) = languages::detect_from_command(&command) {
                 // Command-based detection first for `run`
-                (img, None)
+                (img, None, false)
             } else {
                 // Try current directory config
                 let default_config = PathBuf::from("agentkernel.toml");
                 if default_config.exists() {
                     let cfg = Config::from_file(&default_config)?;
-                    (cfg.docker_image(), Some(cfg))
+                    let has_build_settings = config_has_build_settings(&cfg);
+                    (cfg.docker_image(), Some(cfg), has_build_settings)
                 } else {
                     // Fall back to project file detection or default
-                    (languages::detect_image(&command), None)
+                    (languages::detect_image(&command), None, false)
                 }
             };
 
@@ -2260,6 +2261,7 @@ memory_mb = 512
             let should_build_image = should_build_run_image(
                 explicit_image,
                 build_image,
+                honor_config_dockerfile,
                 cfg_for_build.as_ref(),
                 &current_dir,
             );
@@ -5002,16 +5004,29 @@ fn resolve_workspace_root(config_base_dir: Option<&Path>, dir: Option<&Path>) ->
 fn should_build_run_image(
     explicit_image: bool,
     build_requested: bool,
+    honor_config_dockerfile: bool,
     config: Option<&Config>,
     current_dir: &Path,
 ) -> bool {
     if explicit_image {
         return false;
     }
-    if let Some(config) = config {
-        return config.requires_build(current_dir);
-    }
-    build_requested && languages::detect_dockerfile(current_dir).is_some()
+
+    let dockerfile_available = config
+        .map(|config| config.requires_build(current_dir))
+        .unwrap_or_else(|| languages::detect_dockerfile(current_dir).is_some());
+
+    (build_requested || honor_config_dockerfile) && dockerfile_available
+}
+
+/// Whether an implicitly loaded project config contains intentional build
+/// settings, rather than merely sharing a directory with a Dockerfile.
+fn config_has_build_settings(config: &Config) -> bool {
+    config.build.dockerfile.is_some()
+        || config.build.context.is_some()
+        || config.build.target.is_some()
+        || !config.build.args.is_empty()
+        || config.build.no_cache
 }
 
 fn extract_template_help_text(content: &str) -> Option<String> {
@@ -5095,7 +5110,7 @@ async fn delegate_start_to_server(host: &str, port: u16, name: &str) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_workspace_root, should_build_run_image};
+    use super::{config_has_build_settings, resolve_workspace_root, should_build_run_image};
     use crate::config::Config;
     use tempfile::TempDir;
 
@@ -5140,24 +5155,68 @@ mod tests {
     fn command_run_skips_ambient_dockerfile() {
         let project = project_with_dockerfile();
 
-        assert!(!should_build_run_image(false, false, None, project.path()));
+        assert!(!should_build_run_image(
+            false,
+            false,
+            false,
+            None,
+            project.path()
+        ));
     }
 
     #[test]
     fn build_flag_enables_ambient_dockerfile() {
         let project = project_with_dockerfile();
 
-        assert!(should_build_run_image(false, true, None, project.path()));
+        assert!(should_build_run_image(
+            false,
+            true,
+            false,
+            None,
+            project.path()
+        ));
     }
 
     #[test]
-    fn configured_run_preserves_dockerfile_build() {
+    fn explicitly_selected_config_preserves_dockerfile_build() {
         let project = project_with_dockerfile();
         let config = Config::minimal("test-project", "claude");
 
         assert!(should_build_run_image(
             false,
             false,
+            true,
+            Some(&config),
+            project.path()
+        ));
+    }
+
+    #[test]
+    fn implicitly_loaded_config_skips_ambient_dockerfile() {
+        let project = project_with_dockerfile();
+        let config = Config::minimal("test-project", "claude");
+
+        assert!(!config_has_build_settings(&config));
+        assert!(!should_build_run_image(
+            false,
+            false,
+            config_has_build_settings(&config),
+            Some(&config),
+            project.path()
+        ));
+    }
+
+    #[test]
+    fn implicit_config_with_build_settings_preserves_dockerfile_build() {
+        let project = project_with_dockerfile();
+        let mut config = Config::minimal("test-project", "claude");
+        config.build.context = Some(".".to_string());
+
+        assert!(config_has_build_settings(&config));
+        assert!(should_build_run_image(
+            false,
+            false,
+            config_has_build_settings(&config),
             Some(&config),
             project.path()
         ));
@@ -5169,6 +5228,7 @@ mod tests {
         let config = Config::minimal("test-project", "claude");
 
         assert!(!should_build_run_image(
+            true,
             true,
             true,
             Some(&config),
