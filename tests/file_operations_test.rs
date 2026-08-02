@@ -65,7 +65,14 @@ fn test_file_write_simple() {
     cleanup_sandbox(&name);
 
     // Setup: create and start sandbox
-    let (exit_code, _, stderr) = run_cmd(&["sandbox", "create", &name, "--backend", "docker"]);
+    let (exit_code, _, stderr) = run_cmd(&[
+        "sandbox",
+        "create",
+        &name,
+        "--backend",
+        "docker",
+        "--no-start",
+    ]);
     assert_eq!(exit_code, 0, "Create failed: {}", stderr);
 
     let (exit_code, _, stderr) = run_cmd(&["sandbox", "start", &name]);

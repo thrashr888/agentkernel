@@ -273,6 +273,13 @@ impl ContainerSandbox {
             args.push(format!("--security-opt=seccomp={}", seccomp_path.display()));
         }
 
+        // `agentkernel run` promises to execute the supplied command. Ignore an
+        // image's configured ENTRYPOINT so it cannot reinterpret that command
+        // as its own arguments (for example, a project image with
+        // `ENTRYPOINT ["agentkernel"]`).
+        args.push("--entrypoint".to_string());
+        args.push("".to_string());
+
         // Image and command
         args.push(image.to_string());
         args.extend(cmd.iter().cloned());

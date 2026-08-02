@@ -2217,6 +2217,7 @@ memory_mb = 512
             // Determine Docker image: --image > --config > --template > Dockerfile > command > ./agentkernel.toml > project files > default
             // For `run`, command detection has higher priority than project files
             // because user is explicitly specifying what to run
+            let explicit_image = image.is_some();
             let (docker_image, cfg_for_build) = if let Some(img) = image {
                 (img, None)
             } else if let Some(ref config_path) = config {
@@ -2249,7 +2250,9 @@ memory_mb = 512
                 .is_some_and(|b| b == "firecracker" || b == "fc");
 
             // Build from Dockerfile if configured or auto-detected
-            let docker_image = if let Some(ref cfg) = cfg_for_build {
+            let docker_image = if explicit_image {
+                docker_image
+            } else if let Some(ref cfg) = cfg_for_build {
                 // Use config's build settings
                 if cfg.requires_build(&current_dir) {
                     let project_name = &cfg.sandbox.name;
