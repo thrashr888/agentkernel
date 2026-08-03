@@ -14,7 +14,7 @@ Pushing a `v*` tag triggers four workflows in parallel:
 
 | Workflow | File | What it does |
 |----------|------|--------------|
-| **Release** | `.github/workflows/release.yml` | Test gate → build CLI binaries for 4 platforms → create GitHub Release → publish Helm chart |
+| **Release** | `.github/workflows/release.yml` | Test gate → build CLI binaries for 4 platforms → build, sign, notarize, and staple macOS DMGs → create GitHub Release → publish Helm chart and Homebrew artifacts |
 | **SDK Publish** | `.github/workflows/sdk-publish.yml` | Test gate → publish all SDKs to their registries |
 | **Docker** | `.github/workflows/docker.yml` | Test gate → build and push Docker image to GHCR |
 
@@ -75,6 +75,20 @@ Cross-compiled on native runners, uploaded to GitHub Releases as `.tar.gz`:
 | macOS arm64 | `macos-latest` | `agentkernel-darwin-arm64.tar.gz` |
 | macOS x64 | `macos-13` | `agentkernel-darwin-x64.tar.gz` |
 
+### Desktop App (release.yml)
+
+The two macOS desktop jobs build the Tauri app for Apple Silicon and Intel. Each
+job must complete all of these steps before its artifacts are uploaded:
+
+1. Import the Developer ID Application certificate into an ephemeral CI keychain.
+2. Build with `APPLE_SIGNING_IDENTITY`.
+3. Verify the app has a valid Developer ID signature and Team ID.
+4. Submit the DMG to Apple’s notary service, staple the ticket, and validate it
+   with `stapler` and `spctl`.
+
+If any Apple signing or notarization secret is missing, the job fails. An
+unsigned DMG cannot reach the GitHub Release or Homebrew cask.
+
 ### SDKs (sdk-publish.yml)
 
 All 4 jobs run in parallel:
@@ -91,7 +105,8 @@ Version is extracted from the tag name (`v0.3.0` → `0.3.0`) and injected into 
 
 ### Homebrew (manual)
 
-After the GitHub Release is created:
+The release workflow updates the formula and cask automatically after the
+GitHub Release is created. For a manual correction or recovery:
 
 ```bash
 # 1. Download release assets and compute SHA256 hashes
@@ -113,6 +128,49 @@ brew install agentkernel
 ## One-Time Setup (per registry)
 
 These secrets and configurations must be set up once before the first publish.
+
+### macOS desktop signing and notarization
+
+Add these repository secrets under **Settings → Secrets and variables →
+Actions**:
+
+| Secret | What it is |
+| ------ | ---------- |
+| `APPLE_CERTIFICATE` | Base64-encoded Developer ID Application `.p12` export |
+| `APPLE_CERTIFICATE_PASSWORD` | Password used when exporting the `.p12` |
+| `APPLE_SIGNING_IDENTITY` | Full identity, for example `Developer ID Application: Name (TEAMID)` |
+| `APPLE_ID` | Apple ID email used for notarization |
+| `APPLE_PASSWORD` | App-specific password for that Apple ID |
+| `APPLE_TEAM_ID` | Apple Developer Team ID |
+| `TAURI_SIGNING_PRIVATE_KEY` | Tauri updater private key |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for the Tauri updater key |
+
+Export the Developer ID certificate without committing the resulting file:
+
+```bash
+security export -k login.keychain-db -t identities -f pkcs12 \
+  -P 'ExportPassword' -o signing.p12
+base64 -i signing.p12 | gh secret set APPLE_CERTIFICATE
+rm signing.p12
+```
+
+Confirm the local identity before attempting a release:
+
+```bash
+security find-identity -v -p codesigning | grep 'Developer ID Application'
+```
+
+For local notarization, store an equivalent notary profile once and use it to
+verify a locally built DMG:
+
+```bash
+xcrun notarytool store-credentials agentkernel-notary \
+  --apple-id you@example.com --team-id YOURTEAMID
+xcrun notarytool submit path/to/AgentKernel.dmg \
+  --keychain-profile agentkernel-notary --wait
+xcrun stapler staple path/to/AgentKernel.dmg
+xcrun stapler validate path/to/AgentKernel.dmg
+```
 
 ### npm (OIDC trusted publisher)
 
@@ -179,6 +237,11 @@ After tagging, check:
 4. **PyPI**: https://pypi.org/project/agentkernel-sdk/
 5. **crates.io**: https://crates.io/crates/agentkernel-sdk
 6. **Homebrew**: `brew info thrashr888/agentkernel/agentkernel`
+
+For the desktop app, also verify that the published DMG is stapled and that
+the installed app passes `codesign --verify --deep --strict` and Gatekeeper’s
+assessment. The first fixed release must be a new patch version such as
+`v0.19.1`; `v0.19.0` remains immutable under the roll-forward policy.
 
 ## Troubleshooting
 
