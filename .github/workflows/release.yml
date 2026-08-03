@@ -472,6 +472,7 @@ jobs:
 
               service do
                 run [opt_bin/"agentkernel", "serve", "--host", "127.0.0.1", "--port", "18888"]
+                environment_variables PATH: "#{HOMEBREW_PREFIX}/bin:#{HOMEBREW_PREFIX}/sbin:/usr/local/bin:/usr/local/sbin:/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin:/usr/sbin:/sbin"
                 keep_alive true
                 log_path var/"log/agentkernel.log"
                 error_log_path var/"log/agentkernel.error.log"

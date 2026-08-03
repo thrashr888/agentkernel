@@ -46,6 +46,7 @@ export const api = {
   // Diagnostics
   getStatus: () => invoke<StatusInfo>("get_status"),
   getDoctor: () => invoke<DoctorResult>("get_doctor"),
+  prepareBackend: () => invoke<string>("prepare_backend"),
   runGc: () => invoke<GcResult>("run_gc"),
 
   // Sandboxes

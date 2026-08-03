@@ -418,6 +418,8 @@ pub fn run() {
             commands::diagnostics::get_status,
             commands::diagnostics::get_doctor,
             commands::diagnostics::run_gc,
+            // backend setup
+            commands::setup::prepare_backend,
             // sandboxes
             commands::sandboxes::list_sandboxes,
             commands::sandboxes::get_sandbox,

@@ -630,8 +630,13 @@ struct AppState {
     opencode: Arc<OpenCodeState>,
     /// Durable orchestration persistence store
     orchestration_store: Option<Arc<OrchestrationStore>>,
-    /// Shared VmManager for durable object wake/hibernate operations
-    vm_manager: Option<Arc<tokio::sync::RwLock<VmManager>>>,
+    /// Lazily initialized VmManager shared by sandbox and durable-object APIs.
+    ///
+    /// Backend discovery can fail while a service is starting (for example,
+    /// before Docker Desktop or Apple Containers is ready).  Retrying through
+    /// the cell lets `/doctor` and the first sandbox attempt recover without
+    /// requiring a server restart.
+    vm_manager: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<VmManager>>>>,
     /// Event bus for sandbox lifecycle events (webhook/SSE/OTel)
     event_bus: Option<crate::events::EventBus>,
     /// OpenTelemetry tracer provider for span export
@@ -702,10 +707,10 @@ impl AppState {
         #[cfg(feature = "enterprise")]
         let (enterprise_config, policy_engine) = Self::init_enterprise();
 
-        let vm_manager = match VmManager::new() {
-            Ok(mgr) => Some(Arc::new(tokio::sync::RwLock::new(mgr))),
-            Err(_) => None,
-        };
+        let vm_manager = Arc::new(std::sync::OnceLock::new());
+        if let Ok(mgr) = VmManager::new() {
+            let _ = vm_manager.set(Arc::new(tokio::sync::RwLock::new(mgr)));
+        }
         Self {
             api_keys,
             allow_sudo_exec,
@@ -728,13 +733,14 @@ impl AppState {
         if !api_keys.is_empty() {
             eprintln!("API key authentication enabled");
         }
+        let vm_manager = Arc::new(std::sync::OnceLock::new());
         Self {
             api_keys,
             allow_sudo_exec: false,
             started_at: std::time::Instant::now(),
-            opencode: Arc::new(OpenCodeState::new(None)),
+            opencode: Arc::new(OpenCodeState::new(vm_manager.clone())),
             orchestration_store: Self::init_orchestration_store(),
-            vm_manager: None,
+            vm_manager,
             event_bus: None,
             otel_provider: None,
             #[cfg(feature = "enterprise")]
@@ -778,11 +784,29 @@ impl AppState {
         }
     }
 
-    async fn get_manager(&self) -> Result<tokio::sync::RwLockWriteGuard<'_, VmManager>> {
-        match self.vm_manager.as_ref() {
-            Some(m) => Ok(m.write().await),
-            None => anyhow::bail!("VmManager not initialized"),
+    fn ensure_manager(&self) -> Result<Arc<tokio::sync::RwLock<VmManager>>> {
+        if let Some(manager) = self.vm_manager.get() {
+            return Ok(manager.clone());
         }
+
+        let manager = Arc::new(tokio::sync::RwLock::new(VmManager::new()?));
+        let _ = self.vm_manager.set(manager);
+        self.vm_manager
+            .get()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("VmManager could not be initialized"))
+    }
+
+    async fn get_manager(&self) -> Result<tokio::sync::RwLockWriteGuard<'_, VmManager>> {
+        if self.vm_manager.get().is_none() {
+            let manager = Arc::new(tokio::sync::RwLock::new(VmManager::new()?));
+            let _ = self.vm_manager.set(manager);
+        }
+        let manager = self
+            .vm_manager
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("VmManager could not be initialized"))?;
+        Ok(manager.write().await)
     }
 
     fn init_orchestration_store() -> Option<Arc<OrchestrationStore>> {
@@ -2262,12 +2286,12 @@ async fn handle_object_call_request(
             );
         }
     };
-    let manager = match state.vm_manager.as_ref() {
-        Some(m) => m,
-        None => {
+    let manager = match state.ensure_manager() {
+        Ok(m) => m,
+        Err(e) => {
             return json_response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                &ApiResponse::<()>::error("VmManager not available"),
+                &ApiResponse::<()>::error(e.to_string()),
             );
         }
     };
@@ -2279,7 +2303,7 @@ async fn handle_object_call_request(
         }
     };
 
-    match crate::object_runtime::handle_object_call(store, manager, class, object_id, method, body)
+    match crate::object_runtime::handle_object_call(store, &manager, class, object_id, method, body)
         .await
     {
         Ok((status, resp_body)) => {
@@ -2314,12 +2338,12 @@ async fn handle_object_alarm(
             );
         }
     };
-    let manager = match state.vm_manager.as_ref() {
-        Some(m) => m,
-        None => {
+    let manager = match state.ensure_manager() {
+        Ok(m) => m,
+        Err(e) => {
             return json_response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                &ApiResponse::<()>::error("VmManager not available"),
+                &ApiResponse::<()>::error(e.to_string()),
             );
         }
     };
@@ -2331,8 +2355,10 @@ async fn handle_object_alarm(
         }
     };
 
-    match crate::object_runtime::handle_object_call(store, manager, class, object_id, "alarm", body)
-        .await
+    match crate::object_runtime::handle_object_call(
+        store, &manager, class, object_id, "alarm", body,
+    )
+    .await
     {
         Ok((status, resp_body)) => {
             let http_status =
@@ -5742,9 +5768,10 @@ pub async fn run_server(addr: SocketAddr, api_keys: Vec<String>) -> Result<()> {
     let state = Arc::new(AppState::new(api_keys, None, vec![]));
     spawn_orchestration_worker(state.clone());
     // Spawn hibernation daemon for durable objects
-    if let (Some(store), Some(manager)) =
-        (state.orchestration_store.clone(), state.vm_manager.clone())
-    {
+    if let (Some(store), Some(manager)) = (
+        state.orchestration_store.clone(),
+        state.vm_manager.get().cloned(),
+    ) {
         tokio::spawn(crate::object_runtime::hibernation_daemon(store, manager));
     }
     let listener = TcpListener::bind(addr).await.map_err(|e| {
@@ -5804,9 +5831,10 @@ pub async fn run_server_with_tls(
     let state = Arc::new(AppState::new(api_keys, otel_endpoint, webhook_urls));
     spawn_orchestration_worker(state.clone());
     // Spawn hibernation daemon for durable objects
-    if let (Some(store), Some(manager)) =
-        (state.orchestration_store.clone(), state.vm_manager.clone())
-    {
+    if let (Some(store), Some(manager)) = (
+        state.orchestration_store.clone(),
+        state.vm_manager.get().cloned(),
+    ) {
         tokio::spawn(crate::object_runtime::hibernation_daemon(store, manager));
     }
     let listener = TcpListener::bind(addr).await.map_err(|e| {
@@ -5994,7 +6022,14 @@ async fn handle_doctor(state: Arc<AppState>) -> Response<BoxBody> {
         message: backend_message,
     });
 
-    // Check Docker/container CLI availability
+    // Check Docker CLI and daemon separately.  A service launched by
+    // launchd may not inherit the user's interactive PATH, and a missing
+    // daemon should not be reported as a missing installation.
+    let docker_cli_available = std::process::Command::new("docker")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
     let docker_available = std::process::Command::new("docker")
         .arg("version")
         .output()
@@ -6009,8 +6044,10 @@ async fn handle_doctor(state: Arc<AppState>) -> Response<BoxBody> {
         },
         message: if docker_available {
             "Docker is available".to_string()
+        } else if docker_cli_available {
+            "Docker is installed but its daemon is not running".to_string()
         } else {
-            "Docker not found".to_string()
+            "Docker CLI not found".to_string()
         },
     });
 
@@ -6030,9 +6067,9 @@ async fn handle_doctor(state: Arc<AppState>) -> Response<BoxBody> {
                 "info".to_string()
             },
             message: if apple_available {
-                "Apple Containers available".to_string()
+                "Apple Containers CLI available; the system starts when needed".to_string()
             } else {
-                "Apple Containers not available".to_string()
+                "Apple Containers CLI not found".to_string()
             },
         });
     }

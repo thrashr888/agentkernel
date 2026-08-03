@@ -361,6 +361,9 @@ Run agentkernel as an HTTP server for programmatic access:
 # As a background service (recommended — survives reboots)
 brew services start thrashr888/agentkernel/agentkernel
 
+# On macOS this starts the AgentKernel HTTP API. The Firecracker VM-pool
+# daemon is Linux/KVM-only; macOS uses Apple Containers or Docker instead.
+
 # Or run manually
 agentkernel serve --host 127.0.0.1 --port 18888
 
