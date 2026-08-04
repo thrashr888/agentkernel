@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle,
   XCircle,
+  AlertTriangle,
+  Info,
   Loader2,
   ArrowRight,
   ArrowLeft,
@@ -43,6 +45,7 @@ export function SetupWizard({ open, onComplete }: SetupWizardProps) {
   const [step, setStep] = useState(0);
   const [apiUrl, setApiUrl] = useState("http://localhost:18888");
   const [sandboxName, setSandboxName] = useState("my-first-sandbox");
+  const [startingServer, setStartingServer] = useState(false);
   const queryClient = useQueryClient();
 
   // Step 1: Check Docker / health
@@ -57,6 +60,21 @@ export function SetupWizard({ open, onComplete }: SetupWizardProps) {
     retry: false,
   });
 
+  const backendReady = doctor?.checks.some(
+    (check) => check.name === "backend" && check.status === "ok",
+  ) ?? false;
+
+  async function refreshDoctorUntilReady() {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const result = await refetchDoctor();
+      const ready = result.data?.checks.some(
+        (check) => check.name === "backend" && check.status === "ok",
+      );
+      if (ready || attempt === 5) return;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+
   // Step 2: Test connection
   const [connectionOk, setConnectionOk] = useState<boolean | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
@@ -65,12 +83,50 @@ export function SetupWizard({ open, onComplete }: SetupWizardProps) {
     setTestingConnection(true);
     setConnectionOk(null);
     try {
+      const settings = await api.getSettings();
+      const activeServer = settings.active_server ?? settings.servers[0]?.name ?? "Local";
+      const servers = settings.servers.length > 0 ? [...settings.servers] : [
+        { name: activeServer, url: apiUrl },
+      ];
+      const serverIndex = servers.findIndex((server) => server.name === activeServer);
+      if (serverIndex >= 0) {
+        servers[serverIndex] = { ...servers[serverIndex], url: apiUrl };
+      }
+      await api.saveSettings({
+        ...settings,
+        active_server: activeServer,
+        servers,
+        api_url: apiUrl,
+      });
       const result = await api.checkConnection();
       setConnectionOk(result === "ok");
     } catch {
       setConnectionOk(false);
     } finally {
       setTestingConnection(false);
+    }
+  }
+
+  const prepareBackendMutation = useMutation({
+    mutationFn: () => api.prepareBackend(),
+    onSuccess: async (message) => {
+      toast.success(message);
+      await refreshDoctorUntilReady();
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : String(err));
+    },
+  });
+
+  async function startServerAndRetry() {
+    setStartingServer(true);
+    try {
+      await api.startServer();
+      await refreshDoctorUntilReady();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setStartingServer(false);
     }
   }
 
@@ -138,7 +194,7 @@ export function SetupWizard({ open, onComplete }: SetupWizardProps) {
           {step === 0 && (
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Checking that Docker or a compatible container runtime is available.
+                Checking the AgentKernel server and a local sandbox runtime.
               </p>
               {doctorLoading ? (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -151,6 +207,10 @@ export function SetupWizard({ open, onComplete }: SetupWizardProps) {
                     <div key={check.name} className="flex items-center gap-2 text-sm">
                       {check.status === "ok" ? (
                         <CheckCircle className="h-4 w-4 text-green-500" />
+                      ) : check.status === "warning" ? (
+                        <AlertTriangle className="h-4 w-4 text-yellow-500" />
+                      ) : check.status === "info" ? (
+                        <Info className="h-4 w-4 text-muted-foreground" />
                       ) : (
                         <XCircle className="h-4 w-4 text-red-500" />
                       )}
@@ -158,6 +218,44 @@ export function SetupWizard({ open, onComplete }: SetupWizardProps) {
                       <span className="text-muted-foreground">{check.message}</span>
                     </div>
                   ))}
+                  {!backendReady && (
+                    <div
+                      className="mt-4 space-y-3 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3"
+                      role="alert"
+                    >
+                      <div>
+                        <p className="text-sm font-medium">No sandbox backend is ready</p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          AgentKernel can prepare Apple Containers on macOS or help start Docker
+                          Desktop. The first sandbox cannot be created until one is ready.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => prepareBackendMutation.mutate()}
+                          disabled={prepareBackendMutation.isPending}
+                        >
+                          {prepareBackendMutation.isPending ? (
+                            <>
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                              Preparing...
+                            </>
+                          ) : (
+                            "Prepare Backend"
+                          )}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => refetchDoctor()}
+                          disabled={doctorLoading}
+                        >
+                          Check Again
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -172,18 +270,10 @@ export function SetupWizard({ open, onComplete }: SetupWizardProps) {
                     <Button
                       variant="default"
                       size="sm"
-                      onClick={async () => {
-                        try {
-                          await api.startServer();
-                          // Give the server a moment to bind the port
-                          await new Promise((r) => setTimeout(r, 2000));
-                          refetchDoctor();
-                        } catch (e) {
-                          console.error("Failed to start server:", e);
-                        }
-                      }}
+                      onClick={startServerAndRetry}
+                      disabled={startingServer}
                     >
-                      Start Server
+                      {startingServer ? "Starting..." : "Start Server"}
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => refetchDoctor()}>
                       Retry
@@ -269,7 +359,10 @@ export function SetupWizard({ open, onComplete }: SetupWizardProps) {
               </Button>
             )}
             {step < 2 ? (
-              <Button onClick={() => setStep(step + 1)}>
+              <Button
+                onClick={() => setStep(step + 1)}
+                disabled={step === 0 ? !backendReady : connectionOk !== true}
+              >
                 Next
                 <ArrowRight className="ml-1 h-4 w-4" />
               </Button>

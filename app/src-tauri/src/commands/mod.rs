@@ -14,6 +14,7 @@ pub mod policy;
 pub mod sandboxes;
 pub mod schedules;
 pub mod secrets;
+pub mod setup;
 pub mod server;
 pub mod sessions;
 pub mod settings;

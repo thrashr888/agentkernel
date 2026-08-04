@@ -50,16 +50,31 @@ const TEMPLATE_NAME: &str = "opencode-sandbox";
 pub struct OpenCodeState {
     upstream_url: RwLock<Option<String>>,
     provisioning: RwLock<bool>,
-    vm_manager: Option<Arc<tokio::sync::RwLock<VmManager>>>,
+    vm_manager: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<VmManager>>>>,
 }
 
 impl OpenCodeState {
-    pub fn new(vm_manager: Option<Arc<tokio::sync::RwLock<VmManager>>>) -> Self {
+    pub fn new(vm_manager: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<VmManager>>>>) -> Self {
         Self {
             upstream_url: RwLock::new(None),
             provisioning: RwLock::new(false),
             vm_manager,
         }
+    }
+
+    fn ensure_manager(&self) -> Result<Arc<tokio::sync::RwLock<VmManager>>, String> {
+        if let Some(manager) = self.vm_manager.get() {
+            return Ok(manager.clone());
+        }
+
+        let manager = Arc::new(tokio::sync::RwLock::new(
+            VmManager::new().map_err(|error| error.to_string())?,
+        ));
+        let _ = self.vm_manager.set(manager);
+        self.vm_manager
+            .get()
+            .cloned()
+            .ok_or_else(|| "VM manager could not be initialized".to_string())
     }
 
     /// Get or create the upstream OpenCode server URL.
@@ -100,7 +115,7 @@ impl OpenCodeState {
 
     /// Provision the sandbox using the opencode-sandbox template.
     async fn provision_sandbox(&self) -> Result<String, String> {
-        let mgr = self.vm_manager.as_ref().ok_or("No VM manager available")?;
+        let mgr = self.ensure_manager()?;
 
         // Resolve the built-in template
         let resolved = crate::template::resolve(TEMPLATE_NAME)
@@ -227,7 +242,7 @@ impl OpenCodeState {
 
 impl Default for OpenCodeState {
     fn default() -> Self {
-        Self::new(None)
+        Self::new(Arc::new(std::sync::OnceLock::new()))
     }
 }
 

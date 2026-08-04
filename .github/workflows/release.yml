@@ -101,6 +101,53 @@ jobs:
       - run: npm ci
         working-directory: app
 
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          test -n "$APPLE_CERTIFICATE" || {
+            echo "::error::APPLE_CERTIFICATE is required for desktop releases" >&2
+            exit 1
+          }
+          test -n "$APPLE_CERTIFICATE_PASSWORD" || {
+            echo "::error::APPLE_CERTIFICATE_PASSWORD is required for desktop releases" >&2
+            exit 1
+          }
+          test -n "$APPLE_SIGNING_IDENTITY" || {
+            echo "::error::APPLE_SIGNING_IDENTITY is required for desktop releases" >&2
+            exit 1
+          }
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/agentkernel-build.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/agentkernel-certificate.p12"
+          trap 'rm -f "$CERTIFICATE_PATH"' EXIT
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -t 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+
+          identities="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH")"
+          printf '%s\n' "$identities" | grep -F 'Developer ID Application:' | grep -F "$APPLE_SIGNING_IDENTITY" >/dev/null || {
+            echo "::error::The imported certificate does not match APPLE_SIGNING_IDENTITY" >&2
+            exit 1
+          }
+
       - name: Set app version from tag
         env:
           TAG_NAME: ${{ github.ref_name }}
@@ -113,22 +160,84 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         working-directory: app
         run: npm run tauri build -- --target ${{ matrix.target }}
 
-      - name: Find artifacts
+      - name: Find and verify desktop artifacts
         id: artifacts
         run: |
+          set -euo pipefail
+
           BUNDLE_DIR="app/src-tauri/target/${{ matrix.target }}/release/bundle"
-          DMG=$(find "$BUNDLE_DIR/dmg" -name "*.dmg" | head -1)
-          UPDATER=$(find "$BUNDLE_DIR/macos" -name "*.app.tar.gz" ! -name "*.sig" | head -1)
+          DMG=$(find "$BUNDLE_DIR/dmg" -maxdepth 1 -name "*.dmg" -type f -print -quit)
+          APP=$(find "$BUNDLE_DIR" -type d -name "AgentKernel.app" -print -quit)
+          UPDATER=$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "*.app.tar.gz" -type f -print -quit)
           SIG="${UPDATER}.sig"
-          echo "dmg=$DMG" >> $GITHUB_OUTPUT
-          echo "updater=$UPDATER" >> $GITHUB_OUTPUT
-          echo "sig=$SIG" >> $GITHUB_OUTPUT
+
+          test -s "$DMG" || { echo "::error::Desktop DMG was not produced" >&2; exit 1; }
+          test -d "$APP" || { echo "::error::AgentKernel.app was not produced" >&2; exit 1; }
+          test -s "$UPDATER" || { echo "::error::Updater archive was not produced" >&2; exit 1; }
+          test -s "$SIG" || { echo "::error::Updater signature was not produced" >&2; exit 1; }
+
+          echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+          echo "updater=$UPDATER" >> "$GITHUB_OUTPUT"
+          echo "sig=$SIG" >> "$GITHUB_OUTPUT"
           echo "Found DMG: $DMG"
+          echo "Found app: $APP"
           echo "Found updater: $UPDATER"
           echo "Found sig: $SIG"
+
+      - name: Verify Developer ID signature
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          APP="${{ steps.artifacts.outputs.app }}"
+
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          signature_info="$(codesign -dvv "$APP" 2>&1)"
+          printf '%s\n' "$signature_info" | grep -F 'Authority=Developer ID Application:' >/dev/null || {
+            echo "::error::The desktop app is not signed with a Developer ID Application certificate" >&2
+            exit 1
+          }
+          printf '%s\n' "$signature_info" | grep -F "TeamIdentifier=" >/dev/null || {
+            echo "::error::The desktop app has no TeamIdentifier" >&2
+            exit 1
+          }
+
+      - name: Notarize and staple DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          test -n "$APPLE_ID" || {
+            echo "::error::APPLE_ID is required for desktop releases" >&2
+            exit 1
+          }
+          test -n "$APPLE_PASSWORD" || {
+            echo "::error::APPLE_PASSWORD is required for desktop releases" >&2
+            exit 1
+          }
+          test -n "$APPLE_TEAM_ID" || {
+            echo "::error::APPLE_TEAM_ID is required for desktop releases" >&2
+            exit 1
+          }
+
+          DMG="${{ steps.artifacts.outputs.dmg }}"
+          echo "Submitting DMG for notarization: $DMG"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          spctl --assess --type open --context context:primary-signature -vv "$DMG"
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
@@ -161,8 +270,8 @@ jobs:
 
       - name: Generate latest.json for updater
         run: |
-          VERSION=$(jq -r .version app/src-tauri/tauri.conf.json)
           TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
           REPO="thrashr888/agentkernel"
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -363,6 +472,7 @@ jobs:
 
               service do
                 run [opt_bin/"agentkernel", "serve", "--host", "127.0.0.1", "--port", "18888"]
+                environment_variables PATH: "#{HOMEBREW_PREFIX}/bin:#{HOMEBREW_PREFIX}/sbin:/usr/local/bin:/usr/local/sbin:/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin:/usr/sbin:/sbin"
                 keep_alive true
                 log_path var/"log/agentkernel.log"
                 error_log_path var/"log/agentkernel.error.log"

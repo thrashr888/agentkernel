@@ -38,6 +38,7 @@ mod proxy;
 mod proxy_hooks;
 mod receipt;
 mod rootfs;
+mod runtime;
 mod sandbox_pool;
 mod seatbelt;
 mod secrets;
@@ -892,6 +893,7 @@ enum PolicyAction {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    runtime::ensure_host_command_path();
     let cli = Cli::parse();
 
     match cli.command {
@@ -4295,8 +4297,8 @@ async fn run_doctor() -> Result<()> {
         }
     }
 
-    // -- Daemon --
-    println!("\nDaemon:");
+    // -- Firecracker daemon --
+    println!("\nFirecracker Daemon:");
     let daemon_client = daemon::DaemonClient::new();
     if daemon_client.is_available() {
         println!(
@@ -4308,7 +4310,13 @@ async fn run_doctor() -> Result<()> {
             println!("  In use .............. {}", in_use);
         }
     } else {
-        println!("  Status .............. not running");
+        if status.kvm_available {
+            println!("  Status .............. not running");
+        } else {
+            println!(
+                "  Status .............. not applicable (requires Linux KVM; use a container backend instead)"
+            );
+        }
     }
 
     // -- Policy Engine --

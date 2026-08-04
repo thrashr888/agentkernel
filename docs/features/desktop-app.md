@@ -8,7 +8,14 @@ AgentKernel includes a native macOS desktop app built with [Tauri 2](https://tau
 ## Requirements
 
 - macOS 26+ (Apple Containers) or macOS with Docker Desktop
-- The `agentkernel` server running (`agentkernel serve` or `make serve`)
+- The `agentkernel` server running (`agentkernel serve` or `make serve`); the
+  first-run wizard can start a bundled/local server when it is not reachable
+- A local sandbox backend; the wizard can initialize Apple Containers or open
+  Docker Desktop when the runtime is installed but not ready
+
+On macOS, `brew services start agentkernel` runs the HTTP API service. The
+separate Firecracker daemon is for Linux hosts with KVM and is not required for
+Apple Containers or Docker.
 
 ## Install
 
