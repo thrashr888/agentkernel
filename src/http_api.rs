@@ -5896,17 +5896,16 @@ pub async fn run_server_with_tls(
 // ---------------------------------------------------------------------------
 
 async fn handle_status(state: Arc<AppState>) -> Response<BoxBody> {
-    let manager = match state.get_manager().await {
-        Ok(m) => m,
-        Err(e) => {
-            return json_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &ApiResponse::<()>::error(e.to_string()),
-            );
+    // The HTTP server can be healthy before a local sandbox runtime is ready.
+    // Keep /status available in that state so clients can distinguish a
+    // reachable server from a missing backend and offer recovery guidance.
+    let backend = match state.get_manager().await {
+        Ok(manager) => manager.backend().to_string(),
+        Err(error) => {
+            eprintln!("[status] Sandbox backend unavailable: {error}");
+            "unavailable".to_string()
         }
     };
-
-    let backend = manager.backend().to_string();
     let version = env!("CARGO_PKG_VERSION").to_string();
 
     #[derive(serde::Serialize)]

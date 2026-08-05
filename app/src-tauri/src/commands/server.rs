@@ -28,7 +28,19 @@ fn find_agentkernel_binary() -> Option<std::path::PathBuf> {
         }
     }
     // Fall back to PATH
-    which::which("agentkernel").ok()
+    if let Ok(path) = which::which("agentkernel") {
+        return Some(path);
+    }
+
+    [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+    ]
+    .iter()
+    .map(|dir| std::path::PathBuf::from(dir).join("agentkernel"))
+    .find(|path| path.is_file())
 }
 
 /// Start the agentkernel server if not already running.
@@ -72,7 +84,7 @@ pub async fn start_server(
     };
 
     let child = std::process::Command::new(&binary)
-        .args(["serve", "--port", &port.to_string()])
+        .args(["serve", "--host", "127.0.0.1", "--port", &port.to_string()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()

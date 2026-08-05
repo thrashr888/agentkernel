@@ -20,6 +20,7 @@ import {
 import { useSettings } from "@/lib/hooks/use-settings";
 import { useHealth } from "@/lib/hooks/use-health";
 import { api } from "@/lib/api";
+import { toast } from "@/components/ui/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -76,6 +77,8 @@ export function Settings() {
     refetchInterval: 30000,
   });
 
+  const backendCheck = doctor?.checks.find((check) => check.name === "backend");
+
   // Local form state for servers
   const [servers, setServers] = useState<ServerEntry[]>([]);
   const [activeServer, setActiveServer] = useState<string>("");
@@ -92,6 +95,7 @@ export function Settings() {
   const [testingConnection, setTestingConnection] = useState(false);
 
   const [serverStarting, setServerStarting] = useState(false);
+  const [backendPreparing, setBackendPreparing] = useState(false);
 
   const [updateStatus, setUpdateStatus] = useState<
     "idle" | "checking" | "available" | "downloading" | "ready" | "up-to-date" | "error"
@@ -184,6 +188,23 @@ export function Settings() {
       setConnectionResult("failed");
     } finally {
       setTestingConnection(false);
+    }
+  }
+
+  async function handlePrepareBackend() {
+    setBackendPreparing(true);
+    try {
+      const message = await api.prepareBackend();
+      toast.success(message);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["doctor"] }),
+        queryClient.invalidateQueries({ queryKey: ["status"] }),
+        queryClient.invalidateQueries({ queryKey: ["sandboxes"] }),
+      ]);
+    } catch (prepareError) {
+      toast.error(prepareError instanceof Error ? prepareError.message : String(prepareError));
+    } finally {
+      setBackendPreparing(false);
     }
   }
 
@@ -462,6 +483,36 @@ export function Settings() {
                     ? `${doctor.checks.filter((c) => c.status === "ok").length}/${doctor.checks.length} checks passing`
                     : "Unhealthy"}
                 </Badge>
+              </div>
+            )}
+            {isConnected && backendCheck && backendCheck.status !== "ok" && (
+              <div className="space-y-3 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3">
+                <div>
+                  <p className="text-sm font-medium">Sandbox backend unavailable</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{backendCheck.message}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={handlePrepareBackend}
+                    disabled={backendPreparing}
+                  >
+                    {backendPreparing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    {backendPreparing ? "Preparing..." : "Prepare Backend"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      void queryClient.invalidateQueries({ queryKey: ["doctor"] });
+                    }}
+                    disabled={backendPreparing}
+                  >
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                    Check Again
+                  </Button>
+                </div>
               </div>
             )}
             {!isConnected && (

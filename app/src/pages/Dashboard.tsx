@@ -16,7 +16,6 @@ import { StatusCards } from "@/components/dashboard/status-cards";
 import { QuickActions } from "@/components/dashboard/quick-actions";
 import { SandboxStatusBadge } from "@/components/sandbox/sandbox-status-badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,6 +25,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/use-toast";
 import { formatRelativeDate } from "@/lib/utils";
+import { ServerRecovery } from "@/components/server-recovery";
 
 const AGENTS = [
   { id: "claude", name: "Claude Code", description: "Anthropic" },
@@ -38,7 +38,7 @@ const AGENTS = [
 ] as const;
 
 export function Dashboard() {
-  const { data: sandboxes, isLoading, error } = useSandboxes();
+  const { data: sandboxes, isLoading, error, refetch } = useSandboxes();
   const { data: llmUsage } = useLlmUsage();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -129,16 +129,7 @@ export function Dashboard() {
       {isLoading ? (
         <Skeleton className="h-10 rounded-md" />
       ) : error ? (
-        <Card>
-          <CardContent className="pt-6 space-y-2">
-            <p className="text-sm text-destructive">
-              Failed to load sandboxes: {error.message}
-            </p>
-            <p className="text-sm text-muted-foreground">
-              The server may not be running. Check Settings to verify the connection, or start the server with <code className="rounded bg-muted px-1 py-0.5 text-xs">agentkernel serve</code>.
-            </p>
-          </CardContent>
-        </Card>
+        <ServerRecovery error={error} onRetry={refetch} />
       ) : (
         <StatusCards sandboxes={sandboxes ?? []} />
       )}

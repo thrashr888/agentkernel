@@ -44,9 +44,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "@/components/ui/use-toast";
 import { formatRelativeDate } from "@/lib/utils";
+import { ServerRecovery } from "@/components/server-recovery";
 
 export function Sandboxes() {
-  const { data: sandboxes, isLoading, error } = useSandboxes();
+  const { data: sandboxes, isLoading, error, refetch } = useSandboxes();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -402,16 +403,7 @@ export function Sandboxes() {
           ))}
         </div>
       ) : error ? (
-        <Card>
-          <CardContent className="pt-6 space-y-2">
-            <p className="text-sm text-destructive">
-              Failed to load sandboxes: {error.message}
-            </p>
-            <p className="text-sm text-muted-foreground">
-              The server may not be running. Check Settings to verify the connection, or start the server with <code className="rounded bg-muted px-1 py-0.5 text-xs">agentkernel serve</code>.
-            </p>
-          </CardContent>
-        </Card>
+        <ServerRecovery error={error} onRetry={refetch} />
       ) : !sandboxes || sandboxes.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">
