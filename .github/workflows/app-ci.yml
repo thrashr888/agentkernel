@@ -3,10 +3,10 @@ name: Desktop App CI
 on:
   push:
     branches: [main]
-    paths: ["app/**"]
+    paths: ["app/**", ".github/workflows/app-ci.yml"]
   pull_request:
     branches: [main]
-    paths: ["app/**"]
+    paths: ["app/**", ".github/workflows/app-ci.yml"]
 
 env:
   CARGO_TERM_COLOR: always
