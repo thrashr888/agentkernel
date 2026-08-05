@@ -4309,14 +4309,12 @@ async fn run_doctor() -> Result<()> {
             println!("  Warm VMs ............ {}", warm);
             println!("  In use .............. {}", in_use);
         }
+    } else if status.kvm_available {
+        println!("  Status .............. not running");
     } else {
-        if status.kvm_available {
-            println!("  Status .............. not running");
-        } else {
-            println!(
-                "  Status .............. not applicable (requires Linux KVM; use a container backend instead)"
-            );
-        }
+        println!(
+            "  Status .............. not applicable (requires Linux KVM; use a container backend instead)"
+        );
     }
 
     // -- Policy Engine --
