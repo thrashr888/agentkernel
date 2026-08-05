@@ -1,6 +1,10 @@
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+
+#[cfg(target_os = "macos")]
+use std::io::Write;
+#[cfg(target_os = "macos")]
+use std::process::Stdio;
 
 /// Find a runtime binary even when the desktop app was launched without the
 /// user's interactive shell PATH.
