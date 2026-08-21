@@ -299,21 +299,27 @@ fn check_macos_version() -> bool {
 
 /// Initialize Apple containers system (start service and download kernel if needed)
 fn initialize_apple_containers() -> Result<()> {
-    if crate::backend::apple::apple_system_running() {
-        println!("  Apple container system already running");
-        return Ok(());
+    #[cfg(target_os = "macos")]
+    {
+        if crate::backend::apple::apple_system_running() {
+            println!("  Apple container system already running");
+            return Ok(());
+        }
+
+        crate::backend::apple::start_apple_system()?;
+        println!("  Apple container system started");
+
+        // Pre-pull alpine image for faster first run
+        println!("  Pre-pulling alpine:3.20 image...");
+        let _ = Command::new("container")
+            .args(["image", "pull", "alpine:3.20"])
+            .output();
+
+        Ok(())
     }
 
-    crate::backend::apple::start_apple_system()?;
-    println!("  Apple container system started");
-
-    // Pre-pull alpine image for faster first run
-    println!("  Pre-pulling alpine:3.20 image...");
-    let _ = Command::new("container")
-        .args(["image", "pull", "alpine:3.20"])
-        .output();
-
-    Ok(())
+    #[cfg(not(target_os = "macos"))]
+    bail!("Apple containers are only available on macOS")
 }
 
 /// Prompt user to select from options
