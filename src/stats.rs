@@ -67,11 +67,11 @@ impl Stats {
 
         // Sort by count descending, take top 5
         let mut top_images: Vec<(String, usize)> = image_counts.into_iter().collect();
-        top_images.sort_by(|a, b| b.1.cmp(&a.1));
+        top_images.sort_by_key(|item| std::cmp::Reverse(item.1));
         top_images.truncate(5);
 
         let mut top_backends: Vec<(String, usize)> = backend_counts.into_iter().collect();
-        top_backends.sort_by(|a, b| b.1.cmp(&a.1));
+        top_backends.sort_by_key(|item| std::cmp::Reverse(item.1));
         top_backends.truncate(5);
 
         let first_entry = entries

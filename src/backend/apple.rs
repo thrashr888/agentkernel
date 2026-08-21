@@ -17,17 +17,38 @@ pub fn apple_system_running() -> bool {
         return true;
     }
 
-    let running = Command::new("container")
-        .args(["system", "status"])
-        .output()
-        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("is running"))
-        .unwrap_or(false);
+    let structured_status = Command::new("container")
+        .args(["system", "status", "--format", "json"])
+        .output();
+    let running = match structured_status {
+        Ok(output) if output.status.success() => {
+            apple_system_status_is_running(&String::from_utf8_lossy(&output.stdout))
+        }
+        _ => Command::new("container")
+            .args(["system", "status"])
+            .output()
+            .map(|output| {
+                output.status.success()
+                    && apple_system_status_is_running(&String::from_utf8_lossy(&output.stdout))
+            })
+            .unwrap_or(false),
+    };
 
     if running {
         SYSTEM_VERIFIED.store(true, Ordering::Relaxed);
     }
 
     running
+}
+
+/// Parse structured status output from current Apple container releases while
+/// retaining compatibility with the human-readable output used by older CLIs.
+fn apple_system_status_is_running(output: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(output.trim())
+        .ok()
+        .and_then(|value| value.get("status")?.as_str().map(str::to_owned))
+        .is_some_and(|status| status.eq_ignore_ascii_case("running"))
+        || output.contains("is running")
 }
 
 /// Start the Apple container system service
@@ -43,9 +64,8 @@ pub fn start_apple_system() -> Result<()> {
 
     eprintln!("Starting Apple container system...");
 
-    // Use echo "Y" to auto-accept kernel download prompt
-    let output = Command::new("sh")
-        .args(["-c", "echo 'Y' | container system start"])
+    let output = Command::new("container")
+        .args(["system", "start", "--enable-kernel-install"])
         .output()
         .context("Failed to start Apple container system")?;
 
@@ -161,16 +181,20 @@ pub fn get_container_ip(container_name: &str) -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    // Parse the JSON array; extract .networks[0].address and strip the CIDR suffix.
     let text = String::from_utf8_lossy(&output.stdout);
-    let arr: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
-    let addr = arr
-        .get(0)?
-        .get("networks")?
-        .get(0)?
-        .get("address")?
+    parse_container_ip(&text)
+}
+
+/// Parse `container inspect` output from current and legacy Apple container
+/// releases. Version 1.0 moved network details under `status` and renamed the
+/// address field to `ipv4Address`.
+fn parse_container_ip(output: &str) -> Option<String> {
+    let arr: serde_json::Value = serde_json::from_str(output.trim()).ok()?;
+    let container = arr.get(0)?;
+    let addr = container
+        .pointer("/status/networks/0/ipv4Address")
+        .or_else(|| container.pointer("/networks/0/address"))?
         .as_str()?;
-    // Strip "/24" CIDR suffix if present
     Some(addr.split('/').next().unwrap_or(addr).to_string())
 }
 
@@ -572,5 +596,40 @@ mod tests {
         assert!(!is_local_image("docker.io/library/alpine"));
         assert!(!is_local_image("ghcr.io/user/image:latest"));
         assert!(!is_local_image("registry.example.com/foo"));
+    }
+
+    #[test]
+    fn parses_current_system_status_json() {
+        let status = r#"{"apiServerVersion":"1.2.2","status":"running"}"#;
+        assert!(apple_system_status_is_running(status));
+        assert!(!apple_system_status_is_running(r#"{"status":"stopped"}"#));
+    }
+
+    #[test]
+    fn parses_legacy_system_status_text() {
+        assert!(apple_system_status_is_running(
+            "Apple container system is running"
+        ));
+        assert!(!apple_system_status_is_running(
+            "Apple container system is stopped"
+        ));
+    }
+
+    #[test]
+    fn parses_current_container_ip() {
+        let inspect = r#"[{"status":{"networks":[{"ipv4Address":"192.168.64.8/24"}]}}]"#;
+        assert_eq!(parse_container_ip(inspect).as_deref(), Some("192.168.64.8"));
+    }
+
+    #[test]
+    fn parses_legacy_container_ip() {
+        let inspect = r#"[{"networks":[{"address":"192.168.64.9/24"}]}]"#;
+        assert_eq!(parse_container_ip(inspect).as_deref(), Some("192.168.64.9"));
+    }
+
+    #[test]
+    fn rejects_missing_or_invalid_container_ip() {
+        assert_eq!(parse_container_ip("not json"), None);
+        assert_eq!(parse_container_ip(r#"[{"status":{"networks":[]}}]"#), None);
     }
 }

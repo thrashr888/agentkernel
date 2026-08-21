@@ -23,25 +23,61 @@ pub fn ensure_host_command_path() {
         let current = std::env::var_os("PATH")
             .map(|value| value.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let mut paths: Vec<String> = current
-            .split(':')
-            .filter(|path| !path.is_empty())
-            .map(str::to_owned)
+        let available_runtime_paths: Vec<&str> = RUNTIME_PATHS
+            .iter()
+            .copied()
+            .filter(|path| std::path::Path::new(path).is_dir())
             .collect();
-
-        for runtime_path in RUNTIME_PATHS {
-            if std::path::Path::new(runtime_path).is_dir()
-                && !paths.iter().any(|path| path == runtime_path)
-            {
-                paths.push((*runtime_path).to_string());
-            }
-        }
-
-        let updated = paths.join(":");
+        let updated = prioritize_host_command_paths(&current, &available_runtime_paths);
         if updated != current {
             // SAFETY: this runs at process startup, before agentkernel spawns
             // any worker or request-handling tasks.
             unsafe { std::env::set_var("PATH", updated) };
         }
+    }
+}
+
+/// Put managed runtime locations before inherited PATH entries. This ensures a
+/// current Homebrew install wins over stale package-manager leftovers while
+/// retaining every unrelated user path in its original order.
+#[cfg(any(target_os = "macos", test))]
+fn prioritize_host_command_paths(current: &str, runtime_paths: &[&str]) -> String {
+    let mut paths: Vec<&str> = Vec::new();
+
+    for path in runtime_paths
+        .iter()
+        .copied()
+        .chain(current.split(':').filter(|path| !path.is_empty()))
+    {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+
+    paths.join(":")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prioritize_host_command_paths;
+
+    #[test]
+    fn prioritizes_homebrew_before_stale_usr_local_binary() {
+        let updated = prioritize_host_command_paths(
+            "/usr/local/bin:/usr/bin:/opt/homebrew/bin",
+            &["/opt/homebrew/bin", "/usr/local/bin"],
+        );
+
+        assert_eq!(updated, "/opt/homebrew/bin:/usr/local/bin:/usr/bin");
+    }
+
+    #[test]
+    fn preserves_unrelated_paths_and_removes_duplicates() {
+        let updated = prioritize_host_command_paths(
+            "/custom/bin:/usr/bin:/custom/bin",
+            &["/opt/homebrew/bin"],
+        );
+
+        assert_eq!(updated, "/opt/homebrew/bin:/custom/bin:/usr/bin");
     }
 }

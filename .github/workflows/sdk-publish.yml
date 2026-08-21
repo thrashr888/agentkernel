@@ -18,7 +18,7 @@ jobs:
     name: Test Gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -42,9 +42,9 @@ jobs:
       run:
         working-directory: sdk/nodejs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
@@ -75,7 +75,7 @@ jobs:
           fi
 
       # Publish to GitHub Packages
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           registry-url: https://npm.pkg.github.com
@@ -110,9 +110,9 @@ jobs:
       run:
         working-directory: sdk/python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -147,7 +147,7 @@ jobs:
       run:
         working-directory: sdk/rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -186,7 +186,7 @@ jobs:
       run:
         working-directory: sdk/swift
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build
         run: swift build

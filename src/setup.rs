@@ -299,39 +299,19 @@ fn check_macos_version() -> bool {
 
 /// Initialize Apple containers system (start service and download kernel if needed)
 fn initialize_apple_containers() -> Result<()> {
-    // Check if system is already running
-    let status_output = Command::new("container")
-        .args(["system", "status"])
-        .output()?;
-
-    if status_output.status.success()
-        && String::from_utf8_lossy(&status_output.stdout).contains("is running")
-    {
+    if crate::backend::apple::apple_system_running() {
         println!("  Apple container system already running");
         return Ok(());
     }
 
-    // Start the system (auto-accept kernel download)
-    println!("  Starting Apple container system...");
-    let output = Command::new("sh")
-        .args(["-c", "echo 'Y' | container system start"])
-        .output()
-        .context("Failed to start Apple container system")?;
+    crate::backend::apple::start_apple_system()?;
+    println!("  Apple container system started");
 
-    if output.status.success() {
-        println!("  Apple container system started");
-
-        // Pre-pull alpine image for faster first run
-        println!("  Pre-pulling alpine:3.20 image...");
-        let _ = Command::new("container")
-            .args(["image", "pull", "alpine:3.20"])
-            .output();
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.contains("already") {
-            bail!("Failed to start Apple container system: {}", stderr);
-        }
-    }
+    // Pre-pull alpine image for faster first run
+    println!("  Pre-pulling alpine:3.20 image...");
+    let _ = Command::new("container")
+        .args(["image", "pull", "alpine:3.20"])
+        .output();
 
     Ok(())
 }
