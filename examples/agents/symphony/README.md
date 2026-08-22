@@ -26,7 +26,7 @@ cd /opt/symphony/elixir && mix run -- /workspace/WORKFLOW.md --port 4000
 ## What's Included
 
 - **Elixir 1.19** with **OTP 28** - Runtime for Symphony
-- **Node.js 22** - For Codex CLI
+- **Node.js 24 LTS** - For Codex CLI
 - **Codex CLI** - `@openai/codex` (the coding agent Symphony spawns)
 - **Git** - Version control
 - **bash** - Shell

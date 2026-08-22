@@ -29,7 +29,7 @@ OpenCode supports multiple LLM providers. Pass whichever key your provider requi
 
 ## What's Included
 
-- **Node.js 22** — Runtime for OpenCode
+- **Node.js 24 LTS** — Runtime for OpenCode
 - **OpenCode CLI** — `opencode`
 - **Git** — Version control
 - **Python 3** — For Python projects

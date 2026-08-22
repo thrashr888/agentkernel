@@ -148,8 +148,8 @@ When started with `--port`, Symphony exposes a dashboard and API:
 The sandbox image includes:
 
 - **Elixir 1.19** with **OTP 28** - Runtime for Symphony
-- **Node.js 22** - For Codex CLI
-- **Codex CLI** - `@openai/codex` (coding agent)
+- **Node.js 24 LTS** - For Codex CLI
+- **Codex CLI** - `@openai/codex@0.149.0` (coding agent)
 - **Git** - Version control
 - **bash** - Shell
 
@@ -163,17 +163,20 @@ FROM elixir:1.19-otp-28-slim
 # Base tools + Node.js
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git bash ca-certificates gnupg curl \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Codex CLI
-RUN npm install -g @openai/codex
+RUN npm install -g @openai/codex@0.149.0
 
 # Symphony
 RUN mix local.hex --force && mix local.rebar --force
-RUN git clone --depth 1 https://github.com/openai/symphony.git /opt/symphony \
-    && cd /opt/symphony/elixir && mix deps.get && mix compile
+RUN git init /opt/symphony \
+    && git -C /opt/symphony remote add origin https://github.com/openai/symphony.git \
+    && git -C /opt/symphony fetch --depth 1 origin 8001b52e3062495a16e520e4ceaf8f9de868c4d0 \
+    && git -C /opt/symphony checkout --detach FETCH_HEAD \
+    && cd /opt/symphony/elixir && MIX_ENV=prod mix setup && MIX_ENV=prod mix build
 
 # Your additions
 RUN npm install -g your-custom-tools

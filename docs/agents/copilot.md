@@ -16,7 +16,7 @@ agentkernel serve                 # or run manually in a terminal
 agentkernel plugin install copilot
 
 # 3. Launch Copilot CLI — it picks up .mcp.json automatically
-github-copilot
+copilot
 ```
 
 ## MCP Integration
@@ -45,7 +45,7 @@ agentkernel attach copilot-dev -e GITHUB_TOKEN=$GITHUB_TOKEN
 
 # One-off command
 agentkernel exec copilot-dev -e GITHUB_TOKEN=$GITHUB_TOKEN -- \
-  github-copilot "Explain this code"
+  copilot "Explain this code"
 ```
 
 ## Sandbox-Based Workflow
@@ -63,7 +63,7 @@ agentkernel sandbox start copilot-dev
 agentkernel attach copilot-dev -e GITHUB_TOKEN=$GITHUB_TOKEN
 
 # Inside the sandbox:
-github-copilot
+copilot
 ```
 
 ## Configuration
@@ -103,8 +103,8 @@ mount_cwd = true    # Mount project directory
 
 The sandbox image includes:
 
-- **Node.js 22** — Runtime for Copilot CLI
-- **Copilot CLI** — `@githubnext/github-copilot-cli`
+- **Node.js 24 LTS** — Runtime for Copilot CLI
+- **Copilot CLI** — `@github/copilot`
 - **Git** — Version control
 - **Python 3** — For Python projects
 - **ripgrep** — Fast code search
@@ -116,16 +116,19 @@ The sandbox image includes:
 Create a custom Dockerfile based on the example:
 
 ```dockerfile
-FROM node:22-alpine
+FROM node:24-bookworm-slim
 
 # Base tools
-RUN apk add --no-cache git bash python3 ripgrep fd jq
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git bash python3 ripgrep fd-find jq \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copilot CLI
-RUN npm install -g @githubnext/github-copilot-cli
+RUN npm install -g @github/copilot@1.0.80
 
 # Your additions
-RUN apk add --no-cache rust cargo
+RUN apt-get update && apt-get install -y --no-install-recommends rustc cargo \
+    && rm -rf /var/lib/apt/lists/*
 
 # Setup
 WORKDIR /workspace

@@ -11,7 +11,9 @@
 # Environment variables:
 #   ANTHROPIC_API_KEY or OPENAI_API_KEY - Required for Pi to work
 
-FROM node:22-alpine
+FROM node:24-alpine3.24
+
+ARG PI_VERSION=0.84.2
 
 # Install essential tools
 RUN apk add --no-cache \
@@ -26,8 +28,8 @@ RUN apk add --no-cache \
     jq \
     && rm -rf /var/cache/apk/*
 
-# Install Pi CLI globally
-RUN npm install -g @mariozechner/pi-coding-agent
+# Pi's supported package moved from @mariozechner to @earendil-works.
+RUN npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}"
 
 # Create workspace directory
 RUN mkdir -p /workspace

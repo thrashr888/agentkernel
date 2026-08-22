@@ -13,7 +13,9 @@
 # Environment variables:
 #   ANTHROPIC_API_KEY - Required for Claude Code to work
 
-FROM node:22-alpine
+FROM node:24-alpine3.24
+
+ARG CLAUDE_CODE_VERSION=2.1.239
 
 # Install essential tools
 RUN apk add --no-cache \
@@ -29,7 +31,7 @@ RUN apk add --no-cache \
     && rm -rf /var/cache/apk/*
 
 # Install Claude Code CLI globally
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
 # Create workspace directory
 RUN mkdir -p /workspace

@@ -119,7 +119,7 @@ mount_cwd = true    # Mount project directory
 
 The Gemini image includes:
 
-- **Node.js 22** - Runtime
+- **Node.js 24 LTS** - Runtime
 - **Gemini CLI** - `@google/gemini-cli`
 - **Git** - Version control
 - **Python 3** - For Python projects

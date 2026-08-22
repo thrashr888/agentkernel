@@ -3,10 +3,10 @@
 
 [sandbox]
 name = "amp-sandbox"
-base_image = "node:22-alpine"
+base_image = "node:24-bookworm-slim"
 init_script = """
 set -e
-npm install -g @sourcegraph/amp
+npm install -g --allow-scripts=@ampcode/cli @ampcode/cli@0.0.1787342526-gc11bfb
 """
 
 [agent]
@@ -27,7 +27,7 @@ profile = "moderate"
 allow = ["api.anthropic.com", "sourcegraph.com"]
 
 [template]
-description = "Amp (Sourcegraph) agent sandbox"
+description = "Amp agent sandbox"
 category = "Agent Sandboxes"
 help_text = """
 How to use: Start the sandbox and run your workflow inside /workspace.

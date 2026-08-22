@@ -3,10 +3,10 @@
 
 [sandbox]
 name = "pi-sandbox"
-base_image = "node:22-alpine"
+base_image = "node:24-alpine3.24"
 init_script = """
 set -e
-npm install -g @mariozechner/pi-coding-agent
+npm install -g @earendil-works/pi-coding-agent@0.84.2
 """
 
 [agent]

@@ -36,7 +36,7 @@ No separate `docker build` step needed - agentkernel automatically builds from t
 ## Common Features
 
 All agent images include:
-- **Node.js 22** - Runtime for agent CLIs
+- **Node.js 24 LTS** - Runtime for agent CLIs
 - **Git** - Version control
 - **Python 3** - For Python projects
 - **ripgrep** - Fast search (used by agents)
@@ -50,6 +50,20 @@ All images:
 - Run as non-root user `developer`
 - Have workspace isolated at `/workspace`
 - Respect agentkernel security profiles
+
+## Tested versions
+
+[`tested-versions.json`](tested-versions.json) records the exact CLI versions or
+immutable source commits used by every image. To build and smoke all images:
+
+```bash
+scripts/smoke-agent-images.sh
+```
+
+Pass one or more directory names to test a subset, or use `--no-build` to smoke
+already-built local tags. The smoke checks are deliberately offline: they verify
+the executable and version/help output, Node and Alpine versions, non-root user,
+and writable workspace without requiring agent credentials.
 
 ## Customizing
 

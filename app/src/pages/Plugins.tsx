@@ -15,13 +15,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/use-toast";
 
 const INSTALL_COMMANDS: Record<string, string> = {
-  claude: "npm install -g @anthropic-ai/claude-code",
-  gemini: "npm install -g @anthropic-ai/gemini-cli",
-  codex: "npm install -g @openai/codex",
-  opencode: "cargo install opencode",
-  amp: "npm install -g @sourcegraph/amp",
-  pi: "npm install -g @mariozechner/pi-coding-agent",
-  copilot: "npm install -g @githubnext/github-copilot-cli",
+  claude: "npm install -g @anthropic-ai/claude-code@2.1.239",
+  gemini: "npm install -g @google/gemini-cli@0.56.0",
+  codex: "npm install -g @openai/codex@0.149.0",
+  opencode: "npm install -g opencode-ai@1.18.21",
+  amp:
+    "npm install -g --allow-scripts=@ampcode/cli @ampcode/cli@0.0.1787342526-gc11bfb",
+  pi: "npm install -g @earendil-works/pi-coding-agent@0.84.2",
+  copilot: "npm install -g @github/copilot@1.0.80",
 };
 
 export function Plugins() {

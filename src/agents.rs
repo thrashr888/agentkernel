@@ -165,7 +165,7 @@ impl Agent for ClaudeAgent {
     }
 
     fn install_instructions(&self) -> &'static str {
-        "Install Claude Code: npm install -g @anthropic-ai/claude-code"
+        "Install Claude Code: npm install -g @anthropic-ai/claude-code@2.1.239"
     }
 }
 
@@ -208,7 +208,7 @@ impl Agent for GeminiAgent {
     }
 
     fn install_instructions(&self) -> &'static str {
-        "Install Gemini CLI: pip install google-generativeai"
+        "Install Gemini CLI: npm install -g @google/gemini-cli@0.56.0"
     }
 }
 
@@ -251,7 +251,7 @@ impl Agent for CodexAgent {
     }
 
     fn install_instructions(&self) -> &'static str {
-        "Install Codex CLI: npm install -g @openai/codex"
+        "Install Codex CLI: npm install -g @openai/codex@0.149.0"
     }
 }
 
@@ -295,7 +295,7 @@ impl Agent for OpenCodeAgent {
     }
 
     fn install_instructions(&self) -> &'static str {
-        "Install OpenCode: cargo install opencode"
+        "Install OpenCode: npm install -g opencode-ai@1.18.21"
     }
 }
 
@@ -338,7 +338,7 @@ impl Agent for AmpAgent {
     }
 
     fn install_instructions(&self) -> &'static str {
-        "Install Amp: npm install -g @sourcegraph/amp"
+        "Install Amp: npm install -g --allow-scripts=@ampcode/cli @ampcode/cli@0.0.1787342526-gc11bfb"
     }
 }
 
@@ -382,7 +382,7 @@ impl Agent for PiAgent {
     }
 
     fn install_instructions(&self) -> &'static str {
-        "Install Pi: npm install -g @mariozechner/pi-coding-agent"
+        "Install Pi: npm install -g @earendil-works/pi-coding-agent@0.84.2"
     }
 }
 

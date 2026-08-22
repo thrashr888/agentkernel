@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "tested_at": "2026-08-21",
+  "defaults": {
+    "runtime_user": "developer",
+    "workspace": "/workspace"
+  },
+  "base_images": {
+    "node_alpine": {
+      "image": "node:24-alpine3.24",
+      "node_major": "24",
+      "alpine_major_minor": "3.24"
+    },
+    "node_debian": {
+      "image": "node:24-bookworm-slim",
+      "node_major": "24"
+    },
+    "elixir_debian": {
+      "image": "elixir:1.19-otp-28-slim",
+      "node_major": "24"
+    }
+  },
+  "agents": [
+    {
+      "id": "codex",
+      "package": "@openai/codex",
+      "version": "0.149.0",
+      "source": "https://github.com/openai/codex",
+      "base": "node_alpine",
+      "executable": "codex",
+      "smoke_arg": "--version",
+      "expected_output": "0.149.0"
+    },
+    {
+      "id": "claude-code",
+      "package": "@anthropic-ai/claude-code",
+      "version": "2.1.239",
+      "source": "https://docs.anthropic.com/en/docs/claude-code/getting-started",
+      "base": "node_alpine",
+      "executable": "claude",
+      "smoke_arg": "--version",
+      "expected_output": "2.1.239"
+    },
+    {
+      "id": "gemini",
+      "package": "@google/gemini-cli",
+      "version": "0.56.0",
+      "source": "https://github.com/google-gemini/gemini-cli",
+      "base": "node_alpine",
+      "executable": "gemini",
+      "smoke_arg": "--version",
+      "expected_output": "0.56.0"
+    },
+    {
+      "id": "copilot",
+      "package": "@github/copilot",
+      "version": "1.0.80",
+      "source": "https://github.com/github/copilot-cli",
+      "base": "node_debian",
+      "executable": "copilot",
+      "smoke_arg": "--version",
+      "expected_output": "1.0.80"
+    },
+    {
+      "id": "opencode",
+      "package": "opencode-ai",
+      "version": "1.18.21",
+      "source": "https://github.com/anomalyco/opencode",
+      "base": "node_alpine",
+      "executable": "opencode",
+      "smoke_arg": "--version",
+      "expected_output": "1.18.21"
+    },
+    {
+      "id": "amp",
+      "package": "@ampcode/cli",
+      "version": "0.0.1787342526-gc11bfb",
+      "source": "https://ampcode.com/news/npm-package-changes",
+      "base": "node_debian",
+      "executable": "amp",
+      "smoke_arg": "--version",
+      "expected_output": "c11bfb"
+    },
+    {
+      "id": "pi",
+      "package": "@earendil-works/pi-coding-agent",
+      "version": "0.84.2",
+      "source": "https://github.com/earendil-works/pi",
+      "base": "node_alpine",
+      "executable": "pi",
+      "smoke_arg": "--version",
+      "expected_output": "0.84.2"
+    },
+    {
+      "id": "hermes",
+      "version": "0.20.5",
+      "source": "https://github.com/NousResearch/hermes-agent",
+      "source_ref": "fc7523ca31eeb6eff9114afe384c2cf6380359df",
+      "base": "node_debian",
+      "executable": "hermes",
+      "smoke_arg": "--version",
+      "expected_output": "0.20.5"
+    },
+    {
+      "id": "symphony",
+      "version": "0.0.2",
+      "source": "https://github.com/openai/symphony",
+      "source_ref": "8001b52e3062495a16e520e4ceaf8f9de868c4d0",
+      "base": "elixir_debian",
+      "executable": "symphony",
+      "smoke_arg": "--help",
+      "expected_exit": 1,
+      "expected_output": "Usage"
+    }
+  ]
+}

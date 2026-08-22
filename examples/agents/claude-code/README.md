@@ -39,7 +39,7 @@ agentkernel exec my-project -- env ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY claude
 
 ## What's Included
 
-- **Node.js 22** - Runtime for Claude Code
+- **Node.js 24 LTS** - Runtime for Claude Code
 - **Claude Code CLI** - `@anthropic-ai/claude-code`
 - **Git** - Version control
 - **Python 3** - For Python projects

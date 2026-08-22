@@ -27,7 +27,7 @@ codex
 
 ## What's Included
 
-- **Node.js 22** - Runtime for Codex
+- **Node.js 24 LTS** - Runtime for Codex
 - **Codex CLI** - `@openai/codex`
 - **Git** - Version control
 - **Python 3** - For Python projects
