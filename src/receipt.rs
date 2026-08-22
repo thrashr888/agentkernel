@@ -133,7 +133,7 @@ pub fn hash_output(output: &str) -> String {
 
 fn hash_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    format!("{:x}", digest)
+    hex::encode(digest)
 }
 
 fn receipts_dir() -> PathBuf {

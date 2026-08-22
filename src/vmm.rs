@@ -29,7 +29,6 @@ pub struct CommandFailed {
     pub exit_code: i32,
     pub output: String,
 }
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -2250,7 +2249,7 @@ impl VmManager {
             )
         })?;
 
-        let id = format!("{:08x}", rand::thread_rng().r#gen::<u32>());
+        let id = format!("{:08x}", rand::random::<u32>());
         let stdout_path = format!("/tmp/ak-{id}.out");
         let stderr_path = format!("/tmp/ak-{id}.err");
         let exit_path = format!("/tmp/ak-{id}.exit");

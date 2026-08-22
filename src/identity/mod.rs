@@ -340,6 +340,39 @@ mod tests {
     }
 
     #[test]
+    fn test_jsonwebtoken_rust_crypto_provider_roundtrip() {
+        use jsonwebtoken::{
+            Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode,
+        };
+
+        let claims = JwtClaims {
+            sub: "user-123".to_string(),
+            email: "user@example.com".to_string(),
+            org_id: "acme-corp".to_string(),
+            roles: vec!["developer".to_string()],
+            mfa_verified: true,
+            exp: Some(4_102_444_800),
+            iat: Some(1_700_000_000),
+        };
+        let secret = b"agentkernel-jsonwebtoken-provider-test";
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap();
+        let decoded = decode::<JwtClaims>(
+            &token,
+            &DecodingKey::from_secret(secret),
+            &Validation::new(Algorithm::HS256),
+        )
+        .unwrap();
+
+        assert_eq!(decoded.claims.sub, claims.sub);
+        assert_eq!(decoded.claims.roles, claims.roles);
+    }
+
+    #[test]
     fn test_agent_identity_from_api_key() {
         let identity = AgentIdentity::from_api_key("ak_test_12345678".to_string());
         assert!(identity.is_authenticated());

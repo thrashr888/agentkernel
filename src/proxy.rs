@@ -200,8 +200,7 @@ struct ProxyState {
 
 /// Holds the CA cert and key pair for signing per-host certs.
 pub struct CaSigner {
-    cert: rcgen::Certificate,
-    key_pair: rcgen::KeyPair,
+    issuer: rcgen::CertifiedIssuer<'static, rcgen::KeyPair>,
 }
 
 /// Generate a CA certificate and key pair for the proxy.
@@ -222,19 +221,12 @@ pub fn generate_proxy_ca() -> Result<(String, CaSigner)> {
         .push(rcgen::DnType::OrganizationName, "AgentKernel");
 
     let key_pair = rcgen::KeyPair::generate().context("Failed to generate CA key pair")?;
-    let ca_cert = params
-        .self_signed(&key_pair)
+    let ca = rcgen::CertifiedIssuer::self_signed(params, key_pair)
         .context("Failed to self-sign CA certificate")?;
 
-    let cert_pem = ca_cert.pem();
+    let cert_pem = ca.pem();
 
-    Ok((
-        cert_pem,
-        CaSigner {
-            cert: ca_cert,
-            key_pair,
-        },
-    ))
+    Ok((cert_pem, CaSigner { issuer: ca }))
 }
 
 /// Generate a per-host TLS certificate signed by the proxy CA.
@@ -255,7 +247,7 @@ fn generate_host_tls_config(host: &str, ca: &CaSigner) -> Result<Arc<rustls::Ser
 
     let host_key = rcgen::KeyPair::generate().context("Failed to generate host key")?;
     let host_cert = params
-        .signed_by(&host_key, &ca.cert, &ca.key_pair)
+        .signed_by(&host_key, &ca.issuer)
         .context("Failed to sign host cert")?;
 
     let cert_chain = vec![CertificateDer::from(host_cert.der().to_vec())];

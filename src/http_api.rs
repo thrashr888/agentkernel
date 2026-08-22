@@ -5716,7 +5716,7 @@ fn parse_runtime_input(
 fn compute_idempotency_key(orchestration_id: &str, activity_name: &str, sequence: i64) -> String {
     let mut hasher = Sha256::new();
     hasher.update(format!("{orchestration_id}:{activity_name}:{sequence}"));
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 fn compute_retry_delay_ms(policy: &RuntimeRetryPolicy, failure_attempts: u32) -> u64 {
