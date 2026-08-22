@@ -4,14 +4,14 @@
 //! inside the guest VM. Uses `openpty()` for PTY creation and `fork()`/`exec()`
 //! for process spawning.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use nix::pty::{openpty, OpenptyResult};
-use nix::sys::signal::{Signal, kill};
-use nix::sys::wait::{WaitStatus, waitpid, WaitPidFlag};
-use nix::unistd::{ForkResult, Pid, close, dup2, fork, setsid};
+use nix::sys::signal::{kill, Signal};
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+use nix::unistd::{dup2_stderr, dup2_stdin, dup2_stdout, fork, setsid, ForkResult, Pid};
 use std::collections::HashMap;
 use std::ffi::CString;
-use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
@@ -47,8 +47,7 @@ impl PtySession {
         env: Option<&HashMap<String, String>>,
     ) -> Result<Self> {
         // Open a new PTY pair
-        let OpenptyResult { master, slave } = openpty(None, None)
-            .context("Failed to open PTY")?;
+        let OpenptyResult { master, slave } = openpty(None, None).context("Failed to open PTY")?;
 
         // Set initial window size
         let winsize = libc::winsize {
@@ -69,7 +68,7 @@ impl PtySession {
                 // Child process: set up PTY and exec
 
                 // Close the master fd in child
-                let _ = close(master.as_raw_fd());
+                drop(master);
 
                 // Create a new session (become session leader)
                 setsid().ok();
@@ -82,13 +81,17 @@ impl PtySession {
 
                 // Redirect stdin/stdout/stderr to the slave PTY
                 let slave_fd = slave.as_raw_fd();
-                dup2(slave_fd, 0).expect("dup2 stdin failed");
-                dup2(slave_fd, 1).expect("dup2 stdout failed");
-                dup2(slave_fd, 2).expect("dup2 stderr failed");
+                dup2_stdin(&slave).expect("dup2 stdin failed");
+                dup2_stdout(&slave).expect("dup2 stdout failed");
+                dup2_stderr(&slave).expect("dup2 stderr failed");
 
                 // Close the original slave fd if it's not one of stdin/stdout/stderr
                 if slave_fd > 2 {
-                    let _ = close(slave_fd);
+                    drop(slave);
+                } else {
+                    // The descriptor is one of the standard streams and must
+                    // remain open across exec.
+                    std::mem::forget(slave);
                 }
 
                 // Prepare command and arguments
@@ -116,7 +119,7 @@ impl PtySession {
                     ("HOME", "/root"),
                     ("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"),
                 ] {
-                    if env.map_or(true, |e| !e.contains_key(key)) {
+                    if env.is_none_or(|e| !e.contains_key(key)) {
                         let env_str = format!("{}={}", key, value);
                         if let Ok(c_env) = CString::new(env_str) {
                             unsafe {
@@ -127,18 +130,18 @@ impl PtySession {
                 }
 
                 // Exec the command
-                nix::unistd::execvp(&cmd, &c_args).expect("execvp failed");
-                unreachable!()
+                match nix::unistd::execvp(&cmd, &c_args) {
+                    Ok(infallible) => match infallible {},
+                    Err(error) => panic!("execvp failed: {error}"),
+                }
             }
             ForkResult::Parent { child } => {
                 // Parent process: close slave, return session
-                let _ = close(slave.as_raw_fd());
+                drop(slave);
 
                 // Create async file wrapper for the master fd
-                let master_fd = master.as_raw_fd();
-                let master_file = unsafe {
-                    std::fs::File::from_raw_fd(master_fd)
-                };
+                let master_file = std::fs::File::from(master);
+                let master_fd = master_file.as_raw_fd();
                 let master_file = tokio::fs::File::from_std(master_file);
 
                 Ok(Self {
@@ -159,11 +162,12 @@ impl PtySession {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        let result = unsafe {
-            libc::ioctl(self.master_fd, libc::TIOCSWINSZ, &winsize)
-        };
+        let result = unsafe { libc::ioctl(self.master_fd, libc::TIOCSWINSZ, &winsize) };
         if result < 0 {
-            bail!("Failed to resize terminal: {}", std::io::Error::last_os_error());
+            bail!(
+                "Failed to resize terminal: {}",
+                std::io::Error::last_os_error()
+            );
         }
         Ok(())
     }
@@ -171,7 +175,9 @@ impl PtySession {
     /// Write data to the PTY (input to the process)
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
         if let Some(ref mut file) = self.master_file {
-            file.write_all(data).await.context("Failed to write to PTY")?;
+            file.write_all(data)
+                .await
+                .context("Failed to write to PTY")?;
             file.flush().await.context("Failed to flush PTY")?;
         }
         Ok(())
@@ -355,10 +361,69 @@ impl Default for SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn test_session_manager_creation() {
         let manager = SessionManager::new();
         assert!(manager.sessions.try_lock().is_ok());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_pty_session_round_trip() {
+        let manager = SessionManager::new();
+        let args = vec![
+            "-c".to_string(),
+            "printf 'ready\\n'; IFS= read -r line; printf 'echo:%s\\n' \"$line\"".to_string(),
+        ];
+        let id = manager
+            .create_session("/bin/sh", &args, 24, 80, None)
+            .await
+            .expect("PTY session should start");
+
+        assert!(manager.has_session(&id).await);
+        assert!(manager.list_sessions().await.contains(&id));
+        manager
+            .resize_session(&id, 40, 120)
+            .await
+            .expect("PTY resize should succeed");
+        manager
+            .write_to_session(&id, b"hello\n")
+            .await
+            .expect("PTY input should succeed");
+
+        let mut output = Vec::new();
+        let read_output = async {
+            let mut buffer = [0_u8; 256];
+            loop {
+                let count = manager
+                    .read_from_session(&id, &mut buffer)
+                    .await
+                    .expect("PTY output should be readable");
+                output.extend_from_slice(&buffer[..count]);
+                if count == 0
+                    || output
+                        .windows(b"echo:hello".len())
+                        .any(|w| w == b"echo:hello")
+                {
+                    break;
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), read_output)
+            .await
+            .expect("PTY round trip timed out");
+
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.contains("ready"), "missing ready marker: {output:?}");
+        assert!(
+            output.contains("echo:hello"),
+            "missing echoed input: {output:?}"
+        );
+        manager
+            .close_session(&id)
+            .await
+            .expect("PTY session should close");
+        assert!(!manager.has_session(&id).await);
     }
 }
