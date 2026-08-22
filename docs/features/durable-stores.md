@@ -112,6 +112,23 @@ Execute response:
 - Uses command-oriented execution (`/stores/:id/command`).
 - Keeps Redis-native semantics explicit (no SQL translation layer).
 - Config supports host/port/db and secret-backed credentials.
+- Valkey uses the same Redis-compatible store kind and command endpoint.
+
+## Tested Server Compatibility
+
+The durable-store client compatibility workflow runs deterministic write/read
+round trips against the server lines used by the bundled templates and their
+Redis-compatible counterpart:
+
+| Engine | CI image |
+| --- | --- |
+| Redis | `redis:7-alpine` |
+| Valkey | `valkey/valkey:9.1.1-alpine` |
+| PostgreSQL | `postgres:17-alpine` |
+| MySQL | `mysql:8.4` |
+
+SQLite migration tests use the bundled SQLite library and verify that reopening
+an older schema applies every pending migration without changing existing rows.
 
 ## SDK Surface (All 5 SDKs)
 

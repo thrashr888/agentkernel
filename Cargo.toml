@@ -46,10 +46,10 @@ tokio = { version = "1.0", features = ["full", "process", "net"] }
 toml = "0.8"
 uuid = { version = "1.0", features = ["v4", "v7"] }
 chrono = { version = "0.4", features = ["serde"] }
-redis = "0.27"
-rusqlite = { version = "0.33", features = ["bundled"] }
-tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
-mysql_async = { version = "0.36", default-features = false, features = ["default-rustls"] }
+redis = "1.6"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+tokio-postgres = { version = "0.7.18", features = ["with-serde_json-1"] }
+mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "rustls-tls", "aws-lc-rs", "tls12"] }
 sha2 = "0.10"
 prometheus = { version = "0.13", default-features = false }
 wat = "1.225"  # WAT to WASM compiler for WebAssembly text format support

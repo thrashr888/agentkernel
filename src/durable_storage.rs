@@ -258,4 +258,62 @@ mod tests {
             .unwrap();
         assert_eq!(migration_count, 6);
     }
+
+    #[test]
+    fn test_bootstrap_migrates_existing_database_without_losing_data() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let db_path = temp.path().join("legacy.db");
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+CREATE TABLE schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+CREATE TABLE orchestrations (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    input_json TEXT,
+    output_json TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2025-01-01T00:00:00Z');
+INSERT INTO orchestrations(
+    id, name, status, input_json, output_json, error, created_at, updated_at
+) VALUES (
+    'legacy-id', 'legacy-run', 'completed', '{"source":"existing"}',
+    '{"preserved":true}', NULL, '2025-01-01T00:00:00Z', '2025-01-01T00:01:00Z'
+);
+"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let storage = DurableStorage::new(db_path).unwrap();
+        let conn = storage.open_connection().unwrap();
+
+        let preserved: (String, String, String) = conn
+            .query_row(
+                "SELECT name, input_json, output_json FROM orchestrations WHERE id = 'legacy-id'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(preserved.0, "legacy-run");
+        assert_eq!(preserved.1, r#"{"source":"existing"}"#);
+        assert_eq!(preserved.2, r#"{"preserved":true}"#);
+
+        let versions: Vec<i64> = conn
+            .prepare("SELECT version FROM schema_migrations ORDER BY version")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
+    }
 }
