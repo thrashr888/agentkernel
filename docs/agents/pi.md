@@ -1,7 +1,7 @@
 
 # Pi
 
-Run [pi-coding-agent](https://github.com/badlogic/pi-mono) with agentkernel for isolated code execution.
+Run [Pi coding agent](https://github.com/earendil-works/pi) with agentkernel for isolated code execution.
 
 ## Quick Start
 
@@ -169,8 +169,8 @@ Pi itself supports multiple LLM providers. Pass your provider's API key as usual
 
 The sandbox image includes:
 
-- **Node.js 22** — Runtime for Pi
-- **Pi CLI** — `@mariozechner/pi-coding-agent`
+- **Node.js 24 LTS** — Runtime for Pi
+- **Pi CLI** — `@earendil-works/pi-coding-agent`
 - **Git** — Version control
 - **Python 3** — For Python projects
 - **ripgrep** — Fast code search
@@ -182,13 +182,13 @@ The sandbox image includes:
 Create a custom Dockerfile based on the example:
 
 ```dockerfile
-FROM node:22-alpine
+FROM node:24-alpine3.24
 
 # Base tools
 RUN apk add --no-cache git bash python3 ripgrep fd jq
 
 # Pi CLI
-RUN npm install -g @mariozechner/pi-coding-agent
+RUN npm install -g @earendil-works/pi-coding-agent@0.84.2
 
 # Your additions
 RUN apk add --no-cache rust cargo

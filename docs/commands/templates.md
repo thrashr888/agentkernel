@@ -39,12 +39,14 @@ agentkernel ships with 26 built-in templates:
 
 | Template | Image | Use Case |
 |----------|-------|----------|
-| `amp-sandbox` | `node:22-alpine` | Amp (Sourcegraph) agent |
-| `claude-sandbox` | `node:22-alpine` | Claude Code agent |
-| `codex-sandbox` | `node:22-alpine` | Codex agent |
-| `gemini-sandbox` | `python:3.12-alpine` | Gemini CLI agent |
-| `opencode-sandbox` | `golang:1.23-alpine` | OpenCode agent |
-| `pi-sandbox` | `node:22-alpine` | Pi coding agent |
+| `amp-sandbox` | `node:24-bookworm-slim` | Amp agent |
+| `claude-sandbox` | `node:24-alpine3.24` | Claude Code agent |
+| `codex-sandbox` | `node:24-alpine3.24` | Codex agent |
+| `copilot-sandbox` | `node:24-bookworm-slim` | GitHub Copilot CLI agent |
+| `gemini-sandbox` | `node:24-alpine3.24` | Gemini CLI agent |
+| `opencode-sandbox` | `node:24-alpine3.24` | OpenCode agent |
+| `pi-sandbox` | `node:24-alpine3.24` | Pi coding agent |
+| `symphony-sandbox` | `elixir:1.19-otp-28-slim` | Symphony orchestration agent |
 
 ### Dev Tools
 

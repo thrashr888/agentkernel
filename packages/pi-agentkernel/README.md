@@ -1,6 +1,6 @@
 # pi-agentkernel
 
-Route [Pi coding agent](https://github.com/badlogic/pi-mono) commands through [agentkernel](https://github.com/thrashr888/agentkernel) microVM sandboxes.
+Route [Pi coding agent](https://github.com/earendil-works/pi) commands through [agentkernel](https://github.com/thrashr888/agentkernel) microVM sandboxes.
 
 ## Install
 
@@ -44,7 +44,7 @@ This extension overrides Pi's built-in `bash` tool so every shell command runs i
 ## Requirements
 
 - [agentkernel](https://github.com/thrashr888/agentkernel) running locally or remotely
-- Pi v0.49.0 or later
+- Pi v0.84.2 or later
 
 ## License
 

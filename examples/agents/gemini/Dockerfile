@@ -11,7 +11,9 @@
 # Environment variables:
 #   GEMINI_API_KEY - Required for Gemini to work
 
-FROM node:22-alpine
+FROM node:24-alpine3.24
+
+ARG GEMINI_CLI_VERSION=0.56.0
 
 # Install essential tools
 RUN apk add --no-cache \
@@ -27,7 +29,7 @@ RUN apk add --no-cache \
     && rm -rf /var/cache/apk/*
 
 # Install Google Gemini CLI globally
-RUN npm install -g @google/gemini-cli
+RUN npm install -g "@google/gemini-cli@${GEMINI_CLI_VERSION}"
 
 # Create workspace directory
 RUN mkdir -p /workspace

@@ -100,12 +100,11 @@ The built-in `opencode-sandbox` template:
 ```toml
 [sandbox]
 name = "opencode-sandbox"
-base_image = "node:22-alpine"
+base_image = "node:24-alpine3.24"
 init_script = """
 set -e
 apk add --no-cache git bash curl python3 ripgrep fd jq
-curl -fsSL https://opencode.ai/install | bash
-export PATH="$HOME/.opencode/bin:$PATH"
+npm install -g opencode-ai@1.18.21
 """
 
 [agent]
@@ -137,8 +136,8 @@ OpenCode itself supports multiple LLM providers. Pass your provider's API key as
 
 The sandbox comes with:
 
-- **Node.js 22** — Runtime
-- **OpenCode CLI** — installed via `opencode.ai/install`
+- **Node.js 24 LTS** — Runtime
+- **OpenCode CLI** — `opencode-ai@1.18.21`
 - **Git** — Version control
 - **Python 3** — For Python projects
 - **ripgrep** — Fast code search

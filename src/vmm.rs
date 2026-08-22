@@ -2003,13 +2003,15 @@ impl VmManager {
         // Auto-install agent CLI if specified in sandbox state
         if let Some(ref agent) = state.agent {
             let install_cmd = match agent.as_str() {
-                "claude" => Some("npm install -g @anthropic-ai/claude-code"),
-                "gemini" => Some("npm install -g @google/gemini-cli"),
-                "codex" => Some("npm install -g @openai/codex"),
-                "opencode" => Some("npm install -g opencode"),
-                "amp" => Some("npm install -g @sourcegraph/amp"),
-                "pi" => Some("npm install -g @mariozechner/pi-coding-agent"),
-                "copilot" => Some("npm install -g @githubnext/github-copilot-cli"),
+                "claude" => Some("npm install -g @anthropic-ai/claude-code@2.1.239"),
+                "gemini" => Some("npm install -g @google/gemini-cli@0.56.0"),
+                "codex" => Some("npm install -g @openai/codex@0.149.0"),
+                "opencode" => Some("npm install -g opencode-ai@1.18.21"),
+                "amp" => Some(
+                    "npm install -g --allow-scripts=@ampcode/cli @ampcode/cli@0.0.1787342526-gc11bfb",
+                ),
+                "pi" => Some("npm install -g @earendil-works/pi-coding-agent@0.84.2"),
+                "copilot" => Some("npm install -g @github/copilot@1.0.80"),
                 _ => None,
             };
             if let Some(cmd) = install_cmd {

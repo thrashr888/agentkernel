@@ -13,30 +13,36 @@
 # Environment variables:
 #   GITHUB_TOKEN - Required for Copilot CLI to work
 
-FROM node:22-alpine
+# Copilot's current native musl artifact aborts during startup on Alpine 3.24,
+# so use the maintained Node 24 Debian variant for this image.
+FROM node:24-bookworm-slim
+
+ARG COPILOT_CLI_VERSION=1.0.80
 
 # Install essential tools
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     bash \
     openssh-client \
     python3 \
-    py3-pip \
+    python3-pip \
     ripgrep \
-    fd \
+    fd-find \
     jq \
-    && rm -rf /var/cache/apk/*
+    && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Copilot CLI globally
-RUN npm install -g @githubnext/github-copilot-cli
+# Install the supported GitHub Copilot CLI package. The old
+# @githubnext/github-copilot-cli package is discontinued.
+RUN npm install -g "@github/copilot@${COPILOT_CLI_VERSION}"
 
 # Create workspace directory
 RUN mkdir -p /workspace
 WORKDIR /workspace
 
 # Set up a non-root user for better security
-RUN adduser -D -h /home/developer developer \
+RUN useradd -m -d /home/developer -s /bin/bash developer \
     && chown -R developer:developer /workspace
 
 # Switch to non-root user

@@ -94,8 +94,8 @@ mount_cwd = true    # Mount project directory
 
 The sandbox image includes:
 
-- **Node.js 22** — Runtime for Amp
-- **Amp CLI** — `@sourcegraph/amp`
+- **Node.js 24 LTS** — Runtime for Amp
+- **Amp CLI** — `@ampcode/cli`
 - **Git** — Version control
 - **Python 3** — For Python projects
 - **ripgrep** — Fast code search
@@ -107,16 +107,19 @@ The sandbox image includes:
 Create a custom Dockerfile based on the example:
 
 ```dockerfile
-FROM node:22-alpine
+FROM node:24-bookworm-slim
 
 # Base tools
-RUN apk add --no-cache git bash python3 ripgrep fd jq
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git bash python3 ripgrep fd-find jq \
+    && rm -rf /var/lib/apt/lists/*
 
 # Amp CLI
-RUN npm install -g @sourcegraph/amp
+RUN npm install -g --allow-scripts=@ampcode/cli @ampcode/cli@0.0.1787342526-gc11bfb
 
 # Your additions
-RUN apk add --no-cache rust cargo
+RUN apt-get update && apt-get install -y --no-install-recommends rustc cargo \
+    && rm -rf /var/lib/apt/lists/*
 
 # Setup
 WORKDIR /workspace

@@ -27,7 +27,7 @@ gemini
 
 ## What's Included
 
-- **Node.js 22** - Runtime for Gemini CLI
+- **Node.js 24 LTS** - Runtime for Gemini CLI
 - **Gemini CLI** - `@google/gemini-cli`
 - **Git** - Version control
 - **Python 3** - For Python projects

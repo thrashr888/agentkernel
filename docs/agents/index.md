@@ -10,7 +10,7 @@ agentkernel provides pre-configured Docker images for popular AI coding agents. 
 | [Claude Code](claude.md) | `claude` | `ANTHROPIC_API_KEY` |
 | [OpenAI Codex](codex.md) | `codex` | `OPENAI_API_KEY` |
 | [Google Gemini](gemini.md) | `gemini` | `GEMINI_API_KEY` |
-| [GitHub Copilot](copilot.md) | `github-copilot` | `GITHUB_TOKEN` |
+| [GitHub Copilot](copilot.md) | `copilot` | `GITHUB_TOKEN` |
 | [Amp](amp.md) | `amp` | `ANTHROPIC_API_KEY` |
 | [Pi](pi.md) | `pi` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
 | [OpenCode](opencode.md) | `opencode` | Provider-specific |
@@ -41,7 +41,7 @@ agentkernel exec my-agent -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY -- claude -p "
 
 All agent images include:
 
-- **Node.js 22** - Runtime for agent CLIs
+- **Node.js 24 LTS** - Runtime for agent CLIs
 - **Git** - Version control
 - **Python 3** - For Python projects
 - **ripgrep** - Fast code search

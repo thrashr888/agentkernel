@@ -28,7 +28,7 @@
     "README.md"
   ],
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": ">=0.49.0"
+    "@earendil-works/pi-coding-agent": ">=0.84.2 <1"
   },
   "pi": {
     "extensions": [

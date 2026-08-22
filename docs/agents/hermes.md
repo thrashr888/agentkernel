@@ -120,7 +120,7 @@ mount_cwd = true
 The sandbox image includes:
 
 - **Python 3.11** - Runtime for Hermes
-- **Node.js 22** - For browser automation tools
+- **Node.js 24 LTS** - For browser automation tools
 - **Hermes Agent** - Full install with 40+ tools
 - **mini-swe-agent** - Terminal tool backend
 - **Git** - Version control
@@ -132,21 +132,22 @@ The sandbox image includes:
 Create a custom Dockerfile based on the example:
 
 ```dockerfile
-FROM nikolaik/python-nodejs:python3.11-nodejs22
+FROM node:24-bookworm-slim
 
 # Base tools
-RUN apt-get update && apt-get install -y --no-install-recommends git bash ripgrep jq
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git bash python3 python3-venv ripgrep jq
 
 # Hermes Agent
-RUN git clone --depth 1 https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
-    && cd /opt/hermes-agent \
-    && git submodule update --init --depth 1 \
-    && pip install -e ".[all]" \
-    && pip install -e "./mini-swe-agent" \
-    && npm install
+RUN git init /opt/hermes-agent \
+    && git -C /opt/hermes-agent remote add origin https://github.com/NousResearch/hermes-agent.git \
+    && git -C /opt/hermes-agent fetch --depth 1 origin fc7523ca31eeb6eff9114afe384c2cf6380359df \
+    && git -C /opt/hermes-agent checkout --detach FETCH_HEAD \
+    && python3 -m venv /opt/hermes-venv \
+    && /opt/hermes-venv/bin/pip install -e "/opt/hermes-agent[all]"
 
 # Your additions
-RUN pip install your-custom-packages
+RUN /opt/hermes-venv/bin/pip install your-custom-packages
 
 WORKDIR /workspace
 ```

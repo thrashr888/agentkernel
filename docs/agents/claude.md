@@ -104,7 +104,7 @@ mount_cwd = true    # Mount project directory
 
 The Claude Code image includes:
 
-- **Node.js 22** - Runtime for Claude Code
+- **Node.js 24 LTS** - Runtime for Claude Code
 - **Claude Code CLI** - `@anthropic-ai/claude-code`
 - **Git** - Version control
 - **Python 3** - For Python projects
@@ -143,13 +143,13 @@ This is safe inside agentkernel because the sandbox provides isolation.
 Create a custom Dockerfile based on the example:
 
 ```dockerfile
-FROM node:22-alpine
+FROM node:24-alpine3.24
 
 # Base tools
 RUN apk add --no-cache git bash python3 ripgrep fd jq
 
 # Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code@2.1.239
 
 # Your additions
 RUN apk add --no-cache rust cargo
