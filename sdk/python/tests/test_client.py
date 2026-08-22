@@ -1,5 +1,7 @@
 """Tests for the synchronous AgentKernel client."""
 
+from typing import Any
+
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -16,7 +18,7 @@ from agentkernel import (
 BASE_URL = "http://localhost:9999"
 
 
-def make_client(**kwargs) -> AgentKernel:
+def make_client(**kwargs: Any) -> AgentKernel:
     return AgentKernel(base_url=BASE_URL, **kwargs)
 
 
@@ -72,7 +74,10 @@ class TestCreateSandbox:
     def test_creates(self, httpx_mock: HTTPXMock) -> None:
         httpx_mock.add_response(
             status_code=201,
-            json={"success": True, "data": {"name": "new", "status": "running", "backend": "docker"}},
+            json={
+                "success": True,
+                "data": {"name": "new", "status": "running", "backend": "docker"},
+            },
         )
         result = make_client().create_sandbox("new")
         assert result.name == "new"
@@ -82,7 +87,10 @@ class TestCreateSandbox:
 class TestGetSandbox:
     def test_returns_info(self, httpx_mock: HTTPXMock) -> None:
         httpx_mock.add_response(
-            json={"success": True, "data": {"name": "test", "status": "running", "backend": "docker"}}
+            json={
+                "success": True,
+                "data": {"name": "test", "status": "running", "backend": "docker"},
+            }
         )
         result = make_client().get_sandbox("test")
         assert result.name == "test"
@@ -237,7 +245,10 @@ class TestDurableStores:
 
     def test_query_path(self, httpx_mock: HTTPXMock) -> None:
         httpx_mock.add_response(
-            json={"success": True, "data": {"columns": ["id"], "rows": [{"id": 1}], "row_count": 1}},
+            json={
+                "success": True,
+                "data": {"columns": ["id"], "rows": [{"id": 1}], "row_count": 1},
+            },
         )
         make_client().query_store("store-1", {"sql": "select 1", "params": []})
         request = httpx_mock.get_request()
@@ -264,7 +275,6 @@ class TestDurableStores:
         assert request.url.path == "/stores/store-1/command"
 
 
-
 class TestRemoveSandbox:
     def test_removes(self, httpx_mock: HTTPXMock) -> None:
         httpx_mock.add_response(json={"success": True, "data": "Sandbox removed"})
@@ -282,7 +292,10 @@ class TestSandboxSession:
     def test_auto_removes(self, httpx_mock: HTTPXMock) -> None:
         # create
         httpx_mock.add_response(
-            json={"success": True, "data": {"name": "sess", "status": "running", "backend": "docker"}}
+            json={
+                "success": True,
+                "data": {"name": "sess", "status": "running", "backend": "docker"},
+            }
         )
         # remove
         httpx_mock.add_response(json={"success": True, "data": "Sandbox removed"})
@@ -296,7 +309,10 @@ class TestSandboxSession:
 
     def test_remove_is_idempotent(self, httpx_mock: HTTPXMock) -> None:
         httpx_mock.add_response(
-            json={"success": True, "data": {"name": "idem", "status": "running", "backend": "docker"}}
+            json={
+                "success": True,
+                "data": {"name": "idem", "status": "running", "backend": "docker"},
+            }
         )
         httpx_mock.add_response(json={"success": True, "data": "Sandbox removed"})
 

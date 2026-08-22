@@ -6,7 +6,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-
 SecurityProfile = Literal["permissive", "moderate", "restrictive"]
 SandboxStatus = Literal["running", "stopped"]
 StreamEventType = Literal["started", "progress", "output", "done", "error"]
@@ -69,7 +68,7 @@ class StreamEvent(BaseModel):
     """SSE stream event."""
 
     type: StreamEventType
-    data: dict
+    data: dict[str, Any]
 
 
 class FileReadResponse(BaseModel):

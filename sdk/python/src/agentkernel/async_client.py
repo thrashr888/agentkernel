@@ -4,34 +4,33 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from types import TracebackType
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
+
+if TYPE_CHECKING:
+    from .browser import AsyncBrowserSession
 
 from ._config import resolve_config
 from .errors import AgentKernelError, NetworkError, error_from_status
 from .types import (
     BatchFileWriteResponse,
     BatchRunResponse,
-    CreateSandboxOptions,
     DetachedCommand,
     DetachedLogsResponse,
-    ExecOptions,
     DurableObject,
     DurableStore,
     DurableStoreCommandResult,
     DurableStoreExecuteResult,
     DurableStoreQueryResult,
-    ExtendTtlResponse,
     FileReadResponse,
+    Orchestration,
     OrchestrationDefinition,
-    RunOptions,
     RunOutput,
     SandboxInfo,
-    SecurityProfile,
-    Orchestration,
-    SnapshotMeta,
     Schedule,
+    SecurityProfile,
+    SnapshotMeta,
     StreamEvent,
 )
 
@@ -56,7 +55,11 @@ class AsyncSandboxSession:
     ) -> RunOutput:
         """Run a command in this sandbox."""
         return await self._client.exec_in_sandbox(
-            self.name, command, env=env, workdir=workdir, sudo=sudo,
+            self.name,
+            command,
+            env=env,
+            workdir=workdir,
+            sudo=sudo,
         )
 
     async def info(self) -> SandboxInfo:
@@ -131,7 +134,7 @@ class AsyncAgentKernel:
 
     async def health(self) -> str:
         """Health check. Returns 'ok'."""
-        return await self._request("GET", "/health")
+        return cast(str, await self._request("GET", "/health"))
 
     async def run(
         self,
@@ -195,9 +198,13 @@ class AsyncAgentKernel:
             "POST",
             "/sandboxes",
             json={
-                "name": name, "image": image, "vcpus": vcpus,
-                "memory_mb": memory_mb, "profile": profile,
-                "source_url": source_url, "source_ref": source_ref,
+                "name": name,
+                "image": image,
+                "vcpus": vcpus,
+                "memory_mb": memory_mb,
+                "profile": profile,
+                "source_url": source_url,
+                "source_ref": source_ref,
                 "volumes": volumes,
             },
         )
@@ -251,24 +258,27 @@ class AsyncAgentKernel:
         encoding: str = "utf8",
     ) -> str:
         """Write a file to a sandbox."""
-        return await self._request(
-            "PUT",
-            f"/sandboxes/{name}/files/{path}",
-            json={"content": content, "encoding": encoding},
+        return cast(
+            str,
+            await self._request(
+                "PUT",
+                f"/sandboxes/{name}/files/{path}",
+                json={"content": content, "encoding": encoding},
+            ),
         )
 
     async def delete_file(self, name: str, path: str) -> str:
         """Delete a file from a sandbox."""
-        return await self._request("DELETE", f"/sandboxes/{name}/files/{path}")
+        return cast(str, await self._request("DELETE", f"/sandboxes/{name}/files/{path}"))
 
     async def write_files(self, name: str, files: dict[str, str]) -> BatchFileWriteResponse:
         """Write multiple files to a sandbox in one request."""
         data = await self._request("POST", f"/sandboxes/{name}/files", json={"files": files})
         return BatchFileWriteResponse(**data)
 
-    async def get_sandbox_logs(self, name: str) -> list[dict]:
+    async def get_sandbox_logs(self, name: str) -> list[dict[str, Any]]:
         """Get audit log entries for a sandbox."""
-        return await self._request("GET", f"/sandboxes/{name}/logs")
+        return cast(list[dict[str, Any]], await self._request("GET", f"/sandboxes/{name}/logs"))
 
     async def batch_run(self, commands: list[list[str]]) -> BatchRunResponse:
         """Run multiple commands in parallel."""
@@ -306,14 +316,15 @@ class AsyncAgentKernel:
     ) -> DetachedLogsResponse:
         """Get logs from a detached command."""
         query = f"?stream={stream}" if stream == "stderr" else ""
-        data = await self._request(
-            "GET", f"/sandboxes/{name}/exec/detached/{cmd_id}/logs{query}"
-        )
+        data = await self._request("GET", f"/sandboxes/{name}/exec/detached/{cmd_id}/logs{query}")
         return DetachedLogsResponse(**data)
 
     async def detached_kill(self, name: str, cmd_id: str) -> str:
         """Kill a detached command."""
-        return await self._request("DELETE", f"/sandboxes/{name}/exec/detached/{cmd_id}")
+        return cast(
+            str,
+            await self._request("DELETE", f"/sandboxes/{name}/exec/detached/{cmd_id}"),
+        )
 
     async def detached_list(self, name: str) -> list[DetachedCommand]:
         """List detached commands in a sandbox."""
@@ -322,109 +333,150 @@ class AsyncAgentKernel:
 
     async def list_orchestrations(self) -> list[Orchestration]:
         """List orchestrations."""
-        return await self._request("GET", "/orchestrations")
+        return cast(list[Orchestration], await self._request("GET", "/orchestrations"))
 
     async def create_orchestration(self, orchestration: Orchestration) -> Orchestration:
         """Create a new orchestration."""
-        return await self._request("POST", "/orchestrations", json=orchestration)
+        return cast(
+            Orchestration, await self._request("POST", "/orchestrations", json=orchestration)
+        )
 
     async def get_orchestration(self, orchestration_id: str) -> Orchestration:
         """Get an orchestration by identifier."""
-        return await self._request("GET", f"/orchestrations/{orchestration_id}")
+        return cast(
+            Orchestration, await self._request("GET", f"/orchestrations/{orchestration_id}")
+        )
 
     async def signal_orchestration(
-        self, orchestration_id: str, event: dict[str, Any],
+        self,
+        orchestration_id: str,
+        event: dict[str, Any],
     ) -> Orchestration:
         """Raise an external event for an orchestration."""
-        return await self._request(
-            "POST", f"/orchestrations/{orchestration_id}/events", json=event,
+        return cast(
+            Orchestration,
+            await self._request(
+                "POST",
+                f"/orchestrations/{orchestration_id}/events",
+                json=event,
+            ),
         )
 
     async def terminate_orchestration(
-        self, orchestration_id: str, payload: dict[str, Any] | None = None,
+        self,
+        orchestration_id: str,
+        payload: dict[str, Any] | None = None,
     ) -> Orchestration:
         """Terminate an orchestration."""
-        return await self._request(
-            "POST",
-            f"/orchestrations/{orchestration_id}/terminate",
-            json=payload or {},
+        return cast(
+            Orchestration,
+            await self._request(
+                "POST",
+                f"/orchestrations/{orchestration_id}/terminate",
+                json=payload or {},
+            ),
         )
 
     async def list_orchestration_definitions(self) -> list[OrchestrationDefinition]:
         """List orchestration definitions."""
-        return await self._request("GET", "/orchestrations/definitions")
+        return cast(
+            list[OrchestrationDefinition],
+            await self._request("GET", "/orchestrations/definitions"),
+        )
 
     async def upsert_orchestration_definition(
-        self, definition: OrchestrationDefinition,
+        self,
+        definition: OrchestrationDefinition,
     ) -> OrchestrationDefinition:
         """Register or update an orchestration definition."""
-        return await self._request("POST", "/orchestrations/definitions", json=definition)
+        return cast(
+            OrchestrationDefinition,
+            await self._request("POST", "/orchestrations/definitions", json=definition),
+        )
 
     async def get_orchestration_definition(self, name: str) -> OrchestrationDefinition:
         """Get an orchestration definition by name."""
-        return await self._request("GET", f"/orchestrations/definitions/{name}")
+        return cast(
+            OrchestrationDefinition,
+            await self._request("GET", f"/orchestrations/definitions/{name}"),
+        )
 
     async def delete_orchestration_definition(self, name: str) -> str:
         """Delete an orchestration definition by name."""
-        return await self._request("DELETE", f"/orchestrations/definitions/{name}")
+        return cast(str, await self._request("DELETE", f"/orchestrations/definitions/{name}"))
 
     async def list_objects(self) -> list[DurableObject]:
         """List objects."""
-        return await self._request("GET", "/objects")
+        return cast(list[DurableObject], await self._request("GET", "/objects"))
 
     async def create_object(self, obj: DurableObject) -> DurableObject:
         """Create a new object."""
-        return await self._request("POST", "/objects", json=obj)
+        return cast(DurableObject, await self._request("POST", "/objects", json=obj))
 
     async def get_object(self, object_id: str) -> DurableObject:
         """Get an object by identifier."""
-        return await self._request("GET", f"/objects/{object_id}")
+        return cast(DurableObject, await self._request("GET", f"/objects/{object_id}"))
 
     async def list_schedules(self) -> list[Schedule]:
         """List schedules."""
-        return await self._request("GET", "/schedules")
+        return cast(list[Schedule], await self._request("GET", "/schedules"))
 
     async def create_schedule(self, schedule: Schedule) -> Schedule:
         """Create a new schedule."""
-        return await self._request("POST", "/schedules", json=schedule)
+        return cast(Schedule, await self._request("POST", "/schedules", json=schedule))
 
     async def get_schedule(self, schedule_id: str) -> Schedule:
         """Get a schedule by identifier."""
-        return await self._request("GET", f"/schedules/{schedule_id}")
+        return cast(Schedule, await self._request("GET", f"/schedules/{schedule_id}"))
 
     async def list_stores(self) -> list[DurableStore]:
         """List durable stores."""
-        return await self._request("GET", "/stores")
+        return cast(list[DurableStore], await self._request("GET", "/stores"))
 
     async def create_store(self, store: DurableStore) -> DurableStore:
         """Create a durable store."""
-        return await self._request("POST", "/stores", json=store)
+        return cast(DurableStore, await self._request("POST", "/stores", json=store))
 
     async def get_store(self, store_id: str) -> DurableStore:
         """Get a durable store by identifier."""
-        return await self._request("GET", f"/stores/{store_id}")
+        return cast(DurableStore, await self._request("GET", f"/stores/{store_id}"))
 
     async def delete_store(self, store_id: str) -> str:
         """Delete a durable store by identifier."""
-        return await self._request("DELETE", f"/stores/{store_id}")
+        return cast(str, await self._request("DELETE", f"/stores/{store_id}"))
 
     async def query_store(
-        self, store_id: str, payload: dict[str, Any],
+        self,
+        store_id: str,
+        payload: dict[str, Any],
     ) -> DurableStoreQueryResult:
         """Run a read query against a durable store."""
-        return await self._request("POST", f"/stores/{store_id}/query", json=payload)
+        return cast(
+            DurableStoreQueryResult,
+            await self._request("POST", f"/stores/{store_id}/query", json=payload),
+        )
 
     async def execute_store(
-        self, store_id: str, payload: dict[str, Any],
+        self,
+        store_id: str,
+        payload: dict[str, Any],
     ) -> DurableStoreExecuteResult:
         """Run a write statement against a durable store."""
-        return await self._request("POST", f"/stores/{store_id}/execute", json=payload)
+        return cast(
+            DurableStoreExecuteResult,
+            await self._request("POST", f"/stores/{store_id}/execute", json=payload),
+        )
 
     async def command_store(
-        self, store_id: str, payload: dict[str, Any],
+        self,
+        store_id: str,
+        payload: dict[str, Any],
     ) -> DurableStoreCommandResult:
         """Run a command against a durable store (Redis-style engines)."""
-        return await self._request("POST", f"/stores/{store_id}/command", json=payload)
+        return cast(
+            DurableStoreCommandResult,
+            await self._request("POST", f"/stores/{store_id}/command", json=payload),
+        )
 
     async def extend_ttl(self, name: str, *, by: str) -> str | None:
         """Extend a sandbox's TTL. Returns the new expiry time."""
@@ -477,7 +529,9 @@ class AsyncAgentKernel:
                 await sb.run(["echo", "hello"])
             # sandbox auto-removed
         """
-        await self.create_sandbox(name, image=image, vcpus=vcpus, memory_mb=memory_mb, profile=profile)
+        await self.create_sandbox(
+            name, image=image, vcpus=vcpus, memory_mb=memory_mb, profile=profile
+        )
         return AsyncSandboxSession(name, self)
 
     async def browser(
@@ -498,10 +552,13 @@ class AsyncAgentKernel:
                 print(page.title, page.links)
             # sandbox auto-removed
         """
-        from .browser import AsyncBrowserSession, _SETUP_CMD
+        from .browser import _SETUP_CMD, AsyncBrowserSession
 
         await self.create_sandbox(
-            name, image="python:3.12-slim", memory_mb=memory_mb, profile="moderate",
+            name,
+            image="python:3.12-slim",
+            memory_mb=memory_mb,
+            profile="moderate",
         )
         await self.exec_in_sandbox(name, _SETUP_CMD)
         return AsyncBrowserSession(name, self)
