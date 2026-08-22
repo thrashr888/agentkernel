@@ -1,0 +1,37 @@
+name: Hyperlight
+
+on:
+  pull_request:
+    branches: [main, codex/apple-container-1-2-modernization]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/backend/hyperlight.rs
+      - src/hyperlight_backend.rs
+      - tests/hyperlight_benchmark.rs
+      - .github/workflows/hyperlight.yml
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.89"
+
+jobs:
+  feature-check:
+    name: Hyperlight feature (Linux x64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: hyperlight
+      - name: Check Hyperlight-only build
+        run: cargo check --locked --lib --no-default-features --features hyperlight
+      - name: Lint Hyperlight-only build
+        run: cargo clippy --locked --lib --no-default-features --features hyperlight -- -D warnings
+      - name: Test Hyperlight-only library
+        run: cargo test --locked --lib --no-default-features --features hyperlight

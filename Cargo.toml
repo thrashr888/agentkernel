@@ -100,7 +100,7 @@ libc = "0.2"
 
 # Hyperlight for sub-millisecond Wasm sandboxes (Linux only, requires KVM)
 [target.'cfg(target_os = "linux")'.dependencies]
-hyperlight-wasm = { version = "0.12", optional = true }
+hyperlight-wasm = { version = "0.14", default-features = false, features = ["kvm"], optional = true }
 
 [dev-dependencies]
 tempfile = "3.0"
