@@ -66,6 +66,32 @@ pub struct NetworkInterface {
     pub host_dev_name: String,
 }
 
+/// Full snapshot creation parameters.
+#[derive(Debug, Serialize)]
+#[allow(dead_code)]
+pub struct SnapshotCreateParams {
+    pub mem_file_path: String,
+    pub snapshot_path: String,
+    pub snapshot_type: String,
+}
+
+/// Override the host-side UDS when restoring a VM snapshot.
+#[derive(Debug, Serialize)]
+#[allow(dead_code)]
+pub struct VsockOverride {
+    pub uds_path: String,
+}
+
+/// Snapshot restoration parameters supported by Firecracker 1.16.
+#[derive(Debug, Serialize)]
+#[allow(dead_code)]
+pub struct SnapshotLoadParams {
+    pub mem_file_path: String,
+    pub snapshot_path: String,
+    pub resume_vm: bool,
+    pub vsock_override: VsockOverride,
+}
+
 /// Instance info response
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -159,6 +185,18 @@ impl FirecrackerClient {
             action_type: "Resume".to_string(),
         };
         self.put("/actions", &action).await
+    }
+
+    /// Create a full VM snapshot. The VM must be paused first.
+    #[allow(dead_code)]
+    pub async fn create_snapshot(&self, snapshot: &SnapshotCreateParams) -> Result<()> {
+        self.put("/snapshot/create", snapshot).await
+    }
+
+    /// Load and optionally resume a VM from a snapshot.
+    #[allow(dead_code)]
+    pub async fn load_snapshot(&self, snapshot: &SnapshotLoadParams) -> Result<()> {
+        self.put("/snapshot/load", snapshot).await
     }
 
     /// Make a PUT request
@@ -263,6 +301,25 @@ mod tests {
         let json = serde_json::to_string(&boot).unwrap();
         assert!(json.contains("kernel_image_path"));
         assert!(json.contains("boot_args"));
+    }
+
+    #[test]
+    fn test_snapshot_load_serializes_vsock_override() {
+        let snapshot = SnapshotLoadParams {
+            mem_file_path: "/tmp/vm.mem".to_string(),
+            snapshot_path: "/tmp/vm.state".to_string(),
+            resume_vm: true,
+            vsock_override: VsockOverride {
+                uds_path: "/tmp/restored-vsock.sock".to_string(),
+            },
+        };
+
+        let value = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(value["resume_vm"], true);
+        assert_eq!(
+            value["vsock_override"]["uds_path"],
+            "/tmp/restored-vsock.sock"
+        );
     }
 
     #[test]

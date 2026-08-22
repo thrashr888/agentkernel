@@ -4,7 +4,7 @@
 #   docker build -t agentkernel-kernel-builder -f Dockerfile.kernel-builder .
 #
 # Run:
-#   docker run --rm -v "$(pwd)/../kernel:/kernel" agentkernel-kernel-builder 6.1.70
+#   docker run --rm -v "$(pwd)/../kernel:/kernel" agentkernel-kernel-builder 6.18.45
 
 FROM ubuntu:24.04
 
@@ -32,4 +32,4 @@ RUN mkdir -p /kernel
 ENV BUILD_DIR=/tmp/kernel-build
 
 ENTRYPOINT ["/build/build-kernel.sh"]
-CMD ["6.1.70"]
+CMD ["6.18.45"]
