@@ -5,8 +5,11 @@
   "engines": {
     "node": ">=20"
   },
+  "scripts": {
+    "test": "node --check remote-bridge.mjs && node --test test/*.test.mjs"
+  },
   "dependencies": {
-    "@daytonaio/sdk": "^0.203.0",
+    "@daytona/sdk": "^0.205.1",
     "@runloop/api-client": "^1.14.1",
     "e2b": "^2.18.0",
     "modal": "^0.7.3"
