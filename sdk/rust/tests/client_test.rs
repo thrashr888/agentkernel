@@ -465,7 +465,10 @@ async fn query_store() {
 
     let client = test_client(&server).await;
     let out = client
-        .query_store("store-1", serde_json::json!({"sql": "select 1", "params": []}))
+        .query_store(
+            "store-1",
+            serde_json::json!({"sql": "select 1", "params": []}),
+        )
         .await
         .unwrap();
     assert_eq!(out["row_count"], 1);
