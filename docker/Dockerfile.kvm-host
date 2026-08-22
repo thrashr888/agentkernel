@@ -27,15 +27,21 @@ RUN mkdir -p /opt/agentkernel/bin \
     /var/run/agentkernel
 
 # Download Firecracker
-ARG FIRECRACKER_VERSION=v1.7.0
+ARG FIRECRACKER_VERSION=v1.16.1
 ARG TARGETARCH
 
-RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "x86_64") && \
-    curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-${ARCH}.tgz" \
-    | tar -xz -C /tmp && \
+RUN case "$TARGETARCH" in \
+      ""|amd64) ARCH=x86_64; FIRECRACKER_SHA256=382a02a869e4d6d5cb14c40577f9545e8458021ea8b0b2d3fc10ec14d9c242e6 ;; \
+      arm64) ARCH=aarch64; FIRECRACKER_SHA256=8d0e69f6d6f9a1724551f607f18504052c16c1828ee3d4d7b6e6c73380871e0e ;; \
+      *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac && \
+    ASSET="firecracker-${FIRECRACKER_VERSION}-${ARCH}.tgz" && \
+    curl -fsSL --output "/tmp/${ASSET}" "https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/${ASSET}" && \
+    echo "${FIRECRACKER_SHA256}  /tmp/${ASSET}" | sha256sum -c - && \
+    tar -xzf "/tmp/${ASSET}" -C /tmp && \
     mv /tmp/release-${FIRECRACKER_VERSION}-${ARCH}/firecracker-${FIRECRACKER_VERSION}-${ARCH} /opt/agentkernel/bin/firecracker && \
     chmod +x /opt/agentkernel/bin/firecracker && \
-    rm -rf /tmp/release-*
+    rm -rf /tmp/release-* "/tmp/${ASSET}"
 
 # Add firecracker to PATH
 ENV PATH="/opt/agentkernel/bin:${PATH}"
