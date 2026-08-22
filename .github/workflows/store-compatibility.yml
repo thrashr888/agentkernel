@@ -1,0 +1,82 @@
+name: Durable Store Compatibility
+
+on:
+  pull_request:
+    branches: [main, codex/apple-container-1-2-modernization]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/durable_storage.rs
+      - src/orchestration_store.rs
+      - tests/store_compatibility.rs
+      - .github/workflows/store-compatibility.yml
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.89"
+  REDIS_PORT: "6379"
+  VALKEY_PORT: "6380"
+  POSTGRES_PORT: "5432"
+  MYSQL_PORT: "3306"
+
+jobs:
+  service-round-trips:
+    name: Redis, Valkey, PostgreSQL, and MySQL
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      valkey:
+        image: valkey/valkey:9.1.1-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: agentkernel
+          POSTGRES_PASSWORD: agentkernel
+          POSTGRES_DB: agentkernel
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agentkernel -d agentkernel"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: agentkernel
+          MYSQL_DATABASE: agentkernel
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pagentkernel --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 18
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: durable-stores
+      - name: Test SQLite migrations
+        run: cargo test --locked durable_storage::tests::test_bootstrap_migrates_existing_database_without_losing_data
+      - name: Test service round trips
+        run: cargo test --locked --test store_compatibility -- --ignored --test-threads=1

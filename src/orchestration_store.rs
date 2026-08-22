@@ -1706,6 +1706,7 @@ fn redis_value_to_json(value: redis::Value) -> serde_json::Value {
             serde_json::Value::Array(data.into_iter().map(redis_value_to_json).collect())
         }
         redis::Value::ServerError(e) => serde_json::json!({ "error": format!("{e:?}") }),
+        other => serde_json::json!({ "unsupported": format!("{other:?}") }),
     }
 }
 
