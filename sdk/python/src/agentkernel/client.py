@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
+
+if TYPE_CHECKING:
+    from .browser import BrowserSession
 
 from ._config import resolve_config
 from .errors import AgentKernelError, NetworkError, error_from_status
 from .types import (
     BatchFileWriteResponse,
     BatchRunResponse,
-    CreateSandboxOptions,
     DetachedCommand,
     DetachedLogsResponse,
     DurableObject,
@@ -20,12 +22,9 @@ from .types import (
     DurableStoreCommandResult,
     DurableStoreExecuteResult,
     DurableStoreQueryResult,
-    ExecOptions,
-    ExtendTtlResponse,
     FileReadResponse,
-    OrchestrationDefinition,
     Orchestration,
-    RunOptions,
+    OrchestrationDefinition,
     RunOutput,
     SandboxInfo,
     Schedule,
@@ -55,7 +54,11 @@ class SandboxSession:
     ) -> RunOutput:
         """Run a command in this sandbox."""
         return self._client.exec_in_sandbox(
-            self.name, command, env=env, workdir=workdir, sudo=sudo,
+            self.name,
+            command,
+            env=env,
+            workdir=workdir,
+            sudo=sudo,
         )
 
     def info(self) -> SandboxInfo:
@@ -120,7 +123,7 @@ class AgentKernel:
 
     def health(self) -> str:
         """Health check. Returns 'ok'."""
-        return self._request("GET", "/health")
+        return cast(str, self._request("GET", "/health"))
 
     def run(
         self,
@@ -180,11 +183,16 @@ class AgentKernel:
     ) -> SandboxInfo:
         """Create a new sandbox."""
         body = {
-            "name": name, "image": image, "vcpus": vcpus,
-            "memory_mb": memory_mb, "profile": profile,
-            "source_url": source_url, "source_ref": source_ref,
+            "name": name,
+            "image": image,
+            "vcpus": vcpus,
+            "memory_mb": memory_mb,
+            "profile": profile,
+            "source_url": source_url,
+            "source_ref": source_ref,
             "volumes": volumes,
-            "secrets": secrets, "secret_files": secret_files,
+            "secrets": secrets,
+            "secret_files": secret_files,
         }
         data = self._request(
             "POST",
@@ -241,24 +249,27 @@ class AgentKernel:
         encoding: str = "utf8",
     ) -> str:
         """Write a file to a sandbox."""
-        return self._request(
-            "PUT",
-            f"/sandboxes/{name}/files/{path}",
-            json={"content": content, "encoding": encoding},
+        return cast(
+            str,
+            self._request(
+                "PUT",
+                f"/sandboxes/{name}/files/{path}",
+                json={"content": content, "encoding": encoding},
+            ),
         )
 
     def delete_file(self, name: str, path: str) -> str:
         """Delete a file from a sandbox."""
-        return self._request("DELETE", f"/sandboxes/{name}/files/{path}")
+        return cast(str, self._request("DELETE", f"/sandboxes/{name}/files/{path}"))
 
     def write_files(self, name: str, files: dict[str, str]) -> BatchFileWriteResponse:
         """Write multiple files to a sandbox in one request."""
         data = self._request("POST", f"/sandboxes/{name}/files", json={"files": files})
         return BatchFileWriteResponse(**data)
 
-    def get_sandbox_logs(self, name: str) -> list[dict]:
+    def get_sandbox_logs(self, name: str) -> list[dict[str, Any]]:
         """Get audit log entries for a sandbox."""
-        return self._request("GET", f"/sandboxes/{name}/logs")
+        return cast(list[dict[str, Any]], self._request("GET", f"/sandboxes/{name}/logs"))
 
     def batch_run(self, commands: list[list[str]]) -> BatchRunResponse:
         """Run multiple commands in parallel."""
@@ -296,14 +307,15 @@ class AgentKernel:
     ) -> DetachedLogsResponse:
         """Get logs from a detached command."""
         query = f"?stream={stream}" if stream == "stderr" else ""
-        data = self._request(
-            "GET", f"/sandboxes/{name}/exec/detached/{cmd_id}/logs{query}"
-        )
+        data = self._request("GET", f"/sandboxes/{name}/exec/detached/{cmd_id}/logs{query}")
         return DetachedLogsResponse(**data)
 
     def detached_kill(self, name: str, cmd_id: str) -> str:
         """Kill a detached command."""
-        return self._request("DELETE", f"/sandboxes/{name}/exec/detached/{cmd_id}")
+        return cast(
+            str,
+            self._request("DELETE", f"/sandboxes/{name}/exec/detached/{cmd_id}"),
+        )
 
     def detached_list(self, name: str) -> list[DetachedCommand]:
         """List detached commands in a sandbox."""
@@ -312,81 +324,110 @@ class AgentKernel:
 
     def list_orchestrations(self) -> list[Orchestration]:
         """List orchestrations."""
-        return self._request("GET", "/orchestrations")
+        return cast(list[Orchestration], self._request("GET", "/orchestrations"))
 
     def create_orchestration(self, orchestration: Orchestration) -> Orchestration:
         """Create a new orchestration."""
-        return self._request("POST", "/orchestrations", json=orchestration)
+        return cast(Orchestration, self._request("POST", "/orchestrations", json=orchestration))
 
     def get_orchestration(self, orchestration_id: str) -> Orchestration:
         """Get an orchestration by identifier."""
-        return self._request("GET", f"/orchestrations/{orchestration_id}")
+        return cast(Orchestration, self._request("GET", f"/orchestrations/{orchestration_id}"))
 
     def signal_orchestration(
-        self, orchestration_id: str, event: dict[str, Any],
+        self,
+        orchestration_id: str,
+        event: dict[str, Any],
     ) -> Orchestration:
         """Raise an external event for an orchestration."""
-        return self._request(
-            "POST", f"/orchestrations/{orchestration_id}/events", json=event,
+        return cast(
+            Orchestration,
+            self._request(
+                "POST",
+                f"/orchestrations/{orchestration_id}/events",
+                json=event,
+            ),
         )
 
     def terminate_orchestration(
-        self, orchestration_id: str, payload: dict[str, Any] | None = None,
+        self,
+        orchestration_id: str,
+        payload: dict[str, Any] | None = None,
     ) -> Orchestration:
         """Terminate an orchestration."""
-        return self._request(
-            "POST",
-            f"/orchestrations/{orchestration_id}/terminate",
-            json=payload or {},
+        return cast(
+            Orchestration,
+            self._request(
+                "POST",
+                f"/orchestrations/{orchestration_id}/terminate",
+                json=payload or {},
+            ),
         )
 
     def list_orchestration_definitions(self) -> list[OrchestrationDefinition]:
         """List orchestration definitions."""
-        return self._request("GET", "/orchestrations/definitions")
+        return cast(
+            list[OrchestrationDefinition], self._request("GET", "/orchestrations/definitions")
+        )
 
     def upsert_orchestration_definition(
-        self, definition: OrchestrationDefinition,
+        self,
+        definition: OrchestrationDefinition,
     ) -> OrchestrationDefinition:
         """Register or update an orchestration definition."""
-        return self._request("POST", "/orchestrations/definitions", json=definition)
+        return cast(
+            OrchestrationDefinition,
+            self._request("POST", "/orchestrations/definitions", json=definition),
+        )
 
     def get_orchestration_definition(self, name: str) -> OrchestrationDefinition:
         """Get an orchestration definition by name."""
-        return self._request("GET", f"/orchestrations/definitions/{name}")
+        return cast(
+            OrchestrationDefinition,
+            self._request("GET", f"/orchestrations/definitions/{name}"),
+        )
 
     def delete_orchestration_definition(self, name: str) -> str:
         """Delete an orchestration definition by name."""
-        return self._request("DELETE", f"/orchestrations/definitions/{name}")
+        return cast(str, self._request("DELETE", f"/orchestrations/definitions/{name}"))
 
     def list_objects(self) -> list[DurableObject]:
         """List objects."""
-        return self._request("GET", "/objects")
+        return cast(list[DurableObject], self._request("GET", "/objects"))
 
     def create_object(self, obj: DurableObject) -> DurableObject:
         """Create a new object."""
-        return self._request("POST", "/objects", json=obj)
+        return cast(DurableObject, self._request("POST", "/objects", json=obj))
 
     def get_object(self, object_id: str) -> DurableObject:
         """Get an object by identifier."""
-        return self._request("GET", f"/objects/{object_id}")
+        return cast(DurableObject, self._request("GET", f"/objects/{object_id}"))
 
     def call_object(
-        self, class_name: str, object_id: str, method: str, args: dict | None = None,
-    ) -> dict:
+        self,
+        class_name: str,
+        object_id: str,
+        method: str,
+        args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Call a method on a durable object (auto-creates/wakes if needed)."""
         resp = self._request(
             "POST",
             f"/objects/{class_name}/{object_id}/call/{method}",
             json=args or {},
         )
-        return resp
+        return cast(dict[str, Any], resp)
 
     def delete_object(self, object_id: str) -> str:
         """Delete a durable object by identifier."""
-        return self._request("DELETE", f"/objects/{object_id}")
+        return cast(str, self._request("DELETE", f"/objects/{object_id}"))
 
     def patch_object(
-        self, object_id: str, *, storage: dict | None = None, status: str | None = None,
+        self,
+        object_id: str,
+        *,
+        storage: dict[str, Any] | None = None,
+        status: str | None = None,
     ) -> DurableObject:
         """Partially update a durable object (storage and/or status)."""
         body: dict[str, Any] = {}
@@ -394,57 +435,72 @@ class AgentKernel:
             body["storage"] = storage
         if status is not None:
             body["status"] = status
-        return self._request("PATCH", f"/objects/{object_id}", json=body)
+        return cast(DurableObject, self._request("PATCH", f"/objects/{object_id}", json=body))
 
     def list_schedules(self) -> list[Schedule]:
         """List schedules."""
-        return self._request("GET", "/schedules")
+        return cast(list[Schedule], self._request("GET", "/schedules"))
 
     def create_schedule(self, schedule: Schedule) -> Schedule:
         """Create a new schedule."""
-        return self._request("POST", "/schedules", json=schedule)
+        return cast(Schedule, self._request("POST", "/schedules", json=schedule))
 
     def get_schedule(self, schedule_id: str) -> Schedule:
         """Get a schedule by identifier."""
-        return self._request("GET", f"/schedules/{schedule_id}")
+        return cast(Schedule, self._request("GET", f"/schedules/{schedule_id}"))
 
     def delete_schedule(self, schedule_id: str) -> str:
         """Delete a schedule by identifier."""
-        return self._request("DELETE", f"/schedules/{schedule_id}")
+        return cast(str, self._request("DELETE", f"/schedules/{schedule_id}"))
 
     def list_stores(self) -> list[DurableStore]:
         """List durable stores."""
-        return self._request("GET", "/stores")
+        return cast(list[DurableStore], self._request("GET", "/stores"))
 
     def create_store(self, store: DurableStore) -> DurableStore:
         """Create a durable store."""
-        return self._request("POST", "/stores", json=store)
+        return cast(DurableStore, self._request("POST", "/stores", json=store))
 
     def get_store(self, store_id: str) -> DurableStore:
         """Get a durable store by identifier."""
-        return self._request("GET", f"/stores/{store_id}")
+        return cast(DurableStore, self._request("GET", f"/stores/{store_id}"))
 
     def delete_store(self, store_id: str) -> str:
         """Delete a durable store by identifier."""
-        return self._request("DELETE", f"/stores/{store_id}")
+        return cast(str, self._request("DELETE", f"/stores/{store_id}"))
 
     def query_store(
-        self, store_id: str, payload: dict[str, Any],
+        self,
+        store_id: str,
+        payload: dict[str, Any],
     ) -> DurableStoreQueryResult:
         """Run a read query against a durable store."""
-        return self._request("POST", f"/stores/{store_id}/query", json=payload)
+        return cast(
+            DurableStoreQueryResult,
+            self._request("POST", f"/stores/{store_id}/query", json=payload),
+        )
 
     def execute_store(
-        self, store_id: str, payload: dict[str, Any],
+        self,
+        store_id: str,
+        payload: dict[str, Any],
     ) -> DurableStoreExecuteResult:
         """Run a write statement against a durable store."""
-        return self._request("POST", f"/stores/{store_id}/execute", json=payload)
+        return cast(
+            DurableStoreExecuteResult,
+            self._request("POST", f"/stores/{store_id}/execute", json=payload),
+        )
 
     def command_store(
-        self, store_id: str, payload: dict[str, Any],
+        self,
+        store_id: str,
+        payload: dict[str, Any],
     ) -> DurableStoreCommandResult:
         """Run a command against a durable store (Redis-style engines)."""
-        return self._request("POST", f"/stores/{store_id}/command", json=payload)
+        return cast(
+            DurableStoreCommandResult,
+            self._request("POST", f"/stores/{store_id}/command", json=payload),
+        )
 
     def extend_ttl(self, name: str, *, by: str) -> str | None:
         """Extend a sandbox's TTL. Returns the new expiry time."""
@@ -516,10 +572,13 @@ class AgentKernel:
                 print(page.title, page.links)
             # sandbox auto-removed
         """
-        from .browser import BrowserSession, _SETUP_CMD
+        from .browser import _SETUP_CMD, BrowserSession
 
         self.create_sandbox(
-            name, image="python:3.12-slim", memory_mb=memory_mb, profile="moderate",
+            name,
+            image="python:3.12-slim",
+            memory_mb=memory_mb,
+            profile="moderate",
         )
         # Install Playwright + Chromium (one-time setup)
         self.exec_in_sandbox(name, _SETUP_CMD)

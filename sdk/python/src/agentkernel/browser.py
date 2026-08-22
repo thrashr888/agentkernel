@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import base64
 import json
-import shlex
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from .types import AriaSnapshot, PageLink, PageResult, RunOutput
 
@@ -245,7 +244,7 @@ _ARIA_SNAPSHOT_JS = r"""
 })()
 """
 
-_BROWSER_SERVER_SCRIPT = r"""
+_BROWSER_SERVER_SCRIPT = r'''
 import asyncio, base64, json, sys, os, signal
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -363,7 +362,7 @@ if __name__ == "__main__":
     def shutdown(sig, frame): server.shutdown(); sys.exit(0)
     signal.signal(signal.SIGTERM, shutdown); signal.signal(signal.SIGINT, shutdown)
     server.serve_forever()
-"""
+'''
 
 _BROWSER_START_SCRIPT = """
 import sys, json, subprocess, time, os, signal, select
@@ -419,7 +418,7 @@ class BrowserSession:
             title=data["title"],
             url=data["url"],
             text=data["text"],
-            links=[PageLink(**l) for l in data.get("links", [])],
+            links=[PageLink(**link) for link in data.get("links", [])],
         )
 
     def screenshot(self, url: str | None = None) -> bytes:
@@ -500,7 +499,7 @@ class BrowserSession:
         """List active page names."""
         result = self._browser_request("GET", "/pages")
         data = json.loads(result.output)
-        return data.get("pages", [])
+        return cast(list[str], data.get("pages", []))
 
     def _browser_request(self, method: str, path: str, body: str | None = None) -> RunOutput:
         """Send a request to the in-sandbox browser server."""
@@ -588,7 +587,7 @@ class AsyncBrowserSession:
             title=data["title"],
             url=data["url"],
             text=data["text"],
-            links=[PageLink(**l) for l in data.get("links", [])],
+            links=[PageLink(**link) for link in data.get("links", [])],
         )
 
     async def screenshot(self, url: str | None = None) -> bytes:
@@ -665,7 +664,7 @@ class AsyncBrowserSession:
         """List active page names."""
         result = await self._browser_request("GET", "/pages")
         data = json.loads(result.output)
-        return data.get("pages", [])
+        return cast(list[str], data.get("pages", []))
 
     async def _browser_request(self, method: str, path: str, body: str | None = None) -> RunOutput:
         """Send a request to the in-sandbox browser server."""
@@ -690,7 +689,14 @@ class AsyncBrowserSession:
             pass
         result = await self._client.exec_in_sandbox(
             self.name,
-            ["python3", "-c", _BROWSER_START_SCRIPT, _ARIA_SNAPSHOT_JS, "9222", _BROWSER_SERVER_SCRIPT],
+            [
+                "python3",
+                "-c",
+                _BROWSER_START_SCRIPT,
+                _ARIA_SNAPSHOT_JS,
+                "9222",
+                _BROWSER_SERVER_SCRIPT,
+            ],
         )
         data = json.loads(result.output)
         if "error" in data:
