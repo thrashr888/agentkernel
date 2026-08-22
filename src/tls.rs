@@ -71,7 +71,7 @@ pub fn generate_self_signed_cert(cn: &str) -> Result<(String, String)> {
         .context("Failed to generate self-signed certificate")?;
 
     let cert_pem = certified_key.cert.pem();
-    let key_pem = certified_key.key_pair.serialize_pem();
+    let key_pem = certified_key.signing_key.serialize_pem();
 
     eprintln!(
         "Warning: Using self-signed certificate. \

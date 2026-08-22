@@ -8,7 +8,6 @@
 //! Secrets are auto-injected as env vars into sandboxes when referenced in config.
 
 use anyhow::{Context, Result, bail};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -204,7 +203,7 @@ impl SecretVault {
         }
 
         let mut key = [0u8; FILE_KEY_LEN];
-        rand::rngs::OsRng.fill_bytes(&mut key);
+        rand::fill(&mut key);
         let encoded = base64::engine::general_purpose::STANDARD.encode(key);
 
         match crate::secure_fs::create_private_file(&self.key_path, encoded.as_bytes()) {
@@ -232,7 +231,7 @@ impl SecretVault {
         let key = LessSafeKey::new(unbound);
 
         let mut nonce_bytes = [0u8; NONCE_LEN];
-        rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+        rand::fill(&mut nonce_bytes);
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
 
         let mut ciphertext = value.as_bytes().to_vec();

@@ -33,7 +33,7 @@ enterprise = ["dep:cedar-policy", "dep:ed25519-dalek", "dep:jsonwebtoken", "dep:
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
-base64 = "0.22"
+base64 = "0.23"
 bytes = "1.0"
 clap = { version = "4.0", features = ["derive"] }
 clap_complete = "4.0"
@@ -43,25 +43,26 @@ http-body-util = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full", "process", "net"] }
-toml = "0.8"
+toml = "1"
 uuid = { version = "1.0", features = ["v4", "v7"] }
 chrono = { version = "0.4", features = ["serde"] }
 redis = "1.6"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 tokio-postgres = { version = "0.7.18", features = ["with-serde_json-1"] }
 mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "rustls-tls", "aws-lc-rs", "tls12"] }
-sha2 = "0.10"
-prometheus = { version = "0.13", default-features = false }
+sha2 = "0.11"
+prometheus = { version = "0.14", default-features = false }
 wat = "1.225"  # WAT to WASM compiler for WebAssembly text format support
 tempfile = "3.0"  # Temporary directories for rootfs conversion
 dirs = "6.0.0"
-sysinfo = "0.34"
+# sysinfo 0.39 requires Rust 1.95; 0.38.4 is the newest release compatible with our 1.89 MSRV.
+sysinfo = "=0.38.4"
 urlencoding = "2"
 tokio-stream = "0.1"
 
 # SSH support (CA key generation and client key signing)
-ssh-key = { version = "0.6", features = ["ed25519", "rand_core"] }
-rand = "0.8"
+ssh-key = { version = "0.6", features = ["ed25519", "getrandom"] }
+rand = "0.10"
 ring = "0.17"
 hex = "0.4"
 
@@ -74,7 +75,7 @@ opentelemetry-otlp = { version = "0.32", features = ["http-proto", "reqwest-clie
 rustls = { version = "0.23", features = ["ring"] }
 rustls-pemfile = "2"
 tokio-rustls = "0.26"
-rcgen = "0.13"
+rcgen = "0.14"
 
 # Kubernetes backend (optional, behind "kubernetes" feature flag)
 kube = { version = "4.2", features = ["client", "runtime", "ws", "derive"], optional = true }
@@ -87,9 +88,9 @@ serde_yaml = { version = "0.9", optional = true }
 # Nomad backend (optional, behind "nomad" feature flag)
 # Enterprise policy engine (optional, behind "enterprise" feature)
 cedar-policy = { version = "4", optional = true }
-ed25519-dalek = { version = "2", features = ["rand_core"], optional = true }
-jsonwebtoken = { version = "10", optional = true }
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], optional = true }
+ed25519-dalek = { version = "3", features = ["rand_core"], optional = true }
+jsonwebtoken = { version = "11", features = ["rust_crypto"], optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["charset", "form", "http2", "json", "rustls", "stream", "system-proxy"], optional = true }
 webpki-roots = "1.0.6"
 
 # Unix socket support for Firecracker API

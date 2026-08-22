@@ -14,7 +14,6 @@
 
 use crate::backend::{FileInjection, Sandbox};
 use anyhow::{Result, bail};
-use rand::RngCore;
 use std::collections::HashMap;
 
 /// Default mount path for secret files inside the sandbox.
@@ -40,7 +39,7 @@ impl PlaceholderMap {
     /// Returns the placeholder string.
     pub fn insert_secret(&mut self, real_value: &str) -> String {
         let mut bytes = [0u8; 16];
-        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        rand::fill(&mut bytes);
         let token = format!("{}{}", PLACEHOLDER_PREFIX, hex::encode(bytes));
         self.mappings.insert(token.clone(), real_value.to_string());
         token
