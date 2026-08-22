@@ -84,7 +84,7 @@ impl HyperlightSandbox {
 
         let proto = SandboxBuilder::new()
             .with_guest_heap_size(10_000_000)
-            .with_guest_stack_size(1_000_000)
+            .with_guest_scratch_size(2 * 1024 * 1024)
             .build()
             .context("Failed to build Hyperlight sandbox")?;
 

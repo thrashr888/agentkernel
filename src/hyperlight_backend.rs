@@ -77,7 +77,7 @@ impl HyperlightSandbox {
         // Build the sandbox configuration
         let proto = SandboxBuilder::new()
             .with_guest_heap_size(10_000_000) // 10MB heap
-            .with_guest_stack_size(1_000_000) // 1MB stack
+            .with_guest_scratch_size(2 * 1024 * 1024) // 2MiB scratch (Hyperlight minimum)
             .build()
             .context("Failed to build Hyperlight sandbox")?;
 
@@ -129,7 +129,6 @@ impl HyperlightSandbox {
 }
 
 /// Pool configuration
-#[cfg(all(target_os = "linux", feature = "hyperlight"))]
 #[derive(Debug, Clone)]
 pub struct HyperlightPoolConfig {
     /// Minimum number of warm sandboxes to maintain
@@ -138,18 +137,20 @@ pub struct HyperlightPoolConfig {
     pub max_warm: usize,
     /// Guest heap size in bytes
     pub guest_heap_size: u64,
-    /// Guest stack size in bytes
+    /// Legacy guest stack size hint, retained for configuration compatibility
     pub guest_stack_size: u64,
+    /// Guest scratch size in bytes, including the dynamically-sized stack
+    pub guest_scratch_size: usize,
 }
 
-#[cfg(all(target_os = "linux", feature = "hyperlight"))]
 impl Default for HyperlightPoolConfig {
     fn default() -> Self {
         Self {
             min_warm: 3,
             max_warm: 10,
-            guest_heap_size: 10_000_000, // 10MB
-            guest_stack_size: 1_000_000, // 1MB
+            guest_heap_size: 10_000_000,         // 10MB
+            guest_stack_size: 1_000_000,         // Legacy 1MB stack hint
+            guest_scratch_size: 2 * 1024 * 1024, // Hyperlight 0.14 minimum
         }
     }
 }
@@ -315,9 +316,17 @@ impl HyperlightPool {
 
     /// Create a new warm runtime
     fn create_runtime(&self) -> Result<PooledRuntime> {
+        let legacy_stack_size = usize::try_from(self.config.guest_stack_size)
+            .context("Hyperlight guest stack size does not fit this platform")?;
+        let guest_scratch_size = self
+            .config
+            .guest_scratch_size
+            .max(legacy_stack_size)
+            .max(2 * 1024 * 1024);
+
         let proto = SandboxBuilder::new()
             .with_guest_heap_size(self.config.guest_heap_size)
-            .with_guest_stack_size(self.config.guest_stack_size)
+            .with_guest_scratch_size(guest_scratch_size)
             .build()
             .context("Failed to build Hyperlight sandbox")?;
 
@@ -372,16 +381,6 @@ pub struct HyperlightPoolStats {
 // ============================================================================
 // Stub implementations for non-Linux/non-hyperlight builds
 // ============================================================================
-
-/// Stub pool configuration
-#[cfg(not(all(target_os = "linux", feature = "hyperlight")))]
-#[derive(Debug, Clone, Default)]
-pub struct HyperlightPoolConfig {
-    pub min_warm: usize,
-    pub max_warm: usize,
-    pub guest_heap_size: u64,
-    pub guest_stack_size: u64,
-}
 
 /// Stub pool statistics
 #[cfg(not(all(target_os = "linux", feature = "hyperlight")))]
@@ -476,5 +475,14 @@ mod tests {
         let sandbox = HyperlightSandbox::new("test");
         assert_eq!(sandbox.name(), "test");
         assert!(!sandbox.is_initialized());
+    }
+
+    #[test]
+    fn test_pool_config_uses_hyperlight_0_14_scratch_minimum() {
+        let config = HyperlightPoolConfig::default();
+        assert_eq!(config.guest_heap_size, 10_000_000);
+        assert_eq!(config.guest_stack_size, 1_000_000);
+        assert_eq!(config.guest_scratch_size, 2 * 1024 * 1024);
+        assert!(config.min_warm <= config.max_warm);
     }
 }
