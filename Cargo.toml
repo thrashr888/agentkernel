@@ -77,9 +77,9 @@ tokio-rustls = "0.26"
 rcgen = "0.13"
 
 # Kubernetes backend (optional, behind "kubernetes" feature flag)
-kube = { version = "0.98", features = ["client", "runtime", "ws", "derive"], optional = true }
-k8s-openapi = { version = "0.24", features = ["latest"], optional = true }
-schemars = { version = "0.8", optional = true }
+kube = { version = "4.2", features = ["client", "runtime", "ws", "derive"], optional = true }
+k8s-openapi = { version = "0.28", features = ["latest"], optional = true }
+schemars = { version = "1.2", optional = true }
 thiserror = "2"
 futures = { version = "0.3", optional = true }
 serde_yaml = { version = "0.9", optional = true }
