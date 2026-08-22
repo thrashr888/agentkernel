@@ -6,16 +6,16 @@
 
 **Date**: 2026-08-20
 
-**Last updated**: 2026-08-20
+**Last updated**: 2026-08-21
 
 **Tracking epic**: `agentkernel-zvvh`
 
 ## Summary
 
 Modernize AgentKernel's compiler and JavaScript toolchains, sandbox backends,
-hosted-provider adapters, base images, bundled agent CLIs, durable-store
-clients, and public SDKs without turning the work into one high-risk dependency
-upgrade.
+hosted-provider adapters, base images, bundled agent CLIs, desktop agent-plugin
+management, durable-store clients, and public SDKs without turning the work
+into one high-risk dependency upgrade.
 
 The program keeps Rust 1.89 as the initial minimum supported Rust version
 (MSRV), adds current-stable validation, moves supported JavaScript tooling to
@@ -97,6 +97,7 @@ validation gates remain the same.
 | Hosted providers | Daytona 0.203, Runloop 1.14, E2B 2.18, Modal 0.7 | Supported SDKs plus shared contract tests and live smoke tests |
 | Default Linux image | Alpine 3.20 | Maintained Alpine stable line; initial target 3.24 |
 | Agent CLIs | Several unpinned installs; legacy Copilot package | Tested, recorded versions and supported Copilot package |
+| Desktop agent plugins | Duplicated CLI install commands and plugin state conflated with executable detection | One tested catalog with distinct CLI and AgentKernel-integration state |
 | Durable stores | Unit-heavy, little service-version coverage | Versioned SQLite, PostgreSQL, MySQL, Redis, and Valkey tests |
 
 ## Compatibility policy
@@ -158,6 +159,10 @@ Provider-specific limitations are explicit capabilities, not silent no-ops.
 - Each agent image must build and pass a minimum smoke test: executable
   discovery, version output, help or non-network startup, expected runtime user,
   and writable workspace.
+- The desktop app, HTTP API, quickstart paths, templates, images, and plugin
+  installer share one tested agent catalog. The app distinguishes a host agent
+  CLI from an AgentKernel MCP, skill, or extension integration and reports the
+  installation scope of each.
 
 ### Durable stores
 
@@ -199,6 +204,7 @@ the bead itself is authoritative.
 | 4 | Hosted-provider compatibility and contract tests | `agentkernel-2yhv` | In progress |
 | 4 | Daytona package rename | `agentkernel-zx4z` | Open |
 | 5 | Base images and bundled agent CLIs | `agentkernel-zvvh.4` | Open |
+| 5 | Desktop agent and plugin management | `agentkernel-zvvh.7` | Open |
 | 6 | Durable-store clients and service compatibility | `agentkernel-zvvh.5` | Open |
 | 7 | SDK language/runtime support matrices | `agentkernel-zvvh.6` | Open |
 
@@ -275,6 +281,12 @@ Move new defaults away from Alpine 3.20 and Node.js 20. Replace the discontinued
 Audit install users and paths, particularly OpenCode's root installation versus
 runtime-user PATH. Record and smoke-test all bundled agent versions.
 
+Audit the macOS Plugins page in the same milestone. Replace its duplicated
+hard-coded install tables with the tested catalog, distinguish host CLI
+availability from AgentKernel integration state, and route integration installs
+through the existing merge-safe plugin installer. Keep this desktop work in its
+own bead and pull request so image refreshes remain independently releasable.
+
 ### Milestone 6: Modernize data services
 
 Upgrade database clients only after service-backed tests exist. Cover Redis and
@@ -313,7 +325,8 @@ This RFC is complete when:
   target and automated validation proportional to its cost;
 - hosted-provider behavior is covered by shared contract tests;
 - remaining dependency advisories have documented, time-bounded exceptions;
-- released agent images publish tested tool versions; and
+- released agent images publish tested tool versions;
+- desktop agent and integration status comes from the same tested catalog; and
 - the support matrix is included in release documentation.
 
 ## Risks
