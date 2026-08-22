@@ -413,9 +413,9 @@ async function handleProviderRequest(providerName, providerRequest) {
 
 async function loadDaytonaSdk() {
   if (!daytonaSdkPromise) {
-    daytonaSdkPromise = import("@daytonaio/sdk").catch((error) => {
+    daytonaSdkPromise = import("@daytona/sdk").catch((error) => {
       throw new Error(
-        "Daytona support requires '@daytonaio/sdk'. Run 'npm install --prefix scripts' first. " +
+        "Daytona support requires '@daytona/sdk'. Run 'npm install --prefix scripts' first. " +
           `(${error.message})`,
       );
     });
@@ -760,7 +760,6 @@ async function resumeDaytonaSandbox(providerRequest) {
     if (!daytonaRunning(sandbox.state)) {
       await sandbox.start();
     }
-    await sandbox.refreshDataSafe();
     return daytonaResponse(sandbox, providerRequest);
   });
 }
@@ -768,7 +767,6 @@ async function resumeDaytonaSandbox(providerRequest) {
 async function statusDaytonaSandbox(providerRequest) {
   return withDaytonaClient(async (daytona) => {
     const sandbox = await getDaytonaSandbox(daytona, providerRequest);
-    await sandbox.refreshDataSafe();
     return daytonaResponse(sandbox, providerRequest);
   });
 }
@@ -778,7 +776,6 @@ async function stopDaytonaSandbox(providerRequest) {
     const sandbox = await getDaytonaSandbox(daytona, providerRequest);
     if (daytonaRunning(sandbox.state)) {
       await sandbox.stop();
-      await sandbox.refreshDataSafe();
     }
     return daytonaResponse(sandbox, providerRequest);
   });

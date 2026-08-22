@@ -58,7 +58,7 @@ jobs:
           cache-dependency-path: scripts/package-lock.json
       - run: npm ci
         working-directory: scripts
-      - run: node --check remote-bridge.mjs
+      - run: npm test
         working-directory: scripts
 
   rust-sdk:
