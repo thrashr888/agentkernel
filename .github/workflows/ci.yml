@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, codex/apple-container-1-2-modernization]
 
 env:
   CARGO_TERM_COLOR: always
@@ -60,6 +60,32 @@ jobs:
         working-directory: scripts
       - run: node --check remote-bridge.mjs
         working-directory: scripts
+
+  rust-sdk:
+    name: Rust SDK (${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ["1.85.0", stable]
+    defaults:
+      run:
+        working-directory: sdk/rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-sdk-${{ matrix.toolchain }}
+          workspaces: sdk/rust -> target
+      - run: cargo fmt --all -- --check
+      - run: cargo check --locked --all-targets
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --all-targets
+      - run: cargo package --locked
 
   test:
     name: Test
