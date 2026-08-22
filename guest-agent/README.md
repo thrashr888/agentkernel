@@ -4,6 +4,8 @@ Lightweight agent that runs inside microVMs to handle commands from the host.
 
 ## Building
 
+Rust 1.89 or newer is required.
+
 ### Native (for testing)
 
 ```bash
@@ -34,12 +36,12 @@ The resulting binary will be in:
 
 ```bash
 # Build for x86_64
-docker run --rm -v "$PWD":/app -w /app rust:alpine \
-  sh -c "rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl"
+docker run --rm --platform linux/amd64 -v "$PWD":/app -w /app rust:1.89-alpine3.22 \
+  sh -c "apk add --no-cache musl-dev && cargo build --release --locked --target x86_64-unknown-linux-musl"
 
 # Build for aarch64
-docker run --rm -v "$PWD":/app -w /app rust:alpine \
-  sh -c "rustup target add aarch64-unknown-linux-musl && cargo build --release --target aarch64-unknown-linux-musl"
+docker run --rm --platform linux/arm64 -v "$PWD":/app -w /app rust:1.89-alpine3.22 \
+  sh -c "apk add --no-cache musl-dev && cargo build --release --locked --target aarch64-unknown-linux-musl"
 ```
 
 ## Protocol
