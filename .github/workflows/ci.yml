@@ -114,6 +114,28 @@ jobs:
       - name: Import built wheel
         run: uv run --isolated --no-project --with ./dist/*.whl python -c "from agentkernel import AgentKernel, AsyncAgentKernel, BrowserSession"
 
+  node-sdk:
+    name: Node SDK (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ["22.13", "24"]
+    defaults:
+      run:
+        working-directory: sdk/nodejs
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: sdk/nodejs/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - run: npm run test:package
+
   test:
     name: Test
     runs-on: ${{ matrix.os }}

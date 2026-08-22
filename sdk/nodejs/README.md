@@ -8,7 +8,7 @@ Node.js SDK for [agentkernel](https://github.com/thrashr888/agentkernel) — run
 npm install agentkernel
 ```
 
-Requires Node.js 20+. Zero HTTP dependencies (uses native `fetch`).
+Requires Node.js 22.13+. Zero HTTP dependencies (uses native `fetch`).
 
 ## Quick Start
 

@@ -5,7 +5,7 @@ Official Node.js client for agentkernel. Zero HTTP dependencies — uses native 
 
 - **Package**: [`agentkernel`](https://www.npmjs.com/package/agentkernel)
 - **Source**: [`sdk/nodejs/`](https://github.com/thrashr888/agentkernel/tree/main/sdk/nodejs)
-- **Requires**: Node.js 20+
+- **Requires**: Node.js 22.13+
 
 ## Install
 
