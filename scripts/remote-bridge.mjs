@@ -1724,21 +1724,11 @@ async function ensureModalWorkspace(sandbox, providerRequest) {
 }
 
 async function readModalFileBuffer(sandbox, filePath) {
-  const file = await sandbox.open(filePath, "r");
-  try {
-    return Buffer.from(await file.read());
-  } finally {
-    await file.close().catch(() => {});
-  }
+  return Buffer.from(await sandbox.filesystem.readBytes(filePath));
 }
 
 async function writeModalFileBuffer(sandbox, filePath, content) {
-  const file = await sandbox.open(filePath, "w");
-  try {
-    await file.write(content);
-  } finally {
-    await file.close().catch(() => {});
-  }
+  await sandbox.filesystem.writeBytes(content, filePath);
 }
 
 async function createModalWorkspaceArchive(sandbox, providerRequest) {
