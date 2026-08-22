@@ -544,7 +544,7 @@ mod tests {
         let path = tmp.path().join("report.json");
         let report = BenchmarkReport {
             generated_at: "2026-03-23T00:00:00Z".to_string(),
-            image: "alpine:3.20".to_string(),
+            image: "alpine:3.24".to_string(),
             measured_iterations: 3,
             warmup_iterations: 1,
             primary_metric: "total_score".to_string(),

@@ -3,7 +3,7 @@
 
 [sandbox]
 name = "enterprise-sandbox"
-base_image = "alpine:3.20"
+base_image = "alpine:3.24"
 
 [agent]
 preferred = "claude"

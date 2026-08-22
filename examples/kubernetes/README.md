@@ -18,7 +18,7 @@ k3d cluster create agentkernel
 cargo build --features kubernetes
 
 # Create and run a sandbox
-agentkernel create k8s-sandbox --backend kubernetes --image alpine:3.20
+agentkernel create k8s-sandbox --backend kubernetes --image alpine:3.24
 agentkernel start k8s-sandbox
 agentkernel exec k8s-sandbox -- echo "hello from kubernetes"
 

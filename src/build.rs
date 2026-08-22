@@ -153,7 +153,7 @@ mod tests {
         let dockerfile_path = dir.path().join("Dockerfile");
 
         let mut file = std::fs::File::create(&dockerfile_path).unwrap();
-        writeln!(file, "FROM alpine:3.20").unwrap();
+        writeln!(file, "FROM alpine:3.24").unwrap();
 
         let name = dockerfile_image_name("my-project", &dockerfile_path);
         assert!(name.starts_with("agentkernel-my-project:"));

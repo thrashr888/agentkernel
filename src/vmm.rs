@@ -78,7 +78,7 @@ static CONTAINER_POOL: OnceCell<Arc<ContainerPool>> = OnceCell::const_new();
 async fn get_pool() -> Result<Arc<ContainerPool>> {
     CONTAINER_POOL
         .get_or_try_init(|| async {
-            let pool = ContainerPool::with_config(5, 20, "alpine:3.20")?;
+            let pool = ContainerPool::with_config(5, 20, "alpine:3.24")?;
             pool.start().await?;
             Ok(Arc::new(pool))
         })
@@ -3127,7 +3127,7 @@ mod tests {
         let state = SandboxState {
             name: "test-sandbox".to_string(),
             uuid: uuid::Uuid::now_v7().to_string(),
-            image: "alpine:3.20".to_string(),
+            image: "alpine:3.24".to_string(),
             vcpus: 2,
             memory_mb: 1024,
             vsock_cid: 5,
@@ -3165,7 +3165,7 @@ mod tests {
 
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("test-sandbox"));
-        assert!(json.contains("alpine:3.20"));
+        assert!(json.contains("alpine:3.24"));
         assert!(json.contains("1024"));
     }
 
@@ -3287,11 +3287,11 @@ mod tests {
     fn test_load_sandboxes_with_files() {
         let temp_dir = TempDir::new().unwrap();
 
-        // Create a valid sandbox JSON file
+        // Legacy compatibility: persisted old image selections are loaded unchanged.
         let state = SandboxState {
             name: "loaded-sandbox".to_string(),
             uuid: uuid::Uuid::now_v7().to_string(),
-            image: "alpine:3.20".to_string(),
+            image: "alpine:3.20".to_string(), // legacy compatibility
             vcpus: 1,
             memory_mb: 256,
             vsock_cid: 4,
@@ -3340,7 +3340,7 @@ mod tests {
         assert!(sandboxes.contains_key("loaded-sandbox"));
 
         let loaded = &sandboxes["loaded-sandbox"];
-        assert_eq!(loaded.image, "alpine:3.20");
+        assert_eq!(loaded.image, "alpine:3.20"); // legacy compatibility
         assert_eq!(loaded.memory_mb, 256);
     }
 
@@ -3357,7 +3357,7 @@ mod tests {
         // Legacy state without UUID should be backfilled on load.
         let legacy = r#"{
             "name": "legacy-box",
-            "image": "alpine:3.20",
+            "image": "alpine:3.24",
             "vcpus": 1,
             "memory_mb": 256,
             "vsock_cid": 4,
@@ -3456,7 +3456,7 @@ mod tests {
         let state = SandboxState {
             name: "label-test".to_string(),
             uuid: uuid::Uuid::now_v7().to_string(),
-            image: "alpine:3.20".to_string(),
+            image: "alpine:3.24".to_string(),
             vcpus: 1,
             memory_mb: 512,
             vsock_cid: 3,
@@ -3529,7 +3529,7 @@ mod tests {
             let state = SandboxState {
                 name: name.to_string(),
                 uuid: uuid::Uuid::now_v7().to_string(),
-                image: "alpine:3.20".to_string(),
+                image: "alpine:3.24".to_string(),
                 vcpus: 1,
                 memory_mb: 512,
                 vsock_cid: 3,
@@ -3603,7 +3603,7 @@ mod tests {
         let state = SandboxState {
             name: "desc-test".to_string(),
             uuid: uuid::Uuid::now_v7().to_string(),
-            image: "alpine:3.20".to_string(),
+            image: "alpine:3.24".to_string(),
             vcpus: 1,
             memory_mb: 512,
             vsock_cid: 3,
@@ -3673,7 +3673,7 @@ mod tests {
         let state = SandboxState {
             name: "persist-test".to_string(),
             uuid: uuid::Uuid::now_v7().to_string(),
-            image: "alpine:3.20".to_string(),
+            image: "alpine:3.24".to_string(),
             vcpus: 1,
             memory_mb: 512,
             vsock_cid: 3,
@@ -3739,7 +3739,7 @@ mod tests {
         SandboxState {
             name: name.to_string(),
             uuid: uuid::Uuid::now_v7().to_string(),
-            image: "alpine:3.20".to_string(),
+            image: "alpine:3.24".to_string(),
             vcpus: 1,
             memory_mb: 256,
             vsock_cid: 3,

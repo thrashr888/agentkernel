@@ -7,7 +7,7 @@ cd "$ROOT"
 BACKENDS="${AK_BENCH_BACKENDS:-docker}"
 ITERATIONS="${AK_BENCH_ITERATIONS:-5}"
 WARMUP="${AK_BENCH_WARMUP:-1}"
-IMAGE="${AK_BENCH_IMAGE:-alpine:3.20}"
+IMAGE="${AK_BENCH_IMAGE:-alpine:3.24}"
 REPORT="${AK_BENCH_REPORT:-autoresearch/latest-report.json}"
 
 mkdir -p "$(dirname "$REPORT")"

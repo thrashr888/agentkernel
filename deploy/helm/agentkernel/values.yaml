@@ -19,7 +19,7 @@ orchestrator:
 # Default sandbox resource limits
 sandbox:
   defaults:
-    image: alpine:3.20
+    image: alpine:3.24
     memory: 512Mi
     cpu: "1"
     securityProfile: restrictive

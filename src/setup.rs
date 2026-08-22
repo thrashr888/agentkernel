@@ -310,9 +310,9 @@ fn initialize_apple_containers() -> Result<()> {
         println!("  Apple container system started");
 
         // Pre-pull alpine image for faster first run
-        println!("  Pre-pulling alpine:3.20 image...");
+        println!("  Pre-pulling alpine:3.24 image...");
         let _ = Command::new("container")
-            .args(["image", "pull", "alpine:3.20"])
+            .args(["image", "pull", "alpine:3.24"])
             .output();
 
         Ok(())
@@ -829,8 +829,8 @@ mkdir -p "$MOUNT_DIR"
 mount -o loop "$ROOTFS_IMG" "$MOUNT_DIR"
 
 echo "Installing Alpine base system..."
-apk -X https://dl-cdn.alpinelinux.org/alpine/v3.20/main \
-    -X https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
+apk -X https://dl-cdn.alpinelinux.org/alpine/v3.24/main \
+    -X https://dl-cdn.alpinelinux.org/alpine/v3.24/community \
     -U --allow-untrusted --root "$MOUNT_DIR" --initdb \
     add alpine-base busybox-static $PACKAGES || true
 
@@ -941,7 +941,7 @@ ls -lh "$ROOTFS_IMG"
             &format!("{}:/build.sh:ro", script_path.display()),
             "-v",
             &format!("{}:/agent-bin:ro", data_dir.join("bin").display()),
-            "alpine:3.20",
+            "alpine:3.24",
             "/bin/sh",
             "/build.sh",
         ])
@@ -1089,7 +1089,7 @@ fn offer_plugin_install(non_interactive: bool) -> Result<()> {
 
 /// Common Docker images to pre-pull for faster container startup
 const DOCKER_IMAGES: &[&str] = &[
-    "alpine:3.20",        // Default pool image
+    "alpine:3.24",        // Default pool image
     "python:3.12-alpine", // Python runtime
     "node:20-alpine",     // Node.js runtime
     "golang:1.22-alpine", // Go runtime

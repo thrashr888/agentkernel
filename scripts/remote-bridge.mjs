@@ -741,7 +741,7 @@ async function createDaytonaSandbox(providerRequest) {
   return withDaytonaClient(async (daytona) => {
     const sandbox = await daytona.create({
       name: providerRequest.sandbox_name,
-      image: providerRequest.image || "alpine:3.20",
+      image: providerRequest.image || "alpine:3.24",
       envVars: daytonaEnvMap(providerRequest.env),
       resources: {
         cpu: providerRequest.vcpus || 1,
@@ -1543,9 +1543,9 @@ function modalImageRef(providerRequest) {
     providerRequest.remote_metadata?.image_ref ||
     providerRequest.image ||
     providerRequest.profile ||
-    "alpine:3.20";
+    "alpine:3.24";
   if (!requested || requested === "base" || requested === "default") {
-    return "alpine:3.20";
+    return "alpine:3.24";
   }
   return requested;
 }

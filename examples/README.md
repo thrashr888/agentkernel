@@ -129,7 +129,7 @@ agentkernel start bash-app
 agentkernel exec bash-app echo "Hello!"
 ```
 
-**Features**: Alpine 3.20, busybox, shell scripting
+**Features**: Alpine 3.24, busybox, shell scripting
 
 ### Kubernetes
 Run sandboxes as Kubernetes Pods on any cluster. Requires `--features kubernetes`.

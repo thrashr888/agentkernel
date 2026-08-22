@@ -14,7 +14,7 @@ Default eval command
 
 Default target on this machine
 - backend: docker
-- image: alpine:3.20
+- image: alpine:3.24
 - measured iterations: 5
 - warmup iterations: 1
 

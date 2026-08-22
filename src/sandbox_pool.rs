@@ -522,7 +522,7 @@ mod tests {
         // Try to detect available backend
         let backend = crate::backend::detect_best_backend().expect("No backend available");
 
-        let config = SandboxConfig::with_image("alpine:3.20");
+        let config = SandboxConfig::with_image("alpine:3.24");
         let pool = SandboxPool::with_config(backend, config, 2, 5).unwrap();
         pool.start().await.unwrap();
 
@@ -549,7 +549,7 @@ mod tests {
     #[ignore] // Requires Docker or Apple containers
     async fn test_sandbox_pool_stats_lifecycle() {
         let backend = crate::backend::detect_best_backend().expect("No backend available");
-        let config = SandboxConfig::with_image("alpine:3.20");
+        let config = SandboxConfig::with_image("alpine:3.24");
         let pool = SandboxPool::with_config(backend, config, 2, 5).unwrap();
 
         // Before start

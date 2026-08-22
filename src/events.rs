@@ -196,7 +196,7 @@ mod tests {
             timestamp: Utc::now(),
             sandbox: "test-sandbox".to_string(),
             labels: HashMap::new(),
-            metadata: serde_json::json!({"image": "alpine:3.20"}),
+            metadata: serde_json::json!({"image": "alpine:3.24"}),
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("sandbox.created"));

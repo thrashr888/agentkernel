@@ -186,7 +186,7 @@ paths:
                 created:
                   value: |
                     event: sandbox.created
-                    data: {"event":"sandbox.created","timestamp":"2026-02-23T12:00:00Z","sandbox":"my-sandbox","labels":{},"metadata":{"image":"alpine:3.20","backend":"docker","vcpus":1,"memory_mb":512,"duration_ms":150}}
+                    data: {"event":"sandbox.created","timestamp":"2026-02-23T12:00:00Z","sandbox":"my-sandbox","labels":{},"metadata":{"image":"alpine:3.24","backend":"docker","vcpus":1,"memory_mb":512,"duration_ms":150}}
         '503':
           description: Event bus not enabled
 
@@ -1187,7 +1187,7 @@ components:
           example: "my-sandbox"
         image:
           type: string
-          default: "alpine:3.20"
+          default: "alpine:3.24"
           description: Docker image to use
           example: "python:3.12-alpine"
         vcpus:

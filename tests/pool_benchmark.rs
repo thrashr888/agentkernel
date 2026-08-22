@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 const ITERATIONS: usize = 20;
 const POOL_SIZE: usize = 5;
-const IMAGE: &str = "alpine:3.20";
+const IMAGE: &str = "alpine:3.24";
 
 fn get_binary_path() -> String {
     std::env::current_dir()

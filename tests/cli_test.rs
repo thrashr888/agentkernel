@@ -97,6 +97,7 @@ fn test_run_help() {
 #[test]
 fn test_run_build_conflicts_with_explicit_image() {
     let (exit_code, _stdout, stderr) =
+        // Legacy compatibility: an explicit old tag is still parsed as an image choice.
         run_cmd(&["run", "--build", "--image", "alpine:3.20", "echo", "hello"]);
     assert_ne!(exit_code, 0);
     assert!(

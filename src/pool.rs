@@ -116,7 +116,7 @@ impl Drop for PersistentShell {
 /// Default pool configuration
 const DEFAULT_POOL_SIZE: usize = 10;
 const DEFAULT_MAX_POOL_SIZE: usize = 50;
-const DEFAULT_IMAGE: &str = "alpine:3.20";
+const DEFAULT_IMAGE: &str = "alpine:3.24";
 const GC_INTERVAL_MS: u64 = 1000;
 const GC_BATCH_SIZE: usize = 10;
 
@@ -687,7 +687,7 @@ mod tests {
     fn test_default_constants() {
         assert_eq!(DEFAULT_POOL_SIZE, 10);
         assert_eq!(DEFAULT_MAX_POOL_SIZE, 50);
-        assert_eq!(DEFAULT_IMAGE, "alpine:3.20");
+        assert_eq!(DEFAULT_IMAGE, "alpine:3.24");
         assert_eq!(GC_INTERVAL_MS, 1000);
         assert_eq!(GC_BATCH_SIZE, 10);
     }
@@ -735,7 +735,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires Docker
     async fn test_pool_basic() {
-        let pool = ContainerPool::with_config(2, 5, "alpine:3.20").unwrap();
+        let pool = ContainerPool::with_config(2, 5, "alpine:3.24").unwrap();
         pool.start().await.unwrap();
 
         // Acquire a container
@@ -762,7 +762,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires Docker
     async fn test_pool_acquire_release_cycle() {
-        let pool = ContainerPool::with_config(2, 5, "alpine:3.20").unwrap();
+        let pool = ContainerPool::with_config(2, 5, "alpine:3.24").unwrap();
         pool.start().await.unwrap();
 
         // Acquire and release multiple times
@@ -782,7 +782,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires Docker
     async fn test_pool_stats_after_operations() {
-        let pool = ContainerPool::with_config(2, 5, "alpine:3.20").unwrap();
+        let pool = ContainerPool::with_config(2, 5, "alpine:3.24").unwrap();
         pool.start().await.unwrap();
 
         // Initial stats

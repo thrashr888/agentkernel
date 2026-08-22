@@ -20,7 +20,7 @@ import type { RunOutput } from "@/lib/types";
 export function QuickActions() {
   const [open, setOpen] = useState(false);
   const [command, setCommand] = useState("");
-  const [image, setImage] = useState("alpine:3.20");
+  const [image, setImage] = useState("alpine:3.24");
   const [output, setOutput] = useState<string | null>(null);
 
   const quickRunMutation = useMutation({
@@ -62,7 +62,7 @@ export function QuickActions() {
     if (!next) {
       // Reset state when closing
       setCommand("");
-      setImage("alpine:3.20");
+      setImage("alpine:3.24");
       setOutput(null);
       quickRunMutation.reset();
     }
@@ -98,7 +98,7 @@ export function QuickActions() {
               <Label htmlFor="qr-image">Image</Label>
               <Input
                 id="qr-image"
-                placeholder="alpine:3.20"
+                placeholder="alpine:3.24"
                 value={image}
                 onChange={(e) => setImage(e.target.value)}
                 disabled={quickRunMutation.isPending}
