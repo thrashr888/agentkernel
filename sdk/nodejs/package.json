@@ -26,6 +26,7 @@
     "build": "tsup",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:package": "node tests/package-smoke.mjs && npm pack --dry-run",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
     "prepublishOnly": "npm run build"
@@ -48,16 +49,16 @@
   },
   "homepage": "https://thrashr888.github.io/agentkernel/",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "dependencies": {
-    "eventsource-parser": "^3.0.0"
+    "eventsource-parser": "^4.1.0"
   },
   "devDependencies": {
-    "@types/node": "^25.1.0",
-    "msw": "^2.7.0",
-    "tsup": "^8.4.0",
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "@types/node": "^24.13.3",
+    "msw": "^2.15.0",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11"
   }
 }
