@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths: ["app/**", ".github/workflows/app-ci.yml"]
   pull_request:
-    branches: [main]
+    branches: [main, codex/apple-container-1-2-modernization]
     paths: ["app/**", ".github/workflows/app-ci.yml"]
 
 env:
