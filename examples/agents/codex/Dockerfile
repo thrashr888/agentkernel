@@ -11,7 +11,9 @@
 # Environment variables:
 #   OPENAI_API_KEY - Required for Codex to work
 
-FROM node:22-alpine
+FROM node:24-alpine3.24
+
+ARG CODEX_VERSION=0.149.0
 
 # Install essential tools
 RUN apk add --no-cache \
@@ -27,7 +29,7 @@ RUN apk add --no-cache \
     && rm -rf /var/cache/apk/*
 
 # Install OpenAI Codex CLI globally
-RUN npm install -g @openai/codex
+RUN npm install -g "@openai/codex@${CODEX_VERSION}"
 
 # Create workspace directory
 RUN mkdir -p /workspace

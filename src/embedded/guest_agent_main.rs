@@ -292,7 +292,9 @@ async fn handle_request(
                     eprintln!("Shell session started: {}", session_id);
                     AgentResponse::shell_started(&request.id, session_id)
                 }
-                Err(e) => AgentResponse::error(&request.id, &format!("Failed to start shell: {}", e)),
+                Err(e) => {
+                    AgentResponse::error(&request.id, &format!("Failed to start shell: {}", e))
+                }
             }
         }
 
@@ -314,7 +316,9 @@ async fn handle_request(
 
             match session_manager.write_to_session(&session_id, &input).await {
                 Ok(()) => AgentResponse::success(&request.id),
-                Err(e) => AgentResponse::error(&request.id, &format!("Failed to write to session: {}", e)),
+                Err(e) => {
+                    AgentResponse::error(&request.id, &format!("Failed to write to session: {}", e))
+                }
             }
         }
 
@@ -326,9 +330,14 @@ async fn handle_request(
             let rows = request.rows.unwrap_or(24);
             let cols = request.cols.unwrap_or(80);
 
-            match session_manager.resize_session(&session_id, rows, cols).await {
+            match session_manager
+                .resize_session(&session_id, rows, cols)
+                .await
+            {
                 Ok(()) => AgentResponse::success(&request.id),
-                Err(e) => AgentResponse::error(&request.id, &format!("Failed to resize session: {}", e)),
+                Err(e) => {
+                    AgentResponse::error(&request.id, &format!("Failed to resize session: {}", e))
+                }
             }
         }
 
@@ -340,10 +349,15 @@ async fn handle_request(
 
             match session_manager.close_session(&session_id).await {
                 Ok(exit_code) => {
-                    eprintln!("Shell session closed: {} (exit: {:?})", session_id, exit_code);
+                    eprintln!(
+                        "Shell session closed: {} (exit: {:?})",
+                        session_id, exit_code
+                    );
                     AgentResponse::shell_exited(&request.id, &session_id, exit_code.unwrap_or(-1))
                 }
-                Err(e) => AgentResponse::error(&request.id, &format!("Failed to close session: {}", e)),
+                Err(e) => {
+                    AgentResponse::error(&request.id, &format!("Failed to close session: {}", e))
+                }
             }
         }
 
@@ -551,7 +565,7 @@ async fn main() -> Result<()> {
     let session_manager = Arc::new(SessionManager::new());
 
     let addr = VsockAddr::new(VMADDR_CID_ANY, AGENT_PORT);
-    let mut listener = VsockListener::bind(addr).context("Failed to bind vsock listener")?;
+    let listener = VsockListener::bind(addr).context("Failed to bind vsock listener")?;
 
     eprintln!("Agent ready (with PTY support)");
 
@@ -570,5 +584,39 @@ async fn main() -> Result<()> {
                 eprintln!("Accept error: {}", e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn shell_messages_keep_the_existing_wire_shape() {
+        let request: AgentRequest = serde_json::from_value(json!({
+            "id": "request-1",
+            "type": "shell_resize",
+            "session_id": "session-1",
+            "rows": 40,
+            "cols": 120
+        }))
+        .expect("shell resize request should deserialize");
+        assert!(matches!(request.request_type, RequestType::ShellResize));
+        assert_eq!(request.session_id.as_deref(), Some("session-1"));
+        assert_eq!(request.rows, Some(40));
+        assert_eq!(request.cols, Some(120));
+
+        let response =
+            AgentResponse::shell_output("request-1", "session-1", "aGVsbG8=".to_string());
+        assert_eq!(
+            serde_json::to_value(response).expect("shell output should serialize"),
+            json!({
+                "id": "request-1",
+                "session_id": "session-1",
+                "output_base64": "aGVsbG8=",
+                "shell_event": "output"
+            })
+        );
     }
 }

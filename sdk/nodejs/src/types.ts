@@ -29,7 +29,7 @@ export interface RunOptions {
 
 /** Options for creating a sandbox. */
 export interface CreateSandboxOptions {
-  /** Docker image to use. Default: alpine:3.20 */
+  /** Docker image to use. Default: alpine:3.24 */
   image?: string;
   vcpus?: number;
   memory_mb?: number;

@@ -493,7 +493,8 @@ impl AgentKernel {
 
     /// List all objects.
     pub async fn list_objects(&self) -> Result<Vec<DurableObject>> {
-        self.request(reqwest::Method::GET, "/objects", None::<&()>).await
+        self.request(reqwest::Method::GET, "/objects", None::<&()>)
+            .await
     }
 
     /// Create a new object.
@@ -501,17 +502,14 @@ impl AgentKernel {
         &self,
         payload: DurableObjectCreateRequest,
     ) -> Result<DurableObject> {
-        self.request(reqwest::Method::POST, "/objects", Some(&payload)).await
+        self.request(reqwest::Method::POST, "/objects", Some(&payload))
+            .await
     }
 
     /// Get a single object by id.
     pub async fn get_object(&self, id: &str) -> Result<DurableObject> {
-        self.request(
-            reqwest::Method::GET,
-            &format!("/objects/{id}"),
-            None::<&()>,
-        )
-        .await
+        self.request(reqwest::Method::GET, &format!("/objects/{id}"), None::<&()>)
+            .await
     }
 
     /// Call a method on a durable object (auto-creates/wakes if needed).
@@ -533,8 +531,12 @@ impl AgentKernel {
 
     /// Delete a durable object by id.
     pub async fn delete_object(&self, id: &str) -> Result<String> {
-        self.request(reqwest::Method::DELETE, &format!("/objects/{id}"), None::<&()>)
-            .await
+        self.request(
+            reqwest::Method::DELETE,
+            &format!("/objects/{id}"),
+            None::<&()>,
+        )
+        .await
     }
 
     /// Partially update a durable object (storage and/or status).
@@ -553,14 +555,12 @@ impl AgentKernel {
 
     /// List all schedules.
     pub async fn list_schedules(&self) -> Result<Vec<Schedule>> {
-        self.request(reqwest::Method::GET, "/schedules", None::<&()>).await
+        self.request(reqwest::Method::GET, "/schedules", None::<&()>)
+            .await
     }
 
     /// Create a new schedule.
-    pub async fn create_schedule(
-        &self,
-        payload: ScheduleCreateRequest,
-    ) -> Result<Schedule> {
+    pub async fn create_schedule(&self, payload: ScheduleCreateRequest) -> Result<Schedule> {
         self.request(reqwest::Method::POST, "/schedules", Some(&payload))
             .await
     }
@@ -587,7 +587,8 @@ impl AgentKernel {
 
     /// List all durable stores.
     pub async fn list_stores(&self) -> Result<Vec<DurableStore>> {
-        self.request(reqwest::Method::GET, "/stores", None::<&()>).await
+        self.request(reqwest::Method::GET, "/stores", None::<&()>)
+            .await
     }
 
     /// Create a new durable store.

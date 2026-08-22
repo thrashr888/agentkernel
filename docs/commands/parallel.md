@@ -61,8 +61,8 @@ agentkernel parallel \
 
 ```bash
 $ agentkernel parallel \
-    --job "pass:alpine:3.20:echo ok" \
-    --job "fail:alpine:3.20:false" \
+    --job "pass:alpine:3.24:echo ok" \
+    --job "fail:alpine:3.24:false" \
     -B docker
 Running 2 jobs in parallel...
 

@@ -28,7 +28,7 @@ Hermes supports multiple LLM providers via LiteLLM. Provide at least one API key
 ## What's Included
 
 - **Python 3.11** - Runtime for Hermes
-- **Node.js 22** - For browser automation tools
+- **Node.js 24 LTS** - For browser automation tools
 - **Hermes Agent** - Full install from source with all tools
 - **mini-swe-agent** - Terminal tool backend
 - **Git** - Version control

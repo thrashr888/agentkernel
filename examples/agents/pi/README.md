@@ -27,8 +27,8 @@ Pi supports multiple LLM providers. Provide at least one API key.
 
 ## What's Included
 
-- **Node.js 22** - Runtime for Pi
-- **Pi CLI** - `@mariozechner/pi-coding-agent`
+- **Node.js 24 LTS** - Runtime for Pi
+- **Pi CLI** - `@earendil-works/pi-coding-agent`
 - **Git** - Version control
 - **Python 3** - For Python projects
 - **ripgrep** - Fast search

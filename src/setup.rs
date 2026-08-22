@@ -3,11 +3,53 @@
 //! Handles downloading/building kernel, rootfs, and Firecracker.
 
 use anyhow::{Context, Result, bail};
+use sha2::{Digest, Sha256};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::plugin_installer;
+
+/// Supported runtime versions used for fresh AgentKernel installations.
+/// Existing user-provided binaries and kernel images are detected before these
+/// defaults are used, so upgrading AgentKernel does not replace explicit picks.
+pub const DEFAULT_FIRECRACKER_VERSION: &str = "v1.16.1";
+pub const DEFAULT_KERNEL_VERSION: &str = "6.18.45";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FirecrackerRelease {
+    arch: &'static str,
+    sha256: &'static str,
+}
+
+fn firecracker_release(arch: &str) -> Result<FirecrackerRelease> {
+    match arch {
+        "x86_64" => Ok(FirecrackerRelease {
+            arch: "x86_64",
+            sha256: "382a02a869e4d6d5cb14c40577f9545e8458021ea8b0b2d3fc10ec14d9c242e6",
+        }),
+        "aarch64" => Ok(FirecrackerRelease {
+            arch: "aarch64",
+            sha256: "8d0e69f6d6f9a1724551f607f18504052c16c1828ee3d4d7b6e6c73380871e0e",
+        }),
+        other => bail!("Unsupported Firecracker architecture: {other}"),
+    }
+}
+
+fn firecracker_asset_name(release: FirecrackerRelease) -> String {
+    format!(
+        "firecracker-{}-{}.tgz",
+        DEFAULT_FIRECRACKER_VERSION, release.arch
+    )
+}
+
+fn firecracker_download_url(release: FirecrackerRelease) -> String {
+    format!(
+        "https://github.com/firecracker-microvm/firecracker/releases/download/{}/{}",
+        DEFAULT_FIRECRACKER_VERSION,
+        firecracker_asset_name(release)
+    )
+}
 
 /// Runtime options for rootfs
 pub const RUNTIMES: &[(&str, &str)] = &[
@@ -31,7 +73,7 @@ impl Default for SetupConfig {
     fn default() -> Self {
         Self {
             data_dir: default_data_dir(),
-            kernel_version: "6.1.70".to_string(),
+            kernel_version: DEFAULT_KERNEL_VERSION.to_string(),
             runtimes: vec!["base".to_string()],
             install_firecracker: true,
         }
@@ -299,41 +341,27 @@ fn check_macos_version() -> bool {
 
 /// Initialize Apple containers system (start service and download kernel if needed)
 fn initialize_apple_containers() -> Result<()> {
-    // Check if system is already running
-    let status_output = Command::new("container")
-        .args(["system", "status"])
-        .output()?;
-
-    if status_output.status.success()
-        && String::from_utf8_lossy(&status_output.stdout).contains("is running")
+    #[cfg(target_os = "macos")]
     {
-        println!("  Apple container system already running");
-        return Ok(());
-    }
+        if crate::backend::apple::apple_system_running() {
+            println!("  Apple container system already running");
+            return Ok(());
+        }
 
-    // Start the system (auto-accept kernel download)
-    println!("  Starting Apple container system...");
-    let output = Command::new("sh")
-        .args(["-c", "echo 'Y' | container system start"])
-        .output()
-        .context("Failed to start Apple container system")?;
-
-    if output.status.success() {
+        crate::backend::apple::start_apple_system()?;
         println!("  Apple container system started");
 
         // Pre-pull alpine image for faster first run
-        println!("  Pre-pulling alpine:3.20 image...");
+        println!("  Pre-pulling alpine:3.24 image...");
         let _ = Command::new("container")
-            .args(["image", "pull", "alpine:3.20"])
+            .args(["image", "pull", "alpine:3.24"])
             .output();
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.contains("already") {
-            bail!("Failed to start Apple container system: {}", stderr);
-        }
+
+        Ok(())
     }
 
-    Ok(())
+    #[cfg(not(target_os = "macos"))]
+    bail!("Apple containers are only available on macOS")
 }
 
 /// Prompt user to select from options
@@ -611,11 +639,14 @@ RUN chmod +x /build/build-kernel.sh
 RUN mkdir -p /kernel
 ENV BUILD_DIR=/tmp/kernel-build
 ENTRYPOINT ["/build/build-kernel.sh"]
-CMD ["6.1.70"]
+CMD ["__AGENTKERNEL_DEFAULT_KERNEL__"]
 "#;
 
     let dockerfile_path = temp_dir.join("Dockerfile");
-    std::fs::write(&dockerfile_path, dockerfile)?;
+    std::fs::write(
+        &dockerfile_path,
+        dockerfile.replace("__AGENTKERNEL_DEFAULT_KERNEL__", DEFAULT_KERNEL_VERSION),
+    )?;
 
     // Build the Docker image
     let status = Command::new("docker")
@@ -642,7 +673,7 @@ CMD ["6.1.70"]
             "-v",
             &format!("{}:/kernel", kernel_dir.display()),
             "agentkernel-kernel-builder",
-            "6.1.70",
+            DEFAULT_KERNEL_VERSION,
         ])
         .status()
         .context("Failed to run kernel build")?;
@@ -843,8 +874,8 @@ mkdir -p "$MOUNT_DIR"
 mount -o loop "$ROOTFS_IMG" "$MOUNT_DIR"
 
 echo "Installing Alpine base system..."
-apk -X https://dl-cdn.alpinelinux.org/alpine/v3.20/main \
-    -X https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
+apk -X https://dl-cdn.alpinelinux.org/alpine/v3.24/main \
+    -X https://dl-cdn.alpinelinux.org/alpine/v3.24/community \
     -U --allow-untrusted --root "$MOUNT_DIR" --initdb \
     add alpine-base busybox-static $PACKAGES || true
 
@@ -955,7 +986,7 @@ ls -lh "$ROOTFS_IMG"
             &format!("{}:/build.sh:ro", script_path.display()),
             "-v",
             &format!("{}:/agent-bin:ro", data_dir.join("bin").display()),
-            "alpine:3.20",
+            "alpine:3.24",
             "/bin/sh",
             "/build.sh",
         ])
@@ -1103,7 +1134,7 @@ fn offer_plugin_install(non_interactive: bool) -> Result<()> {
 
 /// Common Docker images to pre-pull for faster container startup
 const DOCKER_IMAGES: &[&str] = &[
-    "alpine:3.20",        // Default pool image
+    "alpine:3.24",        // Default pool image
     "python:3.12-alpine", // Python runtime
     "node:20-alpine",     // Node.js runtime
     "golang:1.22-alpine", // Go runtime
@@ -1160,37 +1191,22 @@ async fn install_firecracker_binary(data_dir: &Path) -> Result<()> {
         bail!("Unsupported architecture");
     };
 
-    let version = "v1.7.0";
-    let url = format!(
-        "https://github.com/firecracker-microvm/firecracker/releases/download/{}/firecracker-{}-{}.tgz",
-        version, version, arch
+    let release = firecracker_release(arch)?;
+    let asset_name = firecracker_asset_name(release);
+    let url = firecracker_download_url(release);
+
+    println!(
+        "Downloading Firecracker {} for {}...",
+        DEFAULT_FIRECRACKER_VERSION, arch
     );
 
-    println!("Downloading Firecracker {} for {}...", version, arch);
-
-    // Download and extract
-    let status = Command::new("sh")
-        .args([
-            "-c",
-            &format!(
-                r#"curl -fsSL "{}" | tar -xz -C "{}" && \
-                   mv "{}/release-{}-{}/firecracker-{}-{}" "{}/firecracker" && \
-                   chmod +x "{}/firecracker" && \
-                   rm -rf "{}/release-{}-{}""#,
-                url,
-                bin_dir.display(),
-                bin_dir.display(),
-                version,
-                arch,
-                version,
-                arch,
-                bin_dir.display(),
-                bin_dir.display(),
-                bin_dir.display(),
-                version,
-                arch
-            ),
-        ])
+    let temp_dir =
+        tempfile::tempdir().context("Failed to create Firecracker download directory")?;
+    let archive_path = temp_dir.path().join(&asset_name);
+    let status = Command::new("curl")
+        .args(["-fsSL", "--output"])
+        .arg(&archive_path)
+        .arg(&url)
         .status()
         .context("Failed to download Firecracker")?;
 
@@ -1198,7 +1214,45 @@ async fn install_firecracker_binary(data_dir: &Path) -> Result<()> {
         bail!("Failed to download Firecracker");
     }
 
+    let archive = std::fs::read(&archive_path).context("Failed to read Firecracker archive")?;
+    let actual_sha256 = hex::encode(Sha256::digest(&archive));
+    if actual_sha256 != release.sha256 {
+        bail!(
+            "Firecracker archive checksum mismatch: expected {}, got {}",
+            release.sha256,
+            actual_sha256
+        );
+    }
+
+    let status = Command::new("tar")
+        .args(["-xzf"])
+        .arg(&archive_path)
+        .arg("-C")
+        .arg(temp_dir.path())
+        .status()
+        .context("Failed to extract Firecracker")?;
+    if !status.success() {
+        bail!("Failed to extract Firecracker");
+    }
+
+    let extracted = temp_dir.path().join(format!(
+        "release-{}-{}/firecracker-{}-{}",
+        DEFAULT_FIRECRACKER_VERSION, arch, DEFAULT_FIRECRACKER_VERSION, arch
+    ));
     let firecracker_path = bin_dir.join("firecracker");
+    std::fs::copy(&extracted, &firecracker_path).with_context(|| {
+        format!(
+            "Failed to install Firecracker binary from {}",
+            extracted.display()
+        )
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&firecracker_path, std::fs::Permissions::from_mode(0o755))?;
+    }
+
     println!("Firecracker installed to: {}", firecracker_path.display());
 
     // Add to PATH hint
@@ -1211,6 +1265,52 @@ async fn install_firecracker_binary(data_dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supported_runtime_defaults_match_verified_release_metadata() {
+        assert_eq!(
+            SetupConfig::default().kernel_version,
+            DEFAULT_KERNEL_VERSION
+        );
+        assert_eq!(DEFAULT_FIRECRACKER_VERSION, "v1.16.1");
+
+        let x86 = firecracker_release("x86_64").unwrap();
+        assert_eq!(
+            firecracker_asset_name(x86),
+            "firecracker-v1.16.1-x86_64.tgz"
+        );
+        assert_eq!(x86.sha256.len(), 64);
+
+        let arm = firecracker_release("aarch64").unwrap();
+        assert_eq!(
+            firecracker_asset_name(arm),
+            "firecracker-v1.16.1-aarch64.tgz"
+        );
+        assert_eq!(arm.sha256.len(), 64);
+        assert!(firecracker_release("riscv64").is_err());
+    }
+
+    #[test]
+    fn packaging_defaults_do_not_drift_from_setup() {
+        let kernel_script = include_str!("../images/build/build-kernel.sh");
+        let kernel_dockerfile = include_str!("../images/build/Dockerfile.kernel-builder");
+        let kvm_dockerfile = include_str!("../docker/Dockerfile.kvm-host");
+
+        assert!(kernel_script.contains(&format!(
+            "KERNEL_VERSION=\"${{1:-{DEFAULT_KERNEL_VERSION}}}\""
+        )));
+        assert!(
+            kernel_script
+                .contains("30fa4a56579ca614ac125a12614f7f6466f87ab1278aef7b951dd74156deab33")
+        );
+        assert!(kernel_dockerfile.contains(&format!("CMD [\"{DEFAULT_KERNEL_VERSION}\"]")));
+        assert!(kvm_dockerfile.contains(&format!(
+            "ARG FIRECRACKER_VERSION={DEFAULT_FIRECRACKER_VERSION}"
+        )));
+        for arch in ["x86_64", "aarch64"] {
+            assert!(kvm_dockerfile.contains(firecracker_release(arch).unwrap().sha256));
+        }
+    }
 
     #[test]
     fn guest_agent_build_context_materializes_declared_modules() {

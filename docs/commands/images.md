@@ -78,7 +78,7 @@ No agentkernel images found. Use --all to show all images.
 $ agentkernel images list --all
 REPOSITORY:TAG                           IMAGE ID        USED BY            SIZE
 python:3.12-alpine                       82585c9f05cf    1 sandbox        79.7MB
-alpine:3.20                              a4f4213abb84    2 sandboxes      13.7MB
+alpine:3.24                              a4f4213abb84    2 sandboxes      13.7MB
 node:22-alpine                           d7119ab9e005    unused            307MB
 
 3 images, 3 sandbox references

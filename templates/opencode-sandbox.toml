@@ -3,12 +3,11 @@
 
 [sandbox]
 name = "opencode-sandbox"
-base_image = "node:22-alpine"
+base_image = "node:24-alpine3.24"
 init_script = """
 set -e
 apk add --no-cache git bash curl python3 ripgrep fd jq
-curl -fsSL https://opencode.ai/install | bash
-export PATH="$HOME/.opencode/bin:$PATH"
+npm install -g opencode-ai@1.18.21
 """
 
 [agent]

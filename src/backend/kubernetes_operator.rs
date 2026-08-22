@@ -13,13 +13,16 @@ use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Container, Pod, PodSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::CustomResourceExt;
-use kube::api::{Api, ListParams, Patch, PatchParams, PostParams};
+use kube::api::{Api, Patch, PatchParams, PostParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher::Config as WatcherConfig;
 use kube::{Client, CustomResource, Resource, ResourceExt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+
+#[cfg(feature = "enterprise")]
+use kube::api::ListParams;
 
 #[cfg(feature = "enterprise")]
 use tokio::sync::RwLock;
@@ -1040,7 +1043,7 @@ mod tests {
         let sandbox = AgentSandbox::new(
             "test-sandbox",
             AgentSandboxSpec {
-                image: "alpine:3.20".to_string(),
+                image: "alpine:3.24".to_string(),
                 vcpus: 1,
                 memory_mb: 512,
                 network: true,

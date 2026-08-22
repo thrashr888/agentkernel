@@ -303,7 +303,7 @@ echo "Conversion complete"
             &format!("{}:/input/agent:ro", agent_abs.display()),
             "-v",
             &format!("{}:/output", output_dir_abs.display()),
-            "alpine:3.20",
+            "alpine:3.24",
             "sh",
             "-c",
             &script,
@@ -351,6 +351,7 @@ mod tests {
 
     #[test]
     fn test_image_to_rootfs_name() {
+        // Legacy compatibility: explicit old image references still map to stable cache names.
         assert_eq!(image_to_rootfs_name("alpine:3.20"), "alpine-3.20.ext4");
         assert_eq!(
             image_to_rootfs_name("my-app/image:latest"),

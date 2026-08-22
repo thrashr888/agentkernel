@@ -3,10 +3,10 @@
 
 [sandbox]
 name = "codex-sandbox"
-base_image = "node:22-alpine"
+base_image = "node:24-alpine3.24"
 init_script = """
 set -e
-npm install -g @openai/codex
+npm install -g @openai/codex@0.149.0
 """
 
 [agent]

@@ -13,7 +13,7 @@ agentkernel sandbox start my-project
 agentkernel attach my-project
 
 # Inside the sandbox, run Copilot CLI
-github-copilot
+copilot
 ```
 
 The Dockerfile is built automatically when you use the config file.
@@ -34,13 +34,13 @@ export GITHUB_TOKEN=ghp_...
 agentkernel sandbox create my-project --image agentkernel/copilot
 
 # Option 2: Pass via exec
-agentkernel exec my-project -- env GITHUB_TOKEN=$GITHUB_TOKEN github-copilot
+agentkernel exec my-project -- env GITHUB_TOKEN=$GITHUB_TOKEN copilot
 ```
 
 ## What's Included
 
-- **Node.js 22** - Runtime for Copilot CLI
-- **Copilot CLI** - `@githubnext/github-copilot-cli`
+- **Node.js 24 LTS** - Runtime for Copilot CLI
+- **Copilot CLI** - `@github/copilot`
 - **Git** - Version control
 - **Python 3** - For Python projects
 - **ripgrep** - Fast search

@@ -116,7 +116,7 @@ impl Default for NomadPoolConfig {
             nomad_token: std::env::var("NOMAD_TOKEN").ok(),
             warm_pool_size: 10,
             max_pool_size: 50,
-            image: "alpine:3.20".to_string(),
+            image: "alpine:3.24".to_string(),
             driver: "docker".to_string(),
             datacenter: "dc1".to_string(),
             memory_mb: 512,

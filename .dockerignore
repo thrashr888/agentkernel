@@ -19,3 +19,5 @@
 !images/build/**
 !images/kernel/
 !images/kernel/microvm.config
+!docker/
+!docker/entrypoint.sh

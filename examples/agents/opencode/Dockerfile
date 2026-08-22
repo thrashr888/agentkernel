@@ -11,7 +11,9 @@
 # Environment variables:
 #   Set your LLM provider's API key as needed (e.g. ANTHROPIC_API_KEY, OPENAI_API_KEY)
 
-FROM node:22-alpine
+FROM node:24-alpine3.24
+
+ARG OPENCODE_VERSION=1.18.21
 
 # Install essential tools
 RUN apk add --no-cache \
@@ -26,8 +28,9 @@ RUN apk add --no-cache \
     jq \
     && rm -rf /var/cache/apk/*
 
-# Install OpenCode CLI
-RUN curl -fsSL https://opencode.ai/install | bash
+# Install OpenCode into npm's system-wide prefix so the non-root runtime user
+# can discover the executable without inheriting root's home directory.
+RUN npm install -g "opencode-ai@${OPENCODE_VERSION}"
 
 # Create workspace directory
 RUN mkdir -p /workspace
@@ -40,10 +43,9 @@ RUN adduser -D -h /home/developer developer \
 # Switch to non-root user
 USER developer
 
-# Set up shell and PATH for opencode
+# Set up shell
 ENV SHELL=/bin/bash
 ENV HOME=/home/developer
-ENV PATH="/root/.opencode/bin:$PATH"
 
 # Keep container running (for attach/exec)
 CMD ["tail", "-f", "/dev/null"]

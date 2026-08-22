@@ -418,7 +418,10 @@ mod tests {
         let cfg = resolved.unwrap().parse();
         assert!(cfg.is_ok(), "template should parse");
         let cfg = cfg.unwrap();
-        assert_eq!(cfg.sandbox.base_image, Some("node:22-alpine".to_string()));
+        assert_eq!(
+            cfg.sandbox.base_image,
+            Some("node:24-alpine3.24".to_string())
+        );
         assert!(cfg.sandbox.init_script.is_some());
     }
 }

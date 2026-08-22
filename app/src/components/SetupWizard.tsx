@@ -135,7 +135,7 @@ export function SetupWizard({ open, onComplete }: SetupWizardProps) {
     mutationFn: () =>
       api.createSandbox({
         name: sandboxName,
-        image: "alpine:3.20",
+        image: "alpine:3.24",
         vcpus: 2,
         memory_mb: 512,
       }),

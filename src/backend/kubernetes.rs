@@ -243,33 +243,37 @@ impl KubernetesSandbox {
         }
     }
 
-    /// Create a NetworkPolicy that denies all ingress/egress for this pod
-    async fn create_network_policy(&self, client: &Client) -> Result<()> {
-        let np_api: Api<NetworkPolicy> = Api::namespaced(client.clone(), &self.namespace);
-
+    /// Build a NetworkPolicy that denies all ingress/egress for this pod.
+    fn build_network_policy(&self) -> NetworkPolicy {
         let pod_name = Self::pod_name_for(&self.name);
         let np_name = format!("{}-deny-all", pod_name);
 
         let mut match_labels = BTreeMap::new();
         match_labels.insert("agentkernel/sandbox".to_string(), self.name.clone());
 
-        let np = NetworkPolicy {
+        NetworkPolicy {
             metadata: ObjectMeta {
                 name: Some(np_name),
                 namespace: Some(self.namespace.clone()),
                 ..Default::default()
             },
             spec: Some(NetworkPolicySpec {
-                pod_selector: LabelSelector {
+                pod_selector: Some(LabelSelector {
                     match_labels: Some(match_labels),
                     ..Default::default()
-                },
+                }),
                 // Empty ingress and egress = deny all
                 ingress: Some(vec![]),
                 egress: Some(vec![]),
                 policy_types: Some(vec!["Ingress".to_string(), "Egress".to_string()]),
             }),
-        };
+        }
+    }
+
+    /// Create a NetworkPolicy that denies all ingress/egress for this pod
+    async fn create_network_policy(&self, client: &Client) -> Result<()> {
+        let np_api: Api<NetworkPolicy> = Api::namespaced(client.clone(), &self.namespace);
+        let np = self.build_network_policy();
 
         np_api
             .create(&PostParams::default(), &np)
@@ -635,4 +639,36 @@ fn tilde_expand(path: &str) -> String {
         return format!("{}{}", home.to_string_lossy(), &path[1..]);
     }
     path.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deny_all_policy_targets_only_the_sandbox() {
+        let sandbox = KubernetesSandbox::new("Test Sandbox", &OrchestratorConfig::default());
+        let policy = sandbox.build_network_policy();
+
+        assert_eq!(
+            policy.metadata.name.as_deref(),
+            Some("agentkernel-test-sandbox-deny-all")
+        );
+        let spec = policy.spec.expect("network policy spec");
+        let selector = spec.pod_selector.expect("pod selector");
+        assert_eq!(
+            selector
+                .match_labels
+                .expect("selector labels")
+                .get("agentkernel/sandbox")
+                .map(String::as_str),
+            Some("Test Sandbox")
+        );
+        assert_eq!(spec.ingress, Some(vec![]));
+        assert_eq!(spec.egress, Some(vec![]));
+        assert_eq!(
+            spec.policy_types,
+            Some(vec!["Ingress".to_string(), "Egress".to_string()])
+        );
+    }
 }

@@ -59,7 +59,7 @@ fn benchmark_hyperlight_runtime_startup() {
 
             let proto = match SandboxBuilder::new()
                 .with_guest_heap_size(10_000_000)
-                .with_guest_stack_size(1_000_000)
+                .with_guest_scratch_size(2 * 1024 * 1024)
                 .build()
             {
                 Ok(p) => p,

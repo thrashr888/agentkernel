@@ -454,7 +454,7 @@ mod tests {
             sandbox: "my-sandbox".to_string(),
             image_tag: "agentkernel-snap:test-snap".to_string(),
             backend: "docker".to_string(),
-            base_image: "alpine:3.20".to_string(),
+            base_image: "alpine:3.24".to_string(),
             vcpus: 2,
             memory_mb: 512,
             created_at: "2026-02-01T00:00:00Z".to_string(),

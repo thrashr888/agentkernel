@@ -7,7 +7,7 @@ Run sandboxes as HashiCorp Nomad job allocations. Each sandbox is a batch job ru
 
 ```bash
 # Create and run a sandbox on Nomad
-agentkernel sandbox create my-sandbox --backend nomad --image alpine:3.20
+agentkernel sandbox create my-sandbox --backend nomad --image alpine:3.24
 agentkernel sandbox start my-sandbox
 agentkernel exec my-sandbox -- echo "hello from nomad"
 agentkernel sandbox stop my-sandbox

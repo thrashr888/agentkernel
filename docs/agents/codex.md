@@ -90,7 +90,7 @@ mount_cwd = true    # Mount project directory
 
 The Codex image includes:
 
-- **Node.js 22** - Runtime
+- **Node.js 24 LTS** - Runtime
 - **Codex CLI** - `@openai/codex`
 - **Git** - Version control
 - **Python 3** - For Python projects

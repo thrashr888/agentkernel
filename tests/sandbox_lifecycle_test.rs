@@ -333,7 +333,7 @@ fn test_run_with_image() {
         "--backend",
         "docker",
         "--image",
-        "alpine:3.20",
+        "alpine:3.20", // legacy compatibility: explicit old images still run
         "--",
         "cat",
         "/etc/alpine-release",

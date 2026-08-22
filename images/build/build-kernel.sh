@@ -2,11 +2,11 @@
 # Build minimal Linux kernel for Firecracker microVMs
 #
 # Usage: ./build-kernel.sh [version]
-# Example: ./build-kernel.sh 6.1.70
+# Example: ./build-kernel.sh 6.18.45
 #
 # For macOS, use Docker:
 #   docker build -t agentkernel-kernel-builder -f Dockerfile.kernel-builder .
-#   docker run --rm -v "$(pwd)/../kernel:/kernel" agentkernel-kernel-builder 6.1.70
+#   docker run --rm -v "$(pwd)/../kernel:/kernel" agentkernel-kernel-builder 6.18.45
 #
 # Requirements (Linux native):
 #   - gcc, make, flex, bison, libelf-dev, libssl-dev, bc
@@ -16,8 +16,11 @@
 
 set -euo pipefail
 
-# Default kernel version (6.1 LTS)
-KERNEL_VERSION="${1:-6.1.70}"
+# Default kernel version (6.18 LTS, supported by Firecracker 1.16)
+# An explicit first argument remains authoritative for existing build workflows.
+KERNEL_VERSION="${1:-6.18.45}"
+DEFAULT_KERNEL_SHA256="30fa4a56579ca614ac125a12614f7f6466f87ab1278aef7b951dd74156deab33"
+KERNEL_SHA256="${2:-}"
 KERNEL_MAJOR="${KERNEL_VERSION%%.*}"
 
 echo "==> Building kernel $KERNEL_VERSION for Firecracker"
@@ -46,7 +49,34 @@ KERNEL_URL="https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/${KERNEL_
 
 if [[ ! -f "$KERNEL_TARBALL" ]]; then
     echo "==> Downloading kernel source..."
-    curl -LO "$KERNEL_URL"
+    curl -fL --output "$KERNEL_TARBALL" "$KERNEL_URL"
+fi
+
+# Verify the pinned default against kernel.org's signed checksum manifest. For an
+# explicit version, accept an explicit checksum or resolve it from that manifest.
+if [[ -z "$KERNEL_SHA256" ]]; then
+    if [[ "$KERNEL_VERSION" == "6.18.45" ]]; then
+        KERNEL_SHA256="$DEFAULT_KERNEL_SHA256"
+    else
+        KERNEL_SHA256="$(curl -fsSL "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/sha256sums.asc" \
+            | awk -v file="$KERNEL_TARBALL" '$2 == file { print $1; exit }')"
+    fi
+fi
+
+if [[ -z "$KERNEL_SHA256" ]]; then
+    echo "ERROR: No official checksum found for $KERNEL_TARBALL"
+    echo "Pass the expected SHA-256 as the second argument for a custom source."
+    exit 1
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+    echo "$KERNEL_SHA256  $KERNEL_TARBALL" | sha256sum -c -
+else
+    ACTUAL_SHA256="$(shasum -a 256 "$KERNEL_TARBALL" | awk '{print $1}')"
+    [[ "$ACTUAL_SHA256" == "$KERNEL_SHA256" ]] || {
+        echo "ERROR: SHA-256 mismatch for $KERNEL_TARBALL"
+        exit 1
+    }
 fi
 
 # Extract if not already extracted

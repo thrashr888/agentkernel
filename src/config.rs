@@ -837,7 +837,7 @@ impl Config {
             "java" => "eclipse-temurin:21-alpine".to_string(),
             "c" => "gcc:14-bookworm".to_string(),
             "dotnet" => "mcr.microsoft.com/dotnet/sdk:8.0".to_string(),
-            _ => "alpine:3.20".to_string(),
+            _ => "alpine:3.24".to_string(),
         }
     }
 

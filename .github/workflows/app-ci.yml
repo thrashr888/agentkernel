@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths: ["app/**", ".github/workflows/app-ci.yml"]
   pull_request:
-    branches: [main]
+    branches: [main, codex/apple-container-1-2-modernization]
     paths: ["app/**", ".github/workflows/app-ci.yml"]
 
 env:
@@ -19,8 +19,8 @@ jobs:
     name: Frontend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -39,8 +39,8 @@ jobs:
     name: Tauri Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -86,8 +86,8 @@ jobs:
             arch: x64
             artifact: agentkernel-desktop-darwin-x64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -111,7 +111,7 @@ jobs:
           projectPath: app
           args: --target ${{ matrix.target }}
       - name: Upload bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: app/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app

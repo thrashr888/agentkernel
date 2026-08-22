@@ -1414,8 +1414,8 @@ async fn handle_run(req: Request<Incoming>, state: Arc<AppState>) -> Response<Bo
     // Fast path: use container pool (default for HTTP API)
     if body.fast {
         if body.image.is_some() {
-            // Pool uses alpine:3.20, warn if custom image requested
-            eprintln!("Warning: custom image ignored in fast mode (pool uses alpine:3.20)");
+            // Pool uses alpine:3.24, warn if custom image requested
+            eprintln!("Warning: custom image ignored in fast mode (pool uses alpine:3.24)");
         }
 
         match VmManager::run_pooled(&body.command).await {
@@ -2895,7 +2895,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         );
     }
 
-    let image = body.image.as_deref().unwrap_or("alpine:3.20");
+    let image = body.image.as_deref().unwrap_or("alpine:3.24");
     let vcpus = body.vcpus.unwrap_or(1);
     let memory_mb = body.memory_mb.unwrap_or(512);
 
@@ -5716,7 +5716,7 @@ fn parse_runtime_input(
 fn compute_idempotency_key(orchestration_id: &str, activity_name: &str, sequence: i64) -> String {
     let mut hasher = Sha256::new();
     hasher.update(format!("{orchestration_id}:{activity_name}:{sequence}"));
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 fn compute_retry_delay_ms(policy: &RuntimeRetryPolicy, failure_attempts: u32) -> u64 {
@@ -6996,7 +6996,7 @@ async fn handle_benchmark(state: Arc<AppState>) -> Response<BoxBody> {
             .next()
             .unwrap_or("0")
     );
-    let image = "alpine:3.20";
+    let image = "alpine:3.24";
 
     let started_at = chrono::Utc::now();
 
@@ -7442,10 +7442,11 @@ mod tests {
 
     #[test]
     fn test_run_request_deserialize() {
+        // Legacy compatibility: explicitly requested old tags deserialize unchanged.
         let json = r#"{"command": ["echo", "hello"], "image": "alpine:3.20"}"#;
         let req: RunRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.command, vec!["echo", "hello"]);
-        assert_eq!(req.image, Some("alpine:3.20".to_string()));
+        assert_eq!(req.image, Some("alpine:3.20".to_string())); // legacy compatibility
         assert!(req.fast); // default is true
     }
 

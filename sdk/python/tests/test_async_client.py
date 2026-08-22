@@ -1,5 +1,7 @@
 """Tests for the asynchronous AsyncAgentKernel client."""
 
+from typing import Any
+
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -8,7 +10,7 @@ from agentkernel import AsyncAgentKernel, NotFoundError, RunOutput, SandboxInfo
 BASE_URL = "http://localhost:9999"
 
 
-def make_client(**kwargs) -> AsyncAgentKernel:
+def make_client(**kwargs: Any) -> AsyncAgentKernel:
     return AsyncAgentKernel(base_url=BASE_URL, **kwargs)
 
 
@@ -213,7 +215,10 @@ class TestAsyncDurableStores:
 
     async def test_query_path(self, httpx_mock: HTTPXMock) -> None:
         httpx_mock.add_response(
-            json={"success": True, "data": {"columns": ["id"], "rows": [{"id": 1}], "row_count": 1}},
+            json={
+                "success": True,
+                "data": {"columns": ["id"], "rows": [{"id": 1}], "row_count": 1},
+            },
         )
         async with make_client() as client:
             await client.query_store("store-1", {"sql": "select 1", "params": []})
@@ -246,7 +251,10 @@ class TestAsyncDurableStores:
 class TestAsyncSandboxSession:
     async def test_auto_removes(self, httpx_mock: HTTPXMock) -> None:
         httpx_mock.add_response(
-            json={"success": True, "data": {"name": "sess", "status": "running", "backend": "docker"}}
+            json={
+                "success": True,
+                "data": {"name": "sess", "status": "running", "backend": "docker"},
+            }
         )
         httpx_mock.add_response(json={"success": True, "data": "Sandbox removed"})
 

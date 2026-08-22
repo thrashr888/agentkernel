@@ -55,7 +55,7 @@ mkdir -p "$ROOTFS_DIR"
 
 # Build in Docker for consistency
 docker build -t agentkernel-rootfs-builder -f - "$SCRIPT_DIR" << 'DOCKERFILE'
-FROM alpine:3.20
+FROM alpine:3.24
 
 RUN apk add --no-cache \
     e2fsprogs \
@@ -122,8 +122,8 @@ mount -o loop "$ROOTFS_IMG" "$MOUNT_DIR"
 
 # Create Alpine rootfs using static busybox approach
 echo "==> Installing Alpine base system..."
-apk -X https://dl-cdn.alpinelinux.org/alpine/v3.20/main \
-    -X https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
+apk -X https://dl-cdn.alpinelinux.org/alpine/v3.24/main \
+    -X https://dl-cdn.alpinelinux.org/alpine/v3.24/community \
     -U --allow-untrusted --root "$MOUNT_DIR" --initdb \
     add alpine-base busybox-static $PACKAGES
 

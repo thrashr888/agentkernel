@@ -335,7 +335,7 @@ pub struct SandboxConfig {
 impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
-            image: "alpine:3.20".to_string(),
+            image: "alpine:3.24".to_string(),
             vcpus: 1,
             memory_mb: 512,
             mount_cwd: false,
@@ -941,7 +941,7 @@ mod tests {
     #[test]
     fn test_sandbox_config_default() {
         let config = SandboxConfig::default();
-        assert_eq!(config.image, "alpine:3.20");
+        assert_eq!(config.image, "alpine:3.24");
         assert_eq!(config.vcpus, 1);
         assert_eq!(config.memory_mb, 512);
         assert!(!config.mount_cwd);

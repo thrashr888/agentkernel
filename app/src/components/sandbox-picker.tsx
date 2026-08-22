@@ -24,7 +24,7 @@ export function SandboxPicker({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [creatingName, setCreatingName] = useState<string | null>(null);
-  const [newImage, setNewImage] = useState("alpine:3.20");
+  const [newImage, setNewImage] = useState("alpine:3.24");
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -59,14 +59,14 @@ export function SandboxPicker({
 
   const createMutation = useMutation({
     mutationFn: (name: string) =>
-      api.createSandbox({ name, image: newImage.trim() || "alpine:3.20" }),
+      api.createSandbox({ name, image: newImage.trim() || "alpine:3.24" }),
     onSuccess: (_data, name) => {
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
       onChange(name);
       setOpen(false);
       setSearch("");
       setCreatingName(null);
-      setNewImage("alpine:3.20");
+      setNewImage("alpine:3.24");
       toast.success(`Sandbox "${name}" created`);
     },
     onError: (err) => {
@@ -147,7 +147,7 @@ export function SandboxPicker({
                   type="text"
                   value={newImage}
                   onChange={(e) => setNewImage(e.target.value)}
-                  placeholder="Image (e.g. alpine:3.20)"
+                  placeholder="Image (e.g. alpine:3.24)"
                   className="flex-1 rounded border bg-background px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-ring"
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {

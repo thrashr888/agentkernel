@@ -36,9 +36,9 @@ cargo run -- <command>
 # Build kernel (via Docker, works on macOS)
 cd images/build
 docker build -t agentkernel-kernel-builder -f Dockerfile.kernel-builder .
-docker run --rm -v "$(pwd)/../kernel:/kernel" agentkernel-kernel-builder 6.1.70
+docker run --rm -v "$(pwd)/../kernel:/kernel" agentkernel-kernel-builder 6.18.45
 
-# Output: images/kernel/vmlinux-6.1.70-agentkernel (~4MB)
+# Output: images/kernel/vmlinux-6.18.45-agentkernel (~4MB)
 ```
 
 ## Architecture

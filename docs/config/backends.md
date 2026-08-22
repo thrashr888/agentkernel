@@ -127,7 +127,7 @@ Run sandboxes as Kubernetes Pods on any cluster. Requires building with `--featu
 ```bash
 cargo build --features kubernetes
 
-agentkernel sandbox create my-sandbox --backend kubernetes --image alpine:3.20
+agentkernel sandbox create my-sandbox --backend kubernetes --image alpine:3.24
 ```
 
 **Requirements:**
@@ -155,7 +155,7 @@ Run sandboxes as HashiCorp Nomad job allocations. Requires building with `--feat
 ```bash
 cargo build --features nomad
 
-agentkernel sandbox create my-sandbox --backend nomad --image alpine:3.20
+agentkernel sandbox create my-sandbox --backend nomad --image alpine:3.24
 ```
 
 **Requirements:**

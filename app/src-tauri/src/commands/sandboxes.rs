@@ -150,8 +150,14 @@ pub async fn quickstart_agent(
                 ("OPENAI_API_KEY", "api.openai.com"),
             ],
         ),
-        "copilot" => ("github-copilot", &[("GITHUB_TOKEN", "api.github.com")]),
+        "copilot" => ("copilot", &[("GITHUB_TOKEN", "api.github.com")]),
         _ => return Err(format!("Unknown agent: {}", agent)),
+    };
+    // Amp and Copilot publish glibc-native packages; the other npm agents are
+    // verified on Alpine 3.24. This only affects newly created sandboxes.
+    let image = match agent.as_str() {
+        "amp" | "copilot" => "node:24-bookworm-slim",
+        _ => "node:24-alpine3.24",
     };
 
     // Build secret bindings from host env vars (format: KEY=value:host)
@@ -165,7 +171,7 @@ pub async fn quickstart_agent(
     // Create sandbox with agent field + secret bindings for LLM proxy
     let req = CreateSandboxRequest {
         name: sandbox_name.clone(),
-        image: Some("node:22-alpine".to_string()),
+        image: Some(image.to_string()),
         vcpus: Some(2),
         memory_mb: Some(1024),
         ports: vec![],

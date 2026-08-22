@@ -3,7 +3,7 @@
 
 [sandbox]
 name = "sqlite"
-base_image = "alpine:3.20"
+base_image = "alpine:3.24"
 init_script = """
 set -e
 apk add --no-cache sqlite

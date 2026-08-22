@@ -8,14 +8,17 @@ base_image = "elixir:1.19-otp-28-slim"
 init_script = """
 set -e
 apt-get update && apt-get install -y --no-install-recommends git curl bash ca-certificates gnupg && rm -rf /var/lib/apt/lists/*
-curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
 apt-get install -y --no-install-recommends nodejs && rm -rf /var/lib/apt/lists/*
-npm install -g @openai/codex
-git clone --depth 1 https://github.com/openai/symphony.git /opt/symphony
+npm install -g @openai/codex@0.149.0
+git init /opt/symphony
+git -C /opt/symphony remote add origin https://github.com/openai/symphony.git
+git -C /opt/symphony fetch --depth 1 origin 8001b52e3062495a16e520e4ceaf8f9de868c4d0
+git -C /opt/symphony checkout --detach FETCH_HEAD
 cd /opt/symphony/elixir
 mix local.hex --force && mix local.rebar --force
-mix deps.get
-mix compile
+MIX_ENV=prod mix setup
+MIX_ENV=prod mix build
 """
 
 [resources]

@@ -328,7 +328,7 @@ enum Commands {
         #[arg(long, default_value = "1")]
         warmup: usize,
         /// Docker image to use for benchmark
-        #[arg(long, default_value = "alpine:3.20")]
+        #[arg(long, default_value = "alpine:3.24")]
         image: String,
         /// Output machine-readable JSON instead of the table view
         #[arg(long)]
@@ -2136,7 +2136,7 @@ memory_mb = 512
                 }
                 if image.is_some() || config.is_some() {
                     eprintln!(
-                        "Warning: --image and --config are ignored with --fast (pool uses alpine:3.20)"
+                        "Warning: --image and --config are ignored with --fast (pool uses alpine:3.24)"
                     );
                 }
 
@@ -2146,7 +2146,7 @@ memory_mb = 512
                         if let Some(path) = receipt_path.as_ref() {
                             write_run_receipt(
                                 path,
-                                Some("alpine:3.20".to_string()),
+                                Some("alpine:3.24".to_string()),
                                 None,
                                 0,
                                 &output,
@@ -2160,7 +2160,7 @@ memory_mb = 512
                             let (exit_code, combined_output, error_message) = error_details(&e);
                             write_run_receipt(
                                 path,
-                                Some("alpine:3.20".to_string()),
+                                Some("alpine:3.24".to_string()),
                                 None,
                                 exit_code,
                                 &combined_output,
@@ -3483,7 +3483,7 @@ memory_mb = 512
                         ));
                     }
                     4 => {
-                        // name:image:tag:command (image with tag like alpine:3.20)
+                        // name:image:tag:command (image with tag like alpine:3.24)
                         parsed_jobs.push((
                             parts[0].to_string(),
                             format!("{}:{}", parts[1], parts[2]),
@@ -3822,7 +3822,7 @@ memory_mb = 512
                 backend,
             } => {
                 let sess = session::create(&name, &agent)?;
-                let docker_image = image.unwrap_or_else(|| "alpine:3.20".to_string());
+                let docker_image = image.unwrap_or_else(|| "alpine:3.24".to_string());
 
                 let backend_type = if let Some(ref b) = backend {
                     Some(
@@ -5122,7 +5122,7 @@ mod tests {
 
     fn project_with_dockerfile() -> TempDir {
         let temp_dir = TempDir::new().unwrap();
-        std::fs::write(temp_dir.path().join("Dockerfile"), "FROM alpine:3.20\n").unwrap();
+        std::fs::write(temp_dir.path().join("Dockerfile"), "FROM alpine:3.24\n").unwrap();
         temp_dir
     }
 

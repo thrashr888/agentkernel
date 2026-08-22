@@ -39,7 +39,7 @@ impl Default for KubernetesPoolConfig {
         Self {
             warm_pool_size: 10,
             max_pool_size: 50,
-            image: "alpine:3.20".to_string(),
+            image: "alpine:3.24".to_string(),
             namespace: "agentkernel".to_string(),
             runtime_class: None,
             memory_mb: 512,

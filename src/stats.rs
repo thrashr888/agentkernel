@@ -67,11 +67,11 @@ impl Stats {
 
         // Sort by count descending, take top 5
         let mut top_images: Vec<(String, usize)> = image_counts.into_iter().collect();
-        top_images.sort_by(|a, b| b.1.cmp(&a.1));
+        top_images.sort_by_key(|item| std::cmp::Reverse(item.1));
         top_images.truncate(5);
 
         let mut top_backends: Vec<(String, usize)> = backend_counts.into_iter().collect();
-        top_backends.sort_by(|a, b| b.1.cmp(&a.1));
+        top_backends.sort_by_key(|item| std::cmp::Reverse(item.1));
         top_backends.truncate(5);
 
         let first_entry = entries
@@ -163,7 +163,7 @@ mod tests {
         let entries = vec![
             make_entry(AuditEvent::SandboxCreated {
                 name: "test1".to_string(),
-                image: "alpine:3.20".to_string(),
+                image: "alpine:3.24".to_string(),
                 backend: "docker".to_string(),
                 labels: Default::default(),
             }),
@@ -188,7 +188,7 @@ mod tests {
         assert_eq!(stats.sandboxes_created, 1);
         assert_eq!(stats.sandboxes_removed, 1);
         assert_eq!(stats.sandboxes_active, 0);
-        assert_eq!(stats.top_images, vec![("alpine:3.20".to_string(), 1)]);
+        assert_eq!(stats.top_images, vec![("alpine:3.24".to_string(), 1)]);
         assert_eq!(stats.top_backends, vec![("docker".to_string(), 1)]);
     }
 

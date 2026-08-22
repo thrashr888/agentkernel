@@ -24,8 +24,8 @@ amp
 
 ## What's Included
 
-- **Node.js 22** - Runtime for Amp
-- **Amp CLI** - `@sourcegraph/amp`
+- **Node.js 24 LTS** - Runtime for Amp
+- **Amp CLI** - `@ampcode/cli`
 - **Git** - Version control
 - **Python 3** - For Python projects
 - **ripgrep** - Fast search

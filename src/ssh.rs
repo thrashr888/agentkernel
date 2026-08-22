@@ -83,7 +83,7 @@ AcceptEnv LANG LC_*
 ///
 /// Returns `(private_key_openssh, public_key_openssh)`.
 pub fn generate_ca_keypair() -> Result<(String, String)> {
-    let mut rng = rand::thread_rng();
+    let mut rng = ssh_key::rand_core::OsRng;
     let private_key = PrivateKey::random(&mut rng, Algorithm::Ed25519)
         .context("Failed to generate CA ed25519 keypair")?;
 
@@ -103,7 +103,7 @@ pub fn generate_ca_keypair() -> Result<(String, String)> {
 ///
 /// Returns `(private_key_openssh, public_key_openssh)`.
 fn generate_host_keypair() -> Result<(String, String)> {
-    let mut rng = rand::thread_rng();
+    let mut rng = ssh_key::rand_core::OsRng;
     let private_key = PrivateKey::random(&mut rng, Algorithm::Ed25519)
         .context("Failed to generate host ed25519 keypair")?;
 
@@ -234,7 +234,7 @@ pub fn sign_client_key_local(
     let client_pubkey = ssh_key::PublicKey::from_openssh(client_public_key)
         .context("Failed to parse client public key")?;
 
-    let mut rng = rand::thread_rng();
+    let mut rng = ssh_key::rand_core::OsRng;
 
     let valid_after = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -289,7 +289,7 @@ pub fn sign_client_key_local(
 ///
 /// Returns `(private_key_openssh, public_key_openssh)`.
 pub fn generate_client_keypair() -> Result<(String, String)> {
-    let mut rng = rand::thread_rng();
+    let mut rng = ssh_key::rand_core::OsRng;
     let private_key = PrivateKey::random(&mut rng, Algorithm::Ed25519)
         .context("Failed to generate client ed25519 keypair")?;
 
@@ -606,7 +606,7 @@ mod tests {
         let (ca_priv, _ca_pub) = generate_ca_keypair().unwrap();
 
         // Generate a client keypair
-        let mut rng = rand::thread_rng();
+        let mut rng = ssh_key::rand_core::OsRng;
         let client_key = PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
         let client_pub = client_key.public_key().to_openssh().unwrap();
 

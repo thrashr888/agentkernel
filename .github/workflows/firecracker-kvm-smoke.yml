@@ -1,0 +1,41 @@
+name: Firecracker KVM Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_safe_runner:
+        description: Run only on the dedicated AgentKernel KVM smoke runner
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  native-kvm-smoke:
+    if: ${{ inputs.confirm_safe_runner }}
+    runs-on: [self-hosted, Linux, X64, agentkernel-kvm-safe]
+    timeout-minutes: 30
+    env:
+      AGENTKERNEL_KVM_SMOKE: "1"
+      FIRECRACKER_BIN: /opt/agentkernel/bin/firecracker
+      AGENTKERNEL_KVM_KERNEL: /opt/agentkernel/images/kernel/vmlinux-6.18.45-agentkernel
+      AGENTKERNEL_KVM_ROOTFS: /opt/agentkernel/images/rootfs/base.ext4
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89"
+      - name: Verify dedicated KVM runner assets
+        run: |
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+          test -r /dev/kvm
+          test -w /dev/kvm
+          test -x "$FIRECRACKER_BIN"
+          test -f "$AGENTKERNEL_KVM_KERNEL"
+          test -f "$AGENTKERNEL_KVM_ROOTFS"
+          "$FIRECRACKER_BIN" --version | grep -F 'v1.16.1'
+      - name: Lifecycle, exec, networking, vsock, snapshot, and recovery
+        run: cargo test --locked --test firecracker_kvm_smoke -- --ignored --nocapture

@@ -8,7 +8,7 @@
  * Install: agentkernel plugin install pi
  * Or manually copy this directory into your project's .pi/extensions/
  */
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 interface SandboxInfo {
@@ -79,7 +79,7 @@ export default function (pi: ExtensionAPI) {
     try {
       await request<SandboxInfo>("POST", "/sandboxes", {
         name,
-        image: "node:22-alpine",
+        image: "node:24-alpine3.24",
       });
       sandboxName = name;
       sandboxReady = true;
@@ -137,6 +137,7 @@ export default function (pi: ExtensionAPI) {
           content: [
             { type: "text", text: result.stdout + result.stderr },
           ],
+          details: { sandbox: "local", sandboxed: false },
         };
       }
 
@@ -149,6 +150,7 @@ export default function (pi: ExtensionAPI) {
                 text: `Running in sandbox ${sandboxName}...`,
               },
             ],
+            details: { sandbox: sandboxName, sandboxed: true },
           });
         }
 
@@ -166,6 +168,11 @@ export default function (pi: ExtensionAPI) {
         if (signal?.aborted) {
           return {
             content: [{ type: "text", text: "Command cancelled." }],
+            details: {
+              sandbox: sandboxName,
+              sandboxed: sandboxReady,
+              error: true,
+            },
           };
         }
         const message =
@@ -177,7 +184,11 @@ export default function (pi: ExtensionAPI) {
               text: `Sandbox error: ${message}`,
             },
           ],
-          details: { error: true },
+          details: {
+            sandbox: sandboxName ?? "unavailable",
+            sandboxed: sandboxReady,
+            error: true,
+          },
         };
       }
     },
@@ -196,7 +207,7 @@ export default function (pi: ExtensionAPI) {
       image: Type.Optional(
         Type.String({
           description:
-            "Container image (default: alpine:3.20). Examples: python:3.12-alpine, node:22-alpine",
+            "Container image (default: alpine:3.24). Examples: python:3.13-alpine, node:24-alpine3.24",
         }),
       ),
     }),
@@ -209,12 +220,16 @@ export default function (pi: ExtensionAPI) {
       try {
         const result = await request<RunOutput>("POST", "/run", {
           command: ["sh", "-c", command],
-          image,
+          image: image ?? "alpine:3.24",
           fast: true,
         });
         return {
           content: [{ type: "text", text: result.output }],
-          details: { sandbox: "one-shot", image: image ?? "alpine:3.20" },
+          details: {
+            sandbox: "one-shot",
+            image: image ?? "alpine:3.24",
+            error: false,
+          },
         };
       } catch (err: unknown) {
         const message =
@@ -223,7 +238,11 @@ export default function (pi: ExtensionAPI) {
           content: [
             { type: "text", text: `Sandbox error: ${message}` },
           ],
-          details: { error: true },
+          details: {
+            sandbox: "one-shot",
+            image: image ?? "alpine:3.24",
+            error: true,
+          },
         };
       }
     },

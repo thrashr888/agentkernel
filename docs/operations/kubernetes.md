@@ -7,7 +7,7 @@ Run sandboxes as Kubernetes Pods on any cluster. Each sandbox is a Pod running `
 
 ```bash
 # Create and run a sandbox on Kubernetes
-agentkernel sandbox create my-sandbox --backend kubernetes --image alpine:3.20
+agentkernel sandbox create my-sandbox --backend kubernetes --image alpine:3.24
 agentkernel sandbox start my-sandbox
 agentkernel exec my-sandbox -- echo "hello from k8s"
 agentkernel sandbox stop my-sandbox
@@ -127,7 +127,7 @@ metadata:
 spec:
   warm_pool_size: 20
   max_pool_size: 100
-  image: alpine:3.20
+  image: alpine:3.24
   vcpus: 1
   memory_mb: 512
 ```
@@ -277,7 +277,7 @@ orchestrator:
 
 sandbox:
   defaults:
-    image: alpine:3.20
+    image: alpine:3.24
     memory: 512Mi
     cpu: "1"
     securityProfile: restrictive

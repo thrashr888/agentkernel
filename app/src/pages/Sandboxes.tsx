@@ -62,7 +62,7 @@ export function Sandboxes() {
   }, [searchParams, setSearchParams]);
 
   const [formName, setFormName] = useState("");
-  const [formImage, setFormImage] = useState("alpine:3.20");
+  const [formImage, setFormImage] = useState("alpine:3.24");
   const [formVcpus, setFormVcpus] = useState(1);
   const [formMemory, setFormMemory] = useState(512);
   const [formProfile, setFormProfile] = useState("restrictive");
@@ -167,7 +167,7 @@ export function Sandboxes() {
 
   function resetForm() {
     setFormName("");
-    setFormImage("alpine:3.20");
+    setFormImage("alpine:3.24");
     setFormVcpus(1);
     setFormMemory(512);
     setFormProfile("restrictive");

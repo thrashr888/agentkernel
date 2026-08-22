@@ -115,7 +115,7 @@ const RUNTIMES: &[Runtime] = &[
     },
     // Shell scripts (uses lightweight alpine)
     Runtime {
-        image: "alpine:3.20",
+        image: "alpine:3.24",
         project_files: &["*.sh"],
         commands: &["sh", "bash", "zsh", "ash"],
     },
@@ -134,7 +134,7 @@ const RUNTIMES: &[Runtime] = &[
 ];
 
 /// Default image when nothing is detected
-const DEFAULT_IMAGE: &str = "alpine:3.20";
+const DEFAULT_IMAGE: &str = "alpine:3.24";
 
 /// Common Dockerfile names to detect
 const DOCKERFILE_NAMES: &[&str] = &[
@@ -351,11 +351,11 @@ mod tests {
     fn test_detect_shell_commands() {
         assert_eq!(
             detect_from_command(&["bash".to_string(), "-c".to_string(), "echo hi".to_string()]),
-            Some("alpine:3.20".to_string())
+            Some("alpine:3.24".to_string())
         );
         assert_eq!(
             detect_from_command(&["sh".to_string(), "script.sh".to_string()]),
-            Some("alpine:3.20".to_string())
+            Some("alpine:3.24".to_string())
         );
     }
 
@@ -404,7 +404,7 @@ mod tests {
         // Create a Dockerfile
         let dockerfile_path = dir.path().join("Dockerfile");
         let mut file = std::fs::File::create(&dockerfile_path).unwrap();
-        writeln!(file, "FROM alpine:3.20").unwrap();
+        writeln!(file, "FROM alpine:3.24").unwrap();
         writeln!(file, "RUN apk add --no-cache python3").unwrap();
 
         let result = detect_dockerfile(dir.path());
@@ -422,7 +422,7 @@ mod tests {
 
         // Create a Dockerfile
         let mut file = std::fs::File::create(&dockerfile_path).unwrap();
-        writeln!(file, "FROM alpine:3.20").unwrap();
+        writeln!(file, "FROM alpine:3.24").unwrap();
 
         let hash = dockerfile_content_hash(&dockerfile_path);
         assert!(hash.is_some());
@@ -442,7 +442,7 @@ mod tests {
         let dockerfile_path = dir.path().join("Dockerfile");
 
         let mut file = std::fs::File::create(&dockerfile_path).unwrap();
-        writeln!(file, "FROM alpine:3.20").unwrap();
+        writeln!(file, "FROM alpine:3.24").unwrap();
 
         let name = dockerfile_image_name("my-project", &dockerfile_path);
         assert!(name.starts_with("agentkernel-my-project:"));

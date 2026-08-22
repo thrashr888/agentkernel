@@ -413,9 +413,9 @@ async function handleProviderRequest(providerName, providerRequest) {
 
 async function loadDaytonaSdk() {
   if (!daytonaSdkPromise) {
-    daytonaSdkPromise = import("@daytonaio/sdk").catch((error) => {
+    daytonaSdkPromise = import("@daytona/sdk").catch((error) => {
       throw new Error(
-        "Daytona support requires '@daytonaio/sdk'. Run 'npm install --prefix scripts' first. " +
+        "Daytona support requires '@daytona/sdk'. Run 'npm install --prefix scripts' first. " +
           `(${error.message})`,
       );
     });
@@ -741,7 +741,7 @@ async function createDaytonaSandbox(providerRequest) {
   return withDaytonaClient(async (daytona) => {
     const sandbox = await daytona.create({
       name: providerRequest.sandbox_name,
-      image: providerRequest.image || "alpine:3.20",
+      image: providerRequest.image || "alpine:3.24",
       envVars: daytonaEnvMap(providerRequest.env),
       resources: {
         cpu: providerRequest.vcpus || 1,
@@ -760,7 +760,6 @@ async function resumeDaytonaSandbox(providerRequest) {
     if (!daytonaRunning(sandbox.state)) {
       await sandbox.start();
     }
-    await sandbox.refreshDataSafe();
     return daytonaResponse(sandbox, providerRequest);
   });
 }
@@ -768,7 +767,6 @@ async function resumeDaytonaSandbox(providerRequest) {
 async function statusDaytonaSandbox(providerRequest) {
   return withDaytonaClient(async (daytona) => {
     const sandbox = await getDaytonaSandbox(daytona, providerRequest);
-    await sandbox.refreshDataSafe();
     return daytonaResponse(sandbox, providerRequest);
   });
 }
@@ -778,7 +776,6 @@ async function stopDaytonaSandbox(providerRequest) {
     const sandbox = await getDaytonaSandbox(daytona, providerRequest);
     if (daytonaRunning(sandbox.state)) {
       await sandbox.stop();
-      await sandbox.refreshDataSafe();
     }
     return daytonaResponse(sandbox, providerRequest);
   });
@@ -1543,9 +1540,9 @@ function modalImageRef(providerRequest) {
     providerRequest.remote_metadata?.image_ref ||
     providerRequest.image ||
     providerRequest.profile ||
-    "alpine:3.20";
+    "alpine:3.24";
   if (!requested || requested === "base" || requested === "default") {
-    return "alpine:3.20";
+    return "alpine:3.24";
   }
   return requested;
 }
@@ -1727,21 +1724,11 @@ async function ensureModalWorkspace(sandbox, providerRequest) {
 }
 
 async function readModalFileBuffer(sandbox, filePath) {
-  const file = await sandbox.open(filePath, "r");
-  try {
-    return Buffer.from(await file.read());
-  } finally {
-    await file.close().catch(() => {});
-  }
+  return Buffer.from(await sandbox.filesystem.readBytes(filePath));
 }
 
 async function writeModalFileBuffer(sandbox, filePath, content) {
-  const file = await sandbox.open(filePath, "w");
-  try {
-    await file.write(content);
-  } finally {
-    await file.close().catch(() => {});
-  }
+  await sandbox.filesystem.writeBytes(content, filePath);
 }
 
 async function createModalWorkspaceArchive(sandbox, providerRequest) {

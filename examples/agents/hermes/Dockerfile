@@ -12,7 +12,10 @@
 #   OPENROUTER_API_KEY - Recommended (access to all models via OpenRouter)
 #   ANTHROPIC_API_KEY  - Alternative (direct Anthropic access)
 
-FROM nikolaik/python-nodejs:python3.11-nodejs22
+FROM node:24-bookworm-slim
+
+ARG HERMES_VERSION=0.20.5
+ARG HERMES_COMMIT=fc7523ca31eeb6eff9114afe384c2cf6380359df
 
 # Install essential tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -20,17 +23,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     bash \
     openssh-client \
+    python3 \
+    python3-pip \
+    python3-venv \
     ripgrep \
     jq \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone and install Hermes Agent
-RUN git clone --depth 1 https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
-    && cd /opt/hermes-agent \
-    && git submodule update --init --depth 1 \
-    && pip install --no-cache-dir -e ".[all]" \
-    && pip install --no-cache-dir -e "./mini-swe-agent" \
-    && npm install
+# Install the tested Hermes release from an immutable upstream commit. Keep its
+# Python environment outside the checkout, matching upstream's guidance.
+RUN git init /opt/hermes-agent \
+    && git -C /opt/hermes-agent remote add origin https://github.com/NousResearch/hermes-agent.git \
+    && git -C /opt/hermes-agent fetch --depth 1 origin "${HERMES_COMMIT}" \
+    && git -C /opt/hermes-agent checkout --detach FETCH_HEAD \
+    && test "$(python3 -c 'import tomllib; print(tomllib.load(open("/opt/hermes-agent/pyproject.toml", "rb"))["project"]["version"])')" = "${HERMES_VERSION}" \
+    && python3 -m venv /opt/hermes-venv \
+    && /opt/hermes-venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/hermes-venv/bin/pip install --no-cache-dir -e "/opt/hermes-agent[all]" \
+    && ln -s /opt/hermes-venv/bin/hermes /usr/local/bin/hermes
 
 # Create workspace directory
 RUN mkdir -p /workspace
