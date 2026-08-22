@@ -215,7 +215,7 @@ name = "deploy-pipeline"
 activities = [
     { name = "clone-repo", image = "alpine/git", command = ["git", "clone", "$input.repo"] },
     { name = "run-tests", image = "rust:1.82-alpine", command = ["cargo", "test"] },
-    { name = "deploy",    image = "alpine:3.20",      command = ["sh", "deploy.sh"] },
+    { name = "deploy",    image = "alpine:3.24",      command = ["sh", "deploy.sh"] },
 ]
 ```
 
@@ -330,7 +330,7 @@ retry_policy = { max_attempts = 2 }
 
 [[orchestrations.activities]]
 name = "deploy"
-image = "alpine:3.20"
+image = "alpine:3.24"
 command = ["sh", "/workspace/deploy.sh"]
 timeout_ms = 120000
 ```

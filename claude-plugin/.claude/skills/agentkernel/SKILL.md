@@ -143,7 +143,7 @@ agentkernel sandbox remove my-sandbox
 | .NET | `dotnet` | `mcr.microsoft.com/dotnet/sdk:8.0` |
 | Terraform | `terraform` | `hashicorp/terraform:1.10` |
 | Lua | `lua`, `luajit` | `nickblah/lua:5.4-alpine` |
-| Shell | `bash`, `sh`, `zsh` | `alpine:3.20` |
+| Shell | `bash`, `sh`, `zsh` | `alpine:3.24` |
 
 ## Security Notes
 

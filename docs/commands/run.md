@@ -141,7 +141,7 @@ The `run` command automatically selects an appropriate Docker image based on you
 | `cargo`, `rustc` | `rust:1.85-alpine` |
 | `go` | `golang:1.23-alpine` |
 | `ruby`, `gem`, `bundle` | `ruby:3.3-alpine` |
-| Others | `alpine:3.20` |
+| Others | `alpine:3.24` |
 
 Override with `--image` when needed, or pass `--build` to build the current project's Dockerfile first.
 

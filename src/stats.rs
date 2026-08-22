@@ -163,7 +163,7 @@ mod tests {
         let entries = vec![
             make_entry(AuditEvent::SandboxCreated {
                 name: "test1".to_string(),
-                image: "alpine:3.20".to_string(),
+                image: "alpine:3.24".to_string(),
                 backend: "docker".to_string(),
                 labels: Default::default(),
             }),
@@ -188,7 +188,7 @@ mod tests {
         assert_eq!(stats.sandboxes_created, 1);
         assert_eq!(stats.sandboxes_removed, 1);
         assert_eq!(stats.sandboxes_active, 0);
-        assert_eq!(stats.top_images, vec![("alpine:3.20".to_string(), 1)]);
+        assert_eq!(stats.top_images, vec![("alpine:3.24".to_string(), 1)]);
         assert_eq!(stats.top_backends, vec![("docker".to_string(), 1)]);
     }
 

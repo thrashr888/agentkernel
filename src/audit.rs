@@ -261,7 +261,7 @@ mod tests {
     fn test_audit_entry_serialization() {
         let entry = AuditEntry::new(AuditEvent::SandboxCreated {
             name: "test".to_string(),
-            image: "alpine:3.20".to_string(),
+            image: "alpine:3.24".to_string(),
             backend: "docker".to_string(),
             labels: Default::default(),
         });

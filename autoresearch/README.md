@@ -34,7 +34,7 @@ Environment overrides:
 AK_BENCH_BACKENDS=docker
 AK_BENCH_ITERATIONS=5
 AK_BENCH_WARMUP=1
-AK_BENCH_IMAGE=alpine:3.20
+AK_BENCH_IMAGE=alpine:3.24
 ./autoresearch/run_eval.sh
 ```
 

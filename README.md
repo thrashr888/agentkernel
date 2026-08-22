@@ -102,7 +102,7 @@ Command-driven runs do not implicitly build a Dockerfile found in the working di
 | Elixir | `mix.exs` | `elixir`, `mix` | `elixir:1.16-alpine` |
 | Lua | `*.lua` | `lua`, `luajit` | `nickblah/lua:5.4-alpine` |
 | HCL/Terraform | `*.tf`, `*.tfvars` | `terraform` | `hashicorp/terraform:1.10` |
-| Shell | `*.sh` | `bash`, `sh`, `zsh` | `alpine:3.20` |
+| Shell | `*.sh` | `bash`, `sh`, `zsh` | `alpine:3.24` |
 
 ### Procfile Support
 

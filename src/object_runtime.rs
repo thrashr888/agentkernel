@@ -100,7 +100,7 @@ async fn wake_object(
 
         // Create if it doesn't exist
         if !mgr.exists(&sandbox_name) {
-            mgr.create(&sandbox_name, "alpine:3.20", 1, 256).await?;
+            mgr.create(&sandbox_name, "alpine:3.24", 1, 256).await?;
         }
 
         // Start if not running

@@ -1040,7 +1040,7 @@ mod tests {
         let sandbox = AgentSandbox::new(
             "test-sandbox",
             AgentSandboxSpec {
-                image: "alpine:3.20".to_string(),
+                image: "alpine:3.24".to_string(),
                 vcpus: 1,
                 memory_mb: 512,
                 network: true,

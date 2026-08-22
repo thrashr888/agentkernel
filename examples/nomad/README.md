@@ -19,7 +19,7 @@ nomad agent -dev &
 cargo build --features nomad
 
 # Create and run a sandbox
-agentkernel create nomad-sandbox --backend nomad --image alpine:3.20
+agentkernel create nomad-sandbox --backend nomad --image alpine:3.24
 agentkernel start nomad-sandbox
 agentkernel exec nomad-sandbox -- echo "hello from nomad"
 

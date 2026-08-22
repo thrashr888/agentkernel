@@ -196,7 +196,7 @@ export default function (pi: ExtensionAPI) {
       image: Type.Optional(
         Type.String({
           description:
-            "Container image (default: alpine:3.20). Examples: python:3.12-alpine, node:22-alpine",
+            "Container image (default: alpine:3.24). Examples: python:3.12-alpine, node:22-alpine",
         }),
       ),
     }),
@@ -214,7 +214,7 @@ export default function (pi: ExtensionAPI) {
         });
         return {
           content: [{ type: "text", text: result.output }],
-          details: { sandbox: "one-shot", image: image ?? "alpine:3.20" },
+          details: { sandbox: "one-shot", image: image ?? "alpine:3.24" },
         };
       } catch (err: unknown) {
         const message =

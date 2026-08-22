@@ -266,7 +266,7 @@ impl McpServer {
                             },
                             "image": {
                                 "type": "string",
-                                "description": "Docker image to use (default: alpine:3.20)"
+                                "description": "Docker image to use (default: alpine:3.24)"
                             },
                             "ports": {
                                 "type": "array",
@@ -1049,7 +1049,7 @@ impl McpServer {
                 );
             }
             if args.get("image").is_some() {
-                eprintln!("Warning: custom image ignored in fast mode (pool uses alpine:3.20)");
+                eprintln!("Warning: custom image ignored in fast mode (pool uses alpine:3.24)");
             }
 
             return tokio::task::block_in_place(|| {
@@ -1119,7 +1119,7 @@ impl McpServer {
         let image = args
             .get("image")
             .and_then(|v| v.as_str())
-            .unwrap_or("alpine:3.20");
+            .unwrap_or("alpine:3.24");
 
         let ports: Vec<crate::backend::PortMapping> = args
             .get("ports")

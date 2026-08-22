@@ -17,7 +17,7 @@ fn test_orch_config() -> agentkernel::config::OrchestratorConfig {
 
 fn test_sandbox_config() -> agentkernel::backend::SandboxConfig {
     agentkernel::backend::SandboxConfig {
-        image: "alpine:3.20".to_string(),
+        image: "alpine:3.24".to_string(),
         vcpus: 1,
         memory_mb: 256,
         mount_cwd: false,

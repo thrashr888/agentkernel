@@ -19,7 +19,7 @@ async fn benchmark_sandbox_pool() {
 
     // Measure pool startup time
     let start = Instant::now();
-    let config = SandboxConfig::with_image("alpine:3.20");
+    let config = SandboxConfig::with_image("alpine:3.24");
     let pool = SandboxPool::with_config(backend, config, 3, 10).unwrap();
     pool.start().await.unwrap();
     let startup_time = start.elapsed();

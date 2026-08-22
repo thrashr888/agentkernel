@@ -344,7 +344,7 @@ command = "echo bad"
     fn test_pipeline_step_serde() {
         let step = PipelineStep {
             name: "test".to_string(),
-            image: "alpine:3.20".to_string(),
+            image: "alpine:3.24".to_string(),
             command: "echo hello".to_string(),
             input: Some("/in".to_string()),
             output: Some("/out".to_string()),

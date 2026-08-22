@@ -502,6 +502,7 @@ mod tests {
 
     #[test]
     fn test_valid_docker_images() {
+        // Legacy compatibility: explicit old tags remain accepted.
         assert!(validate_docker_image("alpine:3.20").is_ok());
         assert!(validate_docker_image("python:3.12-alpine").is_ok());
         assert!(validate_docker_image("ghcr.io/user/image:latest").is_ok());

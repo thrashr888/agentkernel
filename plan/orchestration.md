@@ -213,7 +213,7 @@ resources:
 
 sandbox:
   defaults:
-    image: alpine:3.20
+    image: alpine:3.24
     memory: 512Mi
     cpu: "1"
     securityProfile: restrictive
@@ -384,7 +384,7 @@ Use Nomad parameterized batch jobs:
 warm_pool_size = 20       # pre-warmed sandboxes
 max_sandboxes = 500       # hard cap on total concurrent sandboxes
 warm_pool_images = [      # which images to pre-warm
-  "alpine:3.20",
+  "alpine:3.24",
   "python:3.12-alpine",
   "node:22-alpine",
 ]
@@ -427,7 +427,7 @@ metadata:
   name: default-pool
 spec:
   size: 20
-  image: alpine:3.20
+  image: alpine:3.24
   resources:
     memory: 256Mi
 ```
@@ -481,7 +481,7 @@ kubectl port-forward svc/agentkernel 18888:18888
 for i in $(seq 1 100); do
   curl -s -X POST http://localhost:18888/sandboxes \
     -H 'Content-Type: application/json' \
-    -d "{\"name\": \"test-$i\", \"image\": \"alpine:3.20\"}" &
+    -d "{\"name\": \"test-$i\", \"image\": \"alpine:3.24\"}" &
 done; wait
 
 kubectl -n agentkernel-sandboxes get pods | wc -l

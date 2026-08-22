@@ -31,9 +31,9 @@ agentkernel ships with 26 built-in templates:
 | `ruby` | `ruby:3.3-alpine` | Ruby development |
 | `java` | `eclipse-temurin:21-alpine` | Java development |
 | `dotnet` | `mcr.microsoft.com/dotnet/sdk:8.0` | .NET development |
-| `bash` | `alpine:3.20` | Shell scripting |
+| `bash` | `alpine:3.24` | Shell scripting |
 | `c` | `gcc:14-bookworm` | C/C++ development |
-| `secure` | `alpine:3.20` | Restrictive (no network) |
+| `secure` | `alpine:3.24` | Restrictive (no network) |
 
 ### AI Agent Sandboxes
 
@@ -70,7 +70,7 @@ agentkernel ships with 26 built-in templates:
 ```bash
 $ agentkernel template list
 NAME                 SOURCE     IMAGE
-bash                 built-in   alpine:3.20
+bash                 built-in   alpine:3.24
 c                    built-in   gcc:14-bookworm
 claude-sandbox       built-in   python:3.12-alpine
 python               built-in   python:3.12-alpine

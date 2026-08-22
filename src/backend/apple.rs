@@ -591,6 +591,7 @@ mod tests {
 
     #[test]
     fn test_is_local_image_rejects_registry_images() {
+        // Legacy compatibility: explicit old registry images remain valid remote images.
         assert!(!is_local_image("alpine:3.20"));
         assert!(!is_local_image("python:3.12-alpine"));
         assert!(!is_local_image("docker.io/library/alpine"));
