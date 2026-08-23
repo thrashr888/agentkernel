@@ -42,6 +42,14 @@ pub struct SnapshotMeta {
     /// Original config file path used to reach provider credentials/settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_path: Option<String>,
+    /// Authenticated HTTP owner of this snapshot, when created through the
+    /// enterprise API. CLI-created snapshots remain unowned and are not
+    /// exposed through an authenticated tenant's HTTP snapshot routes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<String>,
+    /// Organization that owns this snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_org_id: Option<String>,
 }
 
 /// Directory where snapshot metadata lives.
@@ -116,6 +124,8 @@ pub fn take(
         remote_snapshot,
         work_dir: state.work_dir.clone(),
         config_path: state.config_path.clone(),
+        owner_user_id: None,
+        owner_org_id: None,
     };
 
     // Save metadata
@@ -126,6 +136,24 @@ pub fn take(
     std::fs::write(&meta_path, content)?;
 
     Ok(meta)
+}
+
+/// Attach authenticated HTTP ownership to an already-written snapshot.
+/// Snapshot creation is also used by CLI/MCP, so ownership is an explicit
+/// follow-up rather than a credential-bearing parameter on the shared API.
+#[cfg(feature = "enterprise")]
+pub fn set_owner(
+    name: &str,
+    owner_user_id: Option<&str>,
+    owner_org_id: Option<&str>,
+) -> Result<()> {
+    let mut meta = get(name)?.ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", name))?;
+    meta.owner_user_id = owner_user_id.map(str::to_string);
+    meta.owner_org_id = owner_org_id.map(str::to_string);
+    let path = snapshots_dir().join(format!("{name}.json"));
+    let content = serde_json::to_string_pretty(&meta)?;
+    std::fs::write(path, content)?;
+    Ok(())
 }
 
 fn take_docker(container_name: &str, image_tag: &str) -> Result<()> {
@@ -461,6 +489,8 @@ mod tests {
             remote_snapshot: None,
             work_dir: None,
             config_path: None,
+            owner_user_id: None,
+            owner_org_id: None,
         };
 
         let json = serde_json::to_string(&meta).unwrap();
@@ -484,6 +514,8 @@ mod tests {
             remote_snapshot: None,
             work_dir: None,
             config_path: None,
+            owner_user_id: None,
+            owner_org_id: None,
         };
 
         let json = serde_json::to_string_pretty(&meta).unwrap();
@@ -506,6 +538,8 @@ mod tests {
             remote_snapshot: Some("remote-1:remote-snap".to_string()),
             work_dir: None,
             config_path: None,
+            owner_user_id: None,
+            owner_org_id: None,
         };
 
         assert_eq!(meta.restore_image(), "default");

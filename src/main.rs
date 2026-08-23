@@ -44,6 +44,8 @@ mod pool;
 mod proxy;
 #[allow(dead_code)]
 mod proxy_hooks;
+#[cfg(feature = "enterprise")]
+mod quota;
 mod receipt;
 mod rootfs;
 mod runtime;
@@ -3517,6 +3519,16 @@ memory_mb = 512
                             schedule_name.as_str(),
                             format!("method={}", method),
                         ),
+                        audit::AuditEvent::QuotaDenied {
+                            sandbox,
+                            action,
+                            reason,
+                            ..
+                        } => (
+                            "quota_denied",
+                            sandbox.as_str(),
+                            format!("action={action}: {reason}"),
+                        ),
                     };
                     println!(
                         "{:<24} {:<20} {:<15} {}",
@@ -5132,6 +5144,9 @@ fn run_info(name: &str) -> Result<()> {
                     ..
                 } => {
                     format!("sched   {}:{}", schedule_name, method)
+                }
+                audit::AuditEvent::QuotaDenied { action, reason, .. } => {
+                    format!("quota   {}: {}", action, reason)
                 }
             };
             println!("  {}  {}", ts, desc);

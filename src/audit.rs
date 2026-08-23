@@ -69,6 +69,14 @@ pub enum AuditEvent {
         schedule_name: String,
         method: String,
     },
+    /// Sandbox lifecycle request denied by a tenant resource quota.
+    QuotaDenied {
+        sandbox: String,
+        principal: String,
+        org_id: String,
+        action: String,
+        reason: String,
+    },
 }
 
 /// A logged audit entry with metadata
@@ -215,6 +223,7 @@ impl AuditLog {
                 AuditEvent::SshDisconnected { sandbox: s, .. } => s == sandbox,
                 AuditEvent::SandboxError { name, .. } => name == sandbox,
                 AuditEvent::ScheduleTriggered { .. } => false,
+                AuditEvent::QuotaDenied { sandbox: s, .. } => s == sandbox,
             })
             .collect())
     }

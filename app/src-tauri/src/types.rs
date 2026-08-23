@@ -464,6 +464,40 @@ pub struct PolicyAuditEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Resource quotas (Enterprise)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ResourceQuotaLimits {
+    pub max_running_sandboxes: Option<u32>,
+    pub max_total_sandboxes: Option<u32>,
+    pub max_total_vcpus: Option<u32>,
+    pub max_total_memory_mb: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct QuotaUsage {
+    pub total_sandboxes: u32,
+    pub running_sandboxes: u32,
+    pub total_vcpus: u32,
+    pub total_memory_mb: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuotaScopeStatus {
+    pub id: String,
+    pub limits: ResourceQuotaLimits,
+    pub usage: QuotaUsage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuotaStatus {
+    pub enabled: bool,
+    pub user: QuotaScopeStatus,
+    pub organization: QuotaScopeStatus,
+}
+
+// ---------------------------------------------------------------------------
 // LLM Usage
 // ---------------------------------------------------------------------------
 

@@ -26,6 +26,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/use-toast";
 import { formatRelativeDate } from "@/lib/utils";
 import { ServerRecovery } from "@/components/server-recovery";
+import { QuotaCard } from "@/components/dashboard/quota-card";
 
 const AGENTS = [
   { id: "claude", name: "Claude Code", description: "Anthropic" },
@@ -145,6 +146,8 @@ export function Dashboard() {
       ) : (
         <StatusCards sandboxes={sandboxes ?? []} />
       )}
+
+      <QuotaCard />
 
       {/* LLM usage bar (compact) */}
       {llmStats && (

@@ -10,6 +10,8 @@ pub mod oidc;
 use anyhow::{Context, Result, bail};
 #[cfg(feature = "enterprise")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "enterprise")]
+use sha2::{Digest, Sha256};
 
 /// JWT claims extracted from a validated token.
 #[cfg(feature = "enterprise")]
@@ -95,6 +97,20 @@ impl AgentIdentity {
     /// Check if MFA is verified
     pub fn mfa_verified(&self) -> bool {
         self.jwt_claims.as_ref().is_some_and(|c| c.mfa_verified)
+    }
+
+    /// Return the stable, non-secret identifier used for mutable quota
+    /// accounting. JWT subjects are already opaque identity IDs. API keys
+    /// use a SHA-256 digest of the complete validated key so keys that share
+    /// a display prefix remain separate without storing or emitting secrets.
+    pub fn quota_user_id(&self) -> String {
+        if let Some(claims) = &self.jwt_claims {
+            return claims.sub.clone();
+        }
+        if let Some(key) = &self.api_key {
+            return format!("api-key:{}", hex::encode(Sha256::digest(key.as_bytes())));
+        }
+        "anonymous".to_string()
     }
 
     /// Whether this identity is authenticated (has either API key or JWT)
@@ -381,6 +397,21 @@ mod tests {
         assert!(identity.subject().is_none());
         assert!(identity.jwt_claims.is_none());
         assert_eq!(identity.api_key, Some("ak_test_12345678".to_string()));
+    }
+
+    #[test]
+    fn test_quota_user_id_hashes_complete_api_key_without_leaking_it() {
+        let first = AgentIdentity::from_api_key("ak_live_shared_prefix_one".to_string());
+        let second = AgentIdentity::from_api_key("ak_live_shared_prefix_two".to_string());
+        let first_id = first.quota_user_id();
+        let second_id = second.quota_user_id();
+
+        assert_ne!(first_id, second_id);
+        assert!(first_id.starts_with("api-key:"));
+        assert!(second_id.starts_with("api-key:"));
+        assert!(!first_id.contains("ak_live"));
+        assert!(!second_id.contains("ak_live"));
+        assert_eq!(first_id.len(), "api-key:".len() + 64);
     }
 
     #[test]

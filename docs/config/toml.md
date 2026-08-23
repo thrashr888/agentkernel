@@ -388,6 +388,50 @@ For the bundled live adapters today:
 | `bootstrap` | string | none | Startup/bootstrap command for the remote runtime |
 | `env` | table | `{}` | Environment variables injected into the remote runtime |
 
+## Enterprise resource quotas
+
+When the enterprise feature is enabled, resource quotas can limit each
+authenticated user and organization independently. Quota checks are performed
+atomically with sandbox create/start/resize operations. Cedar still decides
+whether the action is authorized; quotas enforce mutable resource counts.
+
+```toml
+[enterprise]
+enabled = true
+org_id = "acme"
+
+[enterprise.quotas]
+enabled = true
+
+# Fallback limits for users without an explicit entry. Omitted values are unlimited.
+[enterprise.quotas.default]
+max_running_sandboxes = 4
+max_total_sandboxes = 12
+max_total_vcpus = 16
+max_total_memory_mb = 16384
+
+[enterprise.quotas.users.alice]
+max_running_sandboxes = 8
+
+[enterprise.quotas.organizations.acme]
+max_total_sandboxes = 100
+max_total_vcpus = 128
+max_total_memory_mb = 131072
+```
+
+`max_total_*` includes stopped sandboxes because their allocations remain
+reserved. A limit of `0` is valid and denies that resource. Existing
+sandboxes created before ownership metadata was introduced are accounted to
+the anonymous/default tenant; remove or recreate them if they should belong
+to a specific tenant.
+
+JWT users are addressed by their token `sub`. API-key users are addressed by
+`api-key:<sha256>`, where the digest is computed over the complete API key;
+the raw key is never persisted, returned by `/quotas`, or written to quota
+audit events. To configure an API-key override, compute that SHA-256 digest
+offline and use the resulting identifier as the key under
+`[enterprise.quotas.users]`.
+
 ## Full Example
 
 ```toml

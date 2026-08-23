@@ -16,7 +16,7 @@
 //! Authorization: Bearer <api_key>
 //! ```
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
@@ -35,7 +35,6 @@ use crate::asciicast::{self, AsciicastEvent, AsciicastHeader, EventType};
 use crate::backend::{
     BackendCapabilities, BackendType, backend_capabilities, backend_readiness, detect_best_backend,
 };
-use crate::job_scheduler::{JobScheduleStatus, JobScheduler, JobSchedulerHandle};
 use crate::languages;
 use crate::opencode::OpenCodeState;
 use crate::orchestration_store::{
@@ -871,6 +870,9 @@ struct AppState {
     /// request handling; they must never be represented as enabled.
     #[cfg(feature = "enterprise")]
     policy_init_error: Option<String>,
+    /// Serialized quota checks and lifecycle mutations.
+    #[cfg(feature = "enterprise")]
+    quota_controller: Arc<tokio::sync::Mutex<crate::quota::QuotaController>>,
 }
 
 impl AppState {
@@ -949,6 +951,14 @@ impl AppState {
         #[cfg(feature = "enterprise")]
         let (enterprise_config, policy_engine, policy_init_error) =
             Self::init_enterprise(server_config_path.as_deref());
+        #[cfg(feature = "enterprise")]
+        let quota_controller =
+            Arc::new(tokio::sync::Mutex::new(crate::quota::QuotaController::new(
+                enterprise_config
+                    .as_ref()
+                    .map(|config| config.quotas.clone())
+                    .unwrap_or_default(),
+            )));
 
         let vm_manager = Arc::new(std::sync::OnceLock::new());
         if let Ok(mgr) = VmManager::new() {
@@ -979,6 +989,8 @@ impl AppState {
             policy_engine,
             #[cfg(feature = "enterprise")]
             policy_init_error,
+            #[cfg(feature = "enterprise")]
+            quota_controller,
         })
     }
 
@@ -1029,6 +1041,10 @@ impl AppState {
             policy_engine: None,
             #[cfg(feature = "enterprise")]
             policy_init_error: None,
+            #[cfg(feature = "enterprise")]
+            quota_controller: Arc::new(tokio::sync::Mutex::new(
+                crate::quota::QuotaController::new(Default::default()),
+            )),
         }
     }
 
@@ -1062,7 +1078,24 @@ impl AppState {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[enterprise] Failed to load config: {}", e);
-                return (None, None, Some(format!("Failed to load config: {e}")));
+                // A present but malformed daemon config must not silently
+                // disable an intended quota policy. Keep the enterprise
+                // state fail-closed with zero limits until the file is fixed.
+                let fail_closed = crate::config::EnterpriseConfig {
+                    enabled: true,
+                    quotas: crate::config::ResourceQuotaConfig {
+                        enabled: true,
+                        default_limits: crate::config::ResourceQuotaLimits {
+                            max_running_sandboxes: Some(0),
+                            max_total_sandboxes: Some(0),
+                            max_total_vcpus: Some(0),
+                            max_total_memory_mb: Some(0),
+                        },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                return (Some(fail_closed), None, Some(format!("Failed to load config: {e}")));
             }
         };
 
@@ -1098,37 +1131,6 @@ impl AppState {
             .get()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("VmManager could not be initialized"))
-    }
-
-    /// Load, validate, and attach user schedules before the listener starts.
-    /// Invalid schedule IDs and targets therefore fail daemon startup instead
-    /// of silently disabling automation.
-    fn configure_job_scheduler(&mut self, config_path: Option<&std::path::Path>) -> Result<()> {
-        let path = config_path
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| std::path::PathBuf::from("agentkernel.toml"));
-        if !path.exists() {
-            return Ok(());
-        }
-        let config = crate::config::Config::from_file(&path)
-            .with_context(|| format!("failed to load daemon config {}", path.display()))?;
-        let Some(store) = self.orchestration_store.clone() else {
-            if config.schedules.is_empty() {
-                return Ok(());
-            }
-            anyhow::bail!("configured schedules require durable orchestration storage")
-        };
-        if let Some(scheduler) = JobScheduler::from_config(&config, store, self.vm_manager.clone())?
-        {
-            self.job_scheduler = Some(Arc::new(scheduler));
-        }
-        Ok(())
-    }
-
-    fn start_job_scheduler(&mut self) {
-        if let Some(scheduler) = self.job_scheduler.clone() {
-            self.job_scheduler_handle = Some(scheduler.spawn());
-        }
     }
 
     async fn get_manager(&self) -> Result<tokio::sync::RwLockWriteGuard<'_, VmManager>> {
@@ -1512,6 +1514,30 @@ async fn handle_request(
         return Ok(crate::scim::authentication_required());
     }
 
+    // Every persistent sandbox-scoped route shares this gate. Keeping it at
+    // dispatch time prevents a newly added sub-route (exec, files, browser,
+    // Git, detached logs, etc.) from becoming a name-guessing ownership
+    // bypass. Individual lifecycle handlers retain their checks where they
+    // need the identity for policy/quota decisions.
+    #[cfg(feature = "enterprise")]
+    if segments.first() == Some(&"sandboxes")
+        && let Some(name) = segments.get(1).copied()
+        && name != "import-config"
+        && name != "by-uuid"
+        // POST /sandboxes/{name}/config is the legacy config-import create
+        // endpoint and has no existing sandbox to authorize.
+        && !(method == Method::POST
+            && segments.len() == 3
+            && segments.get(2) == Some(&"config"))
+        && let Ok(manager) = state.get_manager().await
+        && let Some(sandbox) = manager.get_state(name)
+    {
+        let identity = extract_identity(&req, &state).await;
+        if !sandbox_access_allowed(&state, &identity, sandbox) {
+            return Ok(sandbox_access_denied());
+        }
+    }
+
     // SSE event stream (requires auth when API keys are configured)
     if method == Method::GET && segments.as_slice() == ["events"] {
         if let Some(ref bus) = state.event_bus {
@@ -1708,22 +1734,9 @@ async fn handle_request(
         }
 
         // Schedules
-        (Method::GET, ["schedules", "configured"]) => handle_list_configured_schedules(state).await,
-        (Method::GET, ["schedules", "configured", schedule_id]) => {
-            handle_get_configured_schedule(schedule_id, state).await
-        }
-        (Method::GET, ["schedules", "configured", schedule_id, "status"]) => {
-            handle_get_configured_schedule(schedule_id, state).await
-        }
-        (Method::POST, ["schedules", "configured", schedule_id, "trigger"]) => {
-            handle_trigger_configured_schedule(schedule_id, state).await
-        }
         (Method::GET, ["schedules"]) => handle_list_schedules(state).await,
         (Method::POST, ["schedules"]) => handle_create_schedule(req, state).await,
         (Method::GET, ["schedules", schedule_id]) => handle_get_schedule(schedule_id, state).await,
-        (Method::GET, ["schedules", schedule_id, "status"]) => {
-            handle_get_schedule_status(schedule_id, state).await
-        }
         (Method::DELETE, ["schedules", schedule_id]) => {
             handle_delete_schedule(schedule_id, state).await
         }
@@ -1743,11 +1756,11 @@ async fn handle_request(
 
         // Get sandbox info by UUID
         (Method::GET, ["sandboxes", "by-uuid", uuid]) => {
-            handle_get_sandbox_by_uuid(uuid, state).await
+            handle_get_sandbox_by_uuid(req, uuid, state).await
         }
 
         // Get sandbox info
-        (Method::GET, ["sandboxes", name]) => handle_get_sandbox(name, state).await,
+        (Method::GET, ["sandboxes", name]) => handle_get_sandbox(req, name, state).await,
 
         // Execute in a sandbox
         (Method::POST, ["sandboxes", name, "exec"]) => handle_exec_sandbox(req, name, state).await,
@@ -1796,7 +1809,7 @@ async fn handle_request(
         }
 
         // Sandbox logs
-        (Method::GET, ["sandboxes", name, "logs"]) => handle_sandbox_logs(name, state).await,
+        (Method::GET, ["sandboxes", name, "logs"]) => handle_sandbox_logs(req, name, state).await,
 
         // Batch file write: POST /sandboxes/{name}/files
         (Method::POST, ["sandboxes", name, "files"]) => {
@@ -1822,13 +1835,15 @@ async fn handle_request(
         }
 
         // Delete a sandbox
-        (Method::DELETE, ["sandboxes", name]) => handle_delete_sandbox(name, state).await,
+        (Method::DELETE, ["sandboxes", name]) => handle_delete_sandbox(req, name, state).await,
 
         // Start a stopped sandbox
-        (Method::POST, ["sandboxes", name, "start"]) => handle_start_sandbox(name, state).await,
+        (Method::POST, ["sandboxes", name, "start"]) => {
+            handle_start_sandbox(req, name, state).await
+        }
 
         // Stop a running sandbox
-        (Method::POST, ["sandboxes", name, "stop"]) => handle_stop_sandbox(name, state).await,
+        (Method::POST, ["sandboxes", name, "stop"]) => handle_stop_sandbox(req, name, state).await,
 
         // Extend sandbox TTL
         (Method::POST, ["sandboxes", name, "extend"]) => handle_extend_ttl(req, name, state).await,
@@ -1847,10 +1862,10 @@ async fn handle_request(
         (Method::PATCH, ["sandboxes", name]) => handle_patch_sandbox(req, name, state).await,
 
         // Snapshot endpoints
-        (Method::GET, ["snapshots"]) => handle_list_snapshots(state).await,
+        (Method::GET, ["snapshots"]) => handle_list_snapshots(req, state).await,
         (Method::POST, ["snapshots"]) => handle_take_snapshot(req, state).await,
-        (Method::GET, ["snapshots", name]) => handle_get_snapshot(name).await,
-        (Method::DELETE, ["snapshots", name]) => handle_delete_snapshot(name).await,
+        (Method::GET, ["snapshots", name]) => handle_get_snapshot(req, name, state).await,
+        (Method::DELETE, ["snapshots", name]) => handle_delete_snapshot(req, name, state).await,
         (Method::POST, ["snapshots", name, "restore"]) => {
             handle_restore_snapshot(req, name, state).await
         }
@@ -1878,11 +1893,8 @@ async fn handle_request(
         (Method::DELETE, ["proxy", "hooks", name]) => handle_remove_proxy_hook(name, state).await,
 
         // LLM usage
-        (Method::GET, ["llm", "usage"]) => handle_llm_usage_all(req, state.clone()).await,
-        (Method::GET, ["llm", "usage", sandbox]) => {
-            handle_llm_usage_sandbox(req, sandbox, state.clone()).await
-        }
-        (Method::GET, ["llm", "spend"]) => handle_llm_spend(req, state.clone()).await,
+        (Method::GET, ["llm", "usage"]) => handle_llm_usage_all().await,
+        (Method::GET, ["llm", "usage", sandbox]) => handle_llm_usage_sandbox(sandbox).await,
 
         // LLM key management
         (Method::GET, ["llm", "keys"]) => handle_llm_keys_list().await,
@@ -1976,6 +1988,8 @@ async fn handle_request(
         // Enterprise policy endpoints
         #[cfg(feature = "enterprise")]
         (Method::GET, ["policy", "status"]) => handle_policy_status(state).await,
+        #[cfg(feature = "enterprise")]
+        (Method::GET, ["quotas"]) => handle_quota_status(req, state).await,
         #[cfg(feature = "enterprise")]
         (Method::POST, ["policy", "check"]) => handle_policy_check(req, state).await,
         #[cfg(feature = "enterprise")]
@@ -3096,72 +3110,6 @@ async fn handle_get_schedule(schedule_id: &str, state: Arc<AppState>) -> Respons
     }
 }
 
-async fn handle_get_schedule_status(schedule_id: &str, state: Arc<AppState>) -> Response<BoxBody> {
-    handle_get_schedule(schedule_id, state).await
-}
-
-async fn handle_list_configured_schedules(state: Arc<AppState>) -> Response<BoxBody> {
-    let Some(scheduler) = state.job_scheduler.as_ref() else {
-        return json_response(
-            StatusCode::OK,
-            &ApiResponse::success(Vec::<JobScheduleStatus>::new()),
-        );
-    };
-    match scheduler.list_status(chrono::Utc::now()) {
-        Ok(schedules) => json_response(StatusCode::OK, &ApiResponse::success(schedules)),
-        Err(error) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &ApiResponse::<()>::error(error.to_string()),
-        ),
-    }
-}
-
-async fn handle_get_configured_schedule(
-    schedule_id: &str,
-    state: Arc<AppState>,
-) -> Response<BoxBody> {
-    let Some(scheduler) = state.job_scheduler.as_ref() else {
-        return json_response(
-            StatusCode::NOT_FOUND,
-            &ApiResponse::<()>::error("Configured schedule not found"),
-        );
-    };
-    match scheduler.get_status(schedule_id, chrono::Utc::now()) {
-        Ok(Some(status)) => json_response(StatusCode::OK, &ApiResponse::success(status)),
-        Ok(None) => json_response(
-            StatusCode::NOT_FOUND,
-            &ApiResponse::<()>::error("Configured schedule not found"),
-        ),
-        Err(error) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &ApiResponse::<()>::error(error.to_string()),
-        ),
-    }
-}
-
-async fn handle_trigger_configured_schedule(
-    schedule_id: &str,
-    state: Arc<AppState>,
-) -> Response<BoxBody> {
-    let Some(scheduler) = state.job_scheduler.as_ref() else {
-        return json_response(
-            StatusCode::NOT_FOUND,
-            &ApiResponse::<()>::error("Configured schedule not found"),
-        );
-    };
-    match scheduler.trigger(schedule_id).await {
-        Ok(execution) => json_response(StatusCode::OK, &ApiResponse::success(execution)),
-        Err(error) if error.to_string().contains("not found") => json_response(
-            StatusCode::NOT_FOUND,
-            &ApiResponse::<()>::error(error.to_string()),
-        ),
-        Err(error) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &ApiResponse::<()>::error(error.to_string()),
-        ),
-    }
-}
-
 async fn handle_delete_schedule(schedule_id: &str, state: Arc<AppState>) -> Response<BoxBody> {
     let store = match state.orchestration_store() {
         Ok(s) => s,
@@ -3571,6 +3519,11 @@ async fn handle_cancel_task(task_id: &str, state: Arc<AppState>) -> Response<Box
 }
 
 async fn handle_list_sandboxes(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(not(feature = "enterprise"))]
+    let _ = &req;
+
     // Parse label filters from query string: ?label=key:value&label=env:prod
     let label_filters: Vec<(String, String)> = req
         .uri()
@@ -3604,6 +3557,19 @@ async fn handle_list_sandboxes(req: Request<Incoming>, state: Arc<AppState>) -> 
     let sandboxes: Vec<SandboxInfo> = manager
         .list()
         .into_iter()
+        .filter(|(name, _, _)| {
+            #[cfg(feature = "enterprise")]
+            {
+                manager
+                    .get_state(name)
+                    .is_some_and(|sandbox| sandbox_access_allowed(&state, &identity, sandbox))
+            }
+            #[cfg(not(feature = "enterprise"))]
+            {
+                let _ = name;
+                true
+            }
+        })
         .filter(|(name, _, _)| {
             if label_filters.is_empty() {
                 return true;
@@ -3781,6 +3747,9 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
     let vcpus = body.vcpus.unwrap_or(1);
     let memory_mb = body.memory_mb.unwrap_or(512);
 
+    #[cfg(feature = "enterprise")]
+    let quota_subject = quota_subject(&state, &identity);
+
     // Validate Docker image name if provided
     if let Some(ref img) = body.image
         && let Err(e) = validation::validate_docker_image(img)
@@ -3821,6 +3790,9 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         return resp;
     }
 
+    #[cfg(feature = "enterprise")]
+    let quota_guard = state.quota_controller.lock().await;
+
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
         Err(e) => {
@@ -3830,6 +3802,11 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             );
         }
     };
+
+    #[cfg(feature = "enterprise")]
+    if let Err(error) = quota_guard.check_create(&manager, &quota_subject, vcpus, memory_mb) {
+        return quota_denial(&body.name, &quota_subject, "create", error);
+    }
 
     let create_result = match requested_backend {
         Some(backend) => {
@@ -3895,7 +3872,20 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         let _ = manager.remove(&body.name).await;
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            &ApiResponse::<()>::error(format!("Failed to set sandbox owner: {}", e)),
+            &ApiResponse::<()>::error(format!("Failed to set sandbox owner: {e}")),
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    if let Err(error) = manager.set_owner_metadata(
+        &body.name,
+        Some(&quota_subject.user_id),
+        Some(&quota_subject.org_id),
+    ) {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to persist sandbox ownership: {error}")),
         );
     }
 
@@ -4138,7 +4128,16 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
     )
 }
 
-async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+async fn handle_get_sandbox(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(not(feature = "enterprise"))]
+    let _ = &req;
+
     // Validate sandbox name (security: prevents command injection)
     if let Err(e) = validation::validate_sandbox_name(name) {
         return json_response(
@@ -4161,6 +4160,12 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
     for (sandbox_name, running, backend) in &sandboxes {
         if *sandbox_name == name {
             let state_info = manager.get_state(name);
+            #[cfg(feature = "enterprise")]
+            if let Some(sandbox) = state_info
+                && let Err(response) = require_sandbox_access(&state, &identity, sandbox)
+            {
+                return response;
+            }
             let ports = state_info
                 .map(|s| s.ports.iter().map(|p| p.to_string()).collect())
                 .unwrap_or_default();
@@ -4213,7 +4218,16 @@ async fn handle_get_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBod
     )
 }
 
-async fn handle_get_sandbox_by_uuid(uuid: &str, state: Arc<AppState>) -> Response<BoxBody> {
+async fn handle_get_sandbox_by_uuid(
+    req: Request<Incoming>,
+    uuid: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(not(feature = "enterprise"))]
+    let _ = &req;
+
     if uuid::Uuid::parse_str(uuid).is_err() {
         return json_response(
             StatusCode::BAD_REQUEST,
@@ -4237,6 +4251,11 @@ async fn handle_get_sandbox_by_uuid(uuid: &str, state: Arc<AppState>) -> Respons
             &ApiResponse::<()>::error("Sandbox not found"),
         );
     };
+
+    #[cfg(feature = "enterprise")]
+    if let Err(response) = require_sandbox_access(&state, &identity, state_info) {
+        return response;
+    }
 
     let running = manager.is_running(&state_info.name);
     let ip = if running {
@@ -5194,11 +5213,18 @@ async fn handle_detached_kill(
     }
 }
 
-async fn handle_delete_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+async fn handle_delete_sandbox(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
     // Enterprise policy enforcement (reuse Create action for lifecycle operations)
     #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(not(feature = "enterprise"))]
+    let _ = &req;
+    #[cfg(feature = "enterprise")]
     {
-        let identity = crate::identity::AgentIdentity::anonymous();
         if let Err(resp) =
             enforce_policy(&state, &identity, crate::policy::Action::Create, name).await
         {
@@ -5214,6 +5240,9 @@ async fn handle_delete_sandbox(name: &str, state: Arc<AppState>) -> Response<Box
         );
     }
 
+    #[cfg(feature = "enterprise")]
+    let _quota_guard = state.quota_controller.lock().await;
+
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
         Err(e) => {
@@ -5223,6 +5252,13 @@ async fn handle_delete_sandbox(name: &str, state: Arc<AppState>) -> Response<Box
             );
         }
     };
+
+    #[cfg(feature = "enterprise")]
+    if let Some(sandbox) = manager.get_state(name)
+        && let Err(response) = require_sandbox_access(&state, &identity, sandbox)
+    {
+        return response;
+    }
 
     // Capture labels before removal (remove destroys the state)
     let event_labels = manager
@@ -5251,11 +5287,18 @@ async fn handle_delete_sandbox(name: &str, state: Arc<AppState>) -> Response<Box
     }
 }
 
-async fn handle_start_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+async fn handle_start_sandbox(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
     // Enterprise policy enforcement
     #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(not(feature = "enterprise"))]
+    let _ = &req;
+    #[cfg(feature = "enterprise")]
     {
-        let identity = crate::identity::AgentIdentity::anonymous();
         if let Err(resp) =
             enforce_policy(&state, &identity, crate::policy::Action::Create, name).await
         {
@@ -5271,6 +5314,9 @@ async fn handle_start_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxB
         );
     }
 
+    #[cfg(feature = "enterprise")]
+    let quota_guard = state.quota_controller.lock().await;
+
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
         Err(e) => {
@@ -5281,6 +5327,34 @@ async fn handle_start_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxB
         }
     };
 
+    #[cfg(feature = "enterprise")]
+    if let Some(sandbox) = manager.get_state(name)
+        && let Err(response) = require_sandbox_access(&state, &identity, sandbox)
+    {
+        return response;
+    }
+
+    #[cfg(feature = "enterprise")]
+    if let Err(error) = quota_guard.check_start(&manager, name) {
+        let subject = manager
+            .get_state(name)
+            .map(|sandbox| crate::quota::QuotaSubject {
+                user_id: sandbox
+                    .owner_user_id
+                    .clone()
+                    .unwrap_or_else(|| "anonymous".to_string()),
+                org_id: sandbox
+                    .owner_org_id
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string()),
+            })
+            .unwrap_or(crate::quota::QuotaSubject {
+                user_id: "anonymous".to_string(),
+                org_id: "default".to_string(),
+            });
+        return quota_denial(name, &subject, "start", error);
+    }
+
     match manager.start(name).await {
         Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox started")),
         Err(e) => json_response(
@@ -5290,10 +5364,17 @@ async fn handle_start_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxB
     }
 }
 
-async fn handle_stop_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+async fn handle_stop_sandbox(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(not(feature = "enterprise"))]
+    let _ = &req;
     #[cfg(feature = "enterprise")]
     {
-        let identity = crate::identity::AgentIdentity::anonymous();
         if let Err(resp) =
             enforce_policy(&state, &identity, crate::policy::Action::Create, name).await
         {
@@ -5308,6 +5389,9 @@ async fn handle_stop_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBo
         );
     }
 
+    #[cfg(feature = "enterprise")]
+    let _quota_guard = state.quota_controller.lock().await;
+
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
         Err(e) => {
@@ -5317,6 +5401,13 @@ async fn handle_stop_sandbox(name: &str, state: Arc<AppState>) -> Response<BoxBo
             );
         }
     };
+
+    #[cfg(feature = "enterprise")]
+    if let Some(sandbox) = manager.get_state(name)
+        && let Err(response) = require_sandbox_access(&state, &identity, sandbox)
+    {
+        return response;
+    }
 
     match manager.stop(name).await {
         Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox stopped")),
@@ -5423,6 +5514,9 @@ async fn handle_resize_sandbox(
     name: &str,
     state: Arc<AppState>,
 ) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+
     if let Err(e) = validation::validate_sandbox_name(name) {
         return json_response(
             StatusCode::BAD_REQUEST,
@@ -5434,6 +5528,9 @@ async fn handle_resize_sandbox(
         Ok(b) => b,
         Err(resp) => return resp,
     };
+
+    #[cfg(feature = "enterprise")]
+    let quota_guard = state.quota_controller.lock().await;
 
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
@@ -5456,8 +5553,19 @@ async fn handle_resize_sandbox(
         }
     };
 
+    #[cfg(feature = "enterprise")]
+    if let Err(response) = require_sandbox_access(&state, &identity, &sandbox_state) {
+        return response;
+    }
+
     let new_vcpus = body.vcpus.unwrap_or(sandbox_state.vcpus);
     let new_memory = body.memory_mb.unwrap_or(sandbox_state.memory_mb);
+
+    #[cfg(feature = "enterprise")]
+    if let Err(error) = quota_guard.check_resize(&manager, name, new_vcpus, new_memory) {
+        let subject = quota_subject(&state, &identity);
+        return quota_denial(name, &subject, "resize", error);
+    }
 
     let was_running = manager.is_running(name);
     if !was_running {
@@ -5552,6 +5660,20 @@ async fn handle_resize_sandbox(
                     &ApiResponse::<()>::error(format!(
                         "Failed to preserve sandbox identity metadata: {}",
                         e
+                    )),
+                );
+            }
+
+            #[cfg(feature = "enterprise")]
+            if let Err(e) = manager.set_owner_metadata(
+                name,
+                sandbox_state.owner_user_id.as_deref(),
+                sandbox_state.owner_org_id.as_deref(),
+            ) {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(format!(
+                        "Failed to preserve sandbox ownership metadata: {e}"
                     )),
                 );
             }
@@ -5899,9 +6021,21 @@ async fn handle_reconcile_lifecycle(
 
 // --- Snapshot handlers ---
 
-async fn handle_list_snapshots(_state: Arc<AppState>) -> Response<BoxBody> {
+async fn handle_list_snapshots(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(not(feature = "enterprise"))]
+    let _ = (&req, &state);
+
     match crate::snapshot::list() {
-        Ok(snapshots) => json_response(StatusCode::OK, &ApiResponse::success(snapshots)),
+        Ok(snapshots) => {
+            #[cfg(feature = "enterprise")]
+            let snapshots = snapshots
+                .into_iter()
+                .filter(|snapshot| snapshot_access_allowed(&state, &identity, snapshot))
+                .collect::<Vec<_>>();
+            json_response(StatusCode::OK, &ApiResponse::success(snapshots))
+        }
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
@@ -5919,6 +6053,9 @@ struct TakeSnapshotRequest {
 }
 
 async fn handle_take_snapshot(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+
     let body: TakeSnapshotRequest = match read_json_body(req).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -5959,6 +6096,11 @@ async fn handle_take_snapshot(req: Request<Incoming>, state: Arc<AppState>) -> R
         }
     };
 
+    #[cfg(feature = "enterprise")]
+    if let Err(response) = require_sandbox_access(&state, &identity, sandbox_state) {
+        return response;
+    }
+
     let input = crate::snapshot::SnapshotInput {
         image: sandbox_state.image.clone(),
         backend: sandbox_state
@@ -5976,7 +6118,29 @@ async fn handle_take_snapshot(req: Request<Incoming>, state: Arc<AppState>) -> R
     };
 
     match crate::snapshot::take(&body.sandbox, &body.name, &input) {
-        Ok(meta) => json_response(StatusCode::OK, &ApiResponse::success(meta)),
+        Ok(meta) => {
+            #[cfg(feature = "enterprise")]
+            let meta = {
+                let mut meta = meta;
+                let subject = quota_subject(&state, &identity);
+                if let Err(error) = crate::snapshot::set_owner(
+                    &body.name,
+                    Some(&subject.user_id),
+                    Some(&subject.org_id),
+                ) {
+                    return json_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &ApiResponse::<()>::error(format!(
+                            "Failed to persist snapshot ownership: {error}"
+                        )),
+                    );
+                }
+                meta.owner_user_id = Some(subject.user_id);
+                meta.owner_org_id = Some(subject.org_id);
+                meta
+            };
+            json_response(StatusCode::OK, &ApiResponse::success(meta))
+        }
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
@@ -5984,7 +6148,16 @@ async fn handle_take_snapshot(req: Request<Incoming>, state: Arc<AppState>) -> R
     }
 }
 
-async fn handle_get_snapshot(name: &str) -> Response<BoxBody> {
+async fn handle_get_snapshot(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(not(feature = "enterprise"))]
+    let _ = (&req, &state);
+
     // Validate snapshot name
     if let Err(e) = validation::validate_sandbox_name(name) {
         return json_response(
@@ -5994,7 +6167,13 @@ async fn handle_get_snapshot(name: &str) -> Response<BoxBody> {
     }
 
     match crate::snapshot::get(name) {
-        Ok(Some(meta)) => json_response(StatusCode::OK, &ApiResponse::success(meta)),
+        Ok(Some(meta)) => {
+            #[cfg(feature = "enterprise")]
+            if !snapshot_access_allowed(&state, &identity, &meta) {
+                return sandbox_access_denied();
+            }
+            json_response(StatusCode::OK, &ApiResponse::success(meta))
+        }
         Ok(None) => json_response(
             StatusCode::NOT_FOUND,
             &ApiResponse::<()>::error(format!("Snapshot '{}' not found", name)),
@@ -6006,13 +6185,34 @@ async fn handle_get_snapshot(name: &str) -> Response<BoxBody> {
     }
 }
 
-async fn handle_delete_snapshot(name: &str) -> Response<BoxBody> {
+async fn handle_delete_snapshot(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(not(feature = "enterprise"))]
+    let _ = (&req, &state);
+
     // Validate snapshot name
     if let Err(e) = validation::validate_sandbox_name(name) {
         return json_response(
             StatusCode::BAD_REQUEST,
             &ApiResponse::<()>::error(e.to_string()),
         );
+    }
+
+    #[cfg(feature = "enterprise")]
+    match crate::snapshot::get(name) {
+        Ok(Some(meta)) if snapshot_access_allowed(&state, &identity, &meta) => {}
+        Ok(Some(_)) | Ok(None) => return sandbox_access_denied(),
+        Err(error) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(error.to_string()),
+            );
+        }
     }
 
     match crate::snapshot::delete(name) {
@@ -6041,6 +6241,9 @@ async fn handle_restore_snapshot(
     snapshot_name: &str,
     state: Arc<AppState>,
 ) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+
     // Validate snapshot name
     if let Err(e) = validation::validate_sandbox_name(snapshot_name) {
         return json_response(
@@ -6056,7 +6259,13 @@ async fn handle_restore_snapshot(
 
     // Get snapshot metadata
     let meta = match crate::snapshot::get(snapshot_name) {
-        Ok(Some(m)) => m,
+        Ok(Some(m)) => {
+            #[cfg(feature = "enterprise")]
+            if !snapshot_access_allowed(&state, &identity, &m) {
+                return sandbox_access_denied();
+            }
+            m
+        }
         Ok(None) => {
             return json_response(
                 StatusCode::NOT_FOUND,
@@ -6076,6 +6285,9 @@ async fn handle_restore_snapshot(
         .as_name
         .unwrap_or_else(|| format!("{}-restored", meta.sandbox));
 
+    #[cfg(feature = "enterprise")]
+    let quota_subject = quota_subject(&state, &identity);
+
     if let Err(e) = validation::validate_sandbox_name(&restore_name) {
         return json_response(
             StatusCode::BAD_REQUEST,
@@ -6083,7 +6295,12 @@ async fn handle_restore_snapshot(
         );
     }
 
-    // Create the restored sandbox
+    // Create the restored sandbox. Hold the quota guard before the manager
+    // lock, matching create/start/resize so concurrent restores cannot race
+    // past the persisted usage check.
+    #[cfg(feature = "enterprise")]
+    let quota_guard = state.quota_controller.lock().await;
+
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
         Err(e) => {
@@ -6093,6 +6310,13 @@ async fn handle_restore_snapshot(
             );
         }
     };
+
+    #[cfg(feature = "enterprise")]
+    if let Err(error) =
+        quota_guard.check_create_stopped(&manager, &quota_subject, meta.vcpus, meta.memory_mb)
+    {
+        return quota_denial(&restore_name, &quota_subject, "restore", error);
+    }
 
     let restore_result =
         if let Ok(snapshot_backend) = meta.backend.parse::<crate::backend::BackendType>() {
@@ -6118,6 +6342,21 @@ async fn handle_restore_snapshot(
 
     match restore_result {
         Ok(()) => {
+            #[cfg(feature = "enterprise")]
+            if let Err(e) = manager.set_owner_metadata(
+                &restore_name,
+                Some(&quota_subject.user_id),
+                Some(&quota_subject.org_id),
+            ) {
+                let _ = manager.remove(&restore_name).await;
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(format!(
+                        "Failed to persist restored sandbox ownership: {e}"
+                    )),
+                );
+            }
+
             if let Err(e) = manager.set_work_dir(&restore_name, meta.work_dir.clone()) {
                 return json_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -6457,7 +6696,16 @@ async fn handle_batch_file_write(
 
 // --- Sandbox logs handler ---
 
-async fn handle_sandbox_logs(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
+async fn handle_sandbox_logs(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(not(feature = "enterprise"))]
+    let _ = &req;
+
     if let Err(e) = validation::validate_sandbox_name(name) {
         return json_response(
             StatusCode::BAD_REQUEST,
@@ -6481,6 +6729,13 @@ async fn handle_sandbox_logs(name: &str, state: Arc<AppState>) -> Response<BoxBo
             StatusCode::NOT_FOUND,
             &ApiResponse::<()>::error("Sandbox not found"),
         );
+    }
+
+    #[cfg(feature = "enterprise")]
+    if let Some(sandbox) = manager.get_state(name)
+        && let Err(response) = require_sandbox_access(&state, &identity, sandbox)
+    {
+        return response;
     }
 
     let audit = crate::audit::audit();
@@ -6560,7 +6815,142 @@ async fn handle_batch_run(req: Request<Incoming>, state: Arc<AppState>) -> Respo
     )
 }
 
-// --- Enterprise policy handlers ---
+// --- Enterprise quota and policy handlers ---
+
+#[cfg(feature = "enterprise")]
+fn quota_subject(
+    state: &AppState,
+    identity: &crate::identity::AgentIdentity,
+) -> crate::quota::QuotaSubject {
+    let enterprise = state.enterprise_config.as_ref();
+    let org_id = identity
+        .org_id()
+        .or_else(|| enterprise.and_then(|config| config.org_id.as_deref()))
+        .unwrap_or("default")
+        .to_string();
+    crate::quota::QuotaSubject {
+        user_id: identity.quota_user_id(),
+        org_id,
+    }
+}
+
+/// Persistent sandbox ownership is enforced independently of Cedar policy.
+/// Cedar decides whether a principal may perform an action; this check keeps
+/// one authenticated tenant from reading or mutating another tenant's state.
+/// Admin is intentionally the only cross-owner escape hatch, and the role is
+/// taken from validated JWT claims rather than caller-controlled request data.
+#[cfg(feature = "enterprise")]
+fn sandbox_access_allowed(
+    state: &AppState,
+    identity: &crate::identity::AgentIdentity,
+    sandbox: &crate::vmm::SandboxState,
+) -> bool {
+    owner_access_allowed(
+        state,
+        identity,
+        sandbox.owner_user_id.as_deref(),
+        sandbox.owner_org_id.as_deref(),
+    )
+}
+
+#[cfg(feature = "enterprise")]
+fn owner_access_allowed(
+    state: &AppState,
+    identity: &crate::identity::AgentIdentity,
+    owner_user_id: Option<&str>,
+    owner_org_id: Option<&str>,
+) -> bool {
+    if identity.has_role("admin") {
+        return true;
+    }
+
+    let (Some(owner_user), Some(owner_org)) = (owner_user_id, owner_org_id) else {
+        // Legacy state without ownership metadata is deliberately not
+        // addressable through the authenticated HTTP surface. It remains
+        // available to local CLI/admin recovery paths.
+        return false;
+    };
+    let subject = quota_subject(state, identity);
+    owner_user == subject.user_id && owner_org == subject.org_id
+}
+
+#[cfg(feature = "enterprise")]
+fn snapshot_access_allowed(
+    state: &AppState,
+    identity: &crate::identity::AgentIdentity,
+    snapshot: &crate::snapshot::SnapshotMeta,
+) -> bool {
+    owner_access_allowed(
+        state,
+        identity,
+        snapshot.owner_user_id.as_deref(),
+        snapshot.owner_org_id.as_deref(),
+    )
+}
+
+#[cfg(feature = "enterprise")]
+fn sandbox_access_denied() -> Response<BoxBody> {
+    // Do not distinguish a missing sandbox from an unauthorized one. This
+    // avoids leaking names, UUIDs, ownership metadata, or audit existence.
+    json_response(
+        StatusCode::NOT_FOUND,
+        &ApiResponse::<()>::error("Sandbox not found"),
+    )
+}
+
+#[cfg(feature = "enterprise")]
+fn require_sandbox_access(
+    state: &AppState,
+    identity: &crate::identity::AgentIdentity,
+    sandbox: &crate::vmm::SandboxState,
+) -> Result<(), Response<BoxBody>> {
+    if sandbox_access_allowed(state, identity, sandbox) {
+        Ok(())
+    } else {
+        Err(sandbox_access_denied())
+    }
+}
+
+#[cfg(feature = "enterprise")]
+fn quota_denial(
+    sandbox: &str,
+    subject: &crate::quota::QuotaSubject,
+    action: &str,
+    error: anyhow::Error,
+) -> Response<BoxBody> {
+    let reason = error.to_string();
+    crate::audit::log_event(crate::audit::AuditEvent::QuotaDenied {
+        sandbox: sandbox.to_string(),
+        principal: subject.user_id.clone(),
+        org_id: subject.org_id.clone(),
+        action: action.to_string(),
+        reason: reason.clone(),
+    });
+    json_response(
+        StatusCode::TOO_MANY_REQUESTS,
+        &ApiResponse::<()>::error(format!("Resource quota denied: {reason}")),
+    )
+}
+
+#[cfg(feature = "enterprise")]
+async fn handle_quota_status(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    let identity = extract_identity(&req, &state).await;
+    let subject = quota_subject(&state, &identity);
+    let quota = state.quota_controller.lock().await;
+    let manager = match state.get_manager().await {
+        Ok(manager) => manager,
+        Err(error) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(error.to_string()),
+            );
+        }
+    };
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(quota.status(&manager, &subject)),
+    )
+}
 
 /// Policy status response
 #[cfg(feature = "enterprise")]
@@ -7967,185 +8357,15 @@ async fn handle_delete_secret(name: &str) -> Response<BoxBody> {
 // LLM usage
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::result_large_err)]
-async fn llm_scope(
-    req: &Request<Incoming>,
-    state: &AppState,
-) -> Result<(String, String, bool), Response<BoxBody>> {
-    #[cfg(feature = "enterprise")]
-    {
-        let identity = extract_identity(req, state).await;
-        let Some((tenant, user)) = trusted_owner_identity(&identity, state) else {
-            return Err(json_response(
-                StatusCode::UNAUTHORIZED,
-                &ApiResponse::<()>::error(
-                    "LLM usage requires a validated JWT or configured API key",
-                ),
-            ));
-        };
-        Ok((
-            tenant,
-            user,
-            identity.has_role("admin") || identity.has_role("billing_admin"),
-        ))
-    }
-    #[cfg(not(feature = "enterprise"))]
-    {
-        let Some((tenant, user)) = trusted_owner_identity(req, state) else {
-            return Err(json_response(
-                StatusCode::UNAUTHORIZED,
-                &ApiResponse::<()>::error("LLM usage requires a configured API key"),
-            ));
-        };
-        Ok((tenant, user, false))
-    }
+async fn handle_llm_usage_all() -> Response<BoxBody> {
+    let store = crate::llm_intercept::LLM_USAGE.read().await;
+    json_response(StatusCode::OK, &ApiResponse::success(store.all_usage()))
 }
 
-async fn handle_llm_usage_all(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
-    let (tenant, user, is_admin) = match llm_scope(&req, &state).await {
-        Ok(scope) => scope,
-        Err(response) => return response,
-    };
+async fn handle_llm_usage_sandbox(sandbox: &str) -> Response<BoxBody> {
     let store = crate::llm_intercept::LLM_USAGE.read().await;
-    let usage: std::collections::HashMap<_, _> = store
-        .all_usage()
-        .iter()
-        .filter(|(sandbox, _)| {
-            store
-                .scope_for_sandbox(sandbox)
-                .is_some_and(|scope| scope.tenant == tenant && (is_admin || scope.user == user))
-        })
-        .map(|(sandbox, entries)| (sandbox.clone(), entries.clone()))
-        .collect();
-    json_response(StatusCode::OK, &ApiResponse::success(usage))
-}
-
-async fn handle_llm_usage_sandbox(
-    req: Request<Incoming>,
-    sandbox: &str,
-    state: Arc<AppState>,
-) -> Response<BoxBody> {
-    let (tenant, user, is_admin) = match llm_scope(&req, &state).await {
-        Ok(scope) => scope,
-        Err(response) => return response,
-    };
-    let store = crate::llm_intercept::LLM_USAGE.read().await;
-    let visible = store
-        .scope_for_sandbox(sandbox)
-        .is_some_and(|scope| scope.tenant == tenant && (is_admin || scope.user == user));
-    if !visible {
-        return json_response(
-            StatusCode::NOT_FOUND,
-            &ApiResponse::<()>::error("LLM usage not found"),
-        );
-    }
     let usage = store.usage_for_sandbox(sandbox);
     json_response(StatusCode::OK, &ApiResponse::success(usage))
-}
-
-fn llm_query_value(query: Option<&str>, key: &str) -> Option<String> {
-    query?.split('&').find_map(|pair| {
-        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
-        (name == key).then(|| {
-            urlencoding::decode(value)
-                .unwrap_or(std::borrow::Cow::Borrowed(value))
-                .into_owned()
-        })
-    })
-}
-
-fn llm_pagination_value(
-    query: Option<&str>,
-    key: &str,
-    default: usize,
-    max: usize,
-) -> Result<usize, String> {
-    let Some(raw) = llm_query_value(query, key) else {
-        return Ok(default);
-    };
-    let value = raw
-        .parse::<usize>()
-        .map_err(|_| format!("{key} must be a non-negative integer"))?;
-    if (key == "limit" && !(1..=max).contains(&value)) || (key == "offset" && value > max) {
-        return Err(if key == "limit" {
-            format!("limit must be between 1 and {max}")
-        } else {
-            format!("offset must be at most {max}")
-        });
-    }
-    Ok(value)
-}
-
-async fn handle_llm_spend(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
-    let limit = match llm_pagination_value(
-        req.uri().query(),
-        "limit",
-        100,
-        crate::llm_spend::MAX_PAGE_SIZE,
-    ) {
-        Ok(value) => value,
-        Err(error) => {
-            return json_response(StatusCode::BAD_REQUEST, &ApiResponse::<()>::error(error));
-        }
-    };
-    let offset = match llm_pagination_value(
-        req.uri().query(),
-        "offset",
-        0,
-        crate::llm_spend::MAX_QUERY_OFFSET,
-    ) {
-        Ok(value) => value,
-        Err(error) => {
-            return json_response(StatusCode::BAD_REQUEST, &ApiResponse::<()>::error(error));
-        }
-    };
-    let mut filter = crate::llm_spend::LlmSpendFilter {
-        agent: llm_query_value(req.uri().query(), "agent"),
-        user: llm_query_value(req.uri().query(), "user"),
-        project: llm_query_value(req.uri().query(), "project"),
-        from: llm_query_value(req.uri().query(), "from"),
-        to: llm_query_value(req.uri().query(), "to"),
-        limit: Some(limit),
-        offset: Some(offset),
-        tenant: None,
-    };
-
-    let (tenant, owner_user, is_admin) = match llm_scope(&req, &state).await {
-        Ok((tenant, user, is_admin)) => (tenant, Some(user), is_admin),
-        Err(response) => return response,
-    };
-    filter.tenant = Some(tenant);
-    if !is_admin {
-        let Some(owner_user) = owner_user else {
-            return json_response(
-                StatusCode::FORBIDDEN,
-                &ApiResponse::<()>::error("Authenticated identity has no spend user scope"),
-            );
-        };
-        if let Some(requested_user) = filter.user.as_deref()
-            && requested_user != owner_user
-        {
-            return json_response(
-                StatusCode::FORBIDDEN,
-                &ApiResponse::<()>::error("Spend user filter is outside the authenticated scope"),
-            );
-        }
-        filter.user = Some(owner_user);
-    }
-
-    let Some(store) = crate::llm_spend::global_store() else {
-        return json_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            &ApiResponse::<()>::error("Durable LLM spend storage is unavailable"),
-        );
-    };
-    match store.query(&filter) {
-        Ok(report) => json_response(StatusCode::OK, &ApiResponse::success(report)),
-        Err(error) => json_response(
-            StatusCode::BAD_REQUEST,
-            &ApiResponse::<()>::error(error.to_string()),
-        ),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -9770,6 +9990,9 @@ async fn handle_import_sandbox_config(
     state: Arc<AppState>,
     path_name: Option<&str>,
 ) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+
     #[derive(Deserialize)]
     struct ImportRequest {
         /// Optional name override. When omitted, the name from [sandbox] is
@@ -9816,6 +10039,11 @@ async fn handle_import_sandbox_config(
         );
     }
 
+    #[cfg(feature = "enterprise")]
+    let quota_subject = quota_subject(&state, &identity);
+    #[cfg(feature = "enterprise")]
+    let quota_guard = state.quota_controller.lock().await;
+
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
         Err(e) => {
@@ -9825,6 +10053,13 @@ async fn handle_import_sandbox_config(
             );
         }
     };
+
+    #[cfg(feature = "enterprise")]
+    if let Err(error) =
+        quota_guard.check_create(&manager, &quota_subject, parsed.vcpus, parsed.memory_mb)
+    {
+        return quota_denial(&name, &quota_subject, "import", error);
+    }
 
     if let Err(e) = manager
         .create_with_agent(
@@ -9841,6 +10076,19 @@ async fn handle_import_sandbox_config(
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(format!("Failed to create sandbox from config: {e}")),
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    if let Err(e) = manager.set_owner_metadata(
+        &name,
+        Some(&quota_subject.user_id),
+        Some(&quota_subject.org_id),
+    ) {
+        let _ = manager.remove(&name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to persist imported sandbox ownership: {e}")),
         );
     }
 
@@ -10308,6 +10556,344 @@ init_script = "echo ready"
         assert!(state.api_keys.is_empty());
     }
 
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn quota_subjects_isolate_same_prefix_api_keys_without_secret_leaks() {
+        let first_key = "ak_live_shared_prefix_one";
+        let second_key = "ak_live_shared_prefix_two";
+        let state = AppState::with_api_keys(vec![first_key.to_string(), second_key.to_string()]);
+        let first = quota_subject(
+            &state,
+            &crate::identity::AgentIdentity::from_api_key(first_key.to_string()),
+        );
+        let second = quota_subject(
+            &state,
+            &crate::identity::AgentIdentity::from_api_key(second_key.to_string()),
+        );
+
+        assert_ne!(first.user_id, second.user_id);
+        assert!(first.user_id.starts_with("api-key:"));
+        assert!(!first.user_id.contains("ak_live"));
+        assert!(!second.user_id.contains("ak_live"));
+
+        let temp = tempfile::tempdir().unwrap();
+        let manager = VmManager::for_tests(temp.path()).unwrap();
+        let status =
+            crate::quota::QuotaController::new(Default::default()).status(&manager, &first);
+        let status_json = serde_json::to_string(&status).unwrap();
+        assert!(!status_json.contains(first_key));
+        assert!(!status_json.contains(second_key));
+        let audit = crate::audit::AuditEvent::QuotaDenied {
+            sandbox: "example".to_string(),
+            principal: first.user_id,
+            org_id: first.org_id,
+            action: "create".to_string(),
+            reason: "limit reached".to_string(),
+        };
+        let audit_json = serde_json::to_string(&audit).unwrap();
+        assert!(!audit_json.contains(first_key));
+        assert!(!audit_json.contains(second_key));
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn app_state_loads_quota_policy_from_explicit_config_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("daemon-config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[sandbox]
+name = "quota-test"
+
+[enterprise]
+enabled = true
+org_id = "configured-org"
+
+[enterprise.quotas]
+enabled = true
+
+[enterprise.quotas.default]
+max_total_sandboxes = 3
+"#,
+        )
+        .unwrap();
+
+        let state = AppState::new_with_config(vec![], None, vec![], Some(&config_path)).unwrap();
+        assert_eq!(
+            state
+                .enterprise_config
+                .as_ref()
+                .and_then(|config| config.org_id.as_deref()),
+            Some("configured-org")
+        );
+        let quota = state.quota_controller.blocking_lock();
+        assert!(quota.enabled());
+        assert_eq!(
+            quota
+                .status(
+                    &VmManager::for_tests(dir.path()).unwrap(),
+                    &crate::quota::QuotaSubject {
+                        user_id: "alice".to_string(),
+                        org_id: "configured-org".to_string(),
+                    },
+                )
+                .user
+                .limits
+                .max_total_sandboxes,
+            Some(3)
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn malformed_explicit_config_fails_quota_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("malformed.toml");
+        std::fs::write(&config_path, "[enterprise\ninvalid").unwrap();
+
+        let state = AppState::new_with_config(vec![], None, vec![], Some(&config_path)).unwrap();
+        let quota = state.quota_controller.blocking_lock();
+        assert!(quota.enabled());
+        let manager = VmManager::for_tests(dir.path()).unwrap();
+        assert!(
+            quota
+                .check_create(
+                    &manager,
+                    &crate::quota::QuotaSubject {
+                        user_id: "alice".to_string(),
+                        org_id: "default".to_string(),
+                    },
+                    1,
+                    512,
+                )
+                .is_err()
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn create_route_returns_429_for_zero_quota() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::with_api_keys(vec![]);
+        let manager = VmManager::for_tests(dir.path()).unwrap();
+        let _ = state
+            .vm_manager
+            .set(Arc::new(tokio::sync::RwLock::new(manager)));
+        *state.quota_controller.lock().await =
+            crate::quota::QuotaController::new(crate::config::ResourceQuotaConfig {
+                enabled: true,
+                default_limits: crate::config::ResourceQuotaLimits {
+                    max_total_sandboxes: Some(0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        let state = Arc::new(state);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |request| {
+                let state = server_state.clone();
+                handle_request(request, state)
+            });
+            http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/sandboxes"))
+            .json(&serde_json::json!({"name": "quota-denied"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("max_total_sandboxes"));
+        task.await.unwrap();
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn sandbox_access_is_owner_scoped_and_admin_can_cross_owners() {
+        let state = AppState::with_api_keys(vec![]);
+        let owner = crate::identity::AgentIdentity::from_api_key("owner".to_string());
+        let other = crate::identity::AgentIdentity::from_api_key("other".to_string());
+        let sandbox: crate::vmm::SandboxState = serde_json::from_value(serde_json::json!({
+            "name": "owned",
+            "uuid": "owned-uuid",
+            "image": "alpine:3.24",
+            "vcpus": 1,
+            "memory_mb": 512,
+            "vsock_cid": 3,
+            "created_at": "2026-01-01T00:00:00Z",
+            "owner_user_id": owner.quota_user_id(),
+            "owner_org_id": "default"
+        }))
+        .unwrap();
+
+        assert!(sandbox_access_allowed(&state, &owner, &sandbox));
+        assert!(!sandbox_access_allowed(&state, &other, &sandbox));
+
+        let admin = crate::identity::AgentIdentity::from_jwt(crate::identity::JwtClaims {
+            sub: "administrator".to_string(),
+            email: "admin@example.invalid".to_string(),
+            org_id: "other-org".to_string(),
+            roles: vec!["admin".to_string()],
+            mfa_verified: true,
+            exp: None,
+            iat: None,
+        });
+        assert!(sandbox_access_allowed(&state, &admin, &sandbox));
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn scoped_route_denies_other_tenants_without_leaking_names() {
+        fn sandbox(name: &str, owner: &str) -> crate::vmm::SandboxState {
+            serde_json::from_value(serde_json::json!({
+                "name": name,
+                "uuid": format!("{name}-uuid"),
+                "image": "alpine:3.24",
+                "vcpus": 1,
+                "memory_mb": 512,
+                "vsock_cid": 3,
+                "created_at": "2026-01-01T00:00:00Z",
+                "owner_user_id": format!("api-key:{}", hex::encode(sha2::Sha256::digest(owner.as_bytes()))),
+                "owner_org_id": "default"
+            }))
+            .unwrap()
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = VmManager::for_tests(dir.path()).unwrap();
+        manager.insert_state_for_tests(sandbox("visible-to-owner", "owner"));
+        manager.insert_state_for_tests(sandbox("hidden-from-owner", "other"));
+        let state = AppState::with_api_keys(vec!["owner".to_string()]);
+        let _ = state
+            .vm_manager
+            .set(Arc::new(tokio::sync::RwLock::new(manager)));
+        let state = Arc::new(state);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |request| {
+                let state = server_state.clone();
+                handle_request(request, state)
+            });
+            http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+                .unwrap();
+        });
+
+        let hidden_file = reqwest::Client::new()
+            .get(format!(
+                "http://{address}/sandboxes/hidden-from-owner/files/etc/passwd"
+            ))
+            .bearer_auth("owner")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(hidden_file.status(), StatusCode::NOT_FOUND);
+        assert!(
+            !hidden_file
+                .text()
+                .await
+                .unwrap()
+                .contains("hidden-from-owner")
+        );
+        task.await.unwrap();
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn stopped_creation_is_not_counted_as_running_quota_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VmManager::for_tests(dir.path()).unwrap();
+        let subject = crate::quota::QuotaSubject {
+            user_id: "alice".to_string(),
+            org_id: "acme".to_string(),
+        };
+        let controller = crate::quota::QuotaController::new(crate::config::ResourceQuotaConfig {
+            enabled: true,
+            default_limits: crate::config::ResourceQuotaLimits {
+                max_running_sandboxes: Some(0),
+                max_total_sandboxes: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(
+            controller
+                .check_create_stopped(&manager, &subject, 1, 512)
+                .is_ok()
+        );
+        assert!(controller.check_create(&manager, &subject, 1, 512).is_err());
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn import_route_returns_429_for_zero_quota() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::with_api_keys(vec![]);
+        let manager = VmManager::for_tests(dir.path()).unwrap();
+        let _ = state
+            .vm_manager
+            .set(Arc::new(tokio::sync::RwLock::new(manager)));
+        *state.quota_controller.lock().await =
+            crate::quota::QuotaController::new(crate::config::ResourceQuotaConfig {
+                enabled: true,
+                default_limits: crate::config::ResourceQuotaLimits {
+                    max_total_sandboxes: Some(0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        let state = Arc::new(state);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |request| {
+                let state = server_state.clone();
+                handle_request(request, state)
+            });
+            http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/sandboxes/import-config"))
+            .json(&serde_json::json!({
+                "config": "name = \"imported\"\nimage = \"alpine:3.24\"\nvcpus = 1\nmemory_mb = 512\n"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            response
+                .text()
+                .await
+                .unwrap()
+                .contains("max_total_sandboxes")
+        );
+        task.await.unwrap();
+    }
+
     #[tokio::test]
     async fn llm_spend_requires_credentials_even_when_other_routes_are_anonymous() {
         let state = Arc::new(AppState::with_api_keys(vec![]));
@@ -10749,33 +11335,6 @@ init_script = "echo ready"
         let path = "/stores/store-1/command";
         let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         assert_eq!(segments, vec!["stores", "store-1", "command"]);
-    }
-
-    #[test]
-    fn test_path_segments_configured_schedules() {
-        let path = "/schedules/configured";
-        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        assert_eq!(segments, vec!["schedules", "configured"]);
-    }
-
-    #[test]
-    fn test_path_segments_configured_schedule_status() {
-        let path = "/schedules/configured/nightly/status";
-        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        assert_eq!(
-            segments,
-            vec!["schedules", "configured", "nightly", "status"]
-        );
-    }
-
-    #[test]
-    fn test_path_segments_configured_schedule_trigger() {
-        let path = "/schedules/configured/nightly/trigger";
-        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        assert_eq!(
-            segments,
-            vec!["schedules", "configured", "nightly", "trigger"]
-        );
     }
 
     #[tokio::test]

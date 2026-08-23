@@ -570,6 +570,93 @@ pub struct ScimGroupMapping {
     pub team_id: Option<String>,
 }
 
+/// Limits that can be applied independently to a user or organization.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceQuotaLimits {
+    /// Maximum concurrently running sandboxes.
+    #[serde(default)]
+    pub max_running_sandboxes: Option<u32>,
+    /// Maximum persisted sandboxes, including stopped sandboxes.
+    #[serde(default)]
+    pub max_total_sandboxes: Option<u32>,
+    /// Maximum vCPUs allocated across persisted sandboxes.
+    #[serde(default)]
+    pub max_total_vcpus: Option<u32>,
+    /// Maximum memory in MB allocated across persisted sandboxes.
+    #[serde(default)]
+    pub max_total_memory_mb: Option<u64>,
+}
+
+impl ResourceQuotaLimits {
+    /// Fill omitted fields from a fallback limit set while preserving
+    /// explicit values, including zero deny-all limits.
+    #[cfg(feature = "enterprise")]
+    pub fn with_fallback(&self, fallback: &Self) -> Self {
+        Self {
+            max_running_sandboxes: self
+                .max_running_sandboxes
+                .or(fallback.max_running_sandboxes),
+            max_total_sandboxes: self.max_total_sandboxes.or(fallback.max_total_sandboxes),
+            max_total_vcpus: self.max_total_vcpus.or(fallback.max_total_vcpus),
+            max_total_memory_mb: self.max_total_memory_mb.or(fallback.max_total_memory_mb),
+        }
+    }
+
+    fn validate(&self, scope: &str, warnings: &mut Vec<String>) {
+        // Zero is a valid deny-all quota and is useful when onboarding or
+        // suspending a tenant. Omitted values mean unlimited.
+        if let (Some(running), Some(total)) = (self.max_running_sandboxes, self.max_total_sandboxes)
+            && running > total
+        {
+            warnings.push(format!(
+                "[enterprise.quotas.{scope}] max_running_sandboxes ({running}) exceeds max_total_sandboxes ({total})"
+            ));
+        }
+    }
+}
+
+/// Enterprise quota configuration. `default` is a per-user fallback; an
+/// organization entry applies to every user in that organization.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceQuotaConfig {
+    /// Enable enforcement. Quotas remain inert when false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Per-user fallback limits.
+    #[serde(default, rename = "default")]
+    pub default_limits: ResourceQuotaLimits,
+    /// Explicit per-user limits keyed by JWT subject or API-key identity.
+    #[serde(default)]
+    pub users: std::collections::BTreeMap<String, ResourceQuotaLimits>,
+    /// Explicit per-organization limits keyed by organization ID.
+    #[serde(default)]
+    pub organizations: std::collections::BTreeMap<String, ResourceQuotaLimits>,
+}
+
+impl ResourceQuotaConfig {
+    /// Return configuration warnings without making a valid config unusable.
+    pub fn validate(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        self.default_limits.validate("default", &mut warnings);
+        for (id, limits) in &self.users {
+            if id.trim().is_empty() {
+                warnings.push("[enterprise.quotas.users] contains an empty user ID".to_string());
+            }
+            limits.validate(&format!("users.{id}"), &mut warnings);
+        }
+        for (id, limits) in &self.organizations {
+            if id.trim().is_empty() {
+                warnings.push(
+                    "[enterprise.quotas.organizations] contains an empty organization ID"
+                        .to_string(),
+                );
+            }
+            limits.validate(&format!("organizations.{id}"), &mut warnings);
+        }
+        warnings
+    }
+}
+
 /// Enterprise policy management configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnterpriseConfig {
@@ -607,6 +694,9 @@ pub struct EnterpriseConfig {
     /// Explicit, tenant-scoped SCIM group authorization mappings.
     #[serde(default)]
     pub scim_group_mappings: Vec<ScimGroupMapping>,
+    /// Per-user and per-organization sandbox resource quotas.
+    #[serde(default)]
+    pub quotas: ResourceQuotaConfig,
 }
 
 fn default_enterprise_roles() -> Vec<String> {
@@ -635,6 +725,7 @@ impl Default for EnterpriseConfig {
             default_roles: default_enterprise_roles(),
             jwks_url: None,
             scim_group_mappings: Vec::new(),
+            quotas: ResourceQuotaConfig::default(),
         }
     }
 }
@@ -1225,6 +1316,8 @@ impl Config {
     pub fn validate(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         let perms = self.get_permissions();
+
+        warnings.extend(self.enterprise.quotas.validate());
 
         let git_name_configured = self
             .agent
@@ -1923,6 +2016,7 @@ mod tests {
         assert_eq!(config.enterprise.offline_mode, "cached_with_expiry");
         assert_eq!(config.enterprise.cache_max_age_hours, 24);
         assert!(config.enterprise.trust_anchors.keys.is_empty());
+        assert!(!config.enterprise.quotas.enabled);
     }
 
     #[test]
@@ -1962,6 +2056,17 @@ mod tests {
 
             [enterprise.trust_anchors]
             keys = ["key1-public", "key2-public"]
+
+            [enterprise.quotas]
+            enabled = true
+            [enterprise.quotas.default]
+            max_total_sandboxes = 8
+            max_total_vcpus = 16
+            max_total_memory_mb = 8192
+            [enterprise.quotas.users.alice]
+            max_running_sandboxes = 2
+            [enterprise.quotas.organizations.acme-corp]
+            max_total_sandboxes = 32
         "#;
         let config = Config::from_str(toml).unwrap();
         assert!(config.enterprise.enabled);
@@ -1977,6 +2082,19 @@ mod tests {
         assert_eq!(config.enterprise.offline_mode, "fail_closed");
         assert_eq!(config.enterprise.cache_max_age_hours, 48);
         assert_eq!(config.enterprise.trust_anchors.keys.len(), 2);
+        assert!(config.enterprise.quotas.enabled);
+        assert_eq!(
+            config.enterprise.quotas.default_limits.max_total_vcpus,
+            Some(16)
+        );
+        assert_eq!(
+            config.enterprise.quotas.users["alice"].max_running_sandboxes,
+            Some(2)
+        );
+        assert_eq!(
+            config.enterprise.quotas.organizations["acme-corp"].max_total_sandboxes,
+            Some(32)
+        );
     }
 
     #[test]

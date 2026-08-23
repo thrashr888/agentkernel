@@ -424,6 +424,7 @@ mod tests {
             default_roles: vec!["developer".to_string()],
             jwks_url: None,
             scim_group_mappings: vec![],
+            quotas: crate::config::ResourceQuotaConfig::default(),
         }
     }
 

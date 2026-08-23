@@ -294,6 +294,12 @@ pub struct SandboxState {
     /// Optional lifecycle automation policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_policy: Option<SandboxLifecyclePolicy>,
+    /// Authenticated user that owns this sandbox for enterprise accounting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<String>,
+    /// Organization that owns this sandbox for enterprise accounting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_org_id: Option<String>,
 }
 
 impl SandboxState {
@@ -442,6 +448,29 @@ fn batch_cmd(names: &[String], cmd: &str, args: &[&str]) -> std::io::Result<std:
 }
 
 impl VmManager {
+    /// Construct a manager backed by a test directory without probing host
+    /// runtimes. This keeps quota accounting tests deterministic.
+    #[cfg(test)]
+    pub fn for_tests(data_dir: &Path) -> Result<Self> {
+        std::fs::create_dir_all(data_dir.join("sandboxes"))?;
+        Ok(Self {
+            backend: BackendType::Docker,
+            running: HashMap::new(),
+            sandboxes: HashMap::new(),
+            data_dir: data_dir.to_path_buf(),
+            rootfs_dir: None,
+            next_cid: 3,
+            detached: HashMap::new(),
+            #[cfg(feature = "enterprise")]
+            policy_engine: None,
+        })
+    }
+
+    #[cfg(test)]
+    pub fn insert_state_for_tests(&mut self, state: SandboxState) {
+        self.sandboxes.insert(state.name.clone(), state);
+    }
+
     /// Create a new VM manager (auto-selects backend based on availability)
     pub fn new() -> Result<Self> {
         Self::with_backend(None)
@@ -1040,6 +1069,8 @@ impl VmManager {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            owner_user_id: None,
+            owner_org_id: None,
         };
 
         self.save_sandbox(&state)?;
@@ -1372,6 +1403,25 @@ impl VmManager {
         state.uuid = uuid.to_string();
         state.created_at = created_at.to_string();
         state.expires_at = expires_at.map(ToString::to_string);
+        let snapshot = state.clone();
+        self.save_sandbox(&snapshot)?;
+        Ok(())
+    }
+
+    /// Persist the authenticated tenant owner for enterprise quota accounting.
+    #[cfg(feature = "enterprise")]
+    pub fn set_owner_metadata(
+        &mut self,
+        name: &str,
+        user_id: Option<&str>,
+        org_id: Option<&str>,
+    ) -> Result<()> {
+        let state = self
+            .sandboxes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        state.owner_user_id = user_id.map(ToString::to_string);
+        state.owner_org_id = org_id.map(ToString::to_string);
         let snapshot = state.clone();
         self.save_sandbox(&snapshot)?;
         Ok(())
@@ -3722,6 +3772,8 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            owner_user_id: None,
+            owner_org_id: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -3847,6 +3899,8 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            owner_user_id: None,
+            owner_org_id: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -3933,6 +3987,8 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            owner_user_id: None,
+            owner_org_id: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -4035,6 +4091,8 @@ mod tests {
                 dormant_at: None,
                 dormant_reason: None,
                 lifecycle_policy: None,
+                owner_user_id: None,
+                owner_org_id: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();
@@ -4118,6 +4176,8 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            owner_user_id: None,
+            owner_org_id: None,
         };
         std::fs::create_dir_all(temp_dir.path().join("sandboxes")).unwrap();
         manager.sandboxes.insert("label-test".to_string(), state);
@@ -4201,6 +4261,8 @@ mod tests {
                 dormant_at: None,
                 dormant_reason: None,
                 lifecycle_policy: None,
+                owner_user_id: None,
+                owner_org_id: None,
             };
             manager.sandboxes.insert(name.to_string(), state);
         }
@@ -4285,6 +4347,8 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            owner_user_id: None,
+            owner_org_id: None,
         };
         manager.sandboxes.insert("desc-test".to_string(), state);
 
@@ -4365,6 +4429,8 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            owner_user_id: None,
+            owner_org_id: None,
         };
 
         // Save to disk
@@ -4441,6 +4507,8 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            owner_user_id: None,
+            owner_org_id: None,
         }
     }
 
