@@ -533,6 +533,17 @@ pub struct DockerImage {
     pub created: String,
 }
 
+/// Summary of container-runtime disk usage by resource type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockerImageDiskUsage {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub total: String,
+    pub active: String,
+    pub size: String,
+    pub reclaimable: String,
+}
+
 // ---------------------------------------------------------------------------
 // Benchmark
 // ---------------------------------------------------------------------------

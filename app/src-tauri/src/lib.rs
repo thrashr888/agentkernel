@@ -500,6 +500,10 @@ pub fn run() {
             commands::images::remove_image,
             // parallel jobs
             commands::batch::batch_run,
+            // docker image management
+            commands::images::image_disk_usage,
+            commands::images::pull_image,
+            commands::images::prune_images,
             // benchmark
             commands::benchmark::run_benchmark,
             // sessions

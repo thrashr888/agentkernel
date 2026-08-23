@@ -1316,6 +1316,9 @@ async fn handle_request(
 
         // Docker image management
         (Method::GET, ["images"]) => handle_list_images(state).await,
+        (Method::GET, ["images", "usage"]) => handle_image_disk_usage(state).await,
+        (Method::POST, ["images", "pull"]) => handle_pull_image(req, state).await,
+        (Method::POST, ["images", "prune"]) => handle_prune_images(req, state).await,
         (Method::DELETE, ["images", id]) => handle_delete_image(id, state).await,
 
         // Hardware benchmark
@@ -7017,17 +7020,134 @@ async fn handle_browser_events(
 // Docker Image Management
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Deserialize)]
+struct ImagePullRequest {
+    image: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ImagePruneRequest {
+    #[serde(default)]
+    agentkernel_only: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DockerImageDiskUsage {
+    #[serde(rename = "type", alias = "Type")]
+    kind: String,
+    #[serde(
+        alias = "Total",
+        alias = "TotalCount",
+        deserialize_with = "deserialize_string_or_number"
+    )]
+    total: String,
+    #[serde(alias = "Active", deserialize_with = "deserialize_string_or_number")]
+    active: String,
+    #[serde(alias = "Size", deserialize_with = "deserialize_string_or_number")]
+    size: String,
+    #[serde(
+        alias = "Reclaimable",
+        deserialize_with = "deserialize_string_or_number"
+    )]
+    reclaimable: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DockerImageRecord {
+    #[serde(alias = "ID")]
+    id: String,
+    #[serde(alias = "Repository")]
+    repository: String,
+    #[serde(alias = "Tag")]
+    tag: String,
+}
+
+fn parse_docker_image_records(stdout: &str) -> Vec<DockerImageRecord> {
+    stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+fn deserialize_string_or_number<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::String(value) => Ok(value),
+        serde_json::Value::Number(value) => Ok(value.to_string()),
+        serde_json::Value::Bool(value) => Ok(value.to_string()),
+        serde_json::Value::Null => Ok(String::new()),
+        value => Err(serde::de::Error::custom(format!(
+            "expected a string or number, got {value}"
+        ))),
+    }
+}
+
+fn image_record_name(image: &DockerImageRecord) -> String {
+    if image.tag == "<none>" {
+        image.id.clone()
+    } else {
+        format!("{}:{}", image.repository, image.tag)
+    }
+}
+
+fn parse_docker_disk_usage(stdout: &str) -> Result<Vec<DockerImageDiskUsage>, String> {
+    // Docker emits one JSON object per line for `{{json .}}`; Podman emits a
+    // JSON array when asked for the `json` format. Accept both so the desktop
+    // page follows whichever runtime the server selected.
+    if let Ok(entries) = serde_json::from_str::<Vec<DockerImageDiskUsage>>(stdout.trim()) {
+        return Ok(entries);
+    }
+
+    let mut entries = Vec::new();
+    for (line_number, line) in stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .enumerate()
+    {
+        let entry = serde_json::from_str(line).map_err(|error| {
+            format!(
+                "invalid disk-usage response on line {}: {error}",
+                line_number + 1
+            )
+        })?;
+        entries.push(entry);
+    }
+
+    if stdout.trim().is_empty() {
+        Ok(entries)
+    } else if entries.is_empty() {
+        Err("container runtime returned non-empty disk-usage output with no entries".to_string())
+    } else {
+        Ok(entries)
+    }
+}
+
+fn is_agentkernel_image(image: &DockerImageRecord) -> bool {
+    // Images created by the image builder, snapshots, and setup all use the
+    // `agentkernel-` namespace. Keep the match anchored: a user's unrelated
+    // image such as `my-agentkernel-tools` must never be pruned.
+    image.repository == "agentkernel" || image.repository.starts_with("agentkernel-")
+}
+
+fn runtime_or_error() -> Result<crate::docker_backend::ContainerRuntime, Box<Response<BoxBody>>> {
+    crate::docker_backend::detect_container_runtime().ok_or_else(|| {
+        Box::new(json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error("No container runtime available"),
+        ))
+    })
+}
+
 async fn handle_list_images(_state: Arc<AppState>) -> Response<BoxBody> {
-    let runtime = crate::docker_backend::detect_container_runtime();
-    let cmd = match runtime {
-        Some(r) => r.cmd(),
-        None => {
-            return json_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &ApiResponse::<()>::error("No container runtime available"),
-            );
-        }
+    let runtime = match runtime_or_error() {
+        Ok(runtime) => runtime,
+        Err(response) => return *response,
     };
+    let cmd = runtime.cmd();
 
     let output = match tokio::process::Command::new(cmd)
         .args(["images", "--format", "{{json .}}"])
@@ -7067,17 +7187,189 @@ async fn handle_list_images(_state: Arc<AppState>) -> Response<BoxBody> {
     json_response(StatusCode::OK, &ApiResponse::success(images))
 }
 
-async fn handle_delete_image(id: &str, _state: Arc<AppState>) -> Response<BoxBody> {
-    let runtime = crate::docker_backend::detect_container_runtime();
-    let cmd = match runtime {
-        Some(r) => r.cmd(),
-        None => {
+async fn handle_image_disk_usage(_state: Arc<AppState>) -> Response<BoxBody> {
+    let runtime = match runtime_or_error() {
+        Ok(runtime) => runtime,
+        Err(response) => return *response,
+    };
+    let format = match runtime {
+        crate::docker_backend::ContainerRuntime::Docker => "{{json .}}",
+        crate::docker_backend::ContainerRuntime::Podman => "json",
+    };
+
+    let output = match tokio::process::Command::new(runtime.cmd())
+        .args(["system", "df", "--format", format])
+        .output()
+        .await
+    {
+        Ok(output) => output,
+        Err(error) => {
             return json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &ApiResponse::<()>::error("No container runtime available"),
+                &ApiResponse::<()>::error(format!("Failed to inspect image disk usage: {error}")),
             );
         }
     };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!(
+                "Container runtime disk usage failed: {}",
+                stderr.trim()
+            )),
+        );
+    }
+
+    let usage = match parse_docker_disk_usage(&String::from_utf8_lossy(&output.stdout)) {
+        Ok(usage) => usage,
+        Err(error) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!("Failed to parse image disk usage: {error}")),
+            );
+        }
+    };
+    json_response(StatusCode::OK, &ApiResponse::success(usage))
+}
+
+async fn handle_pull_image(req: Request<Incoming>, _state: Arc<AppState>) -> Response<BoxBody> {
+    let body: ImagePullRequest = match read_json_body(req).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+
+    if let Err(error) = validation::validate_docker_image(&body.image) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(error.to_string()),
+        );
+    }
+
+    let runtime = match runtime_or_error() {
+        Ok(runtime) => runtime,
+        Err(response) => return *response,
+    };
+    let output = match tokio::process::Command::new(runtime.cmd())
+        .args(["pull", &body.image])
+        .output()
+        .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!("Failed to pull image: {error}")),
+            );
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to pull image: {}", stderr.trim())),
+        );
+    }
+
+    let message = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    json_response(StatusCode::OK, &ApiResponse::success(message))
+}
+
+async fn handle_prune_images(req: Request<Incoming>, _state: Arc<AppState>) -> Response<BoxBody> {
+    let body: ImagePruneRequest = match read_json_body(req).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let runtime = match runtime_or_error() {
+        Ok(runtime) => runtime,
+        Err(response) => return *response,
+    };
+
+    if body.agentkernel_only {
+        let output = match tokio::process::Command::new(runtime.cmd())
+            .args(["images", "--format", "{{json .}}"])
+            .output()
+            .await
+        {
+            Ok(output) => output,
+            Err(error) => {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(format!(
+                        "Failed to list images for pruning: {error}"
+                    )),
+                );
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!(
+                    "Failed to list images for pruning: {}",
+                    stderr.trim()
+                )),
+            );
+        }
+
+        let mut removed = 0usize;
+        for image in parse_docker_image_records(&String::from_utf8_lossy(&output.stdout))
+            .into_iter()
+            .filter(is_agentkernel_image)
+        {
+            if crate::images::sandbox_usage(&image_record_name(&image)).unwrap_or(0) != 0 {
+                continue;
+            }
+            let result = tokio::process::Command::new(runtime.cmd())
+                .args(["rmi", &image.id])
+                .output()
+                .await;
+            if result.is_ok_and(|result| result.status.success()) {
+                removed += 1;
+            }
+        }
+
+        return json_response(
+            StatusCode::OK,
+            &ApiResponse::success(format!("{removed} AgentKernel image(s) removed")),
+        );
+    }
+
+    let output = match tokio::process::Command::new(runtime.cmd())
+        .args(["image", "prune", "-f"])
+        .output()
+        .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!("Failed to prune images: {error}")),
+            );
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to prune images: {}", stderr.trim())),
+        );
+    }
+
+    let message = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    json_response(StatusCode::OK, &ApiResponse::success(message))
+}
+
+async fn handle_delete_image(id: &str, _state: Arc<AppState>) -> Response<BoxBody> {
+    let runtime = match runtime_or_error() {
+        Ok(runtime) => runtime,
+        Err(response) => return *response,
+    };
+    let cmd = runtime.cmd();
 
     // Validate image ID to prevent command injection
     if !id.chars().all(|c| {
@@ -7797,6 +8089,57 @@ mod tests {
         };
         let response = json_response(StatusCode::CREATED, &ApiResponse::success(info));
         assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    #[test]
+    fn test_parse_docker_disk_usage_line_format() {
+        let usage = parse_docker_disk_usage(
+            r#"{"Type":"Images","TotalCount":"3","Active":"1","Size":"2.4GB","Reclaimable":"1.2GB (50%)"}"#,
+        )
+        .unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].kind, "Images");
+        assert_eq!(usage[0].total, "3");
+        assert_eq!(usage[0].reclaimable, "1.2GB (50%)");
+    }
+
+    #[test]
+    fn test_parse_docker_disk_usage_array_with_numeric_fields() {
+        let usage = parse_docker_disk_usage(
+            r#"[{"type":"Images","TotalCount":3,"Active":1,"Size":2400,"Reclaimable":1200}]"#,
+        )
+        .unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].total, "3");
+        assert_eq!(usage[0].size, "2400");
+    }
+
+    #[test]
+    fn test_parse_docker_disk_usage_rejects_unparseable_output() {
+        let error = parse_docker_disk_usage("not json").unwrap_err();
+        assert!(error.contains("invalid disk-usage response"));
+    }
+
+    #[test]
+    fn test_agentkernel_image_match_is_anchored() {
+        let managed = DockerImageRecord {
+            id: "sha256:managed".to_string(),
+            repository: "agentkernel-my-project".to_string(),
+            tag: "latest".to_string(),
+        };
+        let snapshot = DockerImageRecord {
+            id: "sha256:snapshot".to_string(),
+            repository: "agentkernel-snap".to_string(),
+            tag: "checkpoint".to_string(),
+        };
+        let unrelated = DockerImageRecord {
+            id: "sha256:unrelated".to_string(),
+            repository: "my-agentkernel-tools".to_string(),
+            tag: "latest".to_string(),
+        };
+        assert!(is_agentkernel_image(&managed));
+        assert!(is_agentkernel_image(&snapshot));
+        assert!(!is_agentkernel_image(&unrelated));
     }
 
     // === Path parsing tests (unit test the segment logic) ===
