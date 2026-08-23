@@ -18,7 +18,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_VERSION: "1.89"
   NOMAD_ADDR: http://127.0.0.1:4646
-  NOMAD_TEST_DRIVER: exec
+  NOMAD_TEST_DRIVER: docker
 
 jobs:
   compatibility:
@@ -53,10 +53,12 @@ jobs:
           nomad version
       - name: Start Nomad development agent
         run: |
-          # Nomad's Linux exec driver requires the client agent to run as root.
+          # Nomad's Linux client needs root for task-driver resource isolation.
           sudo nomad agent -dev -bind=127.0.0.1 > nomad.log 2>&1 &
           for attempt in {1..30}; do
-            if curl --fail --silent "${NOMAD_ADDR}/v1/status/leader" > /dev/null; then
+            if nomad node status -self -json 2>/dev/null \
+              | jq -e '.Status == "ready" and .Drivers.docker.Detected and .Drivers.docker.Healthy' \
+              > /dev/null; then
               exit 0
             fi
             sleep 1
@@ -73,4 +75,7 @@ jobs:
           test_nomad_exec_with_env -- --ignored --nocapture --test-threads=1
       - name: Show Nomad log on failure
         if: failure()
-        run: test ! -f nomad.log || cat nomad.log
+        run: |
+          nomad node status -self -verbose || true
+          nomad job status || true
+          test ! -f nomad.log || cat nomad.log

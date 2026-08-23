@@ -59,16 +59,32 @@ jobs:
       - name: Probe native arm64 Hyperlight-only build
         run: |
           set +e
-          cargo check --locked --lib --no-default-features --features hyperlight 2>&1 | tee hyperlight-arm64.log
-          status=${PIPESTATUS[0]}
+          cargo check --locked --lib --no-default-features --features hyperlight \
+            --message-format=json > hyperlight-arm64.json 2> hyperlight-arm64.stderr
+          status=$?
           set -e
 
           if [[ "$status" -eq 0 ]]; then
-            exit 0
+            echo 'Hyperlight arm64 now compiles; remove the exception and enable blocking arm64 lint/tests.'
+            exit 1
           fi
 
-          if grep -q 'hyperlight-host-0.14.0/src/' hyperlight-arm64.log \
-            && grep -q 'error\[E0061\]' hyperlight-arm64.log; then
+          cat hyperlight-arm64.stderr
+          jq -r 'select(.reason == "compiler-message" and .message.level == "error") | .message.rendered' \
+            hyperlight-arm64.json
+
+          error_count=$(jq -s '[.[] | select(.reason == "compiler-message" and .message.level == "error")] | length' hyperlight-arm64.json)
+          known_count=$(jq -s '[.[] | select(
+            .reason == "compiler-message"
+            and .message.level == "error"
+            and .message.code.code == "E0061"
+            and any(.message.spans[]?;
+              .is_primary
+              and (.file_name | endswith("/hyperlight-host-0.14.0/src/sandbox/uninitialized_evolve.rs"))
+            )
+          )] | length' hyperlight-arm64.json)
+
+          if [[ "$error_count" -eq 1 && "$known_count" -eq 1 ]]; then
             echo '::warning::Known upstream hyperlight-host 0.14 arm64 compiler failure; exception expires 2026-11-30.'
             exit 0
           fi

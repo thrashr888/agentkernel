@@ -3,8 +3,9 @@
 AgentKernel validates optional Rust feature sets at the package's Rust 1.89
 minimum supported version. The pull-request matrix covers no-default,
 Kubernetes-only, Nomad-only, enterprise-only, and the combined orchestrator
-features. The scheduled Nomad matrix runs lifecycle and exec smoke tests against
-Nomad 1.10.5 (the final 1.10 LTS community release) and Nomad 2.0.4.
+features. The scheduled Nomad matrix runs lifecycle and exec smoke tests with
+the default Docker task driver against Nomad 1.10.5 (the final 1.10 LTS
+community release) and Nomad 2.0.4.
 
 ## Hyperlight arm64 exception
 
