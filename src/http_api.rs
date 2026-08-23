@@ -35,7 +35,7 @@ use crate::asciicast::{self, AsciicastEvent, AsciicastHeader, EventType};
 use crate::backend::{
     BackendCapabilities, BackendType, backend_capabilities, backend_readiness, detect_best_backend,
 };
-use crate::job_scheduler::{JobScheduler, JobSchedulerHandle};
+use crate::job_scheduler::{JobScheduleStatus, JobScheduler, JobSchedulerHandle};
 use crate::languages;
 use crate::opencode::OpenCodeState;
 use crate::orchestration_store::{
@@ -1766,9 +1766,22 @@ async fn handle_request(
         }
 
         // Schedules
+        (Method::GET, ["schedules", "configured"]) => handle_list_configured_schedules(state).await,
+        (Method::GET, ["schedules", "configured", schedule_id]) => {
+            handle_get_configured_schedule(schedule_id, state).await
+        }
+        (Method::GET, ["schedules", "configured", schedule_id, "status"]) => {
+            handle_get_configured_schedule(schedule_id, state).await
+        }
+        (Method::POST, ["schedules", "configured", schedule_id, "trigger"]) => {
+            handle_trigger_configured_schedule(schedule_id, state).await
+        }
         (Method::GET, ["schedules"]) => handle_list_schedules(state).await,
         (Method::POST, ["schedules"]) => handle_create_schedule(req, state).await,
         (Method::GET, ["schedules", schedule_id]) => handle_get_schedule(schedule_id, state).await,
+        (Method::GET, ["schedules", schedule_id, "status"]) => {
+            handle_get_schedule_status(schedule_id, state).await
+        }
         (Method::DELETE, ["schedules", schedule_id]) => {
             handle_delete_schedule(schedule_id, state).await
         }
@@ -1925,8 +1938,11 @@ async fn handle_request(
         (Method::DELETE, ["proxy", "hooks", name]) => handle_remove_proxy_hook(name, state).await,
 
         // LLM usage
-        (Method::GET, ["llm", "usage"]) => handle_llm_usage_all().await,
-        (Method::GET, ["llm", "usage", sandbox]) => handle_llm_usage_sandbox(sandbox).await,
+        (Method::GET, ["llm", "usage"]) => handle_llm_usage_all(req, state.clone()).await,
+        (Method::GET, ["llm", "usage", sandbox]) => {
+            handle_llm_usage_sandbox(req, sandbox, state.clone()).await
+        }
+        (Method::GET, ["llm", "spend"]) => handle_llm_spend(req, state.clone()).await,
 
         // LLM key management
         (Method::GET, ["llm", "keys"]) => handle_llm_keys_list().await,
@@ -3138,6 +3154,72 @@ async fn handle_get_schedule(schedule_id: &str, state: Arc<AppState>) -> Respons
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_get_schedule_status(schedule_id: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    handle_get_schedule(schedule_id, state).await
+}
+
+async fn handle_list_configured_schedules(state: Arc<AppState>) -> Response<BoxBody> {
+    let Some(scheduler) = state.job_scheduler.as_ref() else {
+        return json_response(
+            StatusCode::OK,
+            &ApiResponse::success(Vec::<JobScheduleStatus>::new()),
+        );
+    };
+    match scheduler.list_status(chrono::Utc::now()) {
+        Ok(schedules) => json_response(StatusCode::OK, &ApiResponse::success(schedules)),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(error.to_string()),
+        ),
+    }
+}
+
+async fn handle_get_configured_schedule(
+    schedule_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let Some(scheduler) = state.job_scheduler.as_ref() else {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Configured schedule not found"),
+        );
+    };
+    match scheduler.get_status(schedule_id, chrono::Utc::now()) {
+        Ok(Some(status)) => json_response(StatusCode::OK, &ApiResponse::success(status)),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Configured schedule not found"),
+        ),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(error.to_string()),
+        ),
+    }
+}
+
+async fn handle_trigger_configured_schedule(
+    schedule_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let Some(scheduler) = state.job_scheduler.as_ref() else {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Configured schedule not found"),
+        );
+    };
+    match scheduler.trigger(schedule_id).await {
+        Ok(execution) => json_response(StatusCode::OK, &ApiResponse::success(execution)),
+        Err(error) if error.to_string().contains("not found") => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(error.to_string()),
+        ),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(error.to_string()),
         ),
     }
 }
@@ -8390,15 +8472,185 @@ async fn handle_delete_secret(name: &str) -> Response<BoxBody> {
 // LLM usage
 // ---------------------------------------------------------------------------
 
-async fn handle_llm_usage_all() -> Response<BoxBody> {
-    let store = crate::llm_intercept::LLM_USAGE.read().await;
-    json_response(StatusCode::OK, &ApiResponse::success(store.all_usage()))
+#[allow(clippy::result_large_err)]
+async fn llm_scope(
+    req: &Request<Incoming>,
+    state: &AppState,
+) -> Result<(String, String, bool), Response<BoxBody>> {
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = extract_identity(req, state).await;
+        let Some((tenant, user)) = trusted_owner_identity(&identity, state) else {
+            return Err(json_response(
+                StatusCode::UNAUTHORIZED,
+                &ApiResponse::<()>::error(
+                    "LLM usage requires a validated JWT or configured API key",
+                ),
+            ));
+        };
+        Ok((
+            tenant,
+            user,
+            identity.has_role("admin") || identity.has_role("billing_admin"),
+        ))
+    }
+    #[cfg(not(feature = "enterprise"))]
+    {
+        let Some((tenant, user)) = trusted_owner_identity(req, state) else {
+            return Err(json_response(
+                StatusCode::UNAUTHORIZED,
+                &ApiResponse::<()>::error("LLM usage requires a configured API key"),
+            ));
+        };
+        Ok((tenant, user, false))
+    }
 }
 
-async fn handle_llm_usage_sandbox(sandbox: &str) -> Response<BoxBody> {
+async fn handle_llm_usage_all(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    let (tenant, user, is_admin) = match llm_scope(&req, &state).await {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
     let store = crate::llm_intercept::LLM_USAGE.read().await;
+    let usage: std::collections::HashMap<_, _> = store
+        .all_usage()
+        .iter()
+        .filter(|(sandbox, _)| {
+            store
+                .scope_for_sandbox(sandbox)
+                .is_some_and(|scope| scope.tenant == tenant && (is_admin || scope.user == user))
+        })
+        .map(|(sandbox, entries)| (sandbox.clone(), entries.clone()))
+        .collect();
+    json_response(StatusCode::OK, &ApiResponse::success(usage))
+}
+
+async fn handle_llm_usage_sandbox(
+    req: Request<Incoming>,
+    sandbox: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let (tenant, user, is_admin) = match llm_scope(&req, &state).await {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
+    let store = crate::llm_intercept::LLM_USAGE.read().await;
+    let visible = store
+        .scope_for_sandbox(sandbox)
+        .is_some_and(|scope| scope.tenant == tenant && (is_admin || scope.user == user));
+    if !visible {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("LLM usage not found"),
+        );
+    }
     let usage = store.usage_for_sandbox(sandbox);
     json_response(StatusCode::OK, &ApiResponse::success(usage))
+}
+
+fn llm_query_value(query: Option<&str>, key: &str) -> Option<String> {
+    query?.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        (name == key).then(|| {
+            urlencoding::decode(value)
+                .unwrap_or(std::borrow::Cow::Borrowed(value))
+                .into_owned()
+        })
+    })
+}
+
+fn llm_pagination_value(
+    query: Option<&str>,
+    key: &str,
+    default: usize,
+    max: usize,
+) -> Result<usize, String> {
+    let Some(raw) = llm_query_value(query, key) else {
+        return Ok(default);
+    };
+    let value = raw
+        .parse::<usize>()
+        .map_err(|_| format!("{key} must be a non-negative integer"))?;
+    if (key == "limit" && !(1..=max).contains(&value)) || (key == "offset" && value > max) {
+        return Err(if key == "limit" {
+            format!("limit must be between 1 and {max}")
+        } else {
+            format!("offset must be at most {max}")
+        });
+    }
+    Ok(value)
+}
+
+async fn handle_llm_spend(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    let limit = match llm_pagination_value(
+        req.uri().query(),
+        "limit",
+        100,
+        crate::llm_spend::MAX_PAGE_SIZE,
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            return json_response(StatusCode::BAD_REQUEST, &ApiResponse::<()>::error(error));
+        }
+    };
+    let offset = match llm_pagination_value(
+        req.uri().query(),
+        "offset",
+        0,
+        crate::llm_spend::MAX_QUERY_OFFSET,
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            return json_response(StatusCode::BAD_REQUEST, &ApiResponse::<()>::error(error));
+        }
+    };
+    let mut filter = crate::llm_spend::LlmSpendFilter {
+        agent: llm_query_value(req.uri().query(), "agent"),
+        user: llm_query_value(req.uri().query(), "user"),
+        project: llm_query_value(req.uri().query(), "project"),
+        from: llm_query_value(req.uri().query(), "from"),
+        to: llm_query_value(req.uri().query(), "to"),
+        limit: Some(limit),
+        offset: Some(offset),
+        tenant: None,
+    };
+
+    let (tenant, owner_user, is_admin) = match llm_scope(&req, &state).await {
+        Ok((tenant, user, is_admin)) => (tenant, Some(user), is_admin),
+        Err(response) => return response,
+    };
+    filter.tenant = Some(tenant);
+    if !is_admin {
+        let Some(owner_user) = owner_user else {
+            return json_response(
+                StatusCode::FORBIDDEN,
+                &ApiResponse::<()>::error("Authenticated identity has no spend user scope"),
+            );
+        };
+        if let Some(requested_user) = filter.user.as_deref()
+            && requested_user != owner_user
+        {
+            return json_response(
+                StatusCode::FORBIDDEN,
+                &ApiResponse::<()>::error("Spend user filter is outside the authenticated scope"),
+            );
+        }
+        filter.user = Some(owner_user);
+    }
+
+    let Some(store) = crate::llm_spend::global_store() else {
+        return json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &ApiResponse::<()>::error("Durable LLM spend storage is unavailable"),
+        );
+    };
+    match store.query(&filter) {
+        Ok(report) => json_response(StatusCode::OK, &ApiResponse::success(report)),
+        Err(error) => json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(error.to_string()),
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
