@@ -1013,6 +1013,8 @@ runtime = "base"    # base, python, node, go, rust
 
 [agent]
 preferred = "{}"    # claude, gemini, codex, opencode
+# git_name = "AgentKernel Agent"
+# git_email = "agent@agentkernel.dev"
 
 [resources]
 vcpus = 1
