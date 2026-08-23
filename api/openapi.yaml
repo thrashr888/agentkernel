@@ -33,6 +33,8 @@ tags:
     description: Health check endpoint
   - name: Run
     description: One-shot command execution
+  - name: Tasks
+    description: Durable agent task submission and lifecycle management
   - name: Sandboxes
     description: Persistent sandbox management
   - name: Files
@@ -106,6 +108,98 @@ paths:
                 $ref: '#/components/schemas/RunResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /tasks:
+    post:
+      tags: [Tasks]
+      summary: Submit an agent task
+      description: Queues a prompt for the selected sandbox. Execution is handled by the task worker.
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+            example:
+              prompt: "Inspect the failing test"
+              sandbox: "sandbox-1"
+      responses:
+        '201':
+          description: Task queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      tags: [Tasks]
+      summary: List agent tasks
+      description: Returns the newest 200 tasks first.
+      operationId: listTasks
+      responses:
+        '200':
+          description: Tasks returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskListResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /tasks/{task_id}:
+    parameters:
+      - name: task_id
+        in: path
+        required: true
+        description: Task UUID
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Tasks]
+      summary: Inspect an agent task
+      operationId: getTask
+      responses:
+        '200':
+          description: Task found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Tasks]
+      summary: Cancel an agent task
+      description: Cancels queued or running work. Cancellation is idempotent for an already-cancelled task.
+      operationId: cancelTask
+      responses:
+        '200':
+          description: Task cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Task has already reached a terminal status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -1352,6 +1446,72 @@ components:
           description: |
             Use container pool for fast execution (~50ms).
             Set to false for custom images or profiles (~500ms).
+
+    CreateTaskRequest:
+      type: object
+      additionalProperties: false
+      required: [prompt, sandbox]
+      properties:
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 1048576
+          description: Prompt to dispatch to the agent worker
+        sandbox:
+          type: string
+          pattern: '^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?$'
+          maxLength: 63
+          description: Target sandbox name (also accepted as target_sandbox)
+
+    Task:
+      type: object
+      required: [id, prompt, sandbox, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUIDv7 task identifier
+        prompt:
+          type: string
+        sandbox:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, completed, failed, cancelled]
+        result:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TaskResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/Task'
+
+    TaskListResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
 
     CreateSandboxRequest:
       type: object

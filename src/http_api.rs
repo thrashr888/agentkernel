@@ -40,6 +40,7 @@ use crate::orchestration_store::{
 };
 use crate::permissions::SecurityProfile;
 use crate::secrets::{SecretBackend, SecretVault};
+use crate::tasks::{CancelOutcome, TaskManager};
 use crate::validation;
 use crate::vmm::VmManager;
 
@@ -435,6 +436,15 @@ struct CreateOrchestrationRequest {
     input: Option<serde_json::Value>,
 }
 
+/// Request to queue an agent task for a sandbox.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateTaskRequest {
+    prompt: String,
+    #[serde(alias = "target_sandbox")]
+    sandbox: String,
+}
+
 /// Request to update orchestration state.
 #[derive(Debug, Deserialize)]
 struct UpdateOrchestrationRequest {
@@ -711,6 +721,8 @@ struct AppState {
     opencode: Arc<OpenCodeState>,
     /// Durable orchestration persistence store
     orchestration_store: Option<Arc<OrchestrationStore>>,
+    /// Durable agent task queue.
+    task_manager: Option<Arc<TaskManager>>,
     /// Lazily initialized VmManager shared by sandbox and durable-object APIs.
     ///
     /// Backend discovery can fail while a service is starting (for example,
@@ -802,6 +814,7 @@ impl AppState {
             started_at: std::time::Instant::now(),
             opencode: Arc::new(OpenCodeState::new(vm_manager.clone())),
             orchestration_store: Self::init_orchestration_store(),
+            task_manager: Self::init_task_manager(),
             vm_manager,
             #[cfg(test)]
             force_backend_unavailable: false,
@@ -827,6 +840,7 @@ impl AppState {
             started_at: std::time::Instant::now(),
             opencode: Arc::new(OpenCodeState::new(vm_manager.clone())),
             orchestration_store: Self::init_orchestration_store(),
+            task_manager: Self::init_task_manager(),
             vm_manager,
             #[cfg(test)]
             force_backend_unavailable: false,
@@ -837,6 +851,13 @@ impl AppState {
             #[cfg(feature = "enterprise")]
             policy_engine: None,
         }
+    }
+
+    #[cfg(test)]
+    fn with_task_manager_for_tests(manager: TaskManager) -> Self {
+        let mut state = Self::with_api_keys(vec![]);
+        state.task_manager = Some(Arc::new(manager));
+        state
     }
 
     #[cfg(feature = "enterprise")]
@@ -911,6 +932,26 @@ impl AppState {
                 None
             }
         }
+    }
+
+    fn init_task_manager() -> Option<Arc<TaskManager>> {
+        match TaskManager::open_default() {
+            Ok(manager) => Some(Arc::new(manager)),
+            Err(e) => {
+                eprintln!("[tasks] Failed to initialize task storage: {}", e);
+                None
+            }
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn task_manager(&self) -> Result<&Arc<TaskManager>, Response<BoxBody>> {
+        self.task_manager.as_ref().ok_or_else(|| {
+            json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error("Task storage unavailable"),
+            )
+        })
     }
 
     #[allow(clippy::result_large_err)]
@@ -1167,6 +1208,12 @@ async fn handle_request(
         (Method::DELETE, ["orchestrations", orchestration_id]) => {
             handle_delete_orchestration(orchestration_id, state).await
         }
+
+        // Agent task queue
+        (Method::POST, ["tasks"]) => handle_create_task(req, state).await,
+        (Method::GET, ["tasks"]) => handle_list_tasks(state).await,
+        (Method::GET, ["tasks", task_id]) => handle_get_task(task_id, state).await,
+        (Method::DELETE, ["tasks", task_id]) => handle_cancel_task(task_id, state).await,
 
         // Durable store scaffolding
         (Method::GET, ["stores"]) => handle_list_durable_stores(state).await,
@@ -2869,6 +2916,108 @@ async fn handle_delete_orchestration(
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_create_task(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    let body: CreateTaskRequest = match read_json_body(req).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    if let Err(error) = crate::tasks::validate_task_prompt(&body.prompt) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(error.to_string()),
+        );
+    }
+    if let Err(error) = validation::validate_sandbox_name(&body.sandbox) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(error.to_string()),
+        );
+    }
+
+    let manager = match state.task_manager() {
+        Ok(manager) => manager,
+        Err(resp) => return resp,
+    };
+    match manager.create(&body.prompt, &body.sandbox) {
+        Ok(task) => json_response(StatusCode::CREATED, &ApiResponse::success(task)),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(error.to_string()),
+        ),
+    }
+}
+
+async fn handle_list_tasks(state: Arc<AppState>) -> Response<BoxBody> {
+    let manager = match state.task_manager() {
+        Ok(manager) => manager,
+        Err(resp) => return resp,
+    };
+    match manager.list(200, 0) {
+        Ok(tasks) => json_response(StatusCode::OK, &ApiResponse::success(tasks)),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(error.to_string()),
+        ),
+    }
+}
+
+async fn handle_get_task(task_id: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    if let Err(error) = crate::tasks::validate_task_id(task_id) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(error.to_string()),
+        );
+    }
+    let manager = match state.task_manager() {
+        Ok(manager) => manager,
+        Err(resp) => return resp,
+    };
+    match manager.get(task_id) {
+        Ok(Some(task)) => json_response(StatusCode::OK, &ApiResponse::success(task)),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Task not found"),
+        ),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(error.to_string()),
+        ),
+    }
+}
+
+async fn handle_cancel_task(task_id: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    if let Err(error) = crate::tasks::validate_task_id(task_id) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(error.to_string()),
+        );
+    }
+    let manager = match state.task_manager() {
+        Ok(manager) => manager,
+        Err(resp) => return resp,
+    };
+    match manager.cancel(task_id) {
+        Ok(CancelOutcome::Cancelled(task)) => {
+            json_response(StatusCode::OK, &ApiResponse::success(task))
+        }
+        Ok(CancelOutcome::NotFound) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Task not found"),
+        ),
+        Ok(CancelOutcome::NotCancellable(task)) => json_response(
+            StatusCode::CONFLICT,
+            &ApiResponse::<()>::error(format!(
+                "Task cannot be cancelled after reaching '{}' status",
+                task.status
+            )),
+        ),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(error.to_string()),
         ),
     }
 }
@@ -8883,6 +9032,135 @@ init_script = "echo ready"
                 .as_str()
                 .is_some_and(|message| message.contains("No sandbox backend available"))
         );
+    }
+
+    #[tokio::test]
+    async fn task_crud_routes_submit_list_inspect_and_cancel() {
+        async fn request_once(
+            state: Arc<AppState>,
+            method: reqwest::Method,
+            path: &str,
+            body: Option<serde_json::Value>,
+        ) -> (u16, serde_json::Value) {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let task = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let io = TokioIo::new(stream);
+                let service = service_fn(move |request| {
+                    let state = state.clone();
+                    handle_request(request, state)
+                });
+                http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await
+                    .unwrap();
+            });
+
+            let client = reqwest::Client::new();
+            let mut request = client.request(method, format!("http://{address}{path}"));
+            if let Some(body) = body {
+                request = request.json(&body);
+            }
+            let response = request.send().await.unwrap();
+            let status = response.status().as_u16();
+            let body = response.json::<serde_json::Value>().await.unwrap();
+            drop(client);
+            task.await.unwrap();
+            (status, body)
+        }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let storage = DurableStorage::new(temp.path().join("tasks.db")).unwrap();
+        let state = Arc::new(AppState::with_task_manager_for_tests(TaskManager::new(
+            storage,
+        )));
+
+        let (status, body) = request_once(
+            state.clone(),
+            reqwest::Method::POST,
+            "/tasks",
+            Some(serde_json::json!({
+                "prompt": "inspect the failing test",
+                "target_sandbox": "sandbox-1"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED.as_u16());
+        assert_eq!(body["success"], true);
+        assert_eq!(body["data"]["status"], "queued");
+        let task_id = body["data"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(body["data"]["sandbox"], "sandbox-1");
+
+        let (status, body) =
+            request_once(state.clone(), reqwest::Method::GET, "/tasks", None).await;
+        assert_eq!(status, StatusCode::OK.as_u16());
+        assert_eq!(body["data"].as_array().unwrap().len(), 1);
+
+        let (status, body) = request_once(
+            state.clone(),
+            reqwest::Method::GET,
+            &format!("/tasks/{task_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK.as_u16());
+        assert_eq!(body["data"]["status"], "queued");
+
+        let (status, body) = request_once(
+            state.clone(),
+            reqwest::Method::DELETE,
+            &format!("/tasks/{task_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK.as_u16());
+        assert_eq!(body["data"]["status"], "cancelled");
+
+        // Cancellation is idempotent for a task already cancelled by another caller.
+        let (status, body) = request_once(
+            state.clone(),
+            reqwest::Method::DELETE,
+            &format!("/tasks/{task_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK.as_u16());
+        assert_eq!(body["data"]["status"], "cancelled");
+
+        let (status, _) = request_once(
+            state.clone(),
+            reqwest::Method::GET,
+            "/tasks/not-a-uuid",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST.as_u16());
+
+        let (status, _) = request_once(
+            state.clone(),
+            reqwest::Method::POST,
+            "/tasks",
+            Some(serde_json::json!({
+                "prompt": "valid prompt",
+                "sandbox": "sandbox-1",
+                "unexpected": true
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST.as_u16());
+
+        let (status, _) = request_once(
+            state,
+            reqwest::Method::POST,
+            "/tasks",
+            Some(serde_json::json!({
+                "prompt": "valid prompt",
+                "sandbox": "bad/name"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST.as_u16());
     }
 
     // === default_fast tests ===
