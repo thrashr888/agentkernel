@@ -60,6 +60,30 @@ static CONFIG_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedConfig>>> =
 
 const MAX_CACHED_CONFIGS: usize = 64;
 
+/// Tenant-scoped LLM model allowlists.
+///
+/// ```toml
+/// [llm_governance]
+/// enabled = true
+/// [llm_governance.tenants.acme]
+/// openai = ["gpt-4o", "gpt-4o-mini"]
+/// anthropic = ["claude-3-5-sonnet"]
+/// ```
+///
+/// Tenant identity is resolved by the server from validated authentication
+/// context and is never accepted from an LLM request.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LlmGovernanceConfig {
+    /// Enable fail-closed model allowlist enforcement in the LLM proxy.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Tenant ID → provider → allowed model IDs.
+    #[serde(default)]
+    pub tenants: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    >,
+}
 /// File entry for injecting files into the sandbox at startup
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntry {
@@ -715,6 +739,9 @@ pub struct Config {
     /// unless overridden by sandbox-specific secret bindings.
     #[serde(default)]
     pub llm_keys: LlmKeysConfig,
+    /// Tenant-scoped LLM model governance policy.
+    #[serde(default)]
+    pub llm_governance: LlmGovernanceConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1143,6 +1170,7 @@ impl Config {
             proxy: ProxyHooksConfig::default(),
             secrets: std::collections::BTreeMap::new(),
             llm_keys: LlmKeysConfig::default(),
+            llm_governance: LlmGovernanceConfig::default(),
         }
     }
 
@@ -2155,5 +2183,22 @@ mod tests {
             config.llm_keys.get("api.anthropic.com"),
             Some(&"ANTHROPIC_API_KEY".to_string())
         );
+    }
+
+    #[test]
+    fn test_parse_llm_governance_config() {
+        let toml = r#"
+            [sandbox]
+            name = "test"
+
+            [llm_governance]
+            enabled = true
+
+            [llm_governance.tenants.acme]
+            openai = ["gpt-4o", "gpt-4o-mini"]
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        assert!(config.llm_governance.enabled);
+        assert_eq!(config.llm_governance.tenants["acme"]["openai"].len(), 2);
     }
 }

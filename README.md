@@ -264,6 +264,33 @@ agentkernel parallel \
 
 Pipeline steps are defined in TOML with `name`, `image`, `command`, and optional `input`/`output` directories for data passing between steps.
 
+## LLM Model Governance
+
+The host-side LLM proxy can enforce tenant-scoped model allowlists before an
+upstream request is forwarded. Enable it in the trusted server configuration:
+
+```toml
+[enterprise]
+enabled = true
+org_id = "acme"
+
+[llm_governance]
+enabled = true
+
+[llm_governance.tenants.acme]
+openai = ["gpt-4o", "gpt-4o-mini"]
+anthropic = ["claude-3-5-sonnet"]
+```
+
+Provider and model names are trimmed and normalized to lowercase. The provider
+is derived from the proxy's validated destination registry; a request cannot
+choose a tenant or substitute a provider. Missing, malformed, or unlisted
+models are rejected with `403` before forwarding, and only normalized metadata
+is written to the governance audit trail. Governance-enabled sandboxes require
+a validated tenant identity at creation and fail closed if one is unavailable.
+When `[llm_governance].enabled` is `false` or absent, existing proxy behavior is
+unchanged.
+
 ## Secrets — Credential Isolation
 
 AI agents need API keys to call LLMs, but putting secrets inside sandboxes defeats the purpose of isolation. A compromised agent could exfiltrate your credentials to any host.

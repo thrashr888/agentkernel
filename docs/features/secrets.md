@@ -52,6 +52,18 @@ agentkernel secret delete KEY          # delete
 
 Secrets never enter the sandbox. A host-side proxy injects them as HTTP headers on outbound requests.
 
+### LLM model governance
+
+The same proxy can enforce tenant-scoped model allowlists before forwarding
+known LLM API requests. Enable `[llm_governance].enabled` and define provider
+model lists under `[llm_governance.tenants.<tenant>]` in the trusted server
+configuration. Provider and model identifiers are normalized explicitly; the
+provider comes from the proxy's destination registry, while tenant ownership is
+persisted from validated server authentication when the sandbox is created.
+Missing, malformed, cross-provider, and unlisted models fail closed with HTTP
+403. If a validated tenant is unavailable, the governed sandbox does not start.
+When governance is disabled, existing proxy behavior is unchanged.
+
 ```
 ┌─────────────────┐          ┌──────────────┐          ┌──────────────────┐
 │    Sandbox VM   │──HTTP──▶ │  Host Proxy  │──HTTPS─▶ │  api.openai.com  │
