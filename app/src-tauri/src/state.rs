@@ -4,6 +4,41 @@ use std::sync::Mutex;
 
 use crate::api_client::ApiClient;
 
+/// Explicit SSH forwarding settings for a remote AgentKernel server.
+///
+/// The desktop never edits the user's SSH configuration. `ssh_host` is passed
+/// to the system `ssh` binary as a host/config alias, so keys, bastions, and
+/// other authentication settings continue to come from `~/.ssh/config`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SshTunnelConfig {
+    /// The user must opt in before the desktop starts an SSH process.
+    #[serde(default)]
+    pub enabled: bool,
+    /// SSH host or host alias from the user's SSH config.
+    #[serde(default)]
+    pub ssh_host: String,
+    /// Optional SSH login user. When omitted, OpenSSH resolves it from its
+    /// normal config and local account defaults.
+    #[serde(default)]
+    pub ssh_user: Option<String>,
+    /// Optional SSH daemon port.
+    #[serde(default)]
+    pub ssh_port: Option<u16>,
+    /// Address where AgentKernel listens on the remote machine. It is
+    /// restricted to loopback so the tunnel cannot be used to expose a
+    /// public or LAN-bound service accidentally.
+    #[serde(default)]
+    pub remote_host: Option<String>,
+    /// Optional remote AgentKernel port. Otherwise the server URL port is
+    /// used, falling back to AgentKernel's standard 18888 port.
+    #[serde(default)]
+    pub remote_port: Option<u16>,
+    /// Local loopback port. If omitted, the desktop chooses an available
+    /// ephemeral port for this app-owned tunnel.
+    #[serde(default)]
+    pub local_port: Option<u16>,
+}
+
 /// A configured server endpoint.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerEntry {
@@ -20,6 +55,9 @@ pub struct ServerEntry {
     /// without taking over remote or separately managed endpoints.
     #[serde(default)]
     pub managed: Option<bool>,
+    /// Optional explicit SSH tunnel management for remote entries.
+    #[serde(default)]
+    pub ssh_tunnel: Option<SshTunnelConfig>,
 }
 
 /// Persisted user settings for the desktop app.
@@ -54,6 +92,7 @@ impl Default for Settings {
                 url: url.clone(),
                 api_key: key.clone(),
                 managed: Some(true),
+                ssh_tunnel: None,
             }],
             theme: "system".to_string(),
             poll_interval_ms: 3000,
@@ -95,6 +134,7 @@ impl Settings {
                 url: self.api_url.clone(),
                 api_key: self.api_key.clone(),
                 managed: Some(true),
+                ssh_tunnel: None,
             });
             if self.active_server.is_none() {
                 self.active_server = Some("Local".to_string());
@@ -143,7 +183,19 @@ impl AppState {
 impl Default for AppState {
     fn default() -> Self {
         let settings = Settings::load().unwrap_or_default();
-        let client = Self::client_from_settings(&settings);
+        // Do not briefly probe a configured remote URL while an opted-in
+        // tunnel is still starting. The startup task replaces this loopback
+        // placeholder only after the tunnel health check succeeds.
+        let client = settings
+            .active()
+            .filter(|entry| {
+                entry
+                    .ssh_tunnel
+                    .as_ref()
+                    .is_some_and(|config| config.enabled)
+            })
+            .map(|entry| ApiClient::new("http://127.0.0.1:0", entry.api_key.as_deref()))
+            .unwrap_or_else(|| Self::client_from_settings(&settings));
         Self {
             settings: Mutex::new(settings),
             client: Mutex::new(client),

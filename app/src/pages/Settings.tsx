@@ -18,6 +18,8 @@ import {
   Plus,
   Trash2,
   Check,
+  Network,
+  Power,
 } from "lucide-react";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { useHealth } from "@/lib/hooks/use-health";
@@ -42,8 +44,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Settings as SettingsType, ServerEntry } from "@/lib/types";
+import type { Settings as SettingsType, ServerEntry, SshTunnelConfig } from "@/lib/types";
 import { classifyLocalServerVersion, localServerVersionMessage } from "@/lib/server-version";
+
+function isRemoteServerUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return !["localhost", "127.0.0.1", "::1", "[::1]"].includes(host);
+  } catch {
+    return false;
+  }
+}
 
 export function Settings() {
   const queryClient = useQueryClient();
@@ -65,6 +77,12 @@ export function Settings() {
   });
 
   const { isConnected } = useHealth();
+
+  const { data: tunnelStatus } = useQuery({
+    queryKey: ["tunnel-status"],
+    queryFn: () => api.tunnelStatus(),
+    refetchInterval: 2000,
+  });
 
   const { data: status } = useQuery({
     queryKey: ["status"],
@@ -191,6 +209,40 @@ export function Settings() {
     // Keep activeServer in sync if we renamed the active entry
     if (field === "name" && oldName === activeServer && value) {
       setActiveServer(value);
+    }
+  }
+
+  function handleUpdateTunnel(index: number, changes: Partial<SshTunnelConfig>) {
+    const updated = [...servers];
+    const current: SshTunnelConfig = updated[index].ssh_tunnel ?? {
+      enabled: false,
+      ssh_host: "",
+    };
+    updated[index] = { ...updated[index], ssh_tunnel: { ...current, ...changes } };
+    setServers(updated);
+  }
+
+  function handleTunnelPort(index: number, field: "ssh_port" | "remote_port" | "local_port", value: string) {
+    handleUpdateTunnel(index, { [field]: value ? Number(value) : undefined });
+  }
+
+  async function handleStartTunnel() {
+    try {
+      await api.startTunnel();
+      await queryClient.invalidateQueries({ queryKey: ["tunnel-status"] });
+      queryClient.invalidateQueries();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleStopTunnel() {
+    try {
+      await api.stopTunnel();
+      await queryClient.invalidateQueries({ queryKey: ["tunnel-status"] });
+      queryClient.invalidateQueries();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -422,6 +474,117 @@ export function Settings() {
                     </div>
                   </div>
                 </div>
+
+                {isRemoteServerUrl(server.url) && (
+                  <div className="space-y-3 rounded-md border border-primary/30 bg-primary/5 p-3">
+                    <div className="flex items-start gap-2">
+                      <Network className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                      <div className="space-y-1">
+                        <Label className="text-sm">Private SSH tunnel</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Keep AgentKernel private on the remote machine. The app uses your OpenSSH config and only forwards a loopback port.
+                        </p>
+                      </div>
+                      <label className="ml-auto flex items-center gap-2 text-xs font-medium">
+                        <input
+                          type="checkbox"
+                          checked={server.ssh_tunnel?.enabled ?? false}
+                          onChange={(event) => {
+                            const updatedServers = servers.map((entry, entryIndex) =>
+                              entryIndex === index
+                                ? {
+                                    ...entry,
+                                    ssh_tunnel: {
+                                      ...(entry.ssh_tunnel ?? { ssh_host: "" }),
+                                      enabled: event.target.checked,
+                                    },
+                                  }
+                                : entry,
+                            );
+                            handleUpdateTunnel(index, { enabled: event.target.checked });
+                            saveCurrentSettings({ servers: updatedServers });
+                          }}
+                          className="h-4 w-4 accent-primary"
+                        />
+                        Manage tunnel
+                      </label>
+                    </div>
+
+                    {server.ssh_tunnel?.enabled && (
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <div className="grid gap-1 sm:col-span-2">
+                          <Label className="text-xs text-muted-foreground">SSH host or config alias</Label>
+                          <Input
+                            value={server.ssh_tunnel.ssh_host}
+                            onChange={(event) => handleUpdateTunnel(index, { ssh_host: event.target.value })}
+                            onBlur={handleServerBlur}
+                            placeholder="rookery"
+                            className="h-8 text-sm font-mono"
+                          />
+                        </div>
+                        <div className="grid gap-1">
+                          <Label className="text-xs text-muted-foreground">SSH user (optional)</Label>
+                          <Input
+                            value={server.ssh_tunnel.ssh_user ?? ""}
+                            onChange={(event) => handleUpdateTunnel(index, { ssh_user: event.target.value || undefined })}
+                            onBlur={handleServerBlur}
+                            placeholder="From SSH config"
+                            className="h-8 text-sm"
+                          />
+                        </div>
+                        <div className="grid gap-1">
+                          <Label className="text-xs text-muted-foreground">SSH port (optional)</Label>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={65535}
+                            value={server.ssh_tunnel.ssh_port ?? ""}
+                            onChange={(event) => handleTunnelPort(index, "ssh_port", event.target.value)}
+                            onBlur={handleServerBlur}
+                            placeholder="22"
+                            className="h-8 text-sm"
+                          />
+                        </div>
+                        <div className="grid gap-1">
+                          <Label className="text-xs text-muted-foreground">Remote bind (loopback only)</Label>
+                          <Input
+                            value={server.ssh_tunnel.remote_host ?? ""}
+                            onChange={(event) => handleUpdateTunnel(index, { remote_host: event.target.value || undefined })}
+                            onBlur={handleServerBlur}
+                            placeholder="127.0.0.1"
+                            className="h-8 text-sm font-mono"
+                          />
+                        </div>
+                        <div className="grid gap-1">
+                          <Label className="text-xs text-muted-foreground">Remote AgentKernel port</Label>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={65535}
+                            value={server.ssh_tunnel.remote_port ?? ""}
+                            onChange={(event) => handleTunnelPort(index, "remote_port", event.target.value)}
+                            onBlur={handleServerBlur}
+                            placeholder="From URL or 18888"
+                            className="h-8 text-sm"
+                          />
+                        </div>
+                        <div className="grid gap-1">
+                          <Label className="text-xs text-muted-foreground">Local port (optional)</Label>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={65535}
+                            value={server.ssh_tunnel.local_port ?? ""}
+                            onChange={(event) => handleTunnelPort(index, "local_port", event.target.value)}
+                            onBlur={handleServerBlur}
+                            placeholder="Choose automatically"
+                            className="h-8 text-sm"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -478,6 +641,54 @@ export function Settings() {
                 )}
               </div>
             </div>
+            {activeServerEntry?.ssh_tunnel?.enabled && (
+              <div className="space-y-2 border-b pb-2">
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-2 text-sm font-medium">
+                    <Network className="h-4 w-4" />
+                    SSH tunnel
+                  </span>
+                  <Badge
+                    variant={
+                      tunnelStatus?.state === "connected"
+                        ? "success"
+                        : tunnelStatus?.state === "error"
+                          ? "destructive"
+                          : "secondary"
+                    }
+                  >
+                    {tunnelStatus?.state ?? "starting"}
+                  </Badge>
+                </div>
+                {tunnelStatus?.local_url && (
+                  <p className="text-xs text-muted-foreground">
+                    Forwarding through {tunnelStatus.local_url}
+                  </p>
+                )}
+                {tunnelStatus?.error && (
+                  <p className="text-xs text-destructive">{tunnelStatus.error}</p>
+                )}
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleStartTunnel}
+                    disabled={tunnelStatus?.state === "starting"}
+                  >
+                    <Power className="mr-2 h-3.5 w-3.5" />
+                    Retry tunnel
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleStopTunnel}
+                    disabled={tunnelStatus?.state === "disabled"}
+                  >
+                    Stop tunnel
+                  </Button>
+                </div>
+              </div>
+            )}
             {status && (
               <>
                 <div className="flex items-center justify-between border-b pb-2">
