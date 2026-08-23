@@ -8,8 +8,9 @@ AgentKernel includes a native macOS desktop app built with [Tauri 2](https://tau
 ## Requirements
 
 - macOS 26+ (Apple Containers) or macOS with Docker Desktop
-- The `agentkernel` server running (`agentkernel serve` or `make serve`); the
-  first-run wizard can start a bundled/local server when it is not reachable
+- The desktop release includes the matching `agentkernel` CLI sidecar and
+  starts its local server automatically. Development builds can use an
+  installed `agentkernel` on `PATH`.
 - A local sandbox backend; the wizard can initialize Apple Containers or open
   Docker Desktop when the runtime is installed but not ready
 
@@ -30,13 +31,22 @@ Open the DMG and drag AgentKernel to your Applications folder. Alternatively, bu
 
 ```bash
 # Install dependencies
-cd app && npm ci
+cd app
+npm ci
+cd ..
 
-# Run in development mode (hot-reload)
+# Run in development mode (hot-reload; builds the local sidecar first)
 make app
 
-# Build release .app bundle
-cd app && npx tauri build
+# Build the matching CLI sidecar for the current target
+TARGET=$(rustc -vV | sed -n 's/^host: //p')
+cargo build --release --target "$TARGET" --bin agentkernel
+mkdir -p app/src-tauri/binaries
+cp "target/$TARGET/release/agentkernel" "app/src-tauri/binaries/agentkernel-$TARGET"
+
+# Build release .app bundle (ships the sidecar in the same updater artifact)
+cd app
+npx tauri build
 ```
 
 The built `.app` bundle is output to `app/src-tauri/target/release/bundle/macos/`.
@@ -71,4 +81,12 @@ app/
     └── src/types.rs     # Shared type definitions
 ```
 
-The desktop app communicates with the `agentkernel serve` HTTP API. The Tauri backend acts as a bridge, forwarding IPC calls from the frontend to the server.
+The desktop app communicates with the `agentkernel serve` HTTP API. Release
+bundles contain the matching CLI as a Tauri sidecar, so the Tauri backend starts
+an app-owned loopback server during launch and stops it during application
+shutdown. The sidecar and desktop app are packaged together, including updater
+artifacts, so an update cannot leave the app and server on different versions.
+
+Entries marked as external or remote in Settings are never started or stopped
+by the app. This keeps a separately managed local daemon and remote servers
+available for development, team, and enterprise deployments.

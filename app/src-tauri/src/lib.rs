@@ -9,7 +9,7 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem, SubmenuBuilder},
     tray::{TrayIconBuilder, TrayIconId},
-    Manager, WindowEvent,
+    Manager, RunEvent, WindowEvent,
 };
 use types::SandboxInfo;
 
@@ -276,6 +276,14 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            // The bundled CLI owns the default Local server. Starting it from
+            // setup makes the app usable immediately after launch while the
+            // ownership check leaves remote and user-managed entries alone.
+            commands::server::auto_start_server(
+                &app.state::<commands::server::ServerProcess>(),
+                &app.state::<AppState>(),
+            );
+
             // -- Background poller: update tray status every 5 seconds --
             let status_clone = status_item.clone();
             let count_clone = sandbox_count.clone();
@@ -519,6 +527,13 @@ pub fn run() {
             commands::server::stop_server,
             commands::server::server_status,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+                if let Err(error) = app.state::<commands::server::ServerProcess>().stop() {
+                    eprintln!("Failed to stop AgentKernel server during shutdown: {error}");
+                }
+            }
+        });
 }

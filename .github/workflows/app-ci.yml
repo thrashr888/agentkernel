@@ -59,6 +59,10 @@ jobs:
       - name: Build frontend
         run: npm ci && npx vite build
         working-directory: app
+      - name: Stage sidecar placeholder for Rust checks
+        run: |
+          mkdir -p app/src-tauri/binaries
+          touch "app/src-tauri/binaries/agentkernel-$(rustc -vV | sed -n 's/^host: //p')"
       - name: Format check
         run: cargo fmt --check
         working-directory: app/src-tauri
@@ -101,6 +105,15 @@ jobs:
           workspaces: app/src-tauri -> target
       - run: npm ci
         working-directory: app
+      - name: Build bundled AgentKernel sidecar
+        run: cargo build --release --target ${{ matrix.target }} --bin agentkernel
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      - name: Stage bundled AgentKernel sidecar
+        run: |
+          mkdir -p app/src-tauri/binaries
+          cp "target/${{ matrix.target }}/release/agentkernel" \
+            "app/src-tauri/binaries/agentkernel-${{ matrix.target }}"
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:

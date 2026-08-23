@@ -313,6 +313,8 @@ export interface ServerEntry {
   name: string;
   url: string;
   api_key?: string;
+  /** True when the desktop app owns and starts this local server. */
+  managed?: boolean;
 }
 
 // Settings
