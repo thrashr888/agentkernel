@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { getVersion } from "@tauri-apps/api/app";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Eye,
@@ -13,6 +14,7 @@ import {
   Wifi,
   WifiOff,
   Server,
+  AlertTriangle,
   Plus,
   Trash2,
   Check,
@@ -41,6 +43,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Settings as SettingsType, ServerEntry } from "@/lib/types";
+import { classifyLocalServerVersion, localServerVersionMessage } from "@/lib/server-version";
 
 export function Settings() {
   const queryClient = useQueryClient();
@@ -96,6 +99,19 @@ export function Settings() {
 
   const [serverStarting, setServerStarting] = useState(false);
   const [backendPreparing, setBackendPreparing] = useState(false);
+  const [appVersion, setAppVersion] = useState("");
+
+  const activeServerEntry = servers.find((server) => server.name === activeServer);
+  const versionStatus = classifyLocalServerVersion(
+    appVersion,
+    status?.version ?? "",
+    activeServerEntry?.url ?? settings?.api_url ?? "",
+  );
+  const versionMessage = localServerVersionMessage(
+    versionStatus,
+    appVersion,
+    status?.version ?? "",
+  );
 
   const [updateStatus, setUpdateStatus] = useState<
     "idle" | "checking" | "available" | "downloading" | "ready" | "up-to-date" | "error"
@@ -117,6 +133,10 @@ export function Settings() {
       setFormPollInterval(Math.round(settings.poll_interval_ms / 1000));
     }
   }, [settings]);
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => {});
+  }, []);
 
   function buildSettingsPayload(
     overrides?: Partial<{ servers: ServerEntry[]; activeServer: string; theme: SettingsType["theme"]; pollInterval: number }>
@@ -474,6 +494,18 @@ export function Settings() {
                   </Badge>
                 </div>
               </>
+            )}
+            {versionMessage && (
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3 text-yellow-900 dark:text-yellow-200"
+              >
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium">Local server version mismatch</p>
+                  <p className="mt-1 text-xs">{versionMessage}</p>
+                </div>
+              </div>
             )}
             {doctor && (
               <div className="flex items-center justify-between">

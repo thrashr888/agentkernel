@@ -637,6 +637,10 @@ struct AppState {
     /// the cell lets `/doctor` and the first sandbox attempt recover without
     /// requiring a server restart.
     vm_manager: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<VmManager>>>>,
+    /// Test-only switch used to exercise the reachable-server recovery path
+    /// without depending on whichever host runtimes happen to be installed.
+    #[cfg(test)]
+    force_backend_unavailable: bool,
     /// Event bus for sandbox lifecycle events (webhook/SSE/OTel)
     event_bus: Option<crate::events::EventBus>,
     /// OpenTelemetry tracer provider for span export
@@ -718,6 +722,8 @@ impl AppState {
             opencode: Arc::new(OpenCodeState::new(vm_manager.clone())),
             orchestration_store: Self::init_orchestration_store(),
             vm_manager,
+            #[cfg(test)]
+            force_backend_unavailable: false,
             event_bus,
             otel_provider,
             #[cfg(feature = "enterprise")]
@@ -741,6 +747,8 @@ impl AppState {
             opencode: Arc::new(OpenCodeState::new(vm_manager.clone())),
             orchestration_store: Self::init_orchestration_store(),
             vm_manager,
+            #[cfg(test)]
+            force_backend_unavailable: false,
             event_bus: None,
             otel_provider: None,
             #[cfg(feature = "enterprise")]
@@ -798,6 +806,11 @@ impl AppState {
     }
 
     async fn get_manager(&self) -> Result<tokio::sync::RwLockWriteGuard<'_, VmManager>> {
+        #[cfg(test)]
+        if self.force_backend_unavailable {
+            anyhow::bail!("No sandbox backend available (test fixture)");
+        }
+
         if self.vm_manager.get().is_none() {
             let manager = Arc::new(tokio::sync::RwLock::new(VmManager::new()?));
             let _ = self.vm_manager.set(manager);
@@ -7674,6 +7687,56 @@ mod tests {
     fn test_app_state_without_api_key() {
         let state = AppState::with_api_keys(vec![]);
         assert!(state.api_keys.is_empty());
+    }
+
+    #[cfg(test)]
+    fn unavailable_backend_state() -> Arc<AppState> {
+        let mut state = AppState::with_api_keys(vec![]);
+        state.force_backend_unavailable = true;
+        Arc::new(state)
+    }
+
+    #[tokio::test]
+    async fn reachable_http_server_reports_backend_unavailable() {
+        async fn get_once(state: Arc<AppState>, path: &str) -> (u16, serde_json::Value) {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let task = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let io = TokioIo::new(stream);
+                let service = service_fn(move |request| {
+                    let state = state.clone();
+                    handle_request(request, state)
+                });
+                http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await
+                    .unwrap();
+            });
+
+            let response = reqwest::get(format!("http://{address}{path}"))
+                .await
+                .unwrap();
+            let status = response.status().as_u16();
+            let body = response.json::<serde_json::Value>().await.unwrap();
+            task.await.unwrap();
+            (status, body)
+        }
+
+        let state = unavailable_backend_state();
+        let (status, body) = get_once(state.clone(), "/status").await;
+        assert_eq!(status, StatusCode::OK.as_u16());
+        assert_eq!(body["success"], true);
+        assert_eq!(body["data"]["backend"], "unavailable");
+
+        let (status, body) = get_once(state, "/sandboxes").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR.as_u16());
+        assert_eq!(body["success"], false);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("No sandbox backend available"))
+        );
     }
 
     // === default_fast tests ===
