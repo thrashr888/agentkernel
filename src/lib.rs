@@ -22,7 +22,9 @@ pub mod proxy_hooks;
 pub mod rootfs;
 pub mod sandbox_pool;
 pub mod ssh;
+pub mod tasks;
 pub mod tls;
+pub mod validation;
 pub mod vsock;
 pub mod vsock_secrets;
 

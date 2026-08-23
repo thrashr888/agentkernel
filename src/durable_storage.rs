@@ -114,6 +114,24 @@ CREATE INDEX IF NOT EXISTS idx_schedules_status ON schedules(status);
 CREATE INDEX IF NOT EXISTS idx_schedules_fire_at ON schedules(fire_at);
 "#,
     ),
+    (
+        7,
+        r#"
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    prompt TEXT NOT NULL,
+    sandbox TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);
+"#,
+    ),
 ];
 
 /// SQLite durable storage wrapper with schema bootstrap.
@@ -256,7 +274,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(migration_count, 6);
+        assert_eq!(migration_count, 7);
     }
 
     #[test]
@@ -314,6 +332,6 @@ INSERT INTO orchestrations(
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
     }
 }
