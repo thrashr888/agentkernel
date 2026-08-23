@@ -1,4 +1,9 @@
-# Firecracker rootfs COW benchmark
+# Firecracker rootfs reflink-staging benchmark
+
+This is filesystem-reflink staging groundwork for the Firecracker backend. It
+does not yet provide ZFS/devmapper snapshots, instant clone/reset APIs, or a
+fixed end-to-end latency guarantee. Hosts without reflink support continue to
+use a full byte-for-byte copy.
 
 Firecracker uses an ext4 image file as its root drive.  AgentKernel prepares a
 private image per sandbox using a filesystem reflink when `cp --reflink` is
@@ -27,3 +32,7 @@ Keep the host, image, vCPU, memory, and kernel constant when comparing runs.
 The implementation falls back automatically if reflinks are unsupported. The
 Firecracker backend logs the selected `Reflink` or `FullCopy` strategy; record
 that diagnostic rather than inferring it from elapsed time alone.
+
+`AGENTKERNEL_ROOTFS_COW_DIR` may point to a new private directory or an
+existing directory owned by the current user with mode `0700`. Existing
+permissive directories are rejected rather than chmodded in place.

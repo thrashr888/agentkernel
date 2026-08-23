@@ -8,10 +8,20 @@
 //! semantics as the old implementation.
 
 use anyhow::{Context, Result, bail};
+#[cfg(unix)]
+use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::io::Read;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+#[cfg(unix)]
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[cfg(unix)]
@@ -57,6 +67,8 @@ impl RootfsCowCapabilities {
 pub struct RootfsCowStore {
     root: PathBuf,
     capabilities: RootfsCowCapabilities,
+    #[cfg(unix)]
+    root_handle: Arc<File>,
 }
 
 impl RootfsCowStore {
@@ -73,9 +85,18 @@ impl RootfsCowStore {
                 root.as_ref().display()
             )
         })?;
+        #[cfg(unix)]
+        let root_handle = Arc::new(open_directory(&root).with_context(|| {
+            format!(
+                "failed to open rootfs COW directory {} without following symlinks",
+                root.display()
+            )
+        })?);
         Ok(Self {
             root,
             capabilities: RootfsCowCapabilities::detect(),
+            #[cfg(unix)]
+            root_handle,
         })
     }
 
@@ -119,6 +140,21 @@ impl RootfsCowStore {
             .tempdir_in(&self.root)
             .context("failed to create private rootfs COW directory")?;
         let artifact_dir = temporary_dir.path().to_path_buf();
+        #[cfg(unix)]
+        let (artifact_name, artifact_identity) = {
+            let artifact_name = artifact_dir
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("rootfs COW artifact has no directory name"))?
+                .to_os_string();
+            let artifact_handle = open_directory_at(self.root_handle.as_raw_fd(), &artifact_name)
+                .with_context(|| {
+                format!(
+                    "failed to open rootfs COW artifact {} without following symlinks",
+                    artifact_dir.display()
+                )
+            })?;
+            (artifact_name, file_identity(&artifact_handle)?)
+        };
         let staging_path = artifact_dir.join(format!("{}.partial", ROOTFS_FILE));
         let rootfs_path = artifact_dir.join(ROOTFS_FILE);
         let marker_path = artifact_dir.join(OWNER_MARKER);
@@ -173,18 +209,25 @@ impl RootfsCowStore {
 
         let artifact_dir = temporary_dir.keep();
         Ok(RootfsCow {
+            #[cfg(not(unix))]
             store_root: self.root.clone(),
             artifact_dir,
             rootfs_path,
             marker_path,
             owner_token,
             strategy,
+            #[cfg(unix)]
+            store_root_handle: Arc::clone(&self.root_handle),
+            #[cfg(unix)]
+            artifact_name,
+            #[cfg(unix)]
+            artifact_identity,
         })
     }
 }
 
 fn ensure_private_store_root(root: &Path) -> Result<()> {
-    match fs::symlink_metadata(root) {
+    let existed = match fs::symlink_metadata(root) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
                 bail!(
@@ -195,18 +238,43 @@ fn ensure_private_store_root(root: &Path) -> Result<()> {
             if !metadata.is_dir() {
                 bail!("rootfs COW path is not a directory: {}", root.display());
             }
+            true
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir_all(root).with_context(|| {
-                format!("failed to create rootfs COW directory {}", root.display())
-            })?;
+            if let Some(parent) = root.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("failed to create rootfs COW parent {}", parent.display())
+                })?;
+            }
+            match fs::create_dir(root) {
+                Ok(()) => false,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let metadata = fs::symlink_metadata(root).with_context(|| {
+                        format!("failed to inspect rootfs COW directory {}", root.display())
+                    })?;
+                    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                        bail!(
+                            "rootfs COW path changed to a non-directory or symlink: {}",
+                            root.display()
+                        );
+                    }
+                    true
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("failed to create rootfs COW directory {}", root.display())
+                    });
+                }
+            }
         }
         Err(error) => {
             return Err(error).with_context(|| {
                 format!("failed to inspect rootfs COW directory {}", root.display())
             });
         }
-    }
+    };
 
     let metadata = fs::symlink_metadata(root)
         .with_context(|| format!("failed to inspect rootfs COW directory {}", root.display()))?;
@@ -227,15 +295,18 @@ fn ensure_private_store_root(root: &Path) -> Result<()> {
             );
         }
 
-        // A user-owned but permissive directory is repaired before it is
-        // canonicalized or used for artifacts.  Refuse to continue if the
-        // platform cannot make it private.
         if metadata.permissions().mode() & 0o777 != 0o700 {
+            if existed {
+                bail!(
+                    "existing rootfs COW directory must have mode 0700: {}",
+                    root.display()
+                );
+            }
             let mut permissions = metadata.permissions();
             permissions.set_mode(0o700);
             fs::set_permissions(root, permissions).with_context(|| {
                 format!(
-                    "failed to restrict rootfs COW directory permissions: {}",
+                    "failed to restrict newly-created rootfs COW directory permissions: {}",
                     root.display()
                 )
             })?;
@@ -265,12 +336,19 @@ impl RootfsCowStore {
 /// A prepared rootfs whose cleanup is restricted to AgentKernel-owned paths.
 #[derive(Debug)]
 pub struct RootfsCow {
+    #[cfg(not(unix))]
     store_root: PathBuf,
     artifact_dir: PathBuf,
     rootfs_path: PathBuf,
     marker_path: PathBuf,
     owner_token: String,
     strategy: RootfsCowStrategy,
+    #[cfg(unix)]
+    store_root_handle: Arc<File>,
+    #[cfg(unix)]
+    artifact_name: std::ffi::OsString,
+    #[cfg(unix)]
+    artifact_identity: (u64, u64),
 }
 
 impl RootfsCow {
@@ -288,6 +366,64 @@ impl RootfsCow {
     }
 
     fn cleanup_inner(self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            self.cleanup_unix()
+        }
+
+        #[cfg(not(unix))]
+        {
+            self.cleanup_portable()
+        }
+    }
+
+    #[cfg(unix)]
+    fn cleanup_unix(&self) -> Result<()> {
+        let artifact = open_directory_at(self.store_root_handle.as_raw_fd(), &self.artifact_name)
+            .with_context(|| {
+            format!(
+                "refusing to clean missing or replaced rootfs COW directory {}",
+                self.artifact_dir.display()
+            )
+        })?;
+        if file_identity(&artifact)? != self.artifact_identity {
+            bail!(
+                "refusing to clean replaced rootfs COW directory: {}",
+                self.artifact_dir.display()
+            );
+        }
+        verify_marker_at(artifact.as_raw_fd(), &self.owner_token).with_context(|| {
+            format!(
+                "refusing to clean rootfs COW directory without AgentKernel ownership marker: {}",
+                self.artifact_dir.display()
+            )
+        })?;
+
+        unlink_at(artifact.as_raw_fd(), ROOTFS_FILE, 0)
+            .or_else(ignore_not_found)
+            .with_context(|| format!("failed to remove rootfs {}", self.rootfs_path.display()))?;
+        unlink_at(artifact.as_raw_fd(), OWNER_MARKER, 0).with_context(|| {
+            format!(
+                "failed to remove ownership marker {}",
+                self.marker_path.display()
+            )
+        })?;
+        unlink_at(
+            self.store_root_handle.as_raw_fd(),
+            &self.artifact_name,
+            libc::AT_REMOVEDIR,
+        )
+        .with_context(|| {
+            format!(
+                "failed to remove empty rootfs COW directory {}",
+                self.artifact_dir.display()
+            )
+        })?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn cleanup_portable(&self) -> Result<()> {
         if !is_owned_artifact_dir(&self.store_root, &self.artifact_dir) {
             bail!(
                 "refusing to clean rootfs COW directory outside store: {}",
@@ -326,17 +462,25 @@ impl Drop for RootfsCow {
         // Drop is intentionally best-effort.  It still applies exactly the
         // same ownership checks as explicit cleanup and never removes a path
         // merely because it has an AgentKernel-looking filename.
-        let owned = is_owned_artifact_dir(&self.store_root, &self.artifact_dir)
-            && is_owned_marker(&self.marker_path, &self.owner_token);
-        if !owned {
-            return;
+        #[cfg(unix)]
+        {
+            let _ = self.cleanup_unix();
         }
-        let _ = fs::remove_file(&self.rootfs_path);
-        let _ = fs::remove_file(&self.marker_path);
-        let _ = fs::remove_dir(&self.artifact_dir);
+        #[cfg(not(unix))]
+        {
+            let owned = is_owned_artifact_dir(&self.store_root, &self.artifact_dir)
+                && is_owned_marker(&self.marker_path, &self.owner_token);
+            if !owned {
+                return;
+            }
+            let _ = fs::remove_file(&self.rootfs_path);
+            let _ = fs::remove_file(&self.marker_path);
+            let _ = fs::remove_dir(&self.artifact_dir);
+        }
     }
 }
 
+#[cfg(not(unix))]
 fn is_owned_artifact_dir(root: &Path, child: &Path) -> bool {
     let Ok(root_metadata) = fs::symlink_metadata(root) else {
         return false;
@@ -361,6 +505,7 @@ fn is_owned_artifact_dir(root: &Path, child: &Path) -> bool {
     child.starts_with(&root) && child != root
 }
 
+#[cfg(not(unix))]
 fn is_owned_marker(path: &Path, owner_token: &str) -> bool {
     fs::symlink_metadata(path)
         .map(|metadata| metadata.is_file())
@@ -368,6 +513,136 @@ fn is_owned_marker(path: &Path, owner_token: &str) -> bool {
         && fs::read_to_string(path)
             .map(|contents| contents == format!("{OWNER_MARKER_CONTENT}\n{owner_token}"))
             .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn open_directory(path: &Path) -> std::io::Result<File> {
+    let bytes = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains NUL"))?;
+    let fd = unsafe {
+        libc::open(
+            bytes.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` was returned by `open` and is owned by this File now.
+    let file = unsafe { File::from_raw_fd(fd) };
+    ensure_directory_fd(&file)?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_directory_at(parent: RawFd, name: &std::ffi::OsStr) -> std::io::Result<File> {
+    let bytes = CString::new(name.as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains NUL"))?;
+    let fd = unsafe {
+        libc::openat(
+            parent,
+            bytes.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` was returned by `openat` and is owned by this File now.
+    let file = unsafe { File::from_raw_fd(fd) };
+    ensure_directory_fd(&file)?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn ensure_directory_fd(file: &File) -> std::io::Result<()> {
+    let (_, mode) = file_stat(file)?;
+    if mode & (libc::S_IFMT as u32) != libc::S_IFDIR as u32 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            "path is not a directory",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn file_identity(file: &File) -> std::io::Result<(u64, u64)> {
+    let (identity, _) = file_stat(file)?;
+    Ok(identity)
+}
+
+#[cfg(unix)]
+fn file_stat(file: &File) -> std::io::Result<((u64, u64), u32)> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let result = unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fstat initialized the struct when it returned success.
+    let stat = unsafe { stat.assume_init() };
+    Ok(((stat.st_dev as u64, stat.st_ino), stat.st_mode as u32))
+}
+
+#[cfg(unix)]
+fn open_file_at(parent: RawFd, name: &str) -> std::io::Result<File> {
+    let bytes = CString::new(name)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "name contains NUL"))?;
+    let fd = unsafe {
+        libc::openat(
+            parent,
+            bytes.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` was returned by `openat` and is owned by this File now.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+#[cfg(unix)]
+fn verify_marker_at(parent: RawFd, owner_token: &str) -> std::io::Result<()> {
+    let mut marker = open_file_at(parent, OWNER_MARKER)?;
+    let (_, mode) = file_stat(&marker)?;
+    if mode & (libc::S_IFMT as u32) != libc::S_IFREG as u32 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "ownership marker is not a regular file",
+        ));
+    }
+    let mut contents = String::new();
+    marker.read_to_string(&mut contents)?;
+    if contents == format!("{OWNER_MARKER_CONTENT}\n{owner_token}") {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "ownership marker does not match",
+        ))
+    }
+}
+
+#[cfg(unix)]
+fn unlink_at(parent: RawFd, name: impl AsRef<std::ffi::OsStr>, flags: i32) -> std::io::Result<()> {
+    let bytes = CString::new(name.as_ref().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "name contains NUL"))?;
+    let result = unsafe { libc::unlinkat(parent, bytes.as_ptr(), flags) };
+    if result < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn ignore_not_found(error: std::io::Error) -> std::io::Result<()> {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        Ok(())
+    } else {
+        Err(error)
+    }
 }
 
 fn full_copy(base: &Path, destination: &Path) -> std::io::Result<u64> {
@@ -467,14 +742,23 @@ mod tests {
         fs::create_dir(&unowned).unwrap();
         fs::write(unowned.join(ROOTFS_FILE), b"keep").unwrap();
         fs::write(unowned.join(OWNER_MARKER), b"not-agentkernel").unwrap();
+        #[cfg(unix)]
+        let unowned_handle = open_directory(&unowned).unwrap();
 
         let rootfs = RootfsCow {
+            #[cfg(not(unix))]
             store_root: store.root().to_path_buf(),
             artifact_dir: unowned.clone(),
             rootfs_path: unowned.join(ROOTFS_FILE),
             marker_path: unowned.join(OWNER_MARKER),
             owner_token: "not-the-token".to_string(),
             strategy: RootfsCowStrategy::FullCopy,
+            #[cfg(unix)]
+            store_root_handle: Arc::clone(&store.root_handle),
+            #[cfg(unix)]
+            artifact_name: unowned.file_name().unwrap().to_os_string(),
+            #[cfg(unix)]
+            artifact_identity: file_identity(&unowned_handle).unwrap(),
         };
         assert!(rootfs.cleanup().is_err());
         assert!(unowned.join(ROOTFS_FILE).exists());
@@ -507,6 +791,29 @@ mod tests {
             b"must survive"
         );
         assert!(artifact_dir.is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_uses_store_handle_when_store_path_is_replaced() {
+        use std::os::unix::fs::symlink;
+
+        let (tmp, store) = store();
+        let base = store.root().join("base.ext4");
+        fs::write(&base, b"rootfs contents").unwrap();
+        let rootfs = store.prepare(&base).unwrap();
+        let artifact_name = rootfs.artifact_dir.file_name().unwrap().to_os_string();
+        let moved_store = tmp.path().join("cow-real");
+        let replacement = tmp.path().join("replacement");
+        fs::create_dir(&replacement).unwrap();
+        fs::write(replacement.join("keep"), b"must survive").unwrap();
+
+        fs::rename(store.root(), &moved_store).unwrap();
+        symlink(&replacement, store.root()).unwrap();
+
+        rootfs.cleanup().unwrap();
+        assert!(!moved_store.join(&artifact_name).exists());
+        assert_eq!(fs::read(replacement.join("keep")).unwrap(), b"must survive");
     }
 
     #[cfg(unix)]
@@ -555,7 +862,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn repairs_permissive_store_root_to_private_mode() {
+    fn rejects_permissive_existing_store_without_changing_mode() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("cow");
         fs::create_dir(&root).unwrap();
@@ -563,10 +870,25 @@ mod tests {
         permissions.set_mode(0o755);
         fs::set_permissions(&root, permissions).unwrap();
 
-        RootfsCowStore::new(&root).unwrap();
+        assert!(RootfsCowStore::new(&root).is_err());
         assert_eq!(
             fs::metadata(&root).unwrap().permissions().mode() & 0o777,
-            0o700
+            0o755
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_current_directory_is_not_chmodded() {
+        let current = std::env::current_dir().unwrap();
+        let before = fs::metadata(&current).unwrap().permissions().mode() & 0o777;
+        let result = RootfsCowStore::new(&current);
+        let after = fs::metadata(&current).unwrap().permissions().mode() & 0o777;
+        assert_eq!(after, before);
+        if before == 0o700 {
+            assert!(result.is_ok());
+        } else {
+            assert!(result.is_err());
+        }
     }
 }

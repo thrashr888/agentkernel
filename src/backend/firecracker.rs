@@ -407,12 +407,13 @@ impl Sandbox for FirecrackerSandbox {
         // Clean up sockets and per-sandbox rootfs
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = std::fs::remove_file(&self.vsock_path);
-        if let Some(rootfs) = self.sandbox_rootfs.take() {
-            rootfs.cleanup()?;
-        }
-
+        let cleanup_result = self
+            .sandbox_rootfs
+            .take()
+            .map_or(Ok(()), |rootfs| rootfs.cleanup());
+        self.process = None;
         self.running = false;
-        Ok(())
+        cleanup_result
     }
 
     fn name(&self) -> &str {
@@ -469,5 +470,39 @@ impl Drop for FirecrackerSandbox {
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = std::fs::remove_file(&self.vsock_path);
         self.sandbox_rootfs.take();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stop_finalizes_state_when_rootfs_cleanup_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = RootfsCowStore::with_capabilities(
+            temp.path().join("cow"),
+            crate::cow::RootfsCowCapabilities {
+                reflink_copy: false,
+                overlayfs_available: false,
+            },
+        )
+        .unwrap();
+        let base = store.root().join("base.ext4");
+        std::fs::write(&base, b"rootfs contents").unwrap();
+        let rootfs = store.prepare(&base).unwrap();
+        let artifact_dir = rootfs.path().parent().unwrap().to_path_buf();
+        std::fs::remove_dir_all(&artifact_dir).unwrap();
+
+        let name = format!("stop-cleanup-test-{}", std::process::id());
+        let mut sandbox = FirecrackerSandbox::new(&name).unwrap();
+        sandbox.sandbox_rootfs = Some(rootfs);
+        sandbox.running = true;
+
+        let result = sandbox.stop().await;
+        assert!(result.is_err());
+        assert!(!sandbox.running);
+        assert!(sandbox.sandbox_rootfs.is_none());
+        assert!(sandbox.process.is_none());
     }
 }
