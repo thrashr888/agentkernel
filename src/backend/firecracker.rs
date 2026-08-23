@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use tokio::time::{Duration, sleep};
 
@@ -127,6 +127,17 @@ impl FirecrackerSandbox {
     pub fn with_rootfs(mut self, path: PathBuf) -> Self {
         self.rootfs_path = Some(path);
         self
+    }
+
+    /// Return the private rootfs image currently attached to this sandbox.
+    ///
+    /// Firecracker snapshots retain the path of their block device.  Callers
+    /// that need to preserve a snapshot across `stop` can copy this image
+    /// before stopping and restore it at the same path before loading the
+    /// snapshot.  The path is only available after `start` has prepared the
+    /// image and is not a promise that the file survives `stop`.
+    pub fn prepared_rootfs_path(&self) -> Option<&Path> {
+        self.sandbox_rootfs.as_ref().map(RootfsCow::path)
     }
 
     /// Find kernel path
@@ -317,6 +328,11 @@ impl Sandbox for FirecrackerSandbox {
             let rootfs = store
                 .prepare(&base)
                 .with_context(|| format!("failed to prepare writable rootfs for {}", self.name))?;
+            eprintln!(
+                "[firecracker] rootfs COW strategy={:?} path={}",
+                rootfs.strategy(),
+                rootfs.path().display()
+            );
             self.sandbox_rootfs = Some(rootfs);
         }
 

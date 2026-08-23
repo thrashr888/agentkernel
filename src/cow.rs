@@ -300,7 +300,7 @@ impl RootfsCow {
                 self.artifact_dir.display()
             );
         }
-        if self.rootfs_path.exists() {
+        if fs::symlink_metadata(&self.rootfs_path).is_ok() {
             fs::remove_file(&self.rootfs_path).with_context(|| {
                 format!("failed to remove rootfs {}", self.rootfs_path.display())
             })?;
@@ -507,6 +507,26 @@ mod tests {
             b"must survive"
         );
         assert!(artifact_dir.is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_removes_replaced_rootfs_symlink_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let (tmp, store) = store();
+        let base = store.root().join("base.ext4");
+        fs::write(&base, b"rootfs contents").unwrap();
+        let rootfs = store.prepare(&base).unwrap();
+        let rootfs_path = rootfs.path().to_path_buf();
+        let external = tmp.path().join("external-rootfs");
+        fs::write(&external, b"must survive").unwrap();
+        fs::remove_file(&rootfs_path).unwrap();
+        symlink(&external, &rootfs_path).unwrap();
+
+        rootfs.cleanup().unwrap();
+        assert_eq!(fs::read(&external).unwrap(), b"must survive");
+        assert!(!rootfs_path.exists());
     }
 
     #[test]

@@ -93,7 +93,10 @@ async fn firecracker_lifecycle_exec_network_vsock_snapshot_recovery() {
     let mem_path = snapshot_dir.path().join("microvm.mem");
     let state_path = snapshot_dir.path().join("microvm.state");
     let original_socket = PathBuf::from(format!("/tmp/agentkernel-{name}.sock"));
-    let original_rootfs = PathBuf::from(format!("/tmp/agentkernel-{name}-rootfs.ext4"));
+    let original_rootfs = sandbox
+        .prepared_rootfs_path()
+        .expect("started sandbox has a private rootfs")
+        .to_path_buf();
     let rootfs_backup = snapshot_dir.path().join("rootfs.ext4");
     let client = FirecrackerClient::new(&original_socket);
     client.pause().await.expect("pause microVM for snapshot");
@@ -107,6 +110,8 @@ async fn firecracker_lifecycle_exec_network_vsock_snapshot_recovery() {
         .expect("create full Firecracker snapshot");
     std::fs::copy(&original_rootfs, &rootfs_backup).expect("preserve snapshot rootfs");
     sandbox.stop().await.expect("stop original microVM");
+    std::fs::create_dir_all(original_rootfs.parent().expect("rootfs has a parent"))
+        .expect("recreate rootfs artifact directory");
     std::fs::copy(&rootfs_backup, &original_rootfs).expect("restore snapshot rootfs path");
 
     let restored_socket = snapshot_dir.path().join("restored-api.sock");
@@ -146,5 +151,10 @@ async fn firecracker_lifecycle_exec_network_vsock_snapshot_recovery() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     let _ = restored.kill();
     let _ = restored.wait();
-    let _ = std::fs::remove_file(original_rootfs);
+    let _ = std::fs::remove_file(&original_rootfs);
+    let _ = std::fs::remove_dir(
+        original_rootfs
+            .parent()
+            .expect("rootfs has a parent after restore"),
+    );
 }

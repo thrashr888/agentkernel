@@ -24,6 +24,6 @@ rm -rf "$WORK"
 For an end-to-end measurement, run a Firecracker sandbox with the same image
 and record the elapsed time from `sandbox start` through guest-agent readiness.
 Keep the host, image, vCPU, memory, and kernel constant when comparing runs.
-The implementation falls back automatically if reflinks are unsupported; a
-run should record the selected strategy from diagnostics rather than infer it
-from elapsed time alone.
+The implementation falls back automatically if reflinks are unsupported. The
+Firecracker backend logs the selected `Reflink` or `FullCopy` strategy; record
+that diagnostic rather than inferring it from elapsed time alone.
