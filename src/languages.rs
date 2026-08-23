@@ -193,6 +193,7 @@ pub fn detect_dockerfile(dir: &Path) -> Option<std::path::PathBuf> {
 /// Calculate a content hash for a Dockerfile (for caching)
 ///
 /// Uses the first 12 characters of a SHA256-like hash of the content.
+#[allow(dead_code)]
 pub fn dockerfile_content_hash(dockerfile_path: &Path) -> Option<String> {
     let content = std::fs::read_to_string(dockerfile_path).ok()?;
     // Simple hash: sum of bytes mod large prime, formatted as hex
@@ -207,6 +208,7 @@ pub fn dockerfile_content_hash(dockerfile_path: &Path) -> Option<String> {
 /// Generate a deterministic image name for a built Dockerfile
 ///
 /// Format: agentkernel-{project}:{content-hash}
+#[allow(dead_code)]
 pub fn dockerfile_image_name(project_name: &str, dockerfile_path: &Path) -> String {
     let hash = dockerfile_content_hash(dockerfile_path).unwrap_or_else(|| "unknown".to_string());
     // Sanitize project name for Docker image naming
