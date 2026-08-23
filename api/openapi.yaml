@@ -1436,6 +1436,101 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /schedules/configured:
+    get:
+      tags: [Schedules]
+      summary: List TOML-configured daemon jobs
+      description: Returns status for the immutable jobs loaded from `[[schedule]]` entries.
+      responses:
+        '200':
+          description: Configured schedule status list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConfiguredScheduleStatus'
+
+  /schedules/configured/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Schedules]
+      summary: Get a TOML-configured daemon job
+      responses:
+        '200':
+          description: Configured schedule status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/ConfiguredScheduleStatus'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /schedules/configured/{id}/status:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Schedules]
+      summary: Get execution status for a TOML-configured daemon job
+      responses:
+        '200':
+          description: Configured schedule status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/ConfiguredScheduleStatus'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /schedules/configured/{id}/trigger:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Schedules]
+      summary: Trigger a TOML-configured daemon job immediately
+      responses:
+        '200':
+          description: Job execution result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/ConfiguredScheduleExecution'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
   schemas:
     RunRequest:
@@ -2394,6 +2489,51 @@ components:
         updated_at:
           type: string
           format: date-time
+
+    ConfiguredScheduleStatus:
+      type: object
+      required: [id, enabled, cron, target, status]
+      properties:
+        id:
+          type: string
+        enabled:
+          type: boolean
+        cron:
+          type: string
+          description: Five-field cron expression evaluated in UTC
+        target:
+          type: string
+          enum: [sandbox_command, orchestration, object_method]
+        status:
+          type: string
+          enum: [idle, running, success, failed, disabled]
+        last_run_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_error:
+          type: string
+          nullable: true
+        next_run_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    ConfiguredScheduleExecution:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [success, failed]
+        output:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
 
     PatchDurableObject:
       type: object
