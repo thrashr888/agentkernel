@@ -21,6 +21,7 @@ mod hyperlight_backend;
 mod image_builder;
 mod images;
 mod interactive_permissions;
+mod job_scheduler;
 mod languages;
 mod llm_intercept;
 mod mcp;

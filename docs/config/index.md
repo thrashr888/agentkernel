@@ -40,5 +40,6 @@ mount_cwd = true
 ## Sections
 
 - [agentkernel.toml](toml.md) - Full config file reference
+- `[[schedule]]` entries in [agentkernel.toml](toml.md) - daemon-integrated user jobs
 - [Security Profiles](security.md) - Permission presets
 - [Backends](backends.md) - Backend-specific configuration

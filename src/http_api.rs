@@ -16,7 +16,7 @@
 //! Authorization: Bearer <api_key>
 //! ```
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
@@ -34,6 +34,7 @@ use crate::asciicast::{self, AsciicastEvent, AsciicastHeader, EventType};
 use crate::backend::{
     BackendCapabilities, BackendType, backend_capabilities, backend_readiness, detect_best_backend,
 };
+use crate::job_scheduler::{JobScheduleStatus, JobScheduler, JobSchedulerHandle};
 use crate::languages;
 use crate::opencode::OpenCodeState;
 use crate::orchestration_store::{
@@ -786,6 +787,9 @@ struct AppState {
     orchestration_store: Option<Arc<OrchestrationStore>>,
     /// Durable agent task queue.
     task_manager: Option<Arc<TaskManager>>,
+    /// Config-driven user job scheduler and its owned daemon loop.
+    job_scheduler: Option<Arc<JobScheduler>>,
+    job_scheduler_handle: Option<JobSchedulerHandle>,
     /// Lazily initialized VmManager shared by sandbox and durable-object APIs.
     ///
     /// Backend discovery can fail while a service is starting (for example,
@@ -878,6 +882,8 @@ impl AppState {
             opencode: Arc::new(OpenCodeState::new(vm_manager.clone())),
             orchestration_store: Self::init_orchestration_store(),
             task_manager: Self::init_task_manager(),
+            job_scheduler: None,
+            job_scheduler_handle: None,
             vm_manager,
             #[cfg(test)]
             force_backend_unavailable: false,
@@ -904,6 +910,8 @@ impl AppState {
             opencode: Arc::new(OpenCodeState::new(vm_manager.clone())),
             orchestration_store: Self::init_orchestration_store(),
             task_manager: Self::init_task_manager(),
+            job_scheduler: None,
+            job_scheduler_handle: None,
             vm_manager,
             #[cfg(test)]
             force_backend_unavailable: false,
@@ -968,6 +976,37 @@ impl AppState {
             .get()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("VmManager could not be initialized"))
+    }
+
+    /// Load, validate, and attach user schedules before the listener starts.
+    /// Invalid schedule IDs and targets therefore fail daemon startup instead
+    /// of silently disabling automation.
+    fn configure_job_scheduler(&mut self, config_path: Option<&std::path::Path>) -> Result<()> {
+        let path = config_path
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("agentkernel.toml"));
+        if !path.exists() {
+            return Ok(());
+        }
+        let config = crate::config::Config::from_file(&path)
+            .with_context(|| format!("failed to load daemon config {}", path.display()))?;
+        let Some(store) = self.orchestration_store.clone() else {
+            if config.schedules.is_empty() {
+                return Ok(());
+            }
+            anyhow::bail!("configured schedules require durable orchestration storage")
+        };
+        if let Some(scheduler) = JobScheduler::from_config(&config, store, self.vm_manager.clone())?
+        {
+            self.job_scheduler = Some(Arc::new(scheduler));
+        }
+        Ok(())
+    }
+
+    fn start_job_scheduler(&mut self) {
+        if let Some(scheduler) = self.job_scheduler.clone() {
+            self.job_scheduler_handle = Some(scheduler.spawn());
+        }
     }
 
     async fn get_manager(&self) -> Result<tokio::sync::RwLockWriteGuard<'_, VmManager>> {
@@ -1312,9 +1351,22 @@ async fn handle_request(
         }
 
         // Schedules
+        (Method::GET, ["schedules", "configured"]) => handle_list_configured_schedules(state).await,
+        (Method::GET, ["schedules", "configured", schedule_id]) => {
+            handle_get_configured_schedule(schedule_id, state).await
+        }
+        (Method::GET, ["schedules", "configured", schedule_id, "status"]) => {
+            handle_get_configured_schedule(schedule_id, state).await
+        }
+        (Method::POST, ["schedules", "configured", schedule_id, "trigger"]) => {
+            handle_trigger_configured_schedule(schedule_id, state).await
+        }
         (Method::GET, ["schedules"]) => handle_list_schedules(state).await,
         (Method::POST, ["schedules"]) => handle_create_schedule(req, state).await,
         (Method::GET, ["schedules", schedule_id]) => handle_get_schedule(schedule_id, state).await,
+        (Method::GET, ["schedules", schedule_id, "status"]) => {
+            handle_get_schedule_status(schedule_id, state).await
+        }
         (Method::DELETE, ["schedules", schedule_id]) => {
             handle_delete_schedule(schedule_id, state).await
         }
@@ -2676,6 +2728,72 @@ async fn handle_get_schedule(schedule_id: &str, state: Arc<AppState>) -> Respons
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
+        ),
+    }
+}
+
+async fn handle_get_schedule_status(schedule_id: &str, state: Arc<AppState>) -> Response<BoxBody> {
+    handle_get_schedule(schedule_id, state).await
+}
+
+async fn handle_list_configured_schedules(state: Arc<AppState>) -> Response<BoxBody> {
+    let Some(scheduler) = state.job_scheduler.as_ref() else {
+        return json_response(
+            StatusCode::OK,
+            &ApiResponse::success(Vec::<JobScheduleStatus>::new()),
+        );
+    };
+    match scheduler.list_status(chrono::Utc::now()) {
+        Ok(schedules) => json_response(StatusCode::OK, &ApiResponse::success(schedules)),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(error.to_string()),
+        ),
+    }
+}
+
+async fn handle_get_configured_schedule(
+    schedule_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let Some(scheduler) = state.job_scheduler.as_ref() else {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Configured schedule not found"),
+        );
+    };
+    match scheduler.get_status(schedule_id, chrono::Utc::now()) {
+        Ok(Some(status)) => json_response(StatusCode::OK, &ApiResponse::success(status)),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Configured schedule not found"),
+        ),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(error.to_string()),
+        ),
+    }
+}
+
+async fn handle_trigger_configured_schedule(
+    schedule_id: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let Some(scheduler) = state.job_scheduler.as_ref() else {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Configured schedule not found"),
+        );
+    };
+    match scheduler.trigger(schedule_id).await {
+        Ok(execution) => json_response(StatusCode::OK, &ApiResponse::success(execution)),
+        Err(error) if error.to_string().contains("not found") => json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(error.to_string()),
+        ),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(error.to_string()),
         ),
     }
 }
@@ -6830,7 +6948,10 @@ fn spawn_workspace_scheduler(state: Arc<AppState>, config_path: Option<&std::pat
 /// Run the HTTP API server (plain HTTP)
 #[allow(dead_code)]
 pub async fn run_server(addr: SocketAddr, api_keys: Vec<String>) -> Result<()> {
-    let state = Arc::new(AppState::new(api_keys, None, vec![]));
+    let mut app_state = AppState::new(api_keys, None, vec![]);
+    app_state.configure_job_scheduler(None)?;
+    app_state.start_job_scheduler();
+    let state = Arc::new(app_state);
     spawn_orchestration_worker(state.clone());
     spawn_task_worker(state.clone());
     spawn_workspace_scheduler(state.clone(), None);
@@ -6916,7 +7037,10 @@ pub async fn run_server_with_tls_config(
         None => None,
     };
 
-    let state = Arc::new(AppState::new(api_keys, otel_endpoint, webhook_urls));
+    let mut app_state = AppState::new(api_keys, otel_endpoint, webhook_urls);
+    app_state.configure_job_scheduler(config_path.as_deref())?;
+    app_state.start_job_scheduler();
+    let state = Arc::new(app_state);
     spawn_orchestration_worker(state.clone());
     spawn_task_worker(state.clone());
     spawn_workspace_scheduler(state.clone(), config_path.as_deref());
@@ -9845,6 +9969,33 @@ init_script = "echo ready"
         let path = "/stores/store-1/command";
         let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         assert_eq!(segments, vec!["stores", "store-1", "command"]);
+    }
+
+    #[test]
+    fn test_path_segments_configured_schedules() {
+        let path = "/schedules/configured";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(segments, vec!["schedules", "configured"]);
+    }
+
+    #[test]
+    fn test_path_segments_configured_schedule_status() {
+        let path = "/schedules/configured/nightly/status";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(
+            segments,
+            vec!["schedules", "configured", "nightly", "status"]
+        );
+    }
+
+    #[test]
+    fn test_path_segments_configured_schedule_trigger() {
+        let path = "/schedules/configured/nightly/trigger";
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert_eq!(
+            segments,
+            vec!["schedules", "configured", "nightly", "trigger"]
+        );
     }
 
     #[tokio::test]

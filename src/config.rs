@@ -286,6 +286,145 @@ pub struct WorkspaceSchedulingConfig {
     pub check_interval_seconds: u64,
 }
 
+/// A daemon-integrated user job schedule.
+///
+/// Schedules are deliberately separate from [`WorkspaceSchedulingConfig`]:
+/// workspace scheduling manages infrastructure lifecycle, while these entries
+/// run user work at a UTC cron boundary.  The target is tagged so a malformed
+/// entry cannot accidentally run more than one kind of action.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobScheduleConfig {
+    /// Stable identifier used for API operations and persisted run state.
+    pub id: String,
+    /// Whether the daemon should consider this schedule.
+    #[serde(default = "default_schedule_enabled")]
+    pub enabled: bool,
+    /// Five-field UTC cron expression.
+    pub cron: String,
+    /// Preferred target form: `target = { type = "...", ... }`.
+    #[serde(default)]
+    pub target: Option<JobScheduleTarget>,
+    /// Flat target fields are accepted for simple TOML files and converted to
+    /// the same tagged target during validation.
+    #[serde(rename = "type", default)]
+    pub target_type: Option<String>,
+    #[serde(default)]
+    pub sandbox: Option<String>,
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    #[serde(default)]
+    pub orchestration: Option<String>,
+    #[serde(default)]
+    pub input: Option<serde_json::Value>,
+    #[serde(default)]
+    pub object_class: Option<String>,
+    #[serde(default)]
+    pub object_id: Option<String>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
+}
+
+fn default_schedule_enabled() -> bool {
+    true
+}
+
+/// The one action a user schedule may execute.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum JobScheduleTarget {
+    SandboxCommand {
+        sandbox: String,
+        command: Vec<String>,
+    },
+    Orchestration {
+        name: String,
+        #[serde(default)]
+        input: Option<serde_json::Value>,
+    },
+    ObjectMethod {
+        class: String,
+        object_id: String,
+        method: String,
+        #[serde(default)]
+        args: Option<serde_json::Value>,
+    },
+}
+
+impl JobScheduleConfig {
+    /// Resolve either the tagged or flat TOML target and enforce exactly one
+    /// target kind.  This is intentionally a fallible operation so all
+    /// configuration errors can include the stable schedule id at startup.
+    pub fn resolve_target(&self) -> anyhow::Result<JobScheduleTarget> {
+        if let Some(target) = self.target.clone() {
+            if self.target_type.is_some()
+                || self.sandbox.is_some()
+                || self.command.is_some()
+                || self.orchestration.is_some()
+                || self.object_class.is_some()
+                || self.object_id.is_some()
+                || self.method.is_some()
+                || self.input.is_some()
+                || self.args.is_some()
+            {
+                anyhow::bail!("target cannot be combined with flat target fields");
+            }
+            return Ok(target);
+        }
+
+        let kind = self.target_type.as_deref().unwrap_or_else(|| {
+            if self.sandbox.is_some() || self.command.is_some() {
+                "sandbox_command"
+            } else if self.orchestration.is_some() {
+                "orchestration"
+            } else if self.object_class.is_some()
+                || self.object_id.is_some()
+                || self.method.is_some()
+            {
+                "object_method"
+            } else {
+                ""
+            }
+        });
+
+        match kind {
+            "sandbox_command" => Ok(JobScheduleTarget::SandboxCommand {
+                sandbox: required_field(self.sandbox.as_deref(), "sandbox")?,
+                command: required_command(self.command.as_deref())?,
+            }),
+            "orchestration" => Ok(JobScheduleTarget::Orchestration {
+                name: required_field(self.orchestration.as_deref(), "orchestration")?,
+                input: self.input.clone(),
+            }),
+            "object_method" => Ok(JobScheduleTarget::ObjectMethod {
+                class: required_field(self.object_class.as_deref(), "object_class")?,
+                object_id: required_field(self.object_id.as_deref(), "object_id")?,
+                method: required_field(self.method.as_deref(), "method")?,
+                args: self.args.clone(),
+            }),
+            "" => anyhow::bail!("exactly one target kind is required"),
+            other => anyhow::bail!("unknown target type '{other}'"),
+        }
+    }
+}
+
+fn required_field(value: Option<&str>, name: &str) -> anyhow::Result<String> {
+    let value = value.unwrap_or_default().trim();
+    if value.is_empty() {
+        anyhow::bail!("{name} is required")
+    }
+    Ok(value.to_string())
+}
+
+fn required_command(value: Option<&[String]>) -> anyhow::Result<Vec<String>> {
+    let command = value.unwrap_or_default();
+    if command.is_empty() || command.iter().any(|part| part.trim().is_empty()) {
+        anyhow::bail!("command must contain at least one non-empty argument")
+    }
+    Ok(command.to_vec())
+}
+
 fn default_scheduling_enabled() -> bool {
     true
 }
@@ -471,6 +610,9 @@ pub struct Config {
     /// for users who prefer grouping this policy under the workspace name.
     #[serde(default, alias = "workspace")]
     pub scheduling: WorkspaceSchedulingConfig,
+    /// User job schedules evaluated by the daemon in UTC.
+    #[serde(default, rename = "schedule")]
+    pub schedules: Vec<JobScheduleConfig>,
     /// Proxy hooks configuration
     #[serde(default)]
     pub proxy: ProxyHooksConfig,
@@ -850,6 +992,7 @@ impl Config {
             enterprise: EnterpriseConfig::default(),
             api: ApiConfig::default(),
             scheduling: WorkspaceSchedulingConfig::default(),
+            schedules: Vec::new(),
             proxy: ProxyHooksConfig::default(),
             secrets: std::collections::BTreeMap::new(),
             llm_keys: LlmKeysConfig::default(),

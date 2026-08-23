@@ -1055,6 +1055,25 @@ Auto-creates the object if it does not exist. Wakes from hibernation if needed. 
 
 ### Schedules
 
+When `[[schedule]]` entries are present in `agentkernel.toml`, the
+`/schedules/configured` endpoints list the daemon-integrated user jobs and
+expose their truthful execution state. The config jobs use stable IDs and run
+in UTC. `GET /schedules/configured/{id}` and `GET
+/schedules/configured/{id}/status` return `enabled`, `status`, `last_run_at`,
+`last_error`, and the derived `next_run_at`. `POST
+/schedules/configured/{id}/trigger` executes one configured job immediately;
+it does not require the current minute to match cron.
+
+```bash
+curl http://localhost:18888/schedules/configured
+curl http://localhost:18888/schedules/configured/refresh-index/status
+curl -X POST http://localhost:18888/schedules/configured/refresh-index/trigger
+```
+
+The existing `POST /schedules` CRUD form remains available for durable-object
+schedule records. Config-defined jobs are validated at daemon startup and are
+not mutated by the HTTP API.
+
 #### List Schedules
 
 ```

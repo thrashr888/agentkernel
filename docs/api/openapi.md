@@ -36,6 +36,10 @@ Download: [openapi.yaml](openapi.yaml)
 | GET | `/schedules` | List schedules |
 | POST | `/schedules` | Create schedule |
 | GET | `/schedules/{id}` | Get schedule by id |
+| GET | `/schedules/configured` | List TOML-configured schedules |
+| GET | `/schedules/configured/{id}` | Get TOML schedule status |
+| GET | `/schedules/configured/{id}/status` | Get TOML schedule status |
+| POST | `/schedules/configured/{id}/trigger` | Trigger TOML schedule immediately |
 | GET | `/stores` | List durable stores |
 | POST | `/stores` | Create durable store |
 | GET | `/stores/{id}` | Get durable store by id |
