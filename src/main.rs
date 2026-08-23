@@ -984,7 +984,7 @@ async fn main() -> Result<()> {
                     // Try loading from the project's agentkernel.toml if it exists
                     let project_config = PathBuf::from("agentkernel.toml");
                     if project_config.exists() {
-                        Config::from_file(&project_config)?
+                        Config::from_file_cached(&project_config)?
                     } else {
                         Config::minimal(&from, "claude")
                     }
@@ -1158,7 +1158,7 @@ memory_mb = 512
                 let devcontainer_config =
                     resolve_devcontainer(devcontainer.as_deref(), auto_devcontainer, project_dir)?;
                 let (mut cfg, config_base_dir) = if let Some(ref config_path) = config {
-                    let cfg = Config::from_file(config_path)?;
+                    let cfg = Config::from_file_cached(config_path)?;
                     let base_dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
                     (cfg, Some(base_dir))
                 } else if let Some(ref tmpl_name) = tmpl {
@@ -1632,7 +1632,7 @@ memory_mb = 512
                     .and_then(|extension| extension.to_str())
                     .is_some_and(|extension| matches!(extension, "json" | "jsonc"));
                 let (start_perms, start_files) = if config_path.exists() && !is_devcontainer_path {
-                    let cfg = Config::from_file(&config_path)?;
+                    let cfg = Config::from_file_cached(&config_path)?;
                     for warning in cfg.validate() {
                         eprintln!("Warning: {}", warning);
                     }
@@ -1973,7 +1973,7 @@ memory_mb = 512
                     bail!("Config file not found: {}", file.display());
                 }
 
-                let cfg = Config::from_file(&file)?;
+                let cfg = Config::from_file_cached(&file)?;
                 let name = as_name.unwrap_or_else(|| cfg.sandbox.name.clone());
                 validation::validate_sandbox_name(&name)?;
 
@@ -2312,7 +2312,7 @@ memory_mb = 512
                 let runtime = if let Some(ref img) = image {
                     languages::docker_image_to_firecracker_runtime(img).to_string()
                 } else if let Some(ref config_path) = config {
-                    let cfg = Config::from_file(config_path)?;
+                    let cfg = Config::from_file_cached(config_path)?;
                     languages::docker_image_to_firecracker_runtime(&cfg.docker_image()).to_string()
                 } else {
                     "base".to_string()
@@ -2356,7 +2356,7 @@ memory_mb = 512
             let (docker_image, cfg_for_build, honor_config_dockerfile) = if let Some(img) = image {
                 (img, None, false)
             } else if let Some(ref config_path) = config {
-                let cfg = Config::from_file(config_path)?;
+                let cfg = Config::from_file_cached(config_path)?;
                 (cfg.docker_image(), Some(cfg), true)
             } else if let Some(ref tmpl_name) = tmpl {
                 let resolved = template::resolve(tmpl_name)?;
@@ -2381,7 +2381,7 @@ memory_mb = 512
                 // Try current directory config
                 let default_config = PathBuf::from("agentkernel.toml");
                 if default_config.exists() {
-                    let cfg = Config::from_file(&default_config)?;
+                    let cfg = Config::from_file_cached(&default_config)?;
                     let has_build_settings = config_has_build_settings(&cfg);
                     (cfg.docker_image(), Some(cfg), has_build_settings)
                 } else {
@@ -2462,7 +2462,7 @@ memory_mb = 512
 
             // Apply config overrides if present and load files
             let files = if let Some(ref config_path) = config {
-                let cfg = Config::from_file(config_path)?;
+                let cfg = Config::from_file_cached(config_path)?;
                 for warning in cfg.validate() {
                     eprintln!("Warning: {}", warning);
                 }
@@ -2484,7 +2484,7 @@ memory_mb = 512
                 // Check for default config file and load files if present
                 let default_config = PathBuf::from("agentkernel.toml");
                 if default_config.exists() {
-                    let cfg = Config::from_file(&default_config)?;
+                    let cfg = Config::from_file_cached(&default_config)?;
                     cfg.load_files(std::path::Path::new("."))?
                 } else {
                     Vec::new()
@@ -4570,7 +4570,7 @@ async fn run_doctor() -> Result<()> {
         println!("\nPolicy Engine:");
         let config_path = std::path::PathBuf::from("agentkernel.toml");
         let cfg = if config_path.exists() {
-            Config::from_file(&config_path).ok()
+            Config::from_file_cached(&config_path).ok()
         } else {
             None
         };
@@ -4643,7 +4643,7 @@ async fn run_doctor() -> Result<()> {
     println!("\nConfig:");
     let config_path = std::path::PathBuf::from("agentkernel.toml");
     if config_path.exists() {
-        match Config::from_file(&config_path) {
+        match Config::from_file_cached(&config_path) {
             Ok(cfg) => {
                 let warnings = cfg.validate();
                 if warnings.is_empty() {
@@ -4721,7 +4721,7 @@ async fn handle_policy_command(action: PolicyAction) -> Result<()> {
             // Load config and initialize policy engine
             let config_path = std::path::PathBuf::from("agentkernel.toml");
             let cfg = if config_path.exists() {
-                Config::from_file(&config_path)?
+                Config::from_file_cached(&config_path)?
             } else {
                 Config::minimal("default", "claude")
             };
@@ -4776,7 +4776,7 @@ async fn handle_policy_command(action: PolicyAction) -> Result<()> {
         PolicyAction::Status => {
             let config_path = std::path::PathBuf::from("agentkernel.toml");
             let cfg = if config_path.exists() {
-                Config::from_file(&config_path)?
+                Config::from_file_cached(&config_path)?
             } else {
                 Config::minimal("default", "claude")
             };

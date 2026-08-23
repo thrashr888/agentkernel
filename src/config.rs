@@ -2,7 +2,10 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::SystemTime;
 
 use crate::backend::FileInjection;
 use crate::permissions::SecurityProfile;
@@ -16,6 +19,33 @@ use crate::permissions::SecurityProfile;
 /// "api.anthropic.com" = "ANTHROPIC_API_KEY"
 /// ```
 pub type LlmKeysConfig = std::collections::BTreeMap<String, String>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfigFingerprint {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+impl ConfigFingerprint {
+    fn for_path(path: &Path) -> Option<Self> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some(Self {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedConfig {
+    fingerprint: ConfigFingerprint,
+    config: Arc<Config>,
+}
+
+static CONFIG_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedConfig>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+const MAX_CACHED_CONFIGS: usize = 64;
 
 /// File entry for injecting files into the sandbox at startup
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -961,6 +991,57 @@ impl Config {
         Self::from_str(&content)
     }
 
+    /// Load a configuration file through the process-local parsed-config cache.
+    ///
+    /// Commands commonly load the same `agentkernel.toml` more than once while
+    /// resolving an image, permissions, and file injections.  Keep those
+    /// repeated reads cheap without making a long-lived server blind to edits:
+    /// the cache entry is refreshed whenever the file's size or modification
+    /// timestamp changes.  A cloned value is returned so callers retain the
+    /// ownership and mutation semantics of [`Self::from_file`].
+    pub fn from_file_cached(path: &Path) -> Result<Self> {
+        let cache_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+        let fingerprint = ConfigFingerprint::for_path(&cache_path);
+
+        if let Some(fingerprint) = fingerprint.as_ref()
+            && let Some(entry) = CONFIG_CACHE
+                .lock()
+                .expect("config cache lock poisoned")
+                .get(&cache_path)
+            && entry.fingerprint == *fingerprint
+        {
+            return Ok((*entry.config).clone());
+        }
+
+        let config = Arc::new(Self::from_file(path)?);
+
+        // A file can disappear between metadata() and read_to_string().  In
+        // that case the load above returns an error and no stale entry is
+        // installed.  Successful loads always have a current fingerprint.
+        if let Some(fingerprint) = ConfigFingerprint::for_path(&cache_path) {
+            let mut cache = CONFIG_CACHE.lock().expect("config cache lock poisoned");
+            if cache.len() >= MAX_CACHED_CONFIGS
+                && !cache.contains_key(&cache_path)
+                && let Some(evicted) = cache.keys().next().cloned()
+            {
+                cache.remove(&evicted);
+            }
+            cache.insert(
+                cache_path,
+                CachedConfig {
+                    fingerprint,
+                    config: Arc::clone(&config),
+                },
+            );
+        }
+
+        Ok((*config).clone())
+    }
+
     /// Parse configuration from a TOML string.
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(content: &str) -> Result<Self> {
@@ -1748,6 +1829,24 @@ mod tests {
         assert_eq!(config.enterprise.offline_mode, "cached_with_expiry");
         assert_eq!(config.enterprise.cache_max_age_hours, 24);
         assert!(config.enterprise.trust_anchors.keys.is_empty());
+    }
+
+    #[test]
+    fn test_cached_config_reloads_when_file_changes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("agentkernel.toml");
+        std::fs::write(&path, "[sandbox]\nname = \"first\"\n").unwrap();
+
+        let first = Config::from_file_cached(&path).unwrap();
+        let cached = Config::from_file_cached(&path).unwrap();
+        assert_eq!(first.sandbox.name, "first");
+        assert_eq!(cached.sandbox.name, "first");
+
+        // Change the file size as well as its contents so this remains
+        // deterministic on filesystems with coarse timestamp resolution.
+        std::fs::write(&path, "[sandbox]\nname = \"updated-config\"\n").unwrap();
+        let updated = Config::from_file_cached(&path).unwrap();
+        assert_eq!(updated.sandbox.name, "updated-config");
     }
 
     #[test]
