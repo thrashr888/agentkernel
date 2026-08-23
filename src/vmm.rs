@@ -35,8 +35,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(feature = "enterprise")]
 use std::sync::{LazyLock, Mutex};
-#[cfg(feature = "enterprise")]
-use std::time::SystemTime;
 use tokio::sync::RwLock;
 
 /// Global proxy handle registry. Proxy handles must outlive individual VmManager
@@ -46,7 +44,7 @@ static PROXY_HANDLES: std::sync::LazyLock<RwLock<HashMap<String, ProxyHandle>>> 
 
 #[cfg(feature = "enterprise")]
 struct CachedPolicyEngine {
-    file_signature: Option<(Option<SystemTime>, u64)>,
+    file_signature: Option<crate::config::ConfigFingerprint>,
     engine: Option<Arc<crate::policy::PolicyEngine>>,
 }
 
@@ -59,9 +57,7 @@ fn cached_policy_engine() -> Option<Arc<crate::policy::PolicyEngine>> {
     let default_config = std::env::current_dir()
         .ok()
         .map(|dir| dir.join("agentkernel.toml"))?;
-    let file_signature = std::fs::metadata(&default_config)
-        .ok()
-        .map(|metadata| (metadata.modified().ok(), metadata.len()));
+    let file_signature = Config::file_fingerprint(&default_config);
 
     if let Some(entry) = POLICY_ENGINE_CACHE
         .lock()

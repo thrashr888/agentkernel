@@ -9,6 +9,7 @@ use std::time::SystemTime;
 
 use crate::backend::FileInjection;
 use crate::permissions::SecurityProfile;
+use sha2::{Digest, Sha256};
 
 /// LLM key configuration: maps API domain → vault key name.
 ///
@@ -21,18 +22,30 @@ use crate::permissions::SecurityProfile;
 pub type LlmKeysConfig = std::collections::BTreeMap<String, String>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ConfigFingerprint {
+pub(crate) struct ConfigFingerprint {
     modified: Option<SystemTime>,
     len: u64,
+    content_hash: [u8; 32],
 }
 
 impl ConfigFingerprint {
+    #[allow(dead_code)]
     fn for_path(path: &Path) -> Option<Self> {
         let metadata = std::fs::metadata(path).ok()?;
+        let content = std::fs::read(path).ok()?;
         Some(Self {
             modified: metadata.modified().ok(),
             len: metadata.len(),
+            content_hash: Sha256::digest(content).into(),
         })
+    }
+
+    fn from_metadata_and_content(metadata: &std::fs::Metadata, content: &[u8]) -> Self {
+        Self {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+            content_hash: Sha256::digest(content).into(),
+        }
     }
 }
 
@@ -996,50 +1009,56 @@ impl Config {
     /// Commands commonly load the same `agentkernel.toml` more than once while
     /// resolving an image, permissions, and file injections.  Keep those
     /// repeated reads cheap without making a long-lived server blind to edits:
-    /// the cache entry is refreshed whenever the file's size or modification
-    /// timestamp changes.  A cloned value is returned so callers retain the
-    /// ownership and mutation semantics of [`Self::from_file`].
+    /// the cache entry is refreshed whenever the file's metadata or content
+    /// changes.  A cloned value is returned so callers retain the ownership
+    /// and mutation semantics of [`Self::from_file`].
     pub fn from_file_cached(path: &Path) -> Result<Self> {
         let cache_path = if path.is_absolute() {
             path.to_path_buf()
         } else {
             std::env::current_dir()?.join(path)
         };
-        let fingerprint = ConfigFingerprint::for_path(&cache_path);
+        let metadata = std::fs::metadata(path)
+            .with_context(|| format!("Failed to read config file: {}", path.display()))?;
+        let content = std::fs::read(path)
+            .with_context(|| format!("Failed to read config file: {}", path.display()))?;
+        let fingerprint = ConfigFingerprint::from_metadata_and_content(&metadata, &content);
 
-        if let Some(fingerprint) = fingerprint.as_ref()
-            && let Some(entry) = CONFIG_CACHE
-                .lock()
-                .expect("config cache lock poisoned")
-                .get(&cache_path)
-            && entry.fingerprint == *fingerprint
+        if let Some(entry) = CONFIG_CACHE
+            .lock()
+            .expect("config cache lock poisoned")
+            .get(&cache_path)
+            && entry.fingerprint == fingerprint
         {
             return Ok((*entry.config).clone());
         }
 
-        let config = Arc::new(Self::from_file(path)?);
+        let content = String::from_utf8(content)
+            .with_context(|| format!("Failed to read config file: {}", path.display()))?;
+        let config = Arc::new(Self::from_str(&content)?);
 
-        // A file can disappear between metadata() and read_to_string().  In
-        // that case the load above returns an error and no stale entry is
-        // installed.  Successful loads always have a current fingerprint.
-        if let Some(fingerprint) = ConfigFingerprint::for_path(&cache_path) {
-            let mut cache = CONFIG_CACHE.lock().expect("config cache lock poisoned");
-            if cache.len() >= MAX_CACHED_CONFIGS
-                && !cache.contains_key(&cache_path)
-                && let Some(evicted) = cache.keys().next().cloned()
-            {
-                cache.remove(&evicted);
-            }
-            cache.insert(
-                cache_path,
-                CachedConfig {
-                    fingerprint,
-                    config: Arc::clone(&config),
-                },
-            );
+        let mut cache = CONFIG_CACHE.lock().expect("config cache lock poisoned");
+        if cache.len() >= MAX_CACHED_CONFIGS
+            && !cache.contains_key(&cache_path)
+            && let Some(evicted) = cache.keys().next().cloned()
+        {
+            cache.remove(&evicted);
         }
+        cache.insert(
+            cache_path,
+            CachedConfig {
+                fingerprint,
+                config: Arc::clone(&config),
+            },
+        );
 
         Ok((*config).clone())
+    }
+
+    /// Return a content-sensitive fingerprint for a config file.
+    #[allow(dead_code)]
+    pub(crate) fn file_fingerprint(path: &Path) -> Option<ConfigFingerprint> {
+        ConfigFingerprint::for_path(path)
     }
 
     /// Parse configuration from a TOML string.
@@ -1835,18 +1854,21 @@ mod tests {
     fn test_cached_config_reloads_when_file_changes() {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path().join("agentkernel.toml");
-        std::fs::write(&path, "[sandbox]\nname = \"first\"\n").unwrap();
+        let first_contents = "[sandbox]\nname = \"alpha\"\n";
+        let updated_contents = "[sandbox]\nname = \"omega\"\n";
+        assert_eq!(first_contents.len(), updated_contents.len());
+        std::fs::write(&path, first_contents).unwrap();
 
         let first = Config::from_file_cached(&path).unwrap();
         let cached = Config::from_file_cached(&path).unwrap();
-        assert_eq!(first.sandbox.name, "first");
-        assert_eq!(cached.sandbox.name, "first");
+        assert_eq!(first.sandbox.name, "alpha");
+        assert_eq!(cached.sandbox.name, "alpha");
 
-        // Change the file size as well as its contents so this remains
-        // deterministic on filesystems with coarse timestamp resolution.
-        std::fs::write(&path, "[sandbox]\nname = \"updated-config\"\n").unwrap();
+        // Same-length rewrites must invalidate the cache even on filesystems
+        // whose modification timestamps have coarse resolution.
+        std::fs::write(&path, updated_contents).unwrap();
         let updated = Config::from_file_cached(&path).unwrap();
-        assert_eq!(updated.sandbox.name, "updated-config");
+        assert_eq!(updated.sandbox.name, "omega");
     }
 
     #[test]
