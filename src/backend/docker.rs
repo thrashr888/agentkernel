@@ -338,9 +338,11 @@ impl Sandbox for DockerSandbox {
         args.push(container_name);
         args.extend(cmd.iter().map(|s| s.to_string()));
 
-        let output = Command::new(runtime_cmd)
-            .args(&args)
+        let mut command = tokio::process::Command::new(runtime_cmd);
+        command.args(&args).kill_on_drop(true);
+        let output = command
             .output()
+            .await
             .context("Failed to run command in container")?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();

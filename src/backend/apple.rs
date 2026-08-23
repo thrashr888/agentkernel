@@ -389,8 +389,9 @@ impl Sandbox for AppleSandbox {
         // This is critical for the secret proxy: the proxy runs as a tokio task,
         // and blocking with std::process::Command would starve it when the exec'd
         // process makes requests through the proxy (deadlock).
-        let output = tokio::process::Command::new("container")
-            .args(&args)
+        let mut command = tokio::process::Command::new("container");
+        command.args(&args).kill_on_drop(true);
+        let output = command
             .output()
             .await
             .context("Failed to run command in Apple container")?;

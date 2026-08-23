@@ -41,6 +41,8 @@ use crate::orchestration_store::{
 };
 use crate::permissions::SecurityProfile;
 use crate::secrets::{SecretBackend, SecretVault};
+use crate::task_worker::TaskWorker;
+use crate::task_worker_vmm::VmTaskExecutor;
 use crate::tasks::{CancelOutcome, TaskManager};
 use crate::validation;
 use crate::vmm::VmManager;
@@ -6092,6 +6094,47 @@ fn spawn_orchestration_worker(state: Arc<AppState>) {
     });
 }
 
+/// Run one durable task at a time. Parallelism belongs to the dse.3
+/// coordinator; this loop only provides the production execution path for a
+/// queued task and keeps claiming atomic in `TaskManager`.
+fn spawn_task_worker(state: Arc<AppState>) {
+    let Some(task_manager) = state.task_manager.clone() else {
+        return;
+    };
+
+    tokio::spawn(async move {
+        eprintln!("[tasks] task worker started");
+        loop {
+            let vm_manager = match state.ensure_manager() {
+                Ok(manager) => manager,
+                Err(error) => {
+                    eprintln!("[tasks] worker backend unavailable: {error}");
+                    sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
+            let mut worker =
+                TaskWorker::new((*task_manager).clone(), VmTaskExecutor::new(vm_manager));
+            match worker.recover_interrupted().await {
+                Ok(count) => {
+                    if count > 0 {
+                        eprintln!("[tasks] recovered {count} interrupted task(s)");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("[tasks] worker recovery failed: {error:#}");
+                    sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            }
+            if let Err(error) = worker.run_once().await {
+                eprintln!("[tasks] worker tick failed: {error:#}");
+            }
+            sleep(Duration::from_millis(750)).await;
+        }
+    });
+}
+
 async fn process_orchestrations_tick(store: Arc<OrchestrationStore>) -> Result<()> {
     let records = store.list(200, 0)?;
 
@@ -6616,6 +6659,7 @@ async fn execute_runtime_activity(activity: &RuntimeActivity) -> Result<String> 
 pub async fn run_server(addr: SocketAddr, api_keys: Vec<String>) -> Result<()> {
     let state = Arc::new(AppState::new(api_keys, None, vec![]));
     spawn_orchestration_worker(state.clone());
+    spawn_task_worker(state.clone());
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) = (
         state.orchestration_store.clone(),
@@ -6679,6 +6723,7 @@ pub async fn run_server_with_tls(
 
     let state = Arc::new(AppState::new(api_keys, otel_endpoint, webhook_urls));
     spawn_orchestration_worker(state.clone());
+    spawn_task_worker(state.clone());
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) = (
         state.orchestration_store.clone(),
