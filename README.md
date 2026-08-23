@@ -341,6 +341,8 @@ base_image = "python:3.12-alpine"    # Explicit Docker image
 
 [agent]
 preferred = "claude"    # claude, gemini, codex, opencode
+git_name = "AgentKernel Agent"
+git_email = "agent@agentkernel.dev"
 
 [resources]
 vcpus = 2

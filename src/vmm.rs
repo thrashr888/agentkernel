@@ -1498,6 +1498,25 @@ impl VmManager {
             }
         }
 
+        // Inject a process-scoped Git identity from the sandbox's config. Git
+        // reads these variables as configuration for every command, avoiding
+        // writes to a mounted human ~/.gitconfig while working on every backend.
+        let configured_path = state.config_path.as_ref().map(PathBuf::from);
+        let fallback_path = PathBuf::from("agentkernel.toml");
+        let git_config_path = configured_path
+            .filter(|path| path.exists())
+            .or_else(|| fallback_path.exists().then_some(fallback_path));
+        if let Some(path) = git_config_path {
+            match Config::from_file(&path) {
+                Ok(config) => env.extend(config.agent.git_config_env()),
+                Err(error) => eprintln!(
+                    "Warning: Failed to load agent Git identity from {}: {}",
+                    path.display(),
+                    error
+                ),
+            }
+        }
+
         // Start secret injection proxy if bindings are configured
         if !state.secret_bindings.is_empty() {
             let vault = SecretVault::new(SecretBackend::default());

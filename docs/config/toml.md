@@ -51,12 +51,20 @@ AI agent settings.
 [agent]
 preferred = "claude"          # Agent type
 compatibility_mode = "claude" # Compatibility adjustments
+git_name = "AgentKernel Agent" # Git author/committer name inside the sandbox
+git_email = "agent@agentkernel.dev" # Git author/committer email
 ```
 
 | Field | Type | Values |
 |-------|------|--------|
 | `preferred` | string | `claude`, `codex`, `gemini`, `opencode` |
 | `compatibility_mode` | string | Same as preferred |
+| `git_name` | string | Git author and committer name inside the sandbox |
+| `git_email` | string | Git author and committer email inside the sandbox |
+
+Set both Git identity fields together. AgentKernel injects them as process-scoped
+Git configuration on sandbox start, so agent commits are distinguishable without
+overwriting a mounted user's global Git configuration.
 
 ## [resources]
 

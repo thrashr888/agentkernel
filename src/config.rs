@@ -538,6 +538,12 @@ pub struct AgentConfig {
     /// Sets agent-specific permissions and network policies
     #[serde(default)]
     pub compatibility_mode: Option<String>,
+    /// Git author/committer name exposed inside the sandbox.
+    #[serde(default)]
+    pub git_name: Option<String>,
+    /// Git author/committer email exposed inside the sandbox.
+    #[serde(default)]
+    pub git_email: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -545,7 +551,31 @@ impl Default for AgentConfig {
         Self {
             preferred: default_agent(),
             compatibility_mode: None,
+            git_name: None,
+            git_email: None,
         }
+    }
+}
+
+impl AgentConfig {
+    /// Return Git's process-scoped configuration environment for the configured
+    /// agent identity. This keeps agent commits distinct without writing to a
+    /// mounted user's global Git configuration.
+    pub fn git_config_env(&self) -> Vec<(String, String)> {
+        let (Some(name), Some(email)) = (&self.git_name, &self.git_email) else {
+            return Vec::new();
+        };
+        if name.trim().is_empty() || email.trim().is_empty() {
+            return Vec::new();
+        }
+
+        vec![
+            ("GIT_CONFIG_COUNT".to_string(), "2".to_string()),
+            ("GIT_CONFIG_KEY_0".to_string(), "user.name".to_string()),
+            ("GIT_CONFIG_VALUE_0".to_string(), name.clone()),
+            ("GIT_CONFIG_KEY_1".to_string(), "user.email".to_string()),
+            ("GIT_CONFIG_VALUE_1".to_string(), email.clone()),
+        ]
     }
 }
 
@@ -659,6 +689,8 @@ impl Config {
             agent: AgentConfig {
                 preferred: agent.to_string(),
                 compatibility_mode: None,
+                git_name: None,
+                git_email: None,
             },
             resources: ResourcesConfig::default(),
             network: NetworkConfig::default(),
@@ -726,6 +758,23 @@ impl Config {
     pub fn validate(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         let perms = self.get_permissions();
+
+        let git_name_configured = self
+            .agent
+            .git_name
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty());
+        let git_email_configured = self
+            .agent
+            .git_email
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty());
+        if git_name_configured != git_email_configured {
+            warnings.push(
+                "Agent Git identity requires both 'git_name' and 'git_email' in [agent]."
+                    .to_string(),
+            );
+        }
 
         // Warn if ports configured but network is disabled
         if !self.network.ports.is_empty() && !perms.network {
@@ -1115,6 +1164,55 @@ mod tests {
                 .network_policy
                 .always_allow
                 .contains(&"api.anthropic.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_agent_git_identity_builds_process_scoped_config() {
+        let toml = r#"
+            [sandbox]
+            name = "codex-project"
+
+            [agent]
+            preferred = "codex"
+            git_name = "Codex Agent"
+            git_email = "codex@example.com"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+
+        assert_eq!(
+            config.agent.git_config_env(),
+            vec![
+                ("GIT_CONFIG_COUNT".to_string(), "2".to_string()),
+                ("GIT_CONFIG_KEY_0".to_string(), "user.name".to_string()),
+                ("GIT_CONFIG_VALUE_0".to_string(), "Codex Agent".to_string()),
+                ("GIT_CONFIG_KEY_1".to_string(), "user.email".to_string()),
+                (
+                    "GIT_CONFIG_VALUE_1".to_string(),
+                    "codex@example.com".to_string(),
+                ),
+            ]
+        );
+        assert!(config.validate().is_empty());
+    }
+
+    #[test]
+    fn test_agent_git_identity_requires_name_and_email() {
+        let toml = r#"
+            [sandbox]
+            name = "codex-project"
+
+            [agent]
+            git_name = "Codex Agent"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+
+        assert!(config.agent.git_config_env().is_empty());
+        assert!(
+            config
+                .validate()
+                .iter()
+                .any(|warning| warning.contains("requires both 'git_name' and 'git_email'"))
         );
     }
 
