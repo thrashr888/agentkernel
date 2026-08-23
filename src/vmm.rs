@@ -32,7 +32,9 @@ pub struct CommandFailed {
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
+#[cfg(feature = "enterprise")]
+use std::sync::LazyLock;
 use tokio::sync::RwLock;
 
 /// Global proxy handle registry. Proxy handles must outlive individual VmManager

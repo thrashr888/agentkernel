@@ -12,7 +12,7 @@ fn test_orch_config() -> agentkernel::config::OrchestratorConfig {
     agentkernel::config::OrchestratorConfig {
         nomad_addr: std::env::var("NOMAD_ADDR").ok(),
         nomad_token: std::env::var("NOMAD_TOKEN").ok(),
-        nomad_driver: "docker".to_string(),
+        nomad_driver: std::env::var("NOMAD_TEST_DRIVER").unwrap_or_else(|_| "docker".to_string()),
         nomad_datacenter: Some("dc1".to_string()),
         ..Default::default()
     }

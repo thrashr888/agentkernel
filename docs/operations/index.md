@@ -24,3 +24,4 @@ Both backends are included in the default build. You must specify `--backend kub
 - [Nomad Backend](nomad.md) — Jobs, parameterized warm pools, task drivers, Nomad Pack deployment
 - [Remote Backends](remote.md) — Daytona, Runloop, and E2B setup, `/workspace` sync, snapshots, and examples
 - [Deployment Guide](deploy.md) — Docker image, building from source, HTTP API reference
+- [Dependency compatibility](dependency-compatibility.md) — Rust feature, Nomad version, and Hyperlight platform gates
