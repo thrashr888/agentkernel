@@ -557,7 +557,7 @@ fn open_directory_at(parent: RawFd, name: &std::ffi::OsStr) -> std::io::Result<F
 #[cfg(unix)]
 fn ensure_directory_fd(file: &File) -> std::io::Result<()> {
     let (_, mode) = file_stat(file)?;
-    if mode & (libc::S_IFMT as u32) != libc::S_IFDIR as u32 {
+    if mode & STAT_TYPE_MASK != STAT_TYPE_DIRECTORY {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotADirectory,
             "path is not a directory",
@@ -581,7 +581,45 @@ fn file_stat(file: &File) -> std::io::Result<((u64, u64), u32)> {
     }
     // SAFETY: fstat initialized the struct when it returned success.
     let stat = unsafe { stat.assume_init() };
-    Ok(((stat.st_dev as u64, stat.st_ino), stat.st_mode as u32))
+    Ok(((stat_device(&stat), stat.st_ino), stat_mode(&stat)))
+}
+
+#[cfg(target_os = "linux")]
+const STAT_TYPE_MASK: u32 = libc::S_IFMT;
+
+#[cfg(not(target_os = "linux"))]
+const STAT_TYPE_MASK: u32 = libc::S_IFMT as u32;
+
+#[cfg(target_os = "linux")]
+const STAT_TYPE_DIRECTORY: u32 = libc::S_IFDIR;
+
+#[cfg(not(target_os = "linux"))]
+const STAT_TYPE_DIRECTORY: u32 = libc::S_IFDIR as u32;
+
+#[cfg(target_os = "linux")]
+const STAT_TYPE_REGULAR: u32 = libc::S_IFREG;
+
+#[cfg(not(target_os = "linux"))]
+const STAT_TYPE_REGULAR: u32 = libc::S_IFREG as u32;
+
+#[cfg(target_os = "linux")]
+fn stat_device(stat: &libc::stat) -> u64 {
+    stat.st_dev
+}
+
+#[cfg(not(target_os = "linux"))]
+fn stat_device(stat: &libc::stat) -> u64 {
+    stat.st_dev as u64
+}
+
+#[cfg(target_os = "linux")]
+fn stat_mode(stat: &libc::stat) -> u32 {
+    stat.st_mode
+}
+
+#[cfg(not(target_os = "linux"))]
+fn stat_mode(stat: &libc::stat) -> u32 {
+    stat.st_mode as u32
 }
 
 #[cfg(unix)]
@@ -606,7 +644,7 @@ fn open_file_at(parent: RawFd, name: &str) -> std::io::Result<File> {
 fn verify_marker_at(parent: RawFd, owner_token: &str) -> std::io::Result<()> {
     let mut marker = open_file_at(parent, OWNER_MARKER)?;
     let (_, mode) = file_stat(&marker)?;
-    if mode & (libc::S_IFMT as u32) != libc::S_IFREG as u32 {
+    if mode & STAT_TYPE_MASK != STAT_TYPE_REGULAR {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "ownership marker is not a regular file",
