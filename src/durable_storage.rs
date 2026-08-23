@@ -146,6 +146,23 @@ ALTER TABLE tasks ADD COLUMN lease_expires_at TEXT;
 CREATE INDEX IF NOT EXISTS idx_tasks_lease ON tasks(status, lease_expires_at);
 "#,
     ),
+    (
+        10,
+        r#"
+CREATE TABLE IF NOT EXISTS scheduled_job_runs (
+    schedule_id TEXT PRIMARY KEY,
+    last_run_at TEXT,
+    last_run_minute INTEGER,
+    last_status TEXT,
+    last_error TEXT,
+    next_run_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduled_job_runs_next
+    ON scheduled_job_runs(next_run_at);
+"#,
+    ),
 ];
 
 /// SQLite durable storage wrapper with schema bootstrap.
@@ -288,7 +305,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(migration_count, 9);
+        assert_eq!(migration_count, 10);
     }
 
     #[test]
@@ -346,6 +363,6 @@ INSERT INTO orchestrations(
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     }
 }

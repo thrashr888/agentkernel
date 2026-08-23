@@ -127,9 +127,7 @@ impl CronSchedule {
         };
         let fields: Vec<_> = expression.split_whitespace().collect();
         if fields.len() != 5 {
-            bail!(
-                "workspace autostart cron must have five fields (minute hour day-of-month month day-of-week)"
-            );
+            bail!("cron must have five fields (minute hour day-of-month month day-of-week)");
         }
         Ok(Self {
             minute: CronField::parse(fields[0], 0, 59, false)?,

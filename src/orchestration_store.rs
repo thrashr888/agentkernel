@@ -303,6 +303,18 @@ pub struct CreateSchedule {
     pub target_orchestration: Option<String>,
 }
 
+/// Persisted execution state for a TOML-configured daemon job.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScheduledJobRun {
+    pub schedule_id: String,
+    pub last_run_at: Option<String>,
+    pub last_run_minute: Option<i64>,
+    pub last_status: Option<String>,
+    pub last_error: Option<String>,
+    pub next_run_at: Option<String>,
+    pub updated_at: String,
+}
+
 /// Create request for orchestration persistence.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateOrchestration {
@@ -1169,6 +1181,133 @@ LIMIT ?1 OFFSET ?2
             )
             .context("failed to mark schedule as fired")?;
         Ok(updated > 0)
+    }
+
+    /// Return persisted execution state for a config-driven job, if it has
+    /// run (or been observed) before.
+    pub fn get_scheduled_job_run(&self, id: &str) -> Result<Option<ScheduledJobRun>> {
+        let conn = self.storage.open_connection()?;
+        conn.query_row(
+            r#"
+SELECT schedule_id, last_run_at, last_run_minute, last_status, last_error,
+       next_run_at, updated_at
+FROM scheduled_job_runs WHERE schedule_id = ?1
+"#,
+            [id],
+            |row| {
+                Ok(ScheduledJobRun {
+                    schedule_id: row.get(0)?,
+                    last_run_at: row.get(1)?,
+                    last_run_minute: row.get(2)?,
+                    last_status: row.get(3)?,
+                    last_error: row.get(4)?,
+                    next_run_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .context("failed to read scheduled job state")
+    }
+
+    /// Atomically claim a cron minute.  A claim is durable before execution,
+    /// so a daemon tick or restart cannot execute a minute twice.
+    pub fn claim_scheduled_job_minute(
+        &self,
+        id: &str,
+        minute: i64,
+        started_at: &str,
+        next_run_at: Option<&str>,
+    ) -> Result<bool> {
+        let mut conn = self.storage.open_connection()?;
+        let tx = conn
+            .transaction()
+            .context("failed to begin schedule claim")?;
+        let changed = tx
+            .execute(
+                r#"
+INSERT INTO scheduled_job_runs(
+    schedule_id, last_run_at, last_run_minute, last_status, last_error,
+    next_run_at, updated_at
+) VALUES (?1, ?2, ?3, 'running', NULL, ?4, ?2)
+ON CONFLICT(schedule_id) DO UPDATE SET
+    last_run_at = excluded.last_run_at,
+    last_run_minute = excluded.last_run_minute,
+    last_status = 'running',
+    last_error = NULL,
+    next_run_at = excluded.next_run_at,
+    updated_at = excluded.updated_at
+WHERE scheduled_job_runs.last_run_minute IS NULL
+   OR scheduled_job_runs.last_run_minute <> excluded.last_run_minute
+"#,
+                params![id, started_at, minute, next_run_at],
+            )
+            .context("failed to claim scheduled job minute")?;
+        tx.commit().context("failed to commit schedule claim")?;
+        Ok(changed > 0)
+    }
+
+    /// Record the beginning of an explicit manual trigger. Unlike a cron
+    /// claim this is unconditional, so a user can request a second run in the
+    /// same minute intentionally.
+    pub fn start_scheduled_job(
+        &self,
+        id: &str,
+        minute: i64,
+        started_at: &str,
+        next_run_at: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.storage.open_connection()?;
+        conn.execute(
+            r#"
+INSERT INTO scheduled_job_runs(
+    schedule_id, last_run_at, last_run_minute, last_status, last_error,
+    next_run_at, updated_at
+) VALUES (?1, ?2, ?3, 'running', NULL, ?4, ?2)
+ON CONFLICT(schedule_id) DO UPDATE SET
+    last_run_at = excluded.last_run_at,
+    last_run_minute = excluded.last_run_minute,
+    last_status = 'running',
+    last_error = NULL,
+    next_run_at = excluded.next_run_at,
+    updated_at = excluded.updated_at
+"#,
+            params![id, started_at, minute, next_run_at],
+        )
+        .context("failed to start scheduled job")?;
+        Ok(())
+    }
+
+    /// Persist the outcome of a claimed or manually-triggered execution.
+    pub fn finish_scheduled_job(
+        &self,
+        id: &str,
+        minute: i64,
+        finished_at: &str,
+        success: bool,
+        error: Option<&str>,
+        next_run_at: Option<&str>,
+    ) -> Result<()> {
+        let status = if success { "success" } else { "failed" };
+        let conn = self.storage.open_connection()?;
+        conn.execute(
+            r#"
+INSERT INTO scheduled_job_runs(
+    schedule_id, last_run_at, last_run_minute, last_status, last_error,
+    next_run_at, updated_at
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?2)
+ON CONFLICT(schedule_id) DO UPDATE SET
+    last_run_at = excluded.last_run_at,
+    last_run_minute = excluded.last_run_minute,
+    last_status = excluded.last_status,
+    last_error = excluded.last_error,
+    next_run_at = excluded.next_run_at,
+    updated_at = excluded.updated_at
+"#,
+            params![id, finished_at, minute, status, error, next_run_at],
+        )
+        .context("failed to persist scheduled job result")?;
+        Ok(())
     }
 
     fn execute_redis_command(

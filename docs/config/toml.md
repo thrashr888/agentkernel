@@ -159,6 +159,40 @@ remove_dormant_after_days = 30    # Reclaim dormant workspaces after 30 days
 check_interval_seconds = 60       # Enforcement poll interval
 ```
 
+## [[schedule]]
+
+User job schedules are daemon-level automation and are independent of
+`[scheduling]` workspace lifecycle rules. Each entry has a stable `id`, a
+five-field UTC cron expression, an optional `enabled` flag (default `true`),
+and exactly one target. Invalid IDs, cron expressions, or targets stop daemon
+startup with the schedule ID in the error.
+
+The tagged `target` form is recommended:
+
+```toml
+[[schedule]]
+id = "refresh-index"
+cron = "*/15 * * * *"
+enabled = true
+target = { type = "sandbox_command", sandbox = "worker", command = ["python", "refresh.py"] }
+
+[[schedule]]
+id = "nightly-orchestration"
+cron = "0 2 * * *"
+target = { type = "orchestration", name = "nightly", input = { source = "cron" } }
+
+[[schedule]]
+id = "hourly-counter"
+cron = "0 * * * *"
+target = { type = "object_method", class = "Counter", object_id = "main", method = "increment", args = { amount = 1 } }
+```
+
+For simple files, target fields may be flattened (`type`, `sandbox`,
+`command`; or `orchestration`; or `object_class`, `object_id`, and `method`).
+The daemon claims each matching cron minute atomically in its durable SQLite
+store, so loop ticks and restarts do not duplicate a minute. A failed job is
+recorded and does not prevent other jobs from running.
+
 Dormant workspaces are not autostarted. A manual start clears the dormant mark
 and records fresh activity. The daemon performs the checks continuously while
 the API server is running; existing per-sandbox lifecycle policies are also
