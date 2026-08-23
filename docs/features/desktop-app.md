@@ -65,7 +65,7 @@ The built `.app` bundle is output to `app/src-tauri/target/release/bundle/macos/
 | Secrets | Manage environment secrets passed to sandboxes |
 | Audit Log | View sandbox lifecycle events |
 | Diagnostics | System health checks and backend status |
-| Settings | Configure server URL and preferences |
+| Settings | Configure server connections, toggle the app-owned local server, and set preferences |
 
 ## Architecture
 
