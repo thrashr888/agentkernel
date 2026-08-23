@@ -77,6 +77,7 @@ fn invalid_content_length() -> Response<BoxBody> {
     )
 }
 
+#[allow(clippy::result_large_err)]
 pub(crate) async fn read_body_bytes(
     req: Request<Incoming>,
 ) -> Result<bytes::Bytes, Response<BoxBody>> {
@@ -819,6 +820,7 @@ struct RunResponse {
 struct AppState {
     /// Canonical configuration path selected at server startup. Keeping this
     /// explicit avoids silently changing policy based on the process cwd.
+    #[cfg_attr(not(feature = "enterprise"), allow(dead_code))]
     config_path: Option<std::path::PathBuf>,
     /// API keys for authentication (empty = no auth required)
     api_keys: Vec<String>,
@@ -854,6 +856,11 @@ struct AppState {
     event_bus: Option<crate::events::EventBus>,
     /// OpenTelemetry tracer provider for span export
     otel_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
+    /// Trusted server configuration used for sandbox ownership and proxy
+    /// governance. This is captured at server startup, not reparsed from the
+    /// request working directory.
+    server_config_path: Option<std::path::PathBuf>,
+    llm_governance: crate::config::LlmGovernanceConfig,
     /// Enterprise configuration (when enterprise feature is enabled)
     #[cfg(feature = "enterprise")]
     enterprise_config: Option<crate::config::EnterpriseConfig>,
@@ -872,7 +879,7 @@ impl AppState {
         otel_endpoint: Option<String>,
         webhook_urls: Vec<String>,
         config_path: Option<std::path::PathBuf>,
-    ) -> Self {
+    ) -> Result<Self> {
         let mut api_keys = api_keys_override;
         // If no keys provided via CLI, fall back to env var / config file
         if api_keys.is_empty()
@@ -922,15 +929,32 @@ impl AppState {
                 }
             });
 
+        let server_config_path = config_path.clone().or_else(|| {
+            let default_path = std::path::PathBuf::from("agentkernel.toml");
+            default_path.exists().then_some(default_path)
+        });
+        let server_config = if let Some(path) = server_config_path.as_deref() {
+            // An explicitly supplied path is authoritative. Do not turn an
+            // unreadable or malformed governance config into "disabled".
+            Some(crate::config::Config::from_file(path)?)
+        } else {
+            None
+        };
+        let llm_governance = server_config
+            .as_ref()
+            .map(|config| config.llm_governance.clone())
+            .unwrap_or_default();
+        crate::model_governance::ModelGovernancePolicy::validate_config(&llm_governance)?;
+
         #[cfg(feature = "enterprise")]
         let (enterprise_config, policy_engine, policy_init_error) =
-            Self::init_enterprise(config_path.as_deref());
+            Self::init_enterprise(server_config_path.as_deref());
 
         let vm_manager = Arc::new(std::sync::OnceLock::new());
         if let Ok(mgr) = VmManager::new() {
             let _ = vm_manager.set(Arc::new(tokio::sync::RwLock::new(mgr)));
         }
-        Self {
+        Ok(Self {
             api_keys,
             allow_sudo_exec,
             started_at: std::time::Instant::now(),
@@ -947,13 +971,30 @@ impl AppState {
             event_bus,
             otel_provider,
             config_path,
+            server_config_path,
+            llm_governance,
             #[cfg(feature = "enterprise")]
             enterprise_config,
             #[cfg(feature = "enterprise")]
             policy_engine,
             #[cfg(feature = "enterprise")]
             policy_init_error,
-        }
+        })
+    }
+
+    #[cfg(test)]
+    fn new_with_config(
+        api_keys_override: Vec<String>,
+        otel_endpoint: Option<String>,
+        webhook_urls: Vec<String>,
+        config_path: Option<&std::path::Path>,
+    ) -> Result<Self> {
+        Self::new(
+            api_keys_override,
+            otel_endpoint,
+            webhook_urls,
+            config_path.map(std::path::Path::to_path_buf),
+        )
     }
 
     /// Create state with explicit API keys
@@ -980,6 +1021,8 @@ impl AppState {
             event_bus: None,
             otel_provider: None,
             config_path: None,
+            server_config_path: None,
+            llm_governance: crate::config::LlmGovernanceConfig::default(),
             #[cfg(feature = "enterprise")]
             enterprise_config: None,
             #[cfg(feature = "enterprise")]
@@ -1293,11 +1336,41 @@ fn api_key_owner_id(key: &str) -> String {
     format!("api-key:{}", hex::encode(digest))
 }
 
+/// Return the tenant that the server has actually authenticated for a new
+/// sandbox. A bearer value is not enough when API-key auth is disabled: that
+/// would let a caller spoof an organization by choosing an arbitrary token.
+#[cfg(feature = "enterprise")]
+fn trusted_tenant_for_sandbox(
+    identity: &crate::identity::AgentIdentity,
+    state: &AppState,
+) -> Option<String> {
+    if let Some(org_id) = identity.org_id().map(str::trim).filter(|id| !id.is_empty()) {
+        return Some(org_id.to_string());
+    }
+
+    let api_key_is_valid = identity.api_key.as_deref().is_some_and(|token| {
+        state
+            .api_keys
+            .iter()
+            .any(|configured| constant_time_eq(token, configured))
+    });
+    if api_key_is_valid {
+        return state
+            .enterprise_config
+            .as_ref()
+            .and_then(|config| config.org_id.clone())
+            .filter(|org_id| !org_id.trim().is_empty());
+    }
+
+    None
+}
+
 /// Enforce enterprise policy for an action on a sandbox.
 ///
 /// Returns Ok(()) if the action is permitted (or no policy engine is active).
 /// Returns a 403 Forbidden response if the action is denied.
 #[cfg(feature = "enterprise")]
+#[allow(clippy::result_large_err)]
 async fn enforce_policy(
     state: &AppState,
     identity: &crate::identity::AgentIdentity,
@@ -1952,6 +2025,7 @@ fn json_response<T: Serialize>(status: StatusCode, data: &T) -> Response<BoxBody
         .unwrap()
 }
 
+#[allow(clippy::result_large_err)]
 async fn read_json_body<T: for<'de> Deserialize<'de>>(
     req: Request<Incoming>,
 ) -> Result<T, Response<BoxBody>> {
@@ -3617,6 +3691,27 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             trusted_owner_identity(&req, &state)
         }
     };
+    #[cfg(feature = "enterprise")]
+    let trusted_tenant = trusted_tenant_for_sandbox(&identity, &state);
+
+    #[cfg(feature = "enterprise")]
+    if state.llm_governance.enabled && trusted_tenant.is_none() {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            &ApiResponse::<()>::error(
+                "LLM model governance requires a validated tenant identity for sandbox creation",
+            ),
+        );
+    }
+    #[cfg(not(feature = "enterprise"))]
+    if state.llm_governance.enabled {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            &ApiResponse::<()>::error(
+                "LLM model governance requires the enterprise identity feature",
+            ),
+        );
+    }
 
     let body: CreateRequest = match read_json_body(req).await {
         Ok(b) => b,
@@ -3769,6 +3864,28 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    if let Some(config_path) = state.server_config_path.as_ref()
+        && let Err(e) =
+            manager.set_config_path(&body.name, Some(config_path.to_string_lossy().to_string()))
+    {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to persist server config ownership: {}", e)),
+        );
+    }
+
+    // Persist ownership before the guest starts. Later starts use this value,
+    // never a tenant supplied by an LLM request or a start caller.
+    #[cfg(feature = "enterprise")]
+    if let Err(e) = manager.set_tenant_id(&body.name, trusted_tenant) {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to persist sandbox tenant ownership: {}", e)),
         );
     }
 
@@ -7332,7 +7449,7 @@ fn spawn_workspace_scheduler(state: Arc<AppState>, config_path: Option<&std::pat
 /// Run the HTTP API server (plain HTTP)
 #[allow(dead_code)]
 pub async fn run_server(addr: SocketAddr, api_keys: Vec<String>) -> Result<()> {
-    let mut app_state = AppState::new(api_keys, None, vec![], None);
+    let mut app_state = AppState::new(api_keys, None, vec![], None)?;
     app_state.configure_job_scheduler(None)?;
     app_state.start_job_scheduler();
     let state = Arc::new(app_state);
@@ -7429,7 +7546,7 @@ pub async fn run_server_with_tls_config(
         None => None,
     };
 
-    let mut app_state = AppState::new(api_keys, otel_endpoint, webhook_urls, config_path.clone());
+    let mut app_state = AppState::new(api_keys, otel_endpoint, webhook_urls, config_path.clone())?;
     app_state.configure_job_scheduler(config_path.as_deref())?;
     app_state.start_job_scheduler();
     let state = Arc::new(app_state);
@@ -8508,6 +8625,7 @@ fn binary_exists_in_path(bin: &str) -> bool {
 use crate::browser_scripts;
 
 /// Helper: ensure the browser server is running in the sandbox, start if needed.
+#[allow(clippy::result_large_err)]
 async fn ensure_browser_server(name: &str, state: &Arc<AppState>) -> Result<(), Response<BoxBody>> {
     let mut manager = state.get_manager().await.map_err(|e| {
         json_response(
@@ -9931,6 +10049,36 @@ mod tests {
     use super::*;
     use crate::durable_storage::DurableStorage;
     use std::sync::Arc;
+
+    #[test]
+    fn explicit_governance_config_parse_failure_is_not_silently_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agentkernel.toml");
+        std::fs::write(&path, "[llm_governance\n").unwrap();
+        assert!(AppState::new_with_config(vec![], None, vec![], Some(&path)).is_err());
+    }
+
+    #[test]
+    fn explicit_config_path_is_the_governance_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        std::fs::write(
+            &path,
+            r#"
+                [sandbox]
+                name = "governed"
+                [llm_governance]
+                enabled = true
+                [llm_governance.tenants.acme]
+                openai = ["gpt-4o"]
+            "#,
+        )
+        .unwrap();
+
+        let state = AppState::new_with_config(vec![], None, vec![], Some(&path)).unwrap();
+        assert!(state.llm_governance.enabled);
+        assert_eq!(state.server_config_path.as_deref(), Some(path.as_path()));
+    }
 
     // === ApiResponse tests ===
 

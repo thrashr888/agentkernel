@@ -1681,6 +1681,7 @@ pub fn not_found_response() -> Response<BoxBody> {
     error_response(ScimError::not_found("SCIM resource not found"))
 }
 
+#[allow(clippy::result_large_err)]
 async fn read_json<T: for<'de> Deserialize<'de>>(
     req: Request<Incoming>,
 ) -> Result<T, Response<BoxBody>> {

@@ -29,6 +29,7 @@ mod llm_intercept;
 mod llm_spend;
 mod mcp;
 mod metrics;
+mod model_governance;
 mod object_runtime;
 mod observe;
 mod opencode;
@@ -1220,6 +1221,24 @@ memory_mb = 512
                 for warning in cfg.validate() {
                     eprintln!("Warning: {}", warning);
                 }
+                model_governance::ModelGovernancePolicy::validate_config(&cfg.llm_governance)?;
+
+                let governance_tenant = if cfg.llm_governance.enabled {
+                    Some(
+                        cfg.enterprise
+                            .enabled
+                            .then(|| cfg.enterprise.org_id.clone())
+                            .flatten()
+                            .filter(|id| !id.trim().is_empty())
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "LLM model governance requires enterprise.org_id in the trusted config"
+                                )
+                            })?,
+                    )
+                } else {
+                    None
+                };
 
                 let mut start_perms = cfg.get_permissions();
                 let git_worktree = git_worktree || cfg.git.worktree;
@@ -1358,6 +1377,9 @@ memory_mb = 512
                         .map(|dc| dc.path.to_string_lossy().into_owned())
                 });
                 manager.set_config_path(&name, stored_config_path)?;
+                if let Some(tenant_id) = governance_tenant {
+                    manager.set_tenant_id(&name, Some(tenant_id))?;
+                }
                 if git_worktree {
                     let worktree = manager.create_git_worktree(&name, &workspace_root)?;
                     println!("  Git worktree: {}", worktree);

@@ -16,6 +16,7 @@ pub mod languages;
 pub mod llm_intercept;
 pub mod llm_spend;
 pub mod metrics;
+pub mod model_governance;
 pub mod orchestration_store;
 pub mod permissions;
 pub mod proxy;

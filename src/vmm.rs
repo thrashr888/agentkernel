@@ -200,6 +200,11 @@ pub struct SandboxState {
     /// Original config file path used to create or start this sandbox.
     #[serde(default)]
     pub config_path: Option<String>,
+    /// Server-derived tenant ownership used by LLM model governance.
+    /// This is persisted at sandbox creation and cannot be supplied by the
+    /// sandbox's network request payload.
+    #[serde(default)]
+    pub tenant_id: Option<String>,
     /// Time-to-live in seconds (None = no expiry)
     #[serde(default)]
     pub ttl_seconds: Option<u64>,
@@ -1006,6 +1011,7 @@ impl VmManager {
             container_work_dir: None,
             git_worktree: None,
             config_path: None,
+            tenant_id: None,
             ttl_seconds,
             expires_at,
             ports,
@@ -1269,6 +1275,26 @@ impl VmManager {
         Ok(())
     }
 
+    /// Persist the trusted tenant identity associated with a sandbox.
+    pub fn set_tenant_id(&mut self, name: &str, tenant_id: Option<String>) -> Result<()> {
+        let tenant_id = tenant_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.tenant_id = tenant_id;
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
     /// Persist template secret mappings (env_var → host) so the UI can show
     /// which secrets a template expects, even before they are configured.
     pub fn set_secret_mappings(
@@ -1504,6 +1530,7 @@ impl VmManager {
         name: &str,
         resolved: &HashMap<String, String>,
         backend: BackendType,
+        model_governance: Option<&crate::model_governance::ModelGovernancePolicy>,
     ) -> Result<()> {
         match crate::vsock_secrets::inject_secrets_as_placeholders(
             sandbox,
@@ -1530,6 +1557,7 @@ impl VmManager {
                         llm_intercept: true,
                         llm_domains: Vec::new(),
                         org_managed_domains: Vec::new(),
+                        llm_governance: model_governance.cloned(),
                     };
                     match crate::proxy::start_proxy(proxy_config, HashMap::new(), placeholder_map)
                         .await
@@ -1718,6 +1746,41 @@ impl VmManager {
             .await
     }
 
+    /// Resolve model governance from trusted server configuration and the
+    /// sandbox's persisted ownership. Request payloads cannot select a tenant.
+    fn model_governance_for_state(
+        state: &SandboxState,
+    ) -> Result<Option<crate::model_governance::ModelGovernancePolicy>> {
+        // A persisted path is authoritative. Falling back to the process
+        // working directory after that path disappears could silently switch
+        // the tenant policy (or disable governance) between starts.
+        let configured_path = state.config_path.as_ref().map(PathBuf::from);
+        let path = configured_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("agentkernel.toml"));
+        if !path.exists() {
+            if configured_path.is_some() {
+                bail!("sandbox governance configuration is missing");
+            }
+            return Ok(None);
+        }
+
+        let config = Config::from_file(&path)?;
+        if !config.llm_governance.enabled {
+            return Ok(None);
+        }
+
+        let tenant_id = state.tenant_id.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "LLM model governance is enabled but this sandbox has no trusted tenant identity"
+            )
+        })?;
+        crate::model_governance::ModelGovernancePolicy::from_config(
+            &config.llm_governance,
+            tenant_id,
+        )
+    }
+
     /// Start a sandbox with specific permissions
     pub async fn start_with_permissions(&mut self, name: &str, perms: &Permissions) -> Result<()> {
         self.start_with_permissions_and_files(name, perms, &[])
@@ -1758,6 +1821,9 @@ impl VmManager {
         if state.git_worktree.is_some() {
             effective_perms.mount_cwd = true;
         }
+        // Resolve before creating the guest so an enabled policy cannot be
+        // skipped because proxy startup happens later.
+        let model_governance = Self::model_governance_for_state(&state)?;
 
         if state.archived_at.is_some() {
             bail!(
@@ -1875,7 +1941,7 @@ impl VmManager {
         }
 
         // Start secret injection proxy if bindings are configured
-        if !state.secret_bindings.is_empty() {
+        if !state.secret_bindings.is_empty() || model_governance.is_some() {
             let vault = SecretVault::new(SecretBackend::default());
 
             // Parse bindings and resolve secrets
@@ -1904,7 +1970,7 @@ impl VmManager {
                 bindings.push(binding);
             }
 
-            if !resolved_secrets.is_empty() {
+            if !resolved_secrets.is_empty() || model_governance.is_some() {
                 let allowed_hosts: Vec<String> =
                     bindings.iter().map(|b| b.target_host.clone()).collect();
                 // Bind proxy to 0.0.0.0 so VMs on the host network can reach it
@@ -1919,6 +1985,7 @@ impl VmManager {
                     llm_intercept: true,
                     llm_domains: Vec::new(),
                     org_managed_domains: Vec::new(),
+                    llm_governance: model_governance.clone(),
                 };
 
                 match crate::proxy::start_proxy(
@@ -1987,6 +2054,9 @@ impl VmManager {
                         PROXY_HANDLES.write().await.insert(name.to_string(), handle);
                     }
                     Err(e) => {
+                        if model_governance.is_some() {
+                            return Err(e.context("LLM governance proxy failed to start"));
+                        }
                         eprintln!("Warning: Failed to start secret proxy: {}", e);
                     }
                 }
@@ -2063,6 +2133,7 @@ impl VmManager {
                             llm_intercept: true,
                             llm_domains: Vec::new(),
                             org_managed_domains: org_domains,
+                            llm_governance: model_governance.clone(),
                         };
 
                         match crate::proxy::start_proxy(
@@ -2136,6 +2207,9 @@ impl VmManager {
                                 PROXY_HANDLES.write().await.insert(name.to_string(), handle);
                             }
                             Err(e) => {
+                                if model_governance.is_some() {
+                                    return Err(e.context("LLM governance proxy failed to start"));
+                                }
                                 eprintln!("Warning: Failed to start org LLM key proxy: {}", e);
                             }
                         }
@@ -2273,8 +2347,14 @@ impl VmManager {
             }
             if !resolved.is_empty() {
                 if state.placeholder_secrets {
-                    self.inject_placeholder_secrets(sandbox.as_mut(), name, &resolved, backend)
-                        .await?;
+                    self.inject_placeholder_secrets(
+                        sandbox.as_mut(),
+                        name,
+                        &resolved,
+                        backend,
+                        model_governance.as_ref(),
+                    )
+                    .await?;
                 } else {
                     match crate::vsock_secrets::inject_secrets_as_files(
                         sandbox.as_mut(),
@@ -3614,6 +3694,7 @@ mod tests {
             git_worktree: None,
             config_path: None,
             ttl_seconds: None,
+            tenant_id: None,
             expires_at: None,
             ports: Vec::new(),
             ssh_enabled: false,
@@ -3738,6 +3819,7 @@ mod tests {
             git_worktree: None,
             config_path: None,
             ttl_seconds: None,
+            tenant_id: None,
             expires_at: None,
             ports: Vec::new(),
             ssh_enabled: false,
@@ -3823,6 +3905,7 @@ mod tests {
             git_worktree: None,
             config_path: None,
             ttl_seconds: None,
+            tenant_id: None,
             expires_at: None,
             ports: Vec::new(),
             ssh_enabled: false,
@@ -3924,6 +4007,7 @@ mod tests {
                 git_worktree: None,
                 config_path: None,
                 ttl_seconds: None,
+                tenant_id: None,
                 expires_at: None,
                 ports: Vec::new(),
                 ssh_enabled: false,
@@ -4006,6 +4090,7 @@ mod tests {
             git_worktree: None,
             config_path: None,
             ttl_seconds: None,
+            tenant_id: None,
             expires_at: None,
             ports: Vec::new(),
             ssh_enabled: false,
@@ -4088,6 +4173,7 @@ mod tests {
                 git_worktree: None,
                 config_path: None,
                 ttl_seconds: None,
+                tenant_id: None,
                 expires_at: None,
                 ports: Vec::new(),
                 ssh_enabled: false,
@@ -4171,6 +4257,7 @@ mod tests {
             git_worktree: None,
             config_path: None,
             ttl_seconds: None,
+            tenant_id: None,
             expires_at: None,
             ports: Vec::new(),
             ssh_enabled: false,
@@ -4250,6 +4337,7 @@ mod tests {
             git_worktree: None,
             config_path: None,
             ttl_seconds: None,
+            tenant_id: None,
             expires_at: None,
             ports: Vec::new(),
             ssh_enabled: false,
@@ -4325,6 +4413,7 @@ mod tests {
             git_worktree: None,
             config_path: None,
             ttl_seconds: Some(3600),
+            tenant_id: None,
             expires_at: Some("2026-01-01T01:00:00Z".to_string()),
             ports: Vec::new(),
             ssh_enabled: false,

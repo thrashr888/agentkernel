@@ -26,6 +26,10 @@ use crate::llm_intercept::{
     self, LlmDomainRegistry, LlmEvent, TokenUsage, extract_model_from_request,
     extract_streaming_from_request, extract_token_usage,
 };
+use crate::model_governance::{
+    DenialReason, GovernanceDenialAudit, ModelGovernancePolicy, normalize_model,
+    normalize_provider, record_denial,
+};
 use crate::proxy_hooks::{
     HookEvent, HookRegistry, ProxyEvent, dispatch_hooks, dispatch_llm_hooks, new_registry,
 };
@@ -165,6 +169,9 @@ pub struct ProxyConfig {
     pub llm_domains: Vec<String>,
     /// Domains whose keys are managed at the org level (from [llm_keys] config)
     pub org_managed_domains: Vec<String>,
+    /// Resolved tenant model policy. This is populated by trusted server
+    /// context; it is never selected from proxy request data.
+    pub llm_governance: Option<ModelGovernancePolicy>,
 }
 
 /// Handle to a running proxy instance.
@@ -316,11 +323,41 @@ pub async fn start_proxy(
 
     let hook_registry = new_registry(config.hooks.clone());
 
-    let llm_registry = if config.llm_intercept {
+    // Governance requires the MITM/interceptor even when a caller supplied a
+    // stale `llm_intercept = false` setting. Otherwise CONNECT would tunnel
+    // straight through and bypass the allowlist.
+    let llm_intercept =
+        llm_interception_enabled(config.llm_intercept, config.llm_governance.is_some());
+    let llm_registry = if llm_intercept {
         LlmDomainRegistry::default_registry().with_custom_domains(&config.llm_domains)
     } else {
         LlmDomainRegistry::empty()
     };
+
+    if let Some(policy) = config.llm_governance.as_ref() {
+        let registered = config
+            .llm_domains
+            .iter()
+            .map(|_| "custom")
+            .chain([
+                "openai",
+                "anthropic",
+                "google",
+                "deepseek",
+                "groq",
+                "mistral",
+                "cohere",
+                "together",
+                "fireworks",
+            ])
+            .collect::<std::collections::HashSet<_>>();
+        if policy
+            .providers()
+            .any(|provider| !registered.contains(provider))
+        {
+            bail!("LLM governance policy references a provider with no trusted proxy domain")
+        }
+    }
 
     let listener = TcpListener::bind(&config.listen_addr)
         .await
@@ -405,6 +442,11 @@ async fn handle_connection(stream: TcpStream, state: Arc<RwLock<ProxyState>>) ->
 }
 
 type BoxBody = http_body_util::combinators::BoxBody<bytes::Bytes, hyper::Error>;
+const MAX_GOVERNED_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+fn llm_interception_enabled(configured: bool, governance: bool) -> bool {
+    configured || governance
+}
 
 fn empty_body() -> BoxBody {
     use http_body_util::Empty;
@@ -414,6 +456,65 @@ fn empty_body() -> BoxBody {
 fn full_body(s: impl Into<bytes::Bytes>) -> BoxBody {
     use http_body_util::Full;
     Full::new(s.into()).map_err(|never| match never {}).boxed()
+}
+
+/// Return a generic denial response and emit a metadata-only audit record.
+/// Request bodies, header values, and unsanitized model input are intentionally
+/// excluded from both the log and the in-memory audit trail.
+#[allow(clippy::too_many_arguments)]
+async fn governance_denial(
+    policy: &ModelGovernancePolicy,
+    reason: DenialReason,
+    sandbox: &str,
+    provider: &str,
+    host: &str,
+    method: &str,
+    path: &str,
+    model: Option<&str>,
+) -> Response<BoxBody> {
+    let provider = normalize_provider(provider).unwrap_or_else(|_| "unknown".to_string());
+    let model = model.and_then(|value| normalize_model(value).ok());
+    eprintln!(
+        "[proxy:audit] LLM governance denied sandbox={} tenant={} provider={} model={} host={} method={} path={} reason={}",
+        sandbox,
+        policy.tenant_id(),
+        provider,
+        model.as_deref().unwrap_or("unknown"),
+        host,
+        method,
+        path,
+        reason.as_str(),
+    );
+    crate::audit::log_event(crate::audit::AuditEvent::PolicyViolation {
+        sandbox: sandbox.to_string(),
+        policy: "llm_model_governance".to_string(),
+        details: format!(
+            "tenant={} provider={} model={} host={} method={} path={} reason={}",
+            policy.tenant_id(),
+            provider,
+            model.as_deref().unwrap_or("unknown"),
+            host,
+            method,
+            path,
+            reason.as_str(),
+        ),
+    });
+    record_denial(GovernanceDenialAudit {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        sandbox: sandbox.to_string(),
+        tenant: policy.tenant_id().to_string(),
+        provider: provider.clone(),
+        host: host.to_string(),
+        method: method.to_string(),
+        path: path.to_string(),
+        model,
+        reason,
+    })
+    .await;
+
+    let mut response = Response::new(full_body("LLM model request denied by governance policy"));
+    *response.status_mut() = StatusCode::FORBIDDEN;
+    response
 }
 
 async fn handle_request(
@@ -459,8 +560,11 @@ async fn handle_connect(
 
     let has_secret = s.resolved_secrets.contains_key(&host_only);
     let secret_info = s.resolved_secrets.get(&host_only).cloned();
-    let is_llm_host = s.config.llm_intercept && s.llm_registry.lookup(&host_only).is_some();
+    let is_llm_host =
+        llm_interception_enabled(s.config.llm_intercept, s.config.llm_governance.is_some())
+            && s.llm_registry.lookup(&host_only).is_some();
     let llm_provider = s.llm_registry.lookup(&host_only).cloned();
+    let llm_governance = s.config.llm_governance.clone();
     let ca_signer = s.ca_signer.clone();
     let sandbox_name = s.config.sandbox_name.clone();
     let registry = s.hook_registry.clone();
@@ -569,6 +673,7 @@ async fn handle_connect(
             &header_value,
             &sandbox_name,
             llm_provider.as_ref(),
+            llm_governance.as_ref(),
             &registry,
             is_org_managed,
             &placeholder_map,
@@ -595,6 +700,7 @@ async fn mitm_bridge(
     header_value: &str,
     sandbox_name: &str,
     llm_provider: Option<&llm_intercept::LlmProvider>,
+    llm_governance: Option<&ModelGovernancePolicy>,
     hook_registry: &HookRegistry,
     is_org_managed: bool,
     placeholder_map: &PlaceholderMap,
@@ -630,6 +736,7 @@ async fn mitm_bridge(
     let host = host.to_string();
     let llm_provider_name = llm_provider.map(|p| p.name.to_string());
     let llm_token_format = llm_provider.map(|p| p.token_format);
+    let llm_governance = llm_governance.cloned();
     let hook_registry = hook_registry.clone();
     let placeholder_map = placeholder_map.clone();
 
@@ -661,6 +768,7 @@ async fn mitm_bridge(
                 let llm_token_format = llm_token_format;
                 let hook_registry = hook_registry.clone();
                 let pmap = placeholder_map.clone();
+                let llm_governance = llm_governance.clone();
                 async move {
                     let method_str = req.method().to_string();
                     let uri_path = req.uri().path().to_string();
@@ -677,11 +785,47 @@ async fn mitm_bridge(
                     let req = if llm_provider_name.is_some() || has_placeholders {
                         // Buffer body for LLM metadata extraction and/or placeholder substitution
                         let (parts, body) = req.into_parts();
-                        let mut body_bytes = body
-                            .collect()
-                            .await
-                            .map(|c| c.to_bytes())
-                            .unwrap_or_default();
+                        let mut body_bytes = match body.collect().await {
+                            Ok(collected) => collected.to_bytes(),
+                            Err(_) if llm_governance.is_some() && llm_provider_name.is_some() => {
+                                let policy = llm_governance.as_ref().expect("checked above");
+                                let provider = llm_provider_name.as_deref().unwrap_or("unknown");
+                                return Ok::<_, hyper::Error>(
+                                    governance_denial(
+                                        policy,
+                                        DenialReason::InvalidModel,
+                                        &sn,
+                                        provider,
+                                        &host,
+                                        &method_str,
+                                        &uri_path,
+                                        None,
+                                    )
+                                    .await,
+                                );
+                            }
+                            Err(_) => bytes::Bytes::new(),
+                        };
+
+                        if let Some(policy) = llm_governance.as_ref()
+                            && llm_provider_name.is_some()
+                            && body_bytes.len() > MAX_GOVERNED_REQUEST_BODY_BYTES
+                        {
+                            let provider = llm_provider_name.as_deref().unwrap_or("unknown");
+                            return Ok::<_, hyper::Error>(
+                                governance_denial(
+                                    policy,
+                                    DenialReason::InvalidModel,
+                                    &sn,
+                                    provider,
+                                    &host,
+                                    &method_str,
+                                    &uri_path,
+                                    None,
+                                )
+                                .await,
+                            );
+                        }
 
                         // Substitute placeholder tokens with real secret values
                         if has_placeholders {
@@ -693,6 +837,24 @@ async fn mitm_bridge(
 
                         model_name = extract_model_from_request(&body_bytes);
                         let is_str = extract_streaming_from_request(&body_bytes);
+                        if let (Some(policy), Some(provider)) =
+                            (llm_governance.as_ref(), llm_provider_name.as_deref())
+                            && let Err(reason) = policy.authorize(provider, model_name.as_deref())
+                        {
+                            return Ok::<_, hyper::Error>(
+                                governance_denial(
+                                    policy,
+                                    reason,
+                                    &sn,
+                                    provider,
+                                    &host,
+                                    &method_str,
+                                    &uri_path,
+                                    model_name.as_deref(),
+                                )
+                                .await,
+                            );
+                        }
                         let mut new_req = Request::from_parts(
                             parts,
                             http_body_util::Full::new(body_bytes)
@@ -902,11 +1064,13 @@ async fn handle_plain_http(
     let url_str = req.uri().to_string();
     let uri_path = req.uri().path().to_string();
     let registry = s.hook_registry.clone();
-    let llm_provider = if s.config.llm_intercept {
-        s.llm_registry.lookup(&host).cloned()
-    } else {
-        None
-    };
+    let llm_provider =
+        if llm_interception_enabled(s.config.llm_intercept, s.config.llm_governance.is_some()) {
+            s.llm_registry.lookup(&host).cloned()
+        } else {
+            None
+        };
+    let llm_governance = s.config.llm_governance.clone();
     let is_org_managed_http = s.org_managed_domains.contains(&host);
     drop(s);
 
@@ -928,18 +1092,78 @@ async fn handle_plain_http(
     )
     .await;
 
-    // Substitute placeholder tokens in request body for plain HTTP
-    let req = if has_placeholders {
+    // Buffer LLM requests so model governance runs before any upstream send.
+    let mut model_name = None;
+    let mut is_streaming = false;
+    let req = if has_placeholders || llm_provider.is_some() {
         let (parts, body) = req.into_parts();
-        let body_bytes = body
-            .collect()
-            .await
-            .map(|c| c.to_bytes())
-            .unwrap_or_default();
-        let (substituted, _) = placeholder_map.substitute_bytes(&body_bytes);
+        let mut body_bytes = match body.collect().await {
+            Ok(collected) => collected.to_bytes(),
+            Err(_) if llm_governance.is_some() && llm_provider.is_some() => {
+                let policy = llm_governance.as_ref().expect("checked above");
+                let provider = llm_provider
+                    .as_ref()
+                    .map(|provider| provider.name)
+                    .unwrap_or("unknown");
+                return Ok(governance_denial(
+                    policy,
+                    DenialReason::InvalidModel,
+                    &sandbox_name,
+                    provider,
+                    &host,
+                    &method_str,
+                    &uri_path,
+                    None,
+                )
+                .await);
+            }
+            Err(_) => bytes::Bytes::new(),
+        };
+        if let Some(policy) = llm_governance.as_ref()
+            && llm_provider.is_some()
+            && body_bytes.len() > MAX_GOVERNED_REQUEST_BODY_BYTES
+        {
+            let provider = llm_provider
+                .as_ref()
+                .map(|provider| provider.name)
+                .unwrap_or("unknown");
+            return Ok(governance_denial(
+                policy,
+                DenialReason::InvalidModel,
+                &sandbox_name,
+                provider,
+                &host,
+                &method_str,
+                &uri_path,
+                None,
+            )
+            .await);
+        }
+        model_name = extract_model_from_request(&body_bytes);
+        is_streaming = extract_streaming_from_request(&body_bytes);
+        if let Some(policy) = llm_governance.as_ref()
+            && let Some(provider) = llm_provider.as_ref()
+            && let Err(reason) = policy.authorize(provider.name, model_name.as_deref())
+        {
+            return Ok(governance_denial(
+                policy,
+                reason,
+                &sandbox_name,
+                provider.name,
+                &host,
+                &method_str,
+                &uri_path,
+                model_name.as_deref(),
+            )
+            .await);
+        }
+        if has_placeholders {
+            let (substituted, _) = placeholder_map.substitute_bytes(&body_bytes);
+            body_bytes = bytes::Bytes::from(substituted);
+        }
         Request::from_parts(
             parts,
-            http_body_util::Full::new(bytes::Bytes::from(substituted))
+            http_body_util::Full::new(body_bytes)
                 .map_err(|never| match never {})
                 .boxed(),
         )
@@ -985,13 +1209,13 @@ async fn handle_plain_http(
                     host,
                     method: method_str,
                     path: uri_path,
-                    model: None,
+                    model: model_name,
                     status: Some(status),
                     latency_ms: Some(latency),
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
                     total_tokens: usage.total_tokens,
-                    streaming: false,
+                    streaming: is_streaming,
                     secret_injected,
                     key_source: if is_org_managed_http {
                         "org".to_string()
@@ -1086,6 +1310,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn governance_forces_llm_interception_even_when_disabled_by_stale_config() {
+        assert!(llm_interception_enabled(false, true));
+        assert!(!llm_interception_enabled(false, false));
+    }
+
+    #[tokio::test]
+    async fn governance_rejects_unregistered_provider_at_proxy_startup() {
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert(
+            "unregistered-provider".to_string(),
+            ["model".to_string()].into_iter().collect(),
+        );
+        let mut tenants = std::collections::BTreeMap::new();
+        tenants.insert("acme".to_string(), providers);
+        let governance = ModelGovernancePolicy::from_config(
+            &crate::config::LlmGovernanceConfig {
+                enabled: true,
+                tenants,
+            },
+            "acme",
+        )
+        .unwrap()
+        .unwrap();
+
+        let result = start_proxy(
+            ProxyConfig {
+                listen_addr: "127.0.0.1:0".parse().unwrap(),
+                bindings: vec![],
+                allowed_hosts: vec![],
+                blocked_hosts: vec![],
+                allowlist_only: false,
+                sandbox_name: "test".to_string(),
+                hooks: vec![],
+                llm_intercept: false,
+                llm_domains: vec![],
+                org_managed_domains: vec![],
+                llm_governance: Some(governance),
+            },
+            HashMap::new(),
+            PlaceholderMap::new(),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .err()
+                .is_some_and(|error| error.to_string().contains("no trusted proxy domain"))
+        );
+    }
+
+    #[test]
     fn test_parse_cli_inline_value() {
         let (binding, value) =
             SecretBinding::parse_cli("OPENAI_API_KEY=sk-test123:api.openai.com").unwrap();
@@ -1146,6 +1421,7 @@ mod tests {
             llm_intercept: false,
             llm_domains: vec![],
             org_managed_domains: vec![],
+            llm_governance: None,
         };
 
         assert!(is_host_allowed("api.openai.com", &config));
@@ -1166,6 +1442,7 @@ mod tests {
             llm_intercept: false,
             llm_domains: vec![],
             org_managed_domains: vec![],
+            llm_governance: None,
         };
 
         assert!(is_host_allowed("api.openai.com", &config));
@@ -1187,6 +1464,7 @@ mod tests {
             llm_intercept: false,
             llm_domains: vec![],
             org_managed_domains: vec![],
+            llm_governance: None,
         };
 
         assert!(is_host_allowed("api.openai.com", &config));
@@ -1208,6 +1486,7 @@ mod tests {
             llm_intercept: false,
             llm_domains: vec![],
             org_managed_domains: vec![],
+            llm_governance: None,
         };
 
         assert!(is_host_allowed("api.openai.com:443", &config));
