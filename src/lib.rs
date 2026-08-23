@@ -7,6 +7,7 @@ pub mod audit;
 pub mod backend;
 pub mod build;
 pub mod config;
+pub mod cow;
 pub mod docker_backend;
 pub mod durable_storage;
 pub mod firecracker_client;

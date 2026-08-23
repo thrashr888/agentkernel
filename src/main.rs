@@ -10,6 +10,8 @@ mod benchmark;
 mod browser_scripts;
 mod build;
 mod config;
+#[allow(dead_code)]
+mod cow;
 mod daemon;
 mod devcontainer;
 mod docker_backend;
