@@ -34,6 +34,7 @@ import type {
   StoreQueryResult,
   StoreExecuteResult,
   StoreCommandResult,
+  TunnelStatus,
   DockerImage,
   DockerImageDiskUsage,
   BenchmarkResult,
@@ -176,6 +177,9 @@ export const api = {
   startServer: () => invoke<string>("start_server"),
   stopServer: () => invoke<string>("stop_server"),
   serverStatus: () => invoke<boolean>("server_status"),
+  startTunnel: () => invoke<TunnelStatus>("start_tunnel"),
+  stopTunnel: () => invoke<TunnelStatus>("stop_tunnel"),
+  tunnelStatus: () => invoke<TunnelStatus>("tunnel_status"),
 
   // Docker Images
   listImages: () => invoke<DockerImage[]>("list_images"),

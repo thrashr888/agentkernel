@@ -90,3 +90,24 @@ artifacts, so an update cannot leave the app and server on different versions.
 Entries marked as external or remote in Settings are never started or stopped
 by the app. This keeps a separately managed local daemon and remote servers
 available for development, team, and enterprise deployments.
+
+### Private SSH tunnels
+
+Remote server entries can opt into **Manage tunnel** in Settings. Configure the
+SSH host alias (and optionally a user/port) from the user's existing OpenSSH
+configuration. The desktop starts `ssh` with `BatchMode`,
+`ExitOnForwardFailure`, keepalive options, and an explicit loopback forward to
+the remote AgentKernel bind (by default `127.0.0.1:18888`). It chooses a local
+loopback port when one is not supplied.
+
+The API client is switched to the local forwarded URL only after a health check
+through that tunnel succeeds. Failed startup reports the SSH stderr or an
+actionable connection error and cleans up the app-owned child. Switching back
+to a direct URL, stopping the tunnel, application exit, and app shutdown stop
+only children spawned by this desktop instance. The app never edits
+`~/.ssh/config`, kills unrelated SSH processes, or requires the AgentKernel
+port to be publicly reachable.
+
+Tunnel-managed entries currently use HTTP over SSH. HTTPS entries remain
+direct because a loopback URL would not preserve the remote certificate's
+hostname/SNI; use a direct HTTPS URL or HTTP on the private SSH link.

@@ -182,6 +182,7 @@ pub fn run() {
     builder
         .manage(AppState::default())
         .manage(commands::server::ServerProcess::default())
+        .manage(commands::tunnels::TunnelManager::default())
         .setup(|app| {
             // -- Status items (disabled — informational only) --
             let status_item = MenuItem::with_id(
@@ -283,6 +284,10 @@ pub fn run() {
                 &app.state::<commands::server::ServerProcess>(),
                 &app.state::<AppState>(),
             );
+            // Remote entries can opt into an app-owned SSH tunnel. Startup
+            // performs the same health check as an explicit connection before
+            // replacing the API client's base URL.
+            commands::tunnels::auto_start(app.handle());
 
             // -- Background poller: update tray status every 5 seconds --
             let status_clone = status_item.clone();
@@ -526,6 +531,10 @@ pub fn run() {
             commands::server::start_server,
             commands::server::stop_server,
             commands::server::server_status,
+            // SSH tunnel management
+            commands::tunnels::start_tunnel,
+            commands::tunnels::stop_tunnel,
+            commands::tunnels::tunnel_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -533,6 +542,9 @@ pub fn run() {
             if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
                 if let Err(error) = app.state::<commands::server::ServerProcess>().stop() {
                     eprintln!("Failed to stop AgentKernel server during shutdown: {error}");
+                }
+                if let Err(error) = app.state::<commands::tunnels::TunnelManager>().stop_now() {
+                    eprintln!("Failed to stop SSH tunnel during shutdown: {error}");
                 }
             }
         });

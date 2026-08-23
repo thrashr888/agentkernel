@@ -275,6 +275,7 @@ mod tests {
             url: url.to_string(),
             api_key: None,
             managed: Some(managed),
+            ssh_tunnel: None,
         }
     }
 

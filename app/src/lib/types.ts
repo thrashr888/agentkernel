@@ -309,12 +309,34 @@ export interface StoreCommandResult {
 }
 
 // Server entry for multi-server support
+export interface SshTunnelConfig {
+  /** Explicit opt-in; disabled entries never spawn ssh. */
+  enabled: boolean;
+  /** Host or alias resolved by the user's OpenSSH config. */
+  ssh_host: string;
+  ssh_user?: string;
+  ssh_port?: number;
+  /** Must remain a loopback bind on the remote machine. */
+  remote_host?: string;
+  remote_port?: number;
+  /** Local loopback port; omitted means the app chooses one. */
+  local_port?: number;
+}
+
+export interface TunnelStatus {
+  state: "disabled" | "starting" | "connected" | "error" | string;
+  server_name?: string;
+  local_url?: string;
+  error?: string;
+}
+
 export interface ServerEntry {
   name: string;
   url: string;
   api_key?: string;
   /** True when the desktop app owns and starts this local server. */
   managed?: boolean;
+  ssh_tunnel?: SshTunnelConfig;
 }
 
 // Settings

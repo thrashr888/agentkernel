@@ -22,3 +22,4 @@ pub mod setup;
 pub mod snapshots;
 pub mod stores;
 pub mod templates;
+pub mod tunnels;
