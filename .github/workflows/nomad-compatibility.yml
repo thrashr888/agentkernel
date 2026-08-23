@@ -41,14 +41,14 @@ jobs:
           NOMAD_VERSION: ${{ matrix.nomad }}
         run: |
           curl --fail --silent --show-error --location \
-            --output nomad.zip \
+            --output "nomad_${NOMAD_VERSION}_linux_amd64.zip" \
             "https://releases.hashicorp.com/nomad/${NOMAD_VERSION}/nomad_${NOMAD_VERSION}_linux_amd64.zip"
           curl --fail --silent --show-error --location \
             --output SHA256SUMS \
             "https://releases.hashicorp.com/nomad/${NOMAD_VERSION}/nomad_${NOMAD_VERSION}_SHA256SUMS"
           grep " nomad_${NOMAD_VERSION}_linux_amd64.zip$" SHA256SUMS > SHA256SUMS.linux
           sha256sum --check SHA256SUMS.linux
-          unzip -q nomad.zip
+          unzip -q "nomad_${NOMAD_VERSION}_linux_amd64.zip"
           sudo install nomad /usr/local/bin/nomad
           nomad version
       - name: Start Nomad development agent
@@ -72,4 +72,4 @@ jobs:
           test_nomad_exec_with_env -- --ignored --nocapture --test-threads=1
       - name: Show Nomad log on failure
         if: failure()
-        run: cat nomad.log
+        run: test ! -f nomad.log || cat nomad.log
