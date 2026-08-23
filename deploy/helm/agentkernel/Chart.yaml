@@ -2,8 +2,8 @@ apiVersion: v2
 name: agentkernel
 description: Agent sandbox orchestration for AI coding agents
 type: application
-version: 0.20.0
-appVersion: "0.20.0"
+version: 0.20.1
+appVersion: "0.20.1"
 maintainers:
   - name: Paul Thrasher
     email: thrashr888@gmail.com
