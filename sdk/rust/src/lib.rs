@@ -25,11 +25,12 @@ pub use browser::BrowserSession;
 pub use client::{AgentKernel, AgentKernelBuilder, SandboxHandle};
 pub use error::{Error, Result};
 pub use types::{
-    AriaSnapshot, BatchCommand, BatchFileWriteResponse, BatchResult, BatchRunResponse,
-    BrowserEvent, CreateSandboxOptions, DetachedCommand, DetachedLogsResponse, DetachedStatus,
-    DurableObject, DurableObjectCreateRequest, DurableStore, DurableStoreCommandResult,
-    DurableStoreCreateRequest, DurableStoreExecuteResult, DurableStoreQueryResult, ExecOptions,
-    ExtendTtlResponse, FileReadResponse, Orchestration, OrchestrationCreateRequest,
-    OrchestrationDefinition, PageLink, PageResult, RunOptions, RunOutput, SandboxInfo, Schedule,
-    ScheduleCreateRequest, SecurityProfile, SnapshotMeta, StreamEvent, TakeSnapshotOptions,
+    AriaSnapshot, BackendCapabilities, BackendDescriptor, BackendDiscovery, BatchCommand,
+    BatchFileWriteResponse, BatchResult, BatchRunResponse, BrowserEvent, CreateSandboxOptions,
+    DetachedCommand, DetachedLogsResponse, DetachedStatus, DurableObject,
+    DurableObjectCreateRequest, DurableStore, DurableStoreCommandResult, DurableStoreCreateRequest,
+    DurableStoreExecuteResult, DurableStoreQueryResult, ExecOptions, ExtendTtlResponse,
+    FileReadResponse, Orchestration, OrchestrationCreateRequest, OrchestrationDefinition, PageLink,
+    PageResult, RunOptions, RunOutput, SandboxInfo, Schedule, ScheduleCreateRequest,
+    SecurityProfile, SnapshotMeta, StreamEvent, TakeSnapshotOptions,
 };

@@ -12,6 +12,9 @@ export {
 } from "./errors.js";
 export type {
   AgentKernelOptions,
+  BackendCapabilities,
+  BackendDescriptor,
+  BackendDiscovery,
   AriaSnapshot,
   BatchFileWriteResponse,
   BrowserEvent,

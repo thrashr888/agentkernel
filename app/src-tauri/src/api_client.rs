@@ -79,6 +79,12 @@ impl ApiClient {
             .await
     }
 
+    /// Discover server-supported and ready sandbox backends.
+    pub async fn get_backends(&self) -> anyhow::Result<BackendDiscovery> {
+        self.request(reqwest::Method::GET, "/backends", None::<&()>)
+            .await
+    }
+
     /// Get info about a single sandbox.
     pub async fn get_sandbox(&self, name: &str) -> anyhow::Result<SandboxInfo> {
         self.request(

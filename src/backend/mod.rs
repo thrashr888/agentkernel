@@ -32,6 +32,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Command;
 
 use crate::ssh::SshConfig;
 
@@ -45,6 +48,7 @@ pub use kubernetes::KubernetesSandbox;
 #[cfg(feature = "nomad")]
 pub use nomad::NomadSandbox;
 pub use remote::{RemoteProvider, RemoteSandbox, remote_bridge_available};
+use remote::{remote_bridge_configured, remote_bridge_custom_configured};
 
 /// Backend type identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +124,25 @@ impl std::str::FromStr for BackendType {
 }
 
 impl BackendType {
+    /// All backend identifiers exposed by the public API, in stable display
+    /// order. Availability is reported separately by backend discovery.
+    pub const fn all() -> [Self; 12] {
+        [
+            Self::Docker,
+            Self::Podman,
+            Self::Firecracker,
+            Self::Apple,
+            Self::Hyperlight,
+            Self::Kubernetes,
+            Self::Nomad,
+            Self::Daytona,
+            Self::Runloop,
+            Self::E2B,
+            Self::Modal,
+            Self::AgentComputer,
+        ]
+    }
+
     pub fn is_remote(self) -> bool {
         matches!(
             self,
@@ -199,7 +222,7 @@ pub struct RemoteSandboxContext {
 }
 
 /// Outcome-level backend capabilities used for compatibility checks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BackendCapabilities {
     pub mount_cwd: bool,
     pub mount_home: bool,
@@ -705,7 +728,18 @@ pub fn detect_best_backend() -> Option<BackendType> {
         return Some(BackendType::Docker);
     }
 
-    None
+    // A configured hosted provider is a valid automatic default when no local
+    // runtime is installed. Keep local runtimes preferred so adding provider
+    // credentials never changes an existing local default.
+    [
+        BackendType::Daytona,
+        BackendType::Runloop,
+        BackendType::E2B,
+        BackendType::Modal,
+        BackendType::AgentComputer,
+    ]
+    .into_iter()
+    .find(|&backend| backend_readiness(backend).usable)
 }
 
 /// Check if a specific backend is available
@@ -734,6 +768,379 @@ pub fn backend_available(backend: BackendType) -> bool {
         | BackendType::E2B
         | BackendType::Modal
         | BackendType::AgentComputer => remote_bridge_available(),
+    }
+}
+
+/// Server-side backend readiness, separating an installed/configured backend
+/// from one that is ready to create a sandbox right now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendReadiness {
+    pub configured: bool,
+    pub usable: bool,
+    pub reason: String,
+}
+
+fn command_available(command: &str) -> bool {
+    Command::new(command)
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn configured_env_values(
+    value: Option<&str>,
+    named_env_value: Option<&str>,
+    fallback_env_value: Option<&str>,
+) -> bool {
+    [value, named_env_value, fallback_env_value]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.trim().is_empty())
+}
+
+fn configured_env(value: Option<&str>, env_name: Option<&str>, fallback_env: &str) -> bool {
+    configured_env_values(
+        value,
+        env_name
+            .and_then(|name| std::env::var(name).ok())
+            .as_deref(),
+        std::env::var(fallback_env).ok().as_deref(),
+    )
+}
+
+fn project_config() -> Option<crate::config::Config> {
+    let path = Path::new("agentkernel.toml");
+    path.exists()
+        .then(|| crate::config::Config::from_file(path).ok())
+        .flatten()
+}
+
+fn remote_credentials_configured(backend: BackendType) -> bool {
+    let config = project_config();
+    remote_credentials_configured_from_config(backend, config.as_ref())
+}
+
+fn remote_credentials_configured_from_config(
+    backend: BackendType,
+    config: Option<&crate::config::Config>,
+) -> bool {
+    let provider = config.map(|config| match backend {
+        BackendType::Daytona => &config.remote.daytona,
+        BackendType::Runloop => &config.remote.runloop,
+        BackendType::E2B => &config.remote.e2b,
+        BackendType::Modal => &config.remote.modal,
+        BackendType::AgentComputer => &config.remote.agentcomputer,
+        _ => unreachable!("remote credential probe called for local backend"),
+    });
+
+    match backend {
+        BackendType::Modal => {
+            let token_id = provider
+                .map(|provider| {
+                    configured_env(
+                        provider.token_id.as_deref(),
+                        provider.token_id_env.as_deref(),
+                        "MODAL_TOKEN_ID",
+                    )
+                })
+                .unwrap_or_else(|| configured_env(None, None, "MODAL_TOKEN_ID"));
+            let token_secret = provider
+                .map(|provider| {
+                    configured_env(
+                        provider.token_secret.as_deref(),
+                        provider.token_secret_env.as_deref(),
+                        "MODAL_TOKEN_SECRET",
+                    )
+                })
+                .unwrap_or_else(|| configured_env(None, None, "MODAL_TOKEN_SECRET"));
+            token_id && token_secret
+        }
+        BackendType::Daytona => {
+            provider.is_some_and(|provider| {
+                configured_env(
+                    provider.api_key.as_deref(),
+                    provider.api_key_env.as_deref(),
+                    "DAYTONA_API_KEY",
+                )
+            }) || std::env::var("DAYTONA_API_KEY").is_ok_and(|value| !value.trim().is_empty())
+        }
+        BackendType::Runloop => {
+            provider.is_some_and(|provider| {
+                configured_env(
+                    provider.api_key.as_deref(),
+                    provider.api_key_env.as_deref(),
+                    "RUNLOOP_API_KEY",
+                )
+            }) || std::env::var("RUNLOOP_API_KEY").is_ok_and(|value| !value.trim().is_empty())
+        }
+        BackendType::E2B => {
+            provider.is_some_and(|provider| {
+                configured_env(
+                    provider.api_key.as_deref(),
+                    provider.api_key_env.as_deref(),
+                    "E2B_API_KEY",
+                )
+            }) || std::env::var("E2B_API_KEY").is_ok_and(|value| !value.trim().is_empty())
+        }
+        BackendType::AgentComputer => {
+            provider.is_some_and(|provider| {
+                configured_env(
+                    provider.api_key.as_deref(),
+                    provider.api_key_env.as_deref(),
+                    "AGENTCOMPUTER_API_KEY",
+                )
+            }) || std::env::var("AGENTCOMPUTER_API_KEY").is_ok_and(|value| !value.trim().is_empty())
+        }
+        _ => false,
+    }
+}
+
+fn bridge_configured_for_backend(
+    backend: BackendType,
+    bridge_configured: bool,
+    custom_bridge_configured: bool,
+) -> bool {
+    bridge_configured && (backend != BackendType::AgentComputer || custom_bridge_configured)
+}
+
+fn expand_user_path(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join(rest);
+    }
+    PathBuf::from(path)
+}
+
+fn kubeconfig_path() -> Option<PathBuf> {
+    project_config()
+        .and_then(|config| config.orchestrator.kubeconfig)
+        .map(|path| expand_user_path(&path))
+        .filter(|path| path.exists())
+        .or_else(|| {
+            std::env::var_os("KUBECONFIG")
+                .map(PathBuf::from)
+                .filter(|path| path.exists())
+        })
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join(".kube/config"))
+                .filter(|path| path.exists())
+        })
+}
+
+fn kubeconfig_configured() -> bool {
+    std::env::var_os("KUBERNETES_SERVICE_HOST").is_some()
+        || kubeconfig_path().is_some_and(|path| path.exists())
+}
+
+#[cfg(feature = "kubernetes")]
+fn kubernetes_api_configured() -> bool {
+    if std::env::var_os("KUBERNETES_SERVICE_HOST").is_some() {
+        return true;
+    }
+    let Some(path) = kubeconfig_path() else {
+        return false;
+    };
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(document) = serde_yaml::from_str::<serde_yaml::Value>(&contents) else {
+        return false;
+    };
+    let current_context = document
+        .get("current-context")
+        .and_then(|value| value.as_str());
+    let cluster_name = document
+        .get("contexts")
+        .and_then(|value| value.as_sequence())
+        .and_then(|contexts| {
+            contexts.iter().find_map(|context| {
+                let matches = current_context.is_none()
+                    || context.get("name").and_then(|value| value.as_str()) == current_context;
+                matches
+                    .then(|| context.get("context")?.get("cluster")?.as_str())
+                    .flatten()
+            })
+        });
+    document
+        .get("clusters")
+        .and_then(|value| value.as_sequence())
+        .and_then(|clusters| {
+            clusters.iter().find_map(|cluster| {
+                let matches = cluster_name.is_none()
+                    || cluster.get("name").and_then(|value| value.as_str()) == cluster_name;
+                matches
+                    .then(|| cluster.get("cluster")?.get("server")?.as_str())
+                    .flatten()
+            })
+        })
+        .is_some_and(|server| !server.trim().is_empty())
+}
+
+#[cfg(not(feature = "kubernetes"))]
+fn kubernetes_api_configured() -> bool {
+    false
+}
+
+fn nomad_address() -> Option<String> {
+    std::env::var("NOMAD_ADDR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| project_config().and_then(|config| config.orchestrator.nomad_addr))
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn nomad_configured() -> bool {
+    nomad_address().is_some()
+}
+
+fn nomad_address_is_valid() -> bool {
+    nomad_address().is_some_and(|address| {
+        let authority = address
+            .split_once("://")
+            .map(|(_, authority)| authority)
+            .unwrap_or(&address)
+            .split('/')
+            .next()
+            .unwrap_or_default();
+        !authority.trim().is_empty() && !authority.contains(char::is_whitespace)
+    })
+}
+
+/// Probe backend configuration and readiness without returning credentials or
+/// provider-specific secret values.
+pub fn backend_readiness(backend: BackendType) -> BackendReadiness {
+    let (configured, usable, reason) = match backend {
+        BackendType::Docker => {
+            let configured = command_available("docker");
+            let usable = backend_available(backend);
+            let reason = if usable {
+                "ready"
+            } else if configured {
+                "Docker CLI is installed but the daemon is unavailable"
+            } else {
+                "Docker CLI is not installed"
+            };
+            (configured, usable, reason)
+        }
+        BackendType::Podman => {
+            let configured = command_available("podman");
+            let usable = backend_available(backend);
+            let reason = if usable {
+                "ready"
+            } else if configured {
+                "Podman CLI is installed but its service is unavailable"
+            } else {
+                "Podman CLI is not installed"
+            };
+            (configured, usable, reason)
+        }
+        BackendType::Firecracker => {
+            let configured = backend_available(backend);
+            #[cfg(target_os = "linux")]
+            let usable = configured && Path::new("/dev/kvm").exists();
+            #[cfg(not(target_os = "linux"))]
+            let usable = false;
+            let reason = if usable {
+                "ready"
+            } else if !configured {
+                "Firecracker is not installed"
+            } else {
+                "Firecracker is installed but KVM is unavailable"
+            };
+            (configured, usable, reason)
+        }
+        #[cfg(target_os = "macos")]
+        BackendType::Apple => {
+            let configured = apple::apple_containers_available();
+            let usable = configured && apple::macos_version_supported();
+            let reason = if usable {
+                "ready; Apple Containers service starts on demand"
+            } else if !configured {
+                "Apple Containers CLI is not installed"
+            } else if !apple::macos_version_supported() {
+                "Apple Containers requires macOS 26 or newer"
+            } else {
+                "Apple Containers CLI is installed but the host readiness probe failed"
+            };
+            (configured, usable, reason)
+        }
+        #[cfg(not(target_os = "macos"))]
+        BackendType::Apple => (false, false, "Apple Containers are only available on macOS"),
+        BackendType::Hyperlight => {
+            let configured = cfg!(all(target_os = "linux", feature = "hyperlight"));
+            let usable = backend_available(backend);
+            let reason = if usable {
+                "ready"
+            } else if !configured {
+                "Hyperlight support is not enabled for this build"
+            } else {
+                "Hyperlight is compiled in but no KVM hypervisor is available"
+            };
+            (configured, usable, reason)
+        }
+        BackendType::Kubernetes => {
+            let configured = cfg!(feature = "kubernetes") && kubeconfig_configured();
+            let usable = configured && kubernetes_api_configured();
+            let reason = if usable {
+                "ready; cluster connectivity is checked when a sandbox starts"
+            } else if !cfg!(feature = "kubernetes") {
+                "Kubernetes support is not enabled for this build"
+            } else if !configured {
+                "Kubernetes support is enabled but no kubeconfig or in-cluster credentials were found"
+            } else {
+                "Kubernetes credentials are configured but the kubeconfig has no API server"
+            };
+            (configured, usable, reason)
+        }
+        BackendType::Nomad => {
+            let configured = cfg!(feature = "nomad") && nomad_configured();
+            let usable = configured && nomad_address_is_valid();
+            let reason = if usable {
+                "ready; Nomad connectivity is checked when a sandbox starts"
+            } else if !cfg!(feature = "nomad") {
+                "Nomad support is not enabled for this build"
+            } else if !configured {
+                "Nomad support is enabled but NOMAD_ADDR is not configured"
+            } else {
+                "Nomad is configured but its API address is invalid"
+            };
+            (configured, usable, reason)
+        }
+        BackendType::Daytona
+        | BackendType::Runloop
+        | BackendType::E2B
+        | BackendType::Modal
+        | BackendType::AgentComputer => {
+            let credentials = remote_credentials_configured(backend);
+            let bridge = bridge_configured_for_backend(
+                backend,
+                remote_bridge_configured(),
+                remote_bridge_custom_configured(),
+            );
+            let configured = bridge && credentials;
+            let usable = configured && remote_bridge_available();
+            let reason = if usable {
+                "ready"
+            } else if backend == BackendType::AgentComputer && !remote_bridge_custom_configured() {
+                "Agent Computer requires a custom provider-aware remote bridge"
+            } else if !bridge {
+                "Remote bridge is not configured"
+            } else if !credentials {
+                "Provider credentials are not configured"
+            } else {
+                "Remote bridge is configured but Node.js or the bridge command is unavailable"
+            };
+            (configured, usable, reason)
+        }
+    };
+
+    BackendReadiness {
+        configured,
+        usable,
+        reason: reason.to_string(),
     }
 }
 
@@ -934,6 +1341,47 @@ mod tests {
         assert!(caps.snapshots);
         assert!(!caps.proxy_secret_bindings);
         assert!(!caps.host_volumes);
+    }
+
+    #[test]
+    fn test_backend_readiness_is_truthful_and_never_hides_reason() {
+        for backend in BackendType::all() {
+            let readiness = backend_readiness(backend);
+            assert!(!readiness.reason.trim().is_empty());
+            assert!(!readiness.usable || readiness.configured);
+        }
+    }
+
+    #[test]
+    fn test_remote_credentials_probe_uses_config_without_exposing_values() {
+        let mut config = crate::config::Config::minimal("test", "codex");
+        config.remote.daytona.api_key = Some("daytona-secret-value".to_string());
+        assert!(remote_credentials_configured_from_config(
+            BackendType::Daytona,
+            Some(&config)
+        ));
+        assert!(configured_env_values(Some("configured"), None, None));
+        assert!(!configured_env_values(None, None, None));
+        assert!(!configured_env_values(None, Some("  "), Some("")));
+    }
+
+    #[test]
+    fn test_agentcomputer_requires_a_custom_bridge() {
+        assert!(bridge_configured_for_backend(
+            BackendType::Daytona,
+            true,
+            false
+        ));
+        assert!(!bridge_configured_for_backend(
+            BackendType::AgentComputer,
+            true,
+            false
+        ));
+        assert!(bridge_configured_for_backend(
+            BackendType::AgentComputer,
+            true,
+            true
+        ));
     }
 
     // === SandboxConfig tests ===

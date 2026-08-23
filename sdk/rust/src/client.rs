@@ -115,6 +115,12 @@ impl AgentKernel {
             .await
     }
 
+    /// Discover server-supported and ready sandbox backends.
+    pub async fn get_backends(&self) -> Result<BackendDiscovery> {
+        self.request(reqwest::Method::GET, "/backends", None::<&()>)
+            .await
+    }
+
     /// Create a new sandbox with optional configuration.
     pub async fn create_sandbox(
         &self,
@@ -124,6 +130,7 @@ impl AgentKernel {
         let opts = opts.unwrap_or_default();
         let body = CreateRequest {
             name: name.to_string(),
+            backend: opts.backend,
             image: opts.image,
             vcpus: opts.vcpus,
             memory_mb: opts.memory_mb,

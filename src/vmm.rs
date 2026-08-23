@@ -766,7 +766,7 @@ impl VmManager {
         vcpus: u32,
         memory_mb: u64,
     ) -> Result<()> {
-        self.create_internal(
+        self.create_with_backend_options(
             backend,
             name,
             image,
@@ -775,6 +775,33 @@ impl VmManager {
             None,
             Vec::new(),
             None,
+        )
+        .await
+    }
+
+    /// Create a sandbox on an explicit backend while preserving the same
+    /// creation options as the automatic-backend path.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_with_backend_options(
+        &mut self,
+        backend: BackendType,
+        name: &str,
+        image: &str,
+        vcpus: u32,
+        memory_mb: u64,
+        ttl_seconds: Option<u64>,
+        ports: Vec<PortMapping>,
+        agent: Option<String>,
+    ) -> Result<()> {
+        self.create_internal(
+            backend,
+            name,
+            image,
+            vcpus,
+            memory_mb,
+            ttl_seconds,
+            ports,
+            agent,
         )
         .await
     }
@@ -818,7 +845,7 @@ impl VmManager {
         ports: Vec<PortMapping>,
         agent: Option<String>,
     ) -> Result<()> {
-        self.create_internal(
+        self.create_with_backend_options(
             self.backend,
             name,
             image,
@@ -2209,10 +2236,12 @@ impl VmManager {
                 name, e
             );
         }
-        crate::metrics::record_command(
-            &self.backend.to_string(),
-            exec_start.elapsed().as_secs_f64(),
-        );
+        let backend = self
+            .sandboxes
+            .get(name)
+            .and_then(|state| state.backend)
+            .unwrap_or(self.backend);
+        crate::metrics::record_command(&backend.to_string(), exec_start.elapsed().as_secs_f64());
 
         log_event(AuditEvent::CommandExecuted {
             sandbox: name.to_string(),
@@ -2511,6 +2540,11 @@ impl VmManager {
     /// Stop a sandbox
     pub async fn stop(&mut self, name: &str) -> Result<()> {
         let stop_start = std::time::Instant::now();
+        let backend = self
+            .sandboxes
+            .get(name)
+            .and_then(|state| state.backend)
+            .unwrap_or(self.backend);
         if let Err(e) = self.hydrate_remote_runtime(name) {
             eprintln!(
                 "Warning: failed to hydrate remote runtime for '{}': {}",
@@ -2535,7 +2569,7 @@ impl VmManager {
             });
             crate::metrics::record_sandbox_lifecycle(
                 "stopped",
-                &self.backend.to_string(),
+                &backend.to_string(),
                 stop_start.elapsed().as_secs_f64(),
             );
         }
@@ -2545,6 +2579,11 @@ impl VmManager {
     /// Remove a sandbox
     pub async fn remove(&mut self, name: &str) -> Result<()> {
         let remove_start = std::time::Instant::now();
+        let backend = self
+            .sandboxes
+            .get(name)
+            .and_then(|state| state.backend)
+            .unwrap_or(self.backend);
         // Shut down the proxy if running
         if let Some(handle) = PROXY_HANDLES.write().await.remove(name) {
             let _ = handle.shutdown_tx.send(());
@@ -2555,7 +2594,6 @@ impl VmManager {
                 return Err(error).with_context(|| format!("failed to remove sandbox '{name}'"));
             }
         } else if let Some(state) = self.sandboxes.get(name).cloned() {
-            let backend = state.backend.unwrap_or(self.backend);
             let mut sandbox = create_sandbox_with_state(
                 backend,
                 name,
@@ -2577,7 +2615,7 @@ impl VmManager {
         });
         crate::metrics::record_sandbox_lifecycle(
             "removed",
-            &self.backend.to_string(),
+            &backend.to_string(),
             remove_start.elapsed().as_secs_f64(),
         );
         crate::metrics::dec_active_sandboxes();

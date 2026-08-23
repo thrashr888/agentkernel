@@ -59,6 +59,38 @@ pub struct SandboxInfo {
     pub description: Option<String>,
 }
 
+/// Capabilities reported by the server for a sandbox backend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendCapabilities {
+    pub mount_cwd: bool,
+    pub mount_home: bool,
+    pub attach: bool,
+    pub host_volumes: bool,
+    pub ssh: bool,
+    pub proxy_secret_bindings: bool,
+    pub secret_files: bool,
+    pub snapshots: bool,
+    pub resume: bool,
+    pub endpoints: bool,
+}
+
+/// One backend's server-side readiness state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendDescriptor {
+    pub backend: String,
+    pub configured: bool,
+    pub usable: bool,
+    pub readiness_reason: String,
+    pub capabilities: BackendCapabilities,
+}
+
+/// Backend discovery response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendDiscovery {
+    pub default_backend: Option<String>,
+    pub backends: Vec<BackendDescriptor>,
+}
+
 /// Output from a command execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunOutput {
@@ -138,6 +170,9 @@ pub struct DetachedLogsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSandboxRequest {
     pub name: String,
+    /// Backend identifier, or `automatic`/omitted for server selection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

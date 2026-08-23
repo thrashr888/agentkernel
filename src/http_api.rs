@@ -31,6 +31,9 @@ use tokio::net::TcpListener;
 use tokio::time::{Duration, sleep};
 
 use crate::asciicast::{self, AsciicastEvent, AsciicastHeader, EventType};
+use crate::backend::{
+    BackendCapabilities, BackendType, backend_capabilities, backend_readiness, detect_best_backend,
+};
 use crate::languages;
 use crate::opencode::OpenCodeState;
 use crate::orchestration_store::{
@@ -239,6 +242,10 @@ impl From<LifecyclePolicyRequest> for crate::vmm::SandboxLifecyclePolicy {
 #[derive(Debug, Deserialize)]
 struct CreateRequest {
     name: String,
+    /// Backend to use for this sandbox. Omit or use `automatic` to select the
+    /// server default.
+    #[serde(default)]
+    backend: Option<String>,
     image: Option<String>,
     vcpus: Option<u32>,
     memory_mb: Option<u64>,
@@ -670,6 +677,59 @@ struct SandboxInfo {
     /// Lifecycle automation policy.
     #[serde(skip_serializing_if = "Option::is_none")]
     lifecycle: Option<crate::vmm::SandboxLifecyclePolicy>,
+}
+
+#[derive(Debug, Serialize)]
+struct BackendDiscovery {
+    /// Backend selected by automatic sandbox creation, when one is ready.
+    default_backend: Option<String>,
+    backends: Vec<BackendDescriptor>,
+}
+
+#[derive(Debug, Serialize)]
+struct BackendDescriptor {
+    backend: String,
+    configured: bool,
+    usable: bool,
+    readiness_reason: String,
+    capabilities: BackendCapabilities,
+}
+
+fn backend_discovery(default_backend: Option<BackendType>) -> BackendDiscovery {
+    let backends = BackendType::all()
+        .into_iter()
+        .map(|backend| {
+            let readiness = backend_readiness(backend);
+            BackendDescriptor {
+                backend: backend.to_string(),
+                configured: readiness.configured,
+                usable: readiness.usable,
+                readiness_reason: readiness.reason,
+                capabilities: backend_capabilities(backend),
+            }
+        })
+        .collect();
+    BackendDiscovery {
+        default_backend: default_backend.map(|backend| backend.to_string()),
+        backends,
+    }
+}
+
+/// Prefer the backend persisted with a sandbox over the manager's automatic
+/// default. An explicit per-sandbox selection must remain visible in every
+/// response even when another backend is the server default.
+fn recorded_backend(recorded: Option<BackendType>, manager_default: BackendType) -> BackendType {
+    recorded.unwrap_or(manager_default)
+}
+
+fn parse_backend_selection(value: Option<&str>) -> Result<Option<BackendType>, String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if matches!(value.to_ascii_lowercase().as_str(), "automatic" | "auto") {
+        return Ok(None);
+    }
+    value.parse().map(Some)
 }
 
 /// Extract env_var → host from secret binding strings.
@@ -1264,6 +1324,10 @@ async fn handle_request(
 
         // List sandboxes (supports ?label=key:value filtering)
         (Method::GET, ["sandboxes"]) => handle_list_sandboxes(req, state).await,
+
+        // Describe backend selection and capabilities without requiring a
+        // sandbox manager to be initialized.
+        (Method::GET, ["backends"]) => handle_list_backends(state).await,
 
         // Create a sandbox
         (Method::POST, ["sandboxes"]) => handle_create_sandbox(req, state).await,
@@ -3117,6 +3181,18 @@ async fn handle_list_sandboxes(req: Request<Incoming>, state: Arc<AppState>) -> 
     json_response(StatusCode::OK, &ApiResponse::success(sandboxes))
 }
 
+async fn handle_list_backends(state: Arc<AppState>) -> Response<BoxBody> {
+    let active_default = if let Some(manager) = state.vm_manager.get() {
+        Some(manager.read().await.backend())
+    } else {
+        detect_best_backend()
+    };
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(backend_discovery(active_default)),
+    )
+}
+
 async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
     let start = std::time::Instant::now();
 
@@ -3128,6 +3204,25 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         Ok(b) => b,
         Err(resp) => return resp,
     };
+
+    let requested_backend = match parse_backend_selection(body.backend.as_deref()) {
+        Ok(backend) => backend,
+        Err(error) => {
+            return json_response(StatusCode::BAD_REQUEST, &ApiResponse::<()>::error(error));
+        }
+    };
+
+    if let Some(backend) = requested_backend
+        && !backend_readiness(backend).usable
+    {
+        return json_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &ApiResponse::<()>::error(format!(
+                "Backend '{}' is unavailable. Use GET /backends to see ready backends",
+                backend
+            )),
+        );
+    }
 
     #[cfg(feature = "enterprise")]
     {
@@ -3223,18 +3318,36 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         }
     };
 
-    if let Err(e) = manager
-        .create_with_agent(
-            &body.name,
-            image,
-            vcpus,
-            memory_mb,
-            None,
-            ports.clone(),
-            body.agent.clone(),
-        )
-        .await
-    {
+    let create_result = match requested_backend {
+        Some(backend) => {
+            manager
+                .create_with_backend_options(
+                    backend,
+                    &body.name,
+                    image,
+                    vcpus,
+                    memory_mb,
+                    None,
+                    ports.clone(),
+                    body.agent.clone(),
+                )
+                .await
+        }
+        None => {
+            manager
+                .create_with_agent(
+                    &body.name,
+                    image,
+                    vcpus,
+                    memory_mb,
+                    None,
+                    ports.clone(),
+                    body.agent.clone(),
+                )
+                .await
+        }
+    };
+    if let Err(e) = create_result {
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
@@ -3427,7 +3540,11 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             labels: body.labels.clone(),
             metadata: serde_json::json!({
                 "image": image,
-                "backend": format!("{}", manager.backend()),
+                "backend": recorded_backend(
+                    state_info.and_then(|state| state.backend),
+                    manager.backend(),
+                )
+                .to_string(),
                 "vcpus": vcpus,
                 "memory_mb": memory_mb,
                 "duration_ms": duration_ms,
@@ -3443,7 +3560,11 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
                 .map(|s| s.uuid.clone())
                 .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
             status: "running".to_string(),
-            backend: format!("{}", manager.backend()),
+            backend: recorded_backend(
+                state_info.and_then(|state| state.backend),
+                manager.backend(),
+            )
+            .to_string(),
             ip,
             image: Some(image.to_string()),
             vcpus: Some(vcpus),
@@ -3583,7 +3704,7 @@ async fn handle_get_sandbox_by_uuid(uuid: &str, state: Arc<AppState>) -> Respons
         .iter()
         .map(std::string::ToString::to_string)
         .collect();
-    let backend = state_info.backend.unwrap_or_else(|| manager.backend());
+    let backend = recorded_backend(state_info.backend, manager.backend());
 
     json_response(
         StatusCode::OK,
@@ -4837,18 +4958,36 @@ async fn handle_resize_sandbox(
                 );
             }
 
-            if let Err(e) = manager
-                .create_with_agent(
-                    name,
-                    &image,
-                    new_vcpus,
-                    new_memory,
-                    ttl_seconds,
-                    ports,
-                    agent,
-                )
-                .await
-            {
+            let recreate_result = match sandbox_state.backend {
+                Some(backend) => {
+                    manager
+                        .create_with_backend_options(
+                            backend,
+                            name,
+                            &image,
+                            new_vcpus,
+                            new_memory,
+                            ttl_seconds,
+                            ports,
+                            agent,
+                        )
+                        .await
+                }
+                None => {
+                    manager
+                        .create_with_agent(
+                            name,
+                            &image,
+                            new_vcpus,
+                            new_memory,
+                            ttl_seconds,
+                            ports,
+                            agent,
+                        )
+                        .await
+                }
+            };
+            if let Err(e) = recreate_result {
                 return json_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     &ApiResponse::<()>::error(format!("Failed to recreate sandbox: {}", e)),
@@ -4916,7 +5055,11 @@ async fn handle_resize_sandbox(
         &ApiResponse::success(SandboxInfo {
             name: name.to_string(),
             status: sandbox_status(state_info, running),
-            backend: format!("{}", manager.backend()),
+            backend: recorded_backend(
+                state_info.and_then(|state| state.backend),
+                manager.backend(),
+            )
+            .to_string(),
             ip,
             image: state_info.map(|s| s.image.clone()),
             vcpus: Some(new_vcpus),
@@ -5042,7 +5185,11 @@ async fn handle_patch_sandbox(
         &ApiResponse::success(SandboxInfo {
             name: name.to_string(),
             status: sandbox_status(state_info, running),
-            backend: format!("{}", manager.backend()),
+            backend: recorded_backend(
+                state_info.and_then(|state| state.backend),
+                manager.backend(),
+            )
+            .to_string(),
             ip,
             image: state_info.map(|s| s.image.clone()),
             vcpus: state_info.map(|s| s.vcpus),
@@ -5133,7 +5280,11 @@ async fn handle_recover_sandbox(
                 .map(|s| s.uuid.clone())
                 .unwrap_or_else(|| uuid::Uuid::nil().to_string()),
             status: sandbox_status(state_info, running),
-            backend: format!("{}", manager.backend()),
+            backend: recorded_backend(
+                state_info.and_then(|state| state.backend),
+                manager.backend(),
+            )
+            .to_string(),
             ip,
             image: state_info.map(|s| s.image.clone()),
             vcpus: state_info.map(|s| s.vcpus),
@@ -8859,11 +9010,11 @@ async fn handle_import_sandbox_config(
             } else {
                 "stopped".to_string()
             },
-            backend: manager
-                .get_state(&name)
-                .and_then(|s| s.backend)
-                .map(|b| format!("{}", b))
-                .unwrap_or_else(|| "unknown".to_string()),
+            backend: recorded_backend(
+                manager.get_state(&name).and_then(|s| s.backend),
+                manager.backend(),
+            )
+            .to_string(),
             ip,
             image: Some(parsed.image),
             vcpus: Some(parsed.vcpus),
@@ -9829,6 +9980,62 @@ init_script = "echo ready"
         assert_eq!(req.profile, Some("restrictive".to_string()));
         assert!(req.vcpus.is_none());
         assert!(req.memory_mb.is_none());
+    }
+
+    #[test]
+    fn test_create_request_backend_selection_is_optional_and_normalized() {
+        let automatic: CreateRequest = serde_json::from_str(r#"{"name":"auto"}"#).unwrap();
+        assert!(automatic.backend.is_none());
+
+        let explicit: CreateRequest =
+            serde_json::from_str(r#"{"name":"vm","backend":" FIRECRACKER "}"#).unwrap();
+        assert_eq!(
+            parse_backend_selection(explicit.backend.as_deref()).unwrap(),
+            Some(crate::backend::BackendType::Firecracker)
+        );
+        assert_eq!(parse_backend_selection(Some("automatic")).unwrap(), None);
+        assert!(parse_backend_selection(Some("not-a-backend")).is_err());
+    }
+
+    #[test]
+    fn test_backend_discovery_serializes_capabilities_and_default() {
+        let discovery = backend_discovery(Some(crate::backend::BackendType::Docker));
+        let json = serde_json::to_value(discovery).unwrap();
+        assert_eq!(json["default_backend"], "docker");
+        assert_eq!(json["backends"].as_array().unwrap().len(), 12);
+        assert!(json["backends"][0]["capabilities"]["mount_cwd"].is_boolean());
+        assert!(json["backends"][0]["readiness_reason"].is_string());
+    }
+
+    #[test]
+    fn test_backend_discovery_reports_configured_and_usable_readiness() {
+        let discovery = backend_discovery(Some(crate::backend::BackendType::Docker));
+        let docker = discovery
+            .backends
+            .iter()
+            .find(|backend| backend.backend == "docker")
+            .unwrap();
+        let readiness = crate::backend::backend_readiness(crate::backend::BackendType::Docker);
+
+        assert_eq!(docker.configured, readiness.configured);
+        assert_eq!(docker.usable, readiness.usable);
+        assert_eq!(docker.readiness_reason, readiness.reason);
+        assert!(!docker.usable || docker.configured);
+    }
+
+    #[test]
+    fn test_recorded_backend_wins_over_server_default() {
+        assert_eq!(
+            recorded_backend(
+                Some(crate::backend::BackendType::Podman),
+                crate::backend::BackendType::Docker,
+            ),
+            crate::backend::BackendType::Podman
+        );
+        assert_eq!(
+            recorded_backend(None, crate::backend::BackendType::Docker),
+            crate::backend::BackendType::Docker
+        );
     }
 
     #[test]

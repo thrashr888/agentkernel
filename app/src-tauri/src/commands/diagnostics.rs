@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::state::AppState;
-use crate::types::{DoctorResult, GcResult, StatusInfo};
+use crate::types::{BackendDiscovery, DoctorResult, GcResult, StatusInfo};
 
 /// Get system status information from the API.
 #[tauri::command(rename_all = "snake_case")]
@@ -15,6 +15,14 @@ pub async fn get_status(state: State<'_, AppState>) -> Result<StatusInfo, String
 pub async fn get_doctor(state: State<'_, AppState>) -> Result<DoctorResult, String> {
     let client = state.client.lock().map_err(|e| e.to_string())?.clone();
     client.get_doctor().await.map_err(|e| e.to_string())
+}
+
+/// Discover server-owned backend choices. Older servers may return 404; the
+/// desktop falls back to Automatic in that case.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_backends(state: State<'_, AppState>) -> Result<BackendDiscovery, String> {
+    let client = state.client.lock().map_err(|e| e.to_string())?.clone();
+    client.get_backends().await.map_err(|e| e.to_string())
 }
 
 /// Run garbage collection to remove expired sandboxes.

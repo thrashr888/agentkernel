@@ -30,6 +30,32 @@ class SandboxInfo(BaseModel):
     created_at: str | None = None
 
 
+class BackendCapabilities(BaseModel):
+    mount_cwd: bool
+    mount_home: bool
+    attach: bool
+    host_volumes: bool
+    ssh: bool
+    proxy_secret_bindings: bool
+    secret_files: bool
+    snapshots: bool
+    resume: bool
+    endpoints: bool
+
+
+class BackendDescriptor(BaseModel):
+    backend: str
+    configured: bool
+    usable: bool
+    readiness_reason: str
+    capabilities: BackendCapabilities
+
+
+class BackendDiscovery(BaseModel):
+    default_backend: str | None = None
+    backends: list[BackendDescriptor]
+
+
 class RunOptions(BaseModel):
     """Options for the run command."""
 
@@ -40,6 +66,8 @@ class RunOptions(BaseModel):
 
 class CreateSandboxOptions(BaseModel):
     """Options for creating a sandbox."""
+
+    backend: str | None = None
 
     image: str | None = None
     vcpus: int | None = None

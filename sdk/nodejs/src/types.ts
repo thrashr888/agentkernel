@@ -29,6 +29,8 @@ export interface RunOptions {
 
 /** Options for creating a sandbox. */
 export interface CreateSandboxOptions {
+  /** Backend identifier; omit or use automatic for server selection. */
+  backend?: string;
   /** Docker image to use. Default: alpine:3.24 */
   image?: string;
   vcpus?: number;
@@ -78,6 +80,32 @@ export interface SandboxInfo {
   vcpus?: number;
   memory_mb?: number;
   created_at?: string;
+}
+
+export interface BackendCapabilities {
+  mount_cwd: boolean;
+  mount_home: boolean;
+  attach: boolean;
+  host_volumes: boolean;
+  ssh: boolean;
+  proxy_secret_bindings: boolean;
+  secret_files: boolean;
+  snapshots: boolean;
+  resume: boolean;
+  endpoints: boolean;
+}
+
+export interface BackendDescriptor {
+  backend: string;
+  configured: boolean;
+  usable: boolean;
+  readiness_reason: string;
+  capabilities: BackendCapabilities;
+}
+
+export interface BackendDiscovery {
+  default_backend?: string;
+  backends: BackendDescriptor[];
 }
 
 /** SSE stream event. */

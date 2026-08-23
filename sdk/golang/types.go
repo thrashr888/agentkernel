@@ -18,6 +18,7 @@ type RunOptions struct {
 
 // CreateSandboxOptions configures sandbox creation.
 type CreateSandboxOptions struct {
+	Backend  string          `json:"backend,omitempty"`
 	Image    string          `json:"image,omitempty"`
 	VCPUs    int             `json:"vcpus,omitempty"`
 	MemoryMB int             `json:"memory_mb,omitempty"`
@@ -50,6 +51,35 @@ type SandboxInfo struct {
 	CreatedAt string `json:"created_at,omitempty"`
 }
 
+// BackendCapabilities describes operations supported by a backend.
+type BackendCapabilities struct {
+	MountCWD            bool `json:"mount_cwd"`
+	MountHome           bool `json:"mount_home"`
+	Attach              bool `json:"attach"`
+	HostVolumes         bool `json:"host_volumes"`
+	SSH                 bool `json:"ssh"`
+	ProxySecretBindings bool `json:"proxy_secret_bindings"`
+	SecretFiles         bool `json:"secret_files"`
+	Snapshots           bool `json:"snapshots"`
+	Resume              bool `json:"resume"`
+	Endpoints           bool `json:"endpoints"`
+}
+
+// BackendDescriptor describes one server backend.
+type BackendDescriptor struct {
+	Backend         string              `json:"backend"`
+	Configured      bool                `json:"configured"`
+	Usable          bool                `json:"usable"`
+	ReadinessReason string              `json:"readiness_reason"`
+	Capabilities    BackendCapabilities `json:"capabilities"`
+}
+
+// BackendDiscovery is returned by GET /backends.
+type BackendDiscovery struct {
+	DefaultBackend string              `json:"default_backend,omitempty"`
+	Backends       []BackendDescriptor `json:"backends"`
+}
+
 // StreamEvent is a server-sent event from a streaming run.
 type StreamEvent struct {
 	Type string                 `json:"type"`
@@ -74,6 +104,7 @@ type runRequest struct {
 // createRequest is the POST /sandboxes body.
 type createRequest struct {
 	Name        string          `json:"name"`
+	Backend     string          `json:"backend,omitempty"`
 	Image       string          `json:"image,omitempty"`
 	VCPUs       int             `json:"vcpus,omitempty"`
 	MemoryMB    int             `json:"memory_mb,omitempty"`

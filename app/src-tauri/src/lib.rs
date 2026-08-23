@@ -417,6 +417,7 @@ pub fn run() {
             // diagnostics
             commands::diagnostics::get_status,
             commands::diagnostics::get_doctor,
+            commands::diagnostics::get_backends,
             commands::diagnostics::run_gc,
             // backend setup
             commands::setup::prepare_backend,

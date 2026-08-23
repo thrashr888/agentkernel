@@ -9,6 +9,7 @@ import { SandboxSession } from "./sandbox.js";
 import { parseSSE } from "./sse.js";
 import type {
   AgentKernelOptions,
+  BackendDiscovery,
   ApiResponse,
   BatchCommand,
   BatchFileWriteResponse,
@@ -127,6 +128,11 @@ export class AgentKernel {
     return this.request<SandboxInfo[]>("GET", "/sandboxes");
   }
 
+  /** Discover server-supported and ready sandbox backends. */
+  async getBackends(): Promise<BackendDiscovery> {
+    return this.request<BackendDiscovery>("GET", "/backends");
+  }
+
   /** Create a new sandbox. */
   async createSandbox(
     name: string,
@@ -134,6 +140,7 @@ export class AgentKernel {
   ): Promise<SandboxInfo> {
     return this.request<SandboxInfo>("POST", "/sandboxes", {
       name,
+      backend: opts?.backend,
       image: opts?.image,
       vcpus: opts?.vcpus,
       memory_mb: opts?.memory_mb,
