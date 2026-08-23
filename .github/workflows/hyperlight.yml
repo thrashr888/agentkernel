@@ -31,6 +31,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: hyperlight
+          # hyperlight-wasm builds a nested guest runtime under target/. Restoring
+          # only part of that tree can leave an include_bytes! path dangling.
+          cache-targets: false
       - name: Check Hyperlight-only build
         run: cargo check --locked --lib --no-default-features --features hyperlight
       - name: Lint Hyperlight-only build
@@ -44,7 +47,6 @@ jobs:
     # hyperlight-wasm 0.14 pins the pre-arm64 hyperlight-host 0.14 line. Keep
     # probing the native target, but do not block releases until upstream ships
     # a Rust 1.89-compatible hyperlight-wasm that consumes hyperlight-host 0.16+.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
@@ -53,8 +55,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: hyperlight-arm64
+          cache-targets: false
       - name: Probe native arm64 Hyperlight-only build
-        run: cargo check --locked --lib --no-default-features --features hyperlight
+        run: |
+          set +e
+          cargo check --locked --lib --no-default-features --features hyperlight 2>&1 | tee hyperlight-arm64.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if [[ "$status" -eq 0 ]]; then
+            exit 0
+          fi
+
+          if grep -q 'hyperlight-host-0.14.0/src/' hyperlight-arm64.log \
+            && grep -q 'error\[E0061\]' hyperlight-arm64.log; then
+            echo '::warning::Known upstream hyperlight-host 0.14 arm64 compiler failure; exception expires 2026-11-30.'
+            exit 0
+          fi
+
+          echo 'Hyperlight arm64 failed for a reason outside the bounded upstream exception.'
+          exit "$status"
 
   arm64-exception-expiry:
     name: Hyperlight arm64 exception expiry
