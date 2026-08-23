@@ -102,6 +102,12 @@ pub enum CancelOutcome {
     NotCancellable(TaskRecord),
 }
 
+enum CancellationSelector<'a> {
+    Any,
+    Queued,
+    Owned(&'a str),
+}
+
 /// SQLite-backed task manager.
 #[derive(Debug, Clone)]
 pub struct TaskManager {
@@ -215,17 +221,59 @@ VALUES (?1, ?2, ?3, 'queued', NULL, NULL, NULL, ?4, ?4)
     /// A conditional update prevents a cancellation racing with a worker's
     /// completion from regressing a terminal task back to `cancelled`.
     pub fn cancel(&self, id: &str) -> Result<CancelOutcome> {
+        self.cancel_matching(id, CancellationSelector::Any)
+    }
+
+    /// Cancel a task only while it is still queued. This is safe for a
+    /// coordinator snapshot: a competing worker that has already claimed the
+    /// task cannot be cancelled by this conditional update.
+    pub fn cancel_queued(&self, id: &str) -> Result<CancelOutcome> {
+        self.cancel_matching(id, CancellationSelector::Queued)
+    }
+
+    /// Cancel a running task only when it is owned by `worker_id`.
+    #[allow(dead_code)]
+    pub fn cancel_owned(&self, id: &str, worker_id: &str) -> Result<CancelOutcome> {
+        self.cancel_matching(id, CancellationSelector::Owned(worker_id))
+    }
+
+    /// Cancel all running tasks owned by one worker. The conditional update
+    /// prevents a coordinator from cancelling another process's lease.
+    pub fn cancel_owned_running(&self, worker_id: &str) -> Result<usize> {
+        let conn = self.storage.open_connection()?;
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE tasks SET status = 'cancelled', worker_id = NULL, lease_expires_at = NULL, updated_at = ?2 WHERE status = 'running' AND worker_id = ?1",
+            params![worker_id, now],
+        )
+        .context("failed to cancel tasks owned by worker")
+    }
+
+    fn cancel_matching(
+        &self,
+        id: &str,
+        selector: CancellationSelector<'_>,
+    ) -> Result<CancelOutcome> {
         let mut conn = self.storage.open_connection()?;
         let tx = conn
             .transaction()
             .context("failed to start task cancellation transaction")?;
         let now = chrono::Utc::now().to_rfc3339();
-        let changed = tx
-            .execute(
+        let changed = match selector {
+            CancellationSelector::Queued => tx.execute(
+                "UPDATE tasks SET status = 'cancelled', worker_id = NULL, lease_expires_at = NULL, updated_at = ?2 WHERE id = ?1 AND status = 'queued'",
+                params![id, now],
+            ),
+            CancellationSelector::Owned(worker_id) => tx.execute(
+                "UPDATE tasks SET status = 'cancelled', worker_id = NULL, lease_expires_at = NULL, updated_at = ?3 WHERE id = ?1 AND status = 'running' AND worker_id = ?2",
+                params![id, worker_id, now],
+            ),
+            CancellationSelector::Any => tx.execute(
                 "UPDATE tasks SET status = 'cancelled', worker_id = NULL, lease_expires_at = NULL, updated_at = ?2 WHERE id = ?1 AND status IN ('queued', 'running')",
                 params![id, now],
-            )
-            .context("failed to cancel task")?;
+            ),
+        }
+        .context("failed to cancel task")?;
 
         let current = tx
             .query_row(
@@ -572,6 +620,33 @@ mod tests {
         ));
         assert!(matches!(
             manager.cancel(&task.id).unwrap(),
+            CancelOutcome::Cancelled(record) if record.status == TaskStatus::Cancelled
+        ));
+    }
+
+    #[test]
+    fn ownership_aware_cancellation_does_not_cross_worker_leases() {
+        let (_temp, manager) = manager();
+        let task = manager.create("owned task", "sandbox-1").unwrap();
+        manager
+            .claim_with_isolation(
+                &task.id,
+                &TaskIsolation::planned(&task.id),
+                "worker-a",
+                &(chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            manager.cancel_queued(&task.id).unwrap(),
+            CancelOutcome::NotCancellable(record) if record.status == TaskStatus::Running
+        ));
+        assert!(matches!(
+            manager.cancel_owned(&task.id, "worker-b").unwrap(),
+            CancelOutcome::NotCancellable(record) if record.status == TaskStatus::Running
+        ));
+        assert!(matches!(
+            manager.cancel_owned(&task.id, "worker-a").unwrap(),
             CancelOutcome::Cancelled(record) if record.status == TaskStatus::Cancelled
         ));
     }

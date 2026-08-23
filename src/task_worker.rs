@@ -49,10 +49,16 @@ where
     E: TaskExecutor,
 {
     pub fn new(manager: TaskManager, executor: E) -> Self {
+        Self::with_worker_id(manager, executor, uuid::Uuid::now_v7().to_string())
+    }
+
+    /// Construct a worker with a caller-supplied identity. Coordinators use
+    /// this to register ownership before spawning worker futures.
+    pub fn with_worker_id(manager: TaskManager, executor: E, worker_id: String) -> Self {
         Self {
             manager,
             executor,
-            worker_id: uuid::Uuid::now_v7().to_string(),
+            worker_id,
         }
     }
 
@@ -91,6 +97,21 @@ where
         let Some(candidate) = self.manager.next_queued()? else {
             return Ok(None);
         };
+
+        self.run_task(&candidate.id).await
+    }
+
+    /// Claim and process exactly `id` if it is still queued. Unlike
+    /// `run_once`, this never searches for another task, which lets a
+    /// coordinator operate on a fixed snapshot and leave tasks submitted
+    /// after that snapshot to a later run.
+    pub async fn run_task(&mut self, id: &str) -> Result<Option<TaskRecord>> {
+        let Some(candidate) = self.manager.get(id)? else {
+            return Ok(None);
+        };
+        if candidate.status != TaskStatus::Queued {
+            return Ok(None);
+        }
 
         let planned = TaskIsolation::planned(&candidate.id);
         let Some(claimed) = self.manager.claim_with_isolation(
