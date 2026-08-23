@@ -6,6 +6,7 @@ dolt-access.lock
 bd.sock
 bd.sock.startlock
 sync-state.json
+export-state.json
 last-touched
 .exclusive-lock
 

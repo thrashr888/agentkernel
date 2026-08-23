@@ -1,3 +1,2 @@
-
-# Use bd merge for beads JSONL files
-.beads/issues.jsonl merge=beads
+# Beads uses Dolt as its authoritative store. Let Git's normal line merge
+# handle the tracked JSONL export; Beads 1.x no longer provides `bd merge`.
