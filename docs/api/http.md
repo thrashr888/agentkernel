@@ -1306,3 +1306,48 @@ be at most 100,000; malformed values are rejected with HTTP 400.
 | 401 | Unauthorized (missing/invalid API key) |
 | 404 | Not found |
 | 500 | Internal server error |
+
+## SCIM 2.0 provisioning
+
+The server exposes an authenticated SCIM 2.0 base URL at `/scim/v2`. SCIM
+always requires an API key, including when the legacy sandbox API is running
+without optional authentication. Configure the IdP with the same Bearer API
+key used by the HTTP API. SCIM responses and errors use
+`application/scim+json`.
+
+The served tenant is selected at server startup, never from request input:
+
+1. `AGENTKERNEL_SCIM_TENANT_ID` is authoritative when set.
+2. Otherwise `[enterprise].org_id` is read from the config path passed to the
+   server (or `agentkernel.toml` for the plain server entry point).
+3. The fallback tenant is `default`.
+
+Every user, group, and membership row stores this tenant ID and all reads and
+writes scope it. SCIM users and groups are durable records in the same SQLite
+database as orchestration state. User IDs and group IDs are generated UUIDv7
+values; IdP `externalId` and uniqueness are tenant-scoped.
+
+Supported discovery endpoints are `ServiceProviderConfig`, `ResourceTypes`,
+and `Schemas`. User and group create/replace bodies must include exactly their
+core SCIM schema URN (`...:User` or `...:Group`); unsupported extension URNs
+are rejected. Users support create, list with equality filters and one-based
+pagination, get, replace, PATCH (including non-deleting deactivation with
+`active: false`), and DELETE. Groups support create, list, get, replace, PATCH
+membership synchronization (including `members[value eq "<user-id>"]`), and
+DELETE. DELETE keeps an internal tombstone for audit/history, returns 404 for
+the deleted ID, and releases unique names and external IDs for a replacement.
+
+SCIM records are also materialized into durable, tenant-scoped authorization
+bindings when group membership changes. Grants are opt-in: configure
+`[[enterprise.scim_group_mappings]]` with `tenant_id`, exactly one of
+`group_id` or `group_external_id`, and one or more `roles` and/or a `team_id`.
+Group IDs are server-generated UUIDs, so `group_external_id` is normally the
+stable IdP selector. Unknown or unmapped groups grant nothing, and invalid
+mapping configuration disables SCIM storage rather than granting a partial
+mapping.
+
+For Cedar evaluation, the validated JWT `sub` must equal the SCIM user's
+`externalId`, and the JWT `org_id` must equal the mapping's `tenant_id`.
+There is no email, `userName`, or generated-UUID fallback. Inactive or deleted
+SCIM users have no materialized grants; restarting the server reloads the
+durable bindings and the configured mappings.

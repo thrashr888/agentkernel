@@ -55,7 +55,7 @@ use crate::vmm::VmManager;
 pub type BoxBody = http_body_util::combinators::BoxBody<bytes::Bytes, hyper::Error>;
 const MAX_HTTP_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
 
-fn full<T: Into<bytes::Bytes>>(chunk: T) -> BoxBody {
+pub(crate) fn full<T: Into<bytes::Bytes>>(chunk: T) -> BoxBody {
     Full::new(chunk.into())
         .map_err(|never| match never {})
         .boxed()
@@ -77,7 +77,9 @@ fn invalid_content_length() -> Response<BoxBody> {
     )
 }
 
-async fn read_body_bytes(req: Request<Incoming>) -> Result<bytes::Bytes, Response<BoxBody>> {
+pub(crate) async fn read_body_bytes(
+    req: Request<Incoming>,
+) -> Result<bytes::Bytes, Response<BoxBody>> {
     if let Some(content_length) = req.headers().get("content-length") {
         let len = match content_length
             .to_str()
@@ -210,6 +212,37 @@ fn load_api_allow_sudo_exec_from_config(config_path: Option<&std::path::Path>) -
         .and_then(|api| api.get("allow_sudo_exec"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
+}
+
+/// Resolve the single tenant served by this agentkernel instance.
+///
+/// SCIM base URLs are normally provisioned per IdP/tenant.  We use the
+/// enterprise organization identifier when present, with an explicit env var
+/// override for installations that do not enable the enterprise policy
+/// engine.  The value is never accepted from a request, which prevents an
+/// authenticated caller from selecting another tenant by changing the URL.
+fn load_scim_tenant_id(config_path: Option<&std::path::Path>) -> String {
+    if let Ok(value) = std::env::var("AGENTKERNEL_SCIM_TENANT_ID") {
+        let value = value.trim();
+        if !value.is_empty() {
+            return value.to_string();
+        }
+    }
+    let config_path = config_path
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("agentkernel.toml"));
+    if let Ok(content) = std::fs::read_to_string(config_path)
+        && let Ok(parsed) = toml::from_str::<toml::Value>(&content)
+        && let Some(value) = parsed
+            .get("enterprise")
+            .and_then(|enterprise| enterprise.get("org_id"))
+            .and_then(toml::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    {
+        return value.to_string();
+    }
+    "default".to_string()
 }
 
 /// Request to run a command
@@ -802,6 +835,10 @@ struct AppState {
     /// Config-driven user job scheduler and its owned daemon loop.
     job_scheduler: Option<Arc<JobScheduler>>,
     job_scheduler_handle: Option<JobSchedulerHandle>,
+    /// Durable SCIM 2.0 provisioning store.
+    pub(crate) scim_store: Option<Arc<crate::scim::ScimStore>>,
+    /// Tenant selected by the server configuration for SCIM provisioning.
+    pub(crate) scim_tenant_id: String,
     /// Lazily initialized VmManager shared by sandbox and durable-object APIs.
     ///
     /// Backend discovery can fail while a service is starting (for example,
@@ -902,6 +939,8 @@ impl AppState {
             task_manager: Self::init_task_manager(),
             job_scheduler: None,
             job_scheduler_handle: None,
+            scim_store: Self::init_scim_store(config_path.as_deref()),
+            scim_tenant_id: load_scim_tenant_id(config_path.as_deref()),
             vm_manager,
             #[cfg(test)]
             force_backend_unavailable: false,
@@ -933,6 +972,8 @@ impl AppState {
             task_manager: Self::init_task_manager(),
             job_scheduler: None,
             job_scheduler_handle: None,
+            scim_store: Self::init_scim_store(None),
+            scim_tenant_id: "default".to_string(),
             vm_manager,
             #[cfg(test)]
             force_backend_unavailable: false,
@@ -1079,6 +1120,22 @@ impl AppState {
             Ok(manager) => Some(Arc::new(manager)),
             Err(e) => {
                 eprintln!("[tasks] Failed to initialize task storage: {}", e);
+                None
+            }
+        }
+    }
+
+    fn init_scim_store(
+        config_path: Option<&std::path::Path>,
+    ) -> Option<Arc<crate::scim::ScimStore>> {
+        let mappings = config_path
+            .and_then(|path| crate::config::Config::from_file(path).ok())
+            .map(|config| config.enterprise.scim_group_mappings)
+            .unwrap_or_default();
+        match crate::scim::ScimStore::open_default_with_mappings(mappings) {
+            Ok(store) => Some(Arc::new(store)),
+            Err(e) => {
+                eprintln!("[scim] Failed to initialize SCIM storage: {e}");
                 None
             }
         }
@@ -1269,10 +1326,39 @@ async fn enforce_policy(
         return Ok(());
     };
 
-    let principal = identity.to_principal(
+    let mut principal = identity.to_principal(
         enterprise.org_id.as_deref().unwrap_or("default"),
         &enterprise.default_roles,
     );
+    // SCIM grants are materialized from explicit tenant/group mappings and
+    // joined only by the validated JWT `sub` ↔ SCIM `externalId` contract.
+    // API-key IDs and email/userName are never used as fallback joins.
+    if let Some(subject) = identity.subject()
+        && let Some(store) = state.scim_store.as_ref()
+    {
+        // The tenant comes from the validated JWT claim, never from the
+        // server default, so a colliding subject in another organization
+        // cannot inherit this tenant's SCIM grants.
+        match store.principal_bindings(&principal.org_id, subject) {
+            Ok((roles, teams)) => {
+                principal.roles.extend(roles);
+                principal.teams.extend(teams);
+                principal.roles.sort();
+                principal.roles.dedup();
+                principal.teams.sort();
+                principal.teams.dedup();
+            }
+            Err(error) => {
+                return Err(json_response(
+                    StatusCode::FORBIDDEN,
+                    &ApiResponse::<()>::error(format!(
+                        "SCIM authorization state unavailable: {:?}",
+                        error
+                    )),
+                ));
+            }
+        }
+    }
     let resource = crate::policy::Resource {
         name: sandbox_name.to_string(),
         agent_type: "api".to_string(),
@@ -1341,7 +1427,16 @@ async fn handle_request(
 
     // Check authentication for all other endpoints
     if let Err(resp) = state.check_auth(&req) {
+        if segments.first() == Some(&"scim") {
+            return Ok(crate::scim::authentication_required());
+        }
         return Ok(resp);
+    }
+
+    // Provisioning is always privileged, even when the legacy sandbox API is
+    // running in its optional-authentication mode.
+    if segments.first() == Some(&"scim") && state.api_keys.is_empty() {
+        return Ok(crate::scim::authentication_required());
     }
 
     // SSE event stream (requires auth when API keys are configured)
@@ -1373,6 +1468,93 @@ async fn handle_request(
     }
 
     let response = match (method, segments.as_slice()) {
+        // SCIM 2.0 provisioning (authenticated by the API-key middleware
+        // above; the configured tenant is never selected from request data).
+        (Method::GET, ["scim", "v2", "ServiceProviderConfig"]) => {
+            crate::scim::handle_service_provider_config().await
+        }
+        (Method::GET, ["scim", "v2", "ResourceTypes"]) => {
+            crate::scim::handle_resource_types().await
+        }
+        (Method::GET, ["scim", "v2", "ResourceTypes", id]) => {
+            crate::scim::handle_resource_type(id).await
+        }
+        (Method::GET, ["scim", "v2", "Schemas"]) => crate::scim::handle_schemas().await,
+        (Method::GET, ["scim", "v2", "Schemas", id]) => crate::scim::handle_schema(id).await,
+        (Method::GET, ["scim", "v2", "Users"]) => {
+            let Some(store) = state.scim_store.clone() else {
+                return Ok(crate::scim::storage_unavailable());
+            };
+            crate::scim::handle_list_users(store, &state.scim_tenant_id, req.uri().query()).await
+        }
+        (Method::POST, ["scim", "v2", "Users"]) => {
+            let Some(store) = state.scim_store.clone() else {
+                return Ok(crate::scim::storage_unavailable());
+            };
+            crate::scim::handle_create_user(req, store, &state.scim_tenant_id).await
+        }
+        (Method::GET, ["scim", "v2", "Users", id]) => {
+            let Some(store) = state.scim_store.clone() else {
+                return Ok(crate::scim::storage_unavailable());
+            };
+            crate::scim::handle_get_user(id, store, &state.scim_tenant_id).await
+        }
+        (Method::PUT, ["scim", "v2", "Users", id]) => {
+            let Some(store) = state.scim_store.clone() else {
+                return Ok(crate::scim::storage_unavailable());
+            };
+            crate::scim::handle_replace_user(req, id, store, &state.scim_tenant_id).await
+        }
+        (Method::PATCH, ["scim", "v2", "Users", id]) => {
+            let Some(store) = state.scim_store.clone() else {
+                return Ok(crate::scim::storage_unavailable());
+            };
+            crate::scim::handle_patch_user(req, id, store, &state.scim_tenant_id).await
+        }
+        // Deactivation is PATCH active:false; DELETE tombstones the resource.
+        (Method::DELETE, ["scim", "v2", "Users", id]) => {
+            let Some(store) = state.scim_store.clone() else {
+                return Ok(crate::scim::storage_unavailable());
+            };
+            crate::scim::handle_delete_user(id, store, &state.scim_tenant_id).await
+        }
+        (Method::GET, ["scim", "v2", "Groups"]) => {
+            let Some(store) = state.scim_store.clone() else {
+                return Ok(crate::scim::storage_unavailable());
+            };
+            crate::scim::handle_list_groups(store, &state.scim_tenant_id, req.uri().query()).await
+        }
+        (Method::POST, ["scim", "v2", "Groups"]) => {
+            let Some(store) = state.scim_store.clone() else {
+                return Ok(crate::scim::storage_unavailable());
+            };
+            crate::scim::handle_create_group(req, store, &state.scim_tenant_id).await
+        }
+        (Method::GET, ["scim", "v2", "Groups", id]) => {
+            let Some(store) = state.scim_store.clone() else {
+                return Ok(crate::scim::storage_unavailable());
+            };
+            crate::scim::handle_get_group(id, store, &state.scim_tenant_id).await
+        }
+        (Method::PUT, ["scim", "v2", "Groups", id]) => {
+            let Some(store) = state.scim_store.clone() else {
+                return Ok(crate::scim::storage_unavailable());
+            };
+            crate::scim::handle_replace_group(req, id, store, &state.scim_tenant_id).await
+        }
+        (Method::PATCH, ["scim", "v2", "Groups", id]) => {
+            let Some(store) = state.scim_store.clone() else {
+                return Ok(crate::scim::storage_unavailable());
+            };
+            crate::scim::handle_patch_group(req, id, store, &state.scim_tenant_id).await
+        }
+        (Method::DELETE, ["scim", "v2", "Groups", id]) => {
+            let Some(store) = state.scim_store.clone() else {
+                return Ok(crate::scim::storage_unavailable());
+            };
+            crate::scim::handle_delete_group(id, store, &state.scim_tenant_id).await
+        }
+
         // Run a command in a temporary sandbox
         (Method::POST, ["run"]) => handle_run(req, state).await,
 
@@ -1727,6 +1909,9 @@ async fn handle_request(
         (Method::POST, ["policy", "reload"]) => handle_policy_reload(state).await,
         #[cfg(feature = "enterprise")]
         (Method::GET, ["policy", "audit"]) => handle_policy_audit(req, state).await,
+
+        // Keep errors under the SCIM media type for unknown SCIM resources.
+        _ if segments.first() == Some(&"scim") => crate::scim::not_found_response(),
 
         // 404 for everything else
         _ => json_response(
@@ -6451,6 +6636,7 @@ async fn handle_policy_check(req: Request<Incoming>, state: Arc<AppState>) -> Re
             .clone()
             .unwrap_or_else(|| "default".to_string()),
         roles: enterprise.default_roles.clone(),
+        teams: Vec::new(),
         mfa_verified: false,
     };
 

@@ -25,6 +25,7 @@ namespace AgentKernel {
         email: String,
         org_id: String,
         roles: Set<String>,
+        teams: Set<String>,
         mfa_verified: Bool,
     };
 
@@ -139,6 +140,9 @@ pub struct Principal {
     pub org_id: String,
     /// Assigned roles
     pub roles: Vec<String>,
+    /// Tenant team IDs assigned through explicit policy or SCIM mappings.
+    #[serde(default)]
+    pub teams: Vec<String>,
     /// Whether MFA has been verified
     pub mfa_verified: bool,
 }
@@ -371,6 +375,15 @@ impl CedarEngine {
                 RestrictedExpression::new_set(roles_iter),
             ),
             (
+                "teams".to_string(),
+                RestrictedExpression::new_set(
+                    principal
+                        .teams
+                        .iter()
+                        .map(|team| RestrictedExpression::new_string(team.clone())),
+                ),
+            ),
+            (
                 "mfa_verified".to_string(),
                 RestrictedExpression::new_bool(principal.mfa_verified),
             ),
@@ -483,6 +496,7 @@ mod tests {
             email: "alice@acme.com".to_string(),
             org_id: "acme-corp".to_string(),
             roles: vec!["developer".to_string()],
+            teams: vec![],
             mfa_verified: true,
         }
     }

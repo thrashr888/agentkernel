@@ -423,6 +423,7 @@ mod tests {
             trust_anchors: crate::config::TrustAnchorsConfig { keys: vec![] },
             default_roles: vec!["developer".to_string()],
             jwks_url: None,
+            scim_group_mappings: vec![],
         }
     }
 
@@ -464,6 +465,7 @@ mod tests {
             email: "alice@test.com".to_string(),
             org_id: "test-org".to_string(),
             roles: vec!["developer".to_string()],
+            teams: vec![],
             mfa_verified: true,
         };
 

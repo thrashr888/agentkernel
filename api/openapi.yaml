@@ -53,6 +53,8 @@ tags:
     description: Real-time sandbox lifecycle event stream
   - name: LLM Spend
     description: Authenticated, token-only LLM usage aggregates
+  - name: SCIM
+    description: Authenticated SCIM 2.0 user provisioning and group membership sync
 
 paths:
   /health:
@@ -1584,9 +1586,416 @@ paths:
                     $ref: '#/components/schemas/ConfiguredScheduleExecution'
         '404':
           $ref: '#/components/responses/NotFound'
+  /scim/v2/ServiceProviderConfig:
+    get:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: SCIM service provider capabilities
+      operationId: getScimServiceProviderConfig
+      responses:
+        '200':
+          description: SCIM capabilities
+          content:
+            application/scim+json:
+              schema:
+                type: object
+
+  /scim/v2/ResourceTypes:
+    get:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: List SCIM resource types
+      operationId: listScimResourceTypes
+      responses:
+        '200':
+          description: SCIM resource types
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimListResponse'
+
+  /scim/v2/ResourceTypes/{id}:
+    get:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: Get a SCIM resource type
+      operationId: getScimResourceType
+      parameters:
+        - $ref: '#/components/parameters/ScimResourceId'
+      responses:
+        '200':
+          description: SCIM resource type
+          content:
+            application/scim+json:
+              schema:
+                type: object
+
+  /scim/v2/Schemas:
+    get:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: List SCIM schemas
+      operationId: listScimSchemas
+      responses:
+        '200':
+          description: SCIM schemas
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimListResponse'
+
+  /scim/v2/Schemas/{id}:
+    get:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: Get a SCIM schema
+      operationId: getScimSchema
+      parameters:
+        - $ref: '#/components/parameters/ScimResourceId'
+      responses:
+        '200':
+          description: SCIM schema
+          content:
+            application/scim+json:
+              schema:
+                type: object
+
+  /scim/v2/Users:
+    get:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: List provisioned users
+      operationId: listScimUsers
+      parameters:
+        - $ref: '#/components/parameters/ScimFilter'
+        - $ref: '#/components/parameters/ScimStartIndex'
+        - $ref: '#/components/parameters/ScimCount'
+      responses:
+        '200':
+          description: SCIM user list
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimListResponse'
+    post:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: Provision a user
+      operationId: createScimUser
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: '#/components/schemas/ScimUserInput'
+      responses:
+        '201':
+          description: User created
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimUser'
+
+  /scim/v2/Users/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ScimResourceId'
+    get:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: Get a provisioned user
+      operationId: getScimUser
+      responses:
+        '200':
+          description: SCIM user
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimUser'
+    put:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: Replace a provisioned user
+      operationId: replaceScimUser
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: '#/components/schemas/ScimUserInput'
+      responses:
+        '200':
+          description: User replaced
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimUser'
+    patch:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: Patch or deactivate a user
+      operationId: patchScimUser
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: '#/components/schemas/ScimPatch'
+      responses:
+        '200':
+          description: User patched
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimUser'
+    delete:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: Delete a provisioned user
+      description: Tombstones the resource. Use PATCH active false for non-deleting deactivation.
+      operationId: deleteScimUser
+      responses:
+        '204':
+          description: User deleted
+
+  /scim/v2/Groups:
+    get:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: List provisioned groups
+      operationId: listScimGroups
+      parameters:
+        - $ref: '#/components/parameters/ScimFilter'
+        - $ref: '#/components/parameters/ScimStartIndex'
+        - $ref: '#/components/parameters/ScimCount'
+      responses:
+        '200':
+          description: SCIM group list
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimListResponse'
+    post:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: Provision a group
+      operationId: createScimGroup
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: '#/components/schemas/ScimGroupInput'
+      responses:
+        '201':
+          description: Group created
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimGroup'
+
+  /scim/v2/Groups/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ScimResourceId'
+    get:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: Get a provisioned group
+      operationId: getScimGroup
+      responses:
+        '200':
+          description: SCIM group
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimGroup'
+    put:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: Replace a group and synchronize membership
+      operationId: replaceScimGroup
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: '#/components/schemas/ScimGroupInput'
+      responses:
+        '200':
+          description: Group replaced
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimGroup'
+    patch:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: Patch group membership
+      operationId: patchScimGroup
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: '#/components/schemas/ScimPatch'
+      responses:
+        '200':
+          description: Group patched
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimGroup'
+    delete:
+      tags: [SCIM]
+      security: [{BearerAuth: []}]
+      summary: Delete a provisioned group
+      description: Tombstones the group while preserving internal membership history.
+      operationId: deleteScimGroup
+      responses:
+        '204':
+          description: Group deleted
 
 components:
+  parameters:
+    ScimResourceId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9._:-]{1,128}$'
+    ScimFilter:
+      name: filter
+      in: query
+      schema:
+        type: string
+      description: Equality filter such as userName eq "alice@example.com".
+    ScimStartIndex:
+      name: startIndex
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    ScimCount:
+      name: count
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 100
+        default: 100
   schemas:
+    ScimUserInput:
+      type: object
+      required: [schemas, userName]
+      properties:
+        schemas:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: string
+            enum: [urn:ietf:params:scim:schemas:core:2.0:User]
+        userName:
+          type: string
+        externalId:
+          type: string
+        active:
+          type: boolean
+          default: true
+        displayName:
+          type: string
+        name:
+          type: object
+          properties:
+            givenName: {type: string}
+            familyName: {type: string}
+        emails:
+          type: array
+          items:
+            type: object
+            required: [value]
+            properties:
+              value: {type: string, format: email}
+              type: {type: string}
+              primary: {type: boolean}
+        locale: {type: string}
+        timezone: {type: string}
+    ScimUser:
+      allOf:
+        - $ref: '#/components/schemas/ScimUserInput'
+        - type: object
+          required: [schemas, id, meta]
+          properties:
+            schemas:
+              type: array
+              items: {type: string}
+            id: {type: string}
+            meta: {type: object}
+    ScimGroupInput:
+      type: object
+      required: [schemas, displayName]
+      properties:
+        schemas:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: string
+            enum: [urn:ietf:params:scim:schemas:core:2.0:Group]
+        displayName: {type: string}
+        externalId: {type: string}
+        members:
+          type: array
+          items:
+            type: object
+            required: [value]
+            properties:
+              value: {type: string}
+              display: {type: string}
+    ScimGroup:
+      allOf:
+        - $ref: '#/components/schemas/ScimGroupInput'
+        - type: object
+          required: [schemas, id, meta]
+          properties:
+            schemas:
+              type: array
+              items: {type: string}
+            id: {type: string}
+            meta: {type: object}
+    ScimPatch:
+      type: object
+      required: [schemas, Operations]
+      properties:
+        schemas:
+          type: array
+          items: {type: string}
+          minItems: 1
+        Operations:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            type: object
+            required: [op]
+            properties:
+              op: {type: string, enum: [add, replace, remove]}
+              path: {type: string}
+              value: {}
+    ScimListResponse:
+      type: object
+      required: [schemas, totalResults, startIndex, itemsPerPage, Resources]
+      properties:
+        schemas:
+          type: array
+          items: {type: string}
+        totalResults: {type: integer}
+        startIndex: {type: integer}
+        itemsPerPage: {type: integer}
+        Resources:
+          type: array
+          items: {type: object}
     RunRequest:
       type: object
       required: [command]

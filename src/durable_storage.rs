@@ -161,6 +161,72 @@ CREATE TABLE IF NOT EXISTS scheduled_job_runs (
 
 CREATE INDEX IF NOT EXISTS idx_scheduled_job_runs_next
     ON scheduled_job_runs(next_run_at);
+CREATE TABLE IF NOT EXISTS scim_users (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    external_id TEXT,
+    user_name TEXT NOT NULL COLLATE NOCASE,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+    display_name TEXT,
+    given_name TEXT,
+    family_name TEXT,
+    email TEXT,
+    locale TEXT,
+    timezone TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_scim_users_tenant ON scim_users(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_scim_users_tenant_external_id
+    ON scim_users(tenant_id, external_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_scim_users_tenant_user_name
+    ON scim_users(tenant_id, user_name COLLATE NOCASE) WHERE deleted = 0;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_scim_users_tenant_external_id
+    ON scim_users(tenant_id, external_id) WHERE deleted = 0 AND external_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS scim_groups (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    external_id TEXT,
+    display_name TEXT NOT NULL COLLATE NOCASE,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_scim_groups_tenant ON scim_groups(tenant_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_scim_groups_tenant_display_name
+    ON scim_groups(tenant_id, display_name COLLATE NOCASE) WHERE active = 1;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_scim_groups_tenant_external_id
+    ON scim_groups(tenant_id, external_id) WHERE active = 1 AND external_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS scim_group_members (
+    group_id TEXT NOT NULL REFERENCES scim_groups(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES scim_users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (group_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scim_group_members_user ON scim_group_members(user_id);
+"#,
+    ),
+    (
+        11,
+        r#"
+CREATE TABLE IF NOT EXISTS scim_principal_bindings (
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES scim_users(id) ON DELETE CASCADE,
+    group_id TEXT NOT NULL REFERENCES scim_groups(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT '',
+    team_id TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, user_id, group_id, role, team_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scim_principal_bindings_user
+    ON scim_principal_bindings(tenant_id, user_id);
 "#,
     ),
 ];

@@ -32,3 +32,11 @@ cache_max_age_hours = 24
 
 [enterprise.trust_anchors]
 keys = ["prod-signing-key-2026"]
+
+# Optional, explicit SCIM authorization. The IdP must provision each user's
+# externalId equal to the validated JWT sub and use the same tenant/org_id.
+[[enterprise.scim_group_mappings]]
+tenant_id = "acme-corp"
+group_external_id = "idp-engineering"
+roles = ["developer"]
+team_id = "engineering"

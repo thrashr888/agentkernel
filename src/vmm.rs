@@ -802,6 +802,7 @@ impl VmManager {
                     .unwrap_or_else(|_| "unknown@local".to_string()),
                 org_id: "local".to_string(),
                 roles: vec!["developer".to_string()],
+                teams: Vec::new(),
                 mfa_verified: false,
             };
 
