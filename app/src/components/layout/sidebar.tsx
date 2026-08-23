@@ -31,6 +31,7 @@ import {
   ChevronsUpDown,
   Check,
   Server,
+  AlertTriangle,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { open } from "@tauri-apps/plugin-shell";
@@ -39,6 +40,7 @@ import { cn } from "@/lib/utils";
 import { useHealth } from "@/lib/hooks/use-health";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { api } from "@/lib/api";
+import { classifyLocalServerVersion, localServerVersionMessage } from "@/lib/server-version";
 import { Separator } from "@/components/ui/separator";
 import {
   DropdownMenu,
@@ -129,6 +131,8 @@ export function Sidebar() {
   const activeServer = settings?.active_server;
   const activeEntry = servers.find((s) => s.name === activeServer);
   const apiUrl = activeEntry?.url ?? settings?.api_url ?? "";
+  const versionStatus = classifyLocalServerVersion(appVersion, serverVersion, apiUrl);
+  const versionMessage = localServerVersionMessage(versionStatus, appVersion, serverVersion);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => {});
@@ -251,6 +255,16 @@ export function Sidebar() {
             </Link>
           )}
         </div>
+        {versionMessage && (
+          <Link
+            to="/settings"
+            className="flex items-start gap-1.5 text-xs text-yellow-700 hover:text-yellow-800 dark:text-yellow-400 dark:hover:text-yellow-300"
+            title={versionMessage}
+          >
+            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+            <span>Local server version mismatch</span>
+          </Link>
+        )}
         <div className="flex items-center gap-3 text-xs text-muted-foreground font-mono flex-wrap">
           {appVersion && <span>app v{appVersion}</span>}
           {serverVersion && <span>server v{serverVersion}</span>}
