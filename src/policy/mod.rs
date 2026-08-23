@@ -12,7 +12,8 @@ pub mod signing;
 pub mod streaming;
 pub mod tenant;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{RwLock, watch};
@@ -38,6 +39,8 @@ permit(
 );
 "#;
 
+const FAIL_CLOSED_POLICY: &str = "";
+
 /// The unified policy engine that coordinates all enterprise policy components.
 ///
 /// Handles:
@@ -59,6 +62,13 @@ pub struct PolicyEngine {
     trust_anchors: Vec<TrustAnchor>,
     /// Current policy version
     current_version: Arc<RwLock<u64>>,
+    /// Where the currently loaded policy came from. This is intentionally
+    /// explicit so a built-in permit-all fallback can never be presented as
+    /// meaningful enforcement by the API or desktop app.
+    policy_source: Arc<RwLock<String>>,
+    /// Whether the loaded policy is an actual configured policy (rather than
+    /// the built-in permit-all compatibility fallback).
+    meaningful: Arc<RwLock<bool>>,
     /// Organization ID
     org_id: Option<String>,
     /// Shutdown signal sender
@@ -68,6 +78,13 @@ pub struct PolicyEngine {
 impl PolicyEngine {
     /// Create a new PolicyEngine from enterprise configuration.
     pub fn new(config: &EnterpriseConfig) -> Result<Self> {
+        let base_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self::new_with_base_dir(config, &base_dir)
+    }
+
+    /// Create a policy engine resolving local policy material relative to the
+    /// server's canonical configuration directory.
+    pub fn new_with_base_dir(config: &EnterpriseConfig, base_dir: &Path) -> Result<Self> {
         if !config.enabled {
             bail!("Enterprise policy engine is not enabled");
         }
@@ -92,28 +109,91 @@ impl PolicyEngine {
             None
         };
 
-        // Try to load policies from cache first
-        let initial_policies = match cache.load() {
-            Ok(Some(bundle)) => {
-                // Verify signature if we have trust anchors
-                if !trust_anchors.is_empty() {
-                    if let Err(e) = verify_bundle(&bundle, &trust_anchors, None) {
+        // A local file is authoritative when configured. Do not silently
+        // replace malformed local policy material with a permissive fallback.
+        let (initial_policies, policy_source, meaningful) = if let Some(policy_file) =
+            &config.policy_file
+        {
+            let path = if Path::new(policy_file).is_absolute() {
+                PathBuf::from(policy_file)
+            } else {
+                base_dir.join(policy_file)
+            };
+            let policies = std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read local policy file: {}", path.display()))?;
+            validate_cedar_syntax(&policies)
+                .with_context(|| format!("Invalid local Cedar policy: {}", path.display()))?;
+            (policies, "local".to_string(), true)
+        } else {
+            match cache.load() {
+                Ok(Some(bundle)) => {
+                    // Verify signature if we have trust anchors. A fail-closed
+                    // deployment gets a deny-all engine on verification error.
+                    if !trust_anchors.is_empty() {
+                        if let Err(e) = verify_bundle(&bundle, &trust_anchors, None) {
+                            if matches!(offline_mode, OfflineMode::FailClosed) {
+                                eprintln!(
+                                    "[enterprise] Cached bundle failed verification; failing closed: {}",
+                                    e
+                                );
+                                (
+                                    FAIL_CLOSED_POLICY.to_string(),
+                                    "fail_closed".to_string(),
+                                    true,
+                                )
+                            } else {
+                                eprintln!(
+                                    "[enterprise] Cached bundle failed verification: {}. Using permit-all compatibility fallback.",
+                                    e
+                                );
+                                (
+                                    DEFAULT_POLICY.to_string(),
+                                    "default_permit_all".to_string(),
+                                    false,
+                                )
+                            }
+                        } else {
+                            (bundle.policies.clone(), "cache".to_string(), true)
+                        }
+                    } else {
+                        (bundle.policies.clone(), "cache".to_string(), true)
+                    }
+                }
+                Ok(None) => {
+                    if matches!(offline_mode, OfflineMode::FailClosed) {
+                        (
+                            FAIL_CLOSED_POLICY.to_string(),
+                            "fail_closed".to_string(),
+                            true,
+                        )
+                    } else {
+                        (
+                            DEFAULT_POLICY.to_string(),
+                            "default_permit_all".to_string(),
+                            false,
+                        )
+                    }
+                }
+                Err(e) => {
+                    if matches!(offline_mode, OfflineMode::FailClosed) {
+                        eprintln!("[enterprise] Failed to load cache; failing closed: {}", e);
+                        (
+                            FAIL_CLOSED_POLICY.to_string(),
+                            "fail_closed".to_string(),
+                            true,
+                        )
+                    } else {
                         eprintln!(
-                            "[enterprise] Cached bundle failed verification: {}. Using default.",
+                            "[enterprise] Failed to load cache: {}. Using permit-all compatibility fallback.",
                             e
                         );
-                        DEFAULT_POLICY.to_string()
-                    } else {
-                        bundle.policies.clone()
+                        (
+                            DEFAULT_POLICY.to_string(),
+                            "default_permit_all".to_string(),
+                            false,
+                        )
                     }
-                } else {
-                    bundle.policies.clone()
                 }
-            }
-            Ok(None) => DEFAULT_POLICY.to_string(),
-            Err(e) => {
-                eprintln!("[enterprise] Failed to load cache: {}. Using default.", e);
-                DEFAULT_POLICY.to_string()
             }
         };
 
@@ -127,6 +207,8 @@ impl PolicyEngine {
             client,
             trust_anchors,
             current_version: Arc::new(RwLock::new(current_version)),
+            policy_source: Arc::new(RwLock::new(policy_source)),
+            meaningful: Arc::new(RwLock::new(meaningful)),
             org_id: config.org_id.clone(),
             shutdown_tx: None,
         })
@@ -251,6 +333,17 @@ impl PolicyEngine {
         *self.current_version.read().await
     }
 
+    /// Human-readable source for the loaded policy material.
+    pub async fn policy_source(&self) -> String {
+        self.policy_source.read().await.clone()
+    }
+
+    /// Whether this engine is evaluating configured policy material rather
+    /// than the built-in permit-all compatibility fallback.
+    pub async fn meaningful(&self) -> bool {
+        *self.meaningful.read().await
+    }
+
     /// Get a reference to the audit logger.
     pub fn audit_logger(&self) -> &PolicyAuditLogger {
         &self.audit
@@ -269,6 +362,9 @@ impl PolicyEngine {
             let mut engine = self.engine.write().await;
             engine.update_policies(&bundle.policies)?;
         }
+
+        *self.policy_source.write().await = "remote".to_string();
+        *self.meaningful.write().await = true;
 
         // Cache the bundle
         self.cache.store(&bundle)?;
@@ -319,6 +415,7 @@ mod tests {
         EnterpriseConfig {
             enabled: true,
             policy_server: None, // No server for unit tests
+            policy_file: None,
             org_id: Some("test-org".to_string()),
             api_key_env: None,
             offline_mode: "default_policy".to_string(),
@@ -334,6 +431,19 @@ mod tests {
         let config = test_config();
         let engine = PolicyEngine::new(&config);
         assert!(engine.is_ok());
+    }
+
+    #[test]
+    fn permit_all_compatibility_fallback_is_not_meaningful_enforcement() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = test_config();
+        config.offline_mode = "default_policy".to_string();
+        let engine = PolicyEngine::new_with_base_dir(&config, dir.path()).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let source = runtime.block_on(engine.policy_source());
+        if source == "default_permit_all" {
+            assert!(!runtime.block_on(engine.meaningful()));
+        }
     }
 
     #[test]
@@ -384,5 +494,47 @@ mod tests {
         assert_eq!(anchors.len(), 2);
         assert_eq!(anchors[0].key_id, "key1");
         assert_eq!(anchors[1].key_id, "key2");
+    }
+
+    #[test]
+    fn local_policy_material_is_loaded_from_config_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy_path = dir.path().join("policy.cedar");
+        std::fs::write(
+            &policy_path,
+            "permit(principal is AgentKernel::User, action, resource is AgentKernel::Sandbox);",
+        )
+        .unwrap();
+        let mut config = test_config();
+        config.policy_file = Some("policy.cedar".to_string());
+        let engine = PolicyEngine::new_with_base_dir(&config, dir.path()).unwrap();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        assert_eq!(runtime.block_on(engine.policy_source()), "local");
+        assert!(runtime.block_on(engine.meaningful()));
+    }
+
+    #[test]
+    fn malformed_local_policy_is_an_initialization_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy_path = dir.path().join("policy.cedar");
+        std::fs::write(&policy_path, "this is not Cedar").unwrap();
+        let mut config = test_config();
+        config.policy_file = Some(policy_path.display().to_string());
+        assert!(PolicyEngine::new_with_base_dir(&config, dir.path()).is_err());
+    }
+
+    #[test]
+    fn fail_closed_without_material_uses_deny_all_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = test_config();
+        config.offline_mode = "fail_closed".to_string();
+        let engine = PolicyEngine::new_with_base_dir(&config, dir.path()).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        assert!(matches!(
+            runtime.block_on(engine.policy_source()).as_str(),
+            "fail_closed" | "cache"
+        ));
+        assert!(runtime.block_on(engine.meaningful()));
     }
 }

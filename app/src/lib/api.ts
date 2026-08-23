@@ -23,6 +23,8 @@ import type {
   PolicyStatus,
   PolicyCheckResult,
   PolicyReloadResult,
+  PolicyActivationRequest,
+  PolicyActivationResult,
   PolicyAuditEntry,
   LlmUsageEntry,
   LlmSpendReport,
@@ -212,6 +214,8 @@ export const api = {
   checkPolicy: (action: string, sandbox: string) =>
     invoke<PolicyCheckResult>("check_policy", { action, sandbox }),
   reloadPolicy: () => invoke<PolicyReloadResult>("reload_policy"),
+  activateLocalPolicy: (request: PolicyActivationRequest) =>
+    invoke<PolicyActivationResult>("activate_local_policy", { request }),
   getPolicyAudit: (last?: number) =>
     invoke<PolicyAuditEntry[]>("get_policy_audit", { last }),
 

@@ -271,6 +271,11 @@ enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "18888")]
         port: u16,
+        /// Explicit path to the server configuration. The server reports its
+        /// canonical form and never falls back to a cwd-relative policy file
+        /// when this option is supplied.
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// API key for authentication (overrides AGENTKERNEL_API_KEY env var). Can be repeated.
         #[arg(long)]
         api_key: Vec<String>,
@@ -2587,9 +2592,9 @@ memory_mb = 512
         Commands::Serve {
             host,
             port,
+            config,
             api_key,
             api_key_file,
-            config,
             tls,
             tls_cert,
             tls_key,

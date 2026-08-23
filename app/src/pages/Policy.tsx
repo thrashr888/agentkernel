@@ -183,9 +183,9 @@ export function Policy() {
               </div>
               <div className="flex items-center gap-2">
                 <Badge
-                  variant={policyStatus.enabled ? "success" : "secondary"}
+                  variant={policyStatus.enforcing && policyStatus.healthy ? "success" : "secondary"}
                 >
-                  {policyStatus.enabled ? "Enabled" : "Disabled"}
+                  {policyStatus.enforcing && policyStatus.healthy ? "Enforcing" : "Not enforcing"}
                 </Badge>
                 <Button
                   variant="outline"
@@ -203,10 +203,34 @@ export function Policy() {
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2 border-b pb-3 text-sm sm:grid-cols-5">
+                {([
+                  ["Compiled", policyStatus.compiled],
+                  ["Configured", policyStatus.configured],
+                  ["Active", policyStatus.active],
+                  ["Enforcing", policyStatus.enforcing],
+                  ["Healthy", policyStatus.healthy],
+                ] as const).map(([label, value]) => (
+                  <div key={label} className="flex items-center gap-1.5">
+                    {value ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+                    ) : (
+                      <XCircle className="h-3.5 w-3.5 text-muted-foreground" />
+                    )}
+                    <span>{label}</span>
+                  </div>
+                ))}
+              </div>
               <div className="flex items-center justify-between border-b pb-2">
                 <span className="text-sm font-medium">Version</span>
                 <span className="font-mono text-sm text-muted-foreground">
                   {policyStatus.version}
+                </span>
+              </div>
+              <div className="flex items-center justify-between border-b pb-2">
+                <span className="text-sm font-medium">Policy Source</span>
+                <span className="font-mono text-sm text-muted-foreground">
+                  {policyStatus.source ?? "none"}
                 </span>
               </div>
               <div className="flex items-center justify-between border-b pb-2">
@@ -227,6 +251,29 @@ export function Policy() {
                   {policyStatus.policy_server ?? "N/A"}
                 </span>
               </div>
+              {policyStatus.config_path && (
+                <div className="flex items-center justify-between border-t pt-2">
+                  <span className="text-sm font-medium">Configuration Path</span>
+                  <span className="max-w-[70%] truncate font-mono text-sm text-muted-foreground" title={policyStatus.config_path}>
+                    {policyStatus.config_path}
+                  </span>
+                </div>
+              )}
+              {policyStatus.initialization_error && (
+                <p className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                  Policy initialization failed: {policyStatus.initialization_error}
+                </p>
+              )}
+              {policyStatus.source === "default_permit_all" && (
+                <p className="rounded-md border border-yellow-500/40 bg-yellow-500/5 p-3 text-sm text-yellow-700 dark:text-yellow-300">
+                  Permit-all compatibility fallback: this is not meaningful policy enforcement. Configure a local Cedar file or a managed policy server.
+                </p>
+              )}
+              {policyStatus.admin_guidance && (
+                <p className="rounded-md border p-3 text-sm text-muted-foreground">
+                  {policyStatus.admin_guidance}
+                </p>
+              )}
             </div>
           </CardContent>
         </Card>
