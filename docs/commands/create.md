@@ -20,6 +20,9 @@ agentkernel sandbox create [OPTIONS] [NAME]
 | Option | Description |
 |--------|-------------|
 | `--config <FILE>` | Path to agentkernel.toml config file |
+| `--devcontainer <FILE>` | Path to a JSONC Development Container file |
+| `--auto-devcontainer` | Detect `.devcontainer/devcontainer.json` in the project |
+| `-i, --image <IMAGE>` | Docker image override (takes precedence over the devcontainer) |
 | `--template <NAME>` | Use a built-in or custom template |
 | `--agent <AGENT>` | Agent type: `claude`, `codex`, `gemini`, `opencode` |
 | `--dir <PATH>` | Project directory to mount |
@@ -60,6 +63,16 @@ agentkernel sandbox create claude-dev --config examples/agents/claude-code/agent
 # Mount current directory into sandbox
 agentkernel sandbox create my-project --config agentkernel.toml --dir .
 ```
+
+### From a Development Container file
+
+```bash
+agentkernel sandbox create my-project --auto-devcontainer
+agentkernel sandbox create my-project --devcontainer .devcontainer/devcontainer.json
+```
+
+See [Development Container configuration](../features/devcontainers.md) for
+the supported JSONC fields and explicit errors for unsupported features.
 
 ### From a template
 

@@ -152,6 +152,9 @@ pub struct SandboxState {
     /// Local workspace path used for mount_cwd or managed remote sync.
     #[serde(default)]
     pub work_dir: Option<String>,
+    /// Container-side workspace path (defaults to /workspace).
+    #[serde(default)]
+    pub container_work_dir: Option<String>,
     /// Original config file path used to create or start this sandbox.
     #[serde(default)]
     pub config_path: Option<String>,
@@ -196,6 +199,17 @@ pub struct SandboxState {
     /// Shell script to run inside the sandbox after start (from template init_script)
     #[serde(default)]
     pub init_script: Option<String>,
+    /// Environment from a devcontainer file. Values are passed as argv to the
+    /// backend and are never interpolated into log messages.
+    #[serde(default)]
+    pub environment: Vec<(String, String)>,
+    /// Devcontainer postCreateCommand entries represented as argv vectors.
+    #[serde(default)]
+    pub post_create_commands: Vec<Vec<String>>,
+    /// Whether all devcontainer postCreateCommand entries completed successfully.
+    /// This remains false after a failure so the next start can retry them.
+    #[serde(default)]
+    pub post_create_completed: bool,
     /// Template name this sandbox was created from (if any).
     #[serde(default)]
     pub created_from_template: Option<String>,
@@ -359,6 +373,10 @@ pub struct VmManager {
 fn shell_escape(s: &str) -> String {
     // Replace ' with '\'' (end quote, escaped quote, start quote)
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn should_run_devcontainer_post_create(state: &SandboxState) -> bool {
+    !state.post_create_completed && !state.post_create_commands.is_empty()
 }
 
 /// Run a command only when `names` is non-empty; returns `Err` (skip) when empty.
@@ -934,6 +952,7 @@ impl VmManager {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            container_work_dir: None,
             config_path: None,
             ttl_seconds,
             expires_at,
@@ -948,6 +967,9 @@ impl VmManager {
             placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
+            environment: Vec::new(),
+            post_create_commands: Vec::new(),
+            post_create_completed: false,
             created_from_template: None,
             template_help_text: None,
             labels: HashMap::new(),
@@ -1008,6 +1030,58 @@ impl VmManager {
                 .get_mut(name)
                 .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
             state.work_dir = work_dir;
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    /// Set the container-side workspace path for devcontainer mounts.
+    pub fn set_container_work_dir(&mut self, name: &str, work_dir: Option<String>) -> Result<()> {
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.container_work_dir = work_dir;
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    /// Set environment entries originating from a devcontainer file. Values
+    /// are persisted for subsequent `sandbox start` operations.
+    pub fn set_environment(&mut self, name: &str, environment: &[(String, String)]) -> Result<()> {
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.environment = environment.to_vec();
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    /// Set argv-safe devcontainer post-create commands.
+    pub fn set_post_create_commands(&mut self, name: &str, commands: &[Vec<String>]) -> Result<()> {
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.post_create_commands = commands.to_vec();
         }
         let state = self
             .sandboxes
@@ -1548,6 +1622,7 @@ impl VmManager {
         } else {
             None
         };
+        let container_work_dir = state.container_work_dir.clone();
 
         // Build environment variables if pass_env is enabled
         let mut env: Vec<(String, String)> = if perms.pass_env {
@@ -1558,6 +1633,7 @@ impl VmManager {
         } else {
             Vec::new()
         };
+        env.extend(state.environment.iter().cloned());
 
         // Pass agent-specific API keys from host environment
         if let Some(ref agent) = state.agent {
@@ -1585,7 +1661,14 @@ impl VmManager {
         let git_config_path = configured_path
             .filter(|path| path.exists())
             .or_else(|| fallback_path.exists().then_some(fallback_path));
-        if let Some(path) = git_config_path {
+        let is_devcontainer_path = git_config_path.as_ref().is_some_and(|path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| matches!(extension, "json" | "jsonc"))
+        });
+        if let Some(path) = git_config_path
+            && !is_devcontainer_path
+        {
             match Config::from_file(&path) {
                 Ok(config) => env.extend(config.agent.git_config_env()),
                 Err(error) => eprintln!(
@@ -1918,6 +2001,7 @@ impl VmManager {
             memory_mb: perms.max_memory_mb.unwrap_or(state.memory_mb),
             mount_cwd: perms.mount_cwd,
             work_dir,
+            container_work_dir,
             env,
             network: perms.network,
             read_only: perms.read_only_root,
@@ -2175,6 +2259,54 @@ impl VmManager {
                     let _ = sandbox.stop().await;
                     anyhow::bail!("failed to run init script: {}", e);
                 }
+            }
+        }
+
+        // Run devcontainer postCreateCommand entries as argv vectors once. String
+        // commands are represented by ["sh", "-c", value] during parsing; no
+        // command is concatenated into a larger shell string here. The completion
+        // flag is persisted only after every command succeeds, leaving failed
+        // creates retryable on the next start.
+        if should_run_devcontainer_post_create(&state) {
+            for command in &state.post_create_commands {
+                if command.is_empty() {
+                    let _ = sandbox.stop().await;
+                    bail!("devcontainer postCreateCommand contains an empty command");
+                }
+                let argv = command.iter().map(String::as_str).collect::<Vec<_>>();
+                match sandbox.exec(&argv).await {
+                    Ok(result) if result.exit_code == 0 => {}
+                    Ok(result) => {
+                        let stderr = result.stderr.trim().to_string();
+                        let _ = sandbox.stop().await;
+                        bail!(
+                            "devcontainer postCreateCommand failed (exit code {}): {}",
+                            result.exit_code,
+                            stderr
+                        );
+                    }
+                    Err(error) => {
+                        let _ = sandbox.stop().await;
+                        return Err(error).context("failed to run devcontainer postCreateCommand");
+                    }
+                }
+            }
+
+            let snapshot = {
+                let stored = self
+                    .sandboxes
+                    .get_mut(name)
+                    .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+                stored.post_create_completed = true;
+                stored.clone()
+            };
+            if let Err(error) = self.save_sandbox(&snapshot) {
+                if let Some(stored) = self.sandboxes.get_mut(name) {
+                    stored.post_create_completed = false;
+                }
+                let _ = sandbox.stop().await;
+                return Err(error)
+                    .context("failed to persist devcontainer postCreateCommand completion");
             }
         }
 
@@ -3023,6 +3155,7 @@ impl VmManager {
             memory_mb: perms.max_memory_mb.unwrap_or(512),
             mount_cwd: perms.mount_cwd,
             work_dir,
+            container_work_dir: None,
             env,
             network: perms.network,
             read_only: perms.read_only_root,
@@ -3264,6 +3397,7 @@ mod tests {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            container_work_dir: None,
             config_path: None,
             ttl_seconds: None,
             expires_at: None,
@@ -3278,6 +3412,9 @@ mod tests {
             placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
+            environment: Vec::new(),
+            post_create_commands: Vec::new(),
+            post_create_completed: false,
             created_from_template: None,
             template_help_text: None,
             labels: HashMap::new(),
@@ -3313,6 +3450,33 @@ mod tests {
         assert_eq!(state.vcpus, 4);
         assert_eq!(state.memory_mb, 2048);
         assert_eq!(state.vsock_cid, 10);
+        assert!(!state.post_create_completed);
+    }
+
+    #[test]
+    fn test_post_create_completion_is_persisted_and_gates_rerun() {
+        let mut state: SandboxState = serde_json::from_str(
+            r#"{
+                "name":"devcontainer",
+                "image":"alpine:3.24",
+                "vcpus":1,
+                "memory_mb":512,
+                "vsock_cid":2,
+                "created_at":"2024-01-01T00:00:00Z",
+                "post_create_commands":[["echo","ready"]]
+            }"#,
+        )
+        .unwrap();
+        assert!(should_run_devcontainer_post_create(&state));
+
+        state.post_create_completed = true;
+        let restored: SandboxState =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert!(!should_run_devcontainer_post_create(&restored));
+        assert_eq!(
+            restored.post_create_commands,
+            vec![vec!["echo".to_string(), "ready".to_string()]]
+        );
     }
 
     #[test]
@@ -3354,6 +3518,7 @@ mod tests {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            container_work_dir: None,
             config_path: None,
             ttl_seconds: None,
             expires_at: None,
@@ -3368,6 +3533,9 @@ mod tests {
             placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
+            environment: Vec::new(),
+            post_create_commands: Vec::new(),
+            post_create_completed: false,
             created_from_template: None,
             template_help_text: None,
             labels: HashMap::new(),
@@ -3432,6 +3600,7 @@ mod tests {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            container_work_dir: None,
             config_path: None,
             ttl_seconds: None,
             expires_at: None,
@@ -3446,6 +3615,9 @@ mod tests {
             placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
+            environment: Vec::new(),
+            post_create_commands: Vec::new(),
+            post_create_completed: false,
             created_from_template: None,
             template_help_text: None,
             labels: HashMap::new(),
@@ -3526,6 +3698,7 @@ mod tests {
                 workspace_revision: None,
                 endpoints: Vec::new(),
                 work_dir: None,
+                container_work_dir: None,
                 config_path: None,
                 ttl_seconds: None,
                 expires_at: None,
@@ -3540,6 +3713,9 @@ mod tests {
                 placeholder_secrets: false,
                 proxy_port: None,
                 init_script: None,
+                environment: Vec::new(),
+                post_create_commands: Vec::new(),
+                post_create_completed: false,
                 created_from_template: None,
                 template_help_text: None,
                 labels: HashMap::new(),
@@ -3601,6 +3777,7 @@ mod tests {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            container_work_dir: None,
             config_path: None,
             ttl_seconds: None,
             expires_at: None,
@@ -3615,6 +3792,9 @@ mod tests {
             placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
+            environment: Vec::new(),
+            post_create_commands: Vec::new(),
+            post_create_completed: false,
             created_from_template: None,
             template_help_text: None,
             labels: HashMap::new(),
@@ -3676,6 +3856,7 @@ mod tests {
                 workspace_revision: None,
                 endpoints: Vec::new(),
                 work_dir: None,
+                container_work_dir: None,
                 config_path: None,
                 ttl_seconds: None,
                 expires_at: None,
@@ -3690,6 +3871,9 @@ mod tests {
                 placeholder_secrets: false,
                 proxy_port: None,
                 init_script: None,
+                environment: Vec::new(),
+                post_create_commands: Vec::new(),
+                post_create_completed: false,
                 created_from_template: None,
                 template_help_text: None,
                 labels,
@@ -3752,6 +3936,7 @@ mod tests {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            container_work_dir: None,
             config_path: None,
             ttl_seconds: None,
             expires_at: None,
@@ -3766,6 +3951,9 @@ mod tests {
             placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
+            environment: Vec::new(),
+            post_create_commands: Vec::new(),
+            post_create_completed: false,
             created_from_template: None,
             template_help_text: None,
             labels: HashMap::new(),
@@ -3824,6 +4012,7 @@ mod tests {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            container_work_dir: None,
             config_path: None,
             ttl_seconds: None,
             expires_at: None,
@@ -3838,6 +4027,9 @@ mod tests {
             placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
+            environment: Vec::new(),
+            post_create_commands: Vec::new(),
+            post_create_completed: false,
             created_from_template: None,
             template_help_text: None,
             labels: labels.clone(),
@@ -3892,6 +4084,7 @@ mod tests {
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
+            container_work_dir: None,
             config_path: None,
             ttl_seconds: Some(3600),
             expires_at: Some("2026-01-01T01:00:00Z".to_string()),
@@ -3906,6 +4099,9 @@ mod tests {
             placeholder_secrets: false,
             proxy_port: None,
             init_script: None,
+            environment: Vec::new(),
+            post_create_commands: Vec::new(),
+            post_create_completed: false,
             created_from_template: None,
             template_help_text: None,
             labels: HashMap::new(),
