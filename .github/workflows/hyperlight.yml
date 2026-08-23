@@ -2,7 +2,7 @@ name: Hyperlight
 
 on:
   pull_request:
-    branches: [main, codex/apple-container-1-2-modernization]
+    branches: [main, codex/apple-container-1-2-modernization, codex/modernization-followups]
     paths:
       - Cargo.toml
       - Cargo.lock

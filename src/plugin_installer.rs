@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 const CLAUDE_SKILL_MD: &str = include_str!("../claude-plugin/.claude/skills/agentkernel/SKILL.md");
 const CLAUDE_COMMAND_MD: &str = include_str!("../claude-plugin/.claude/commands/sandbox.md");
+const CODEX_CONFIG_TOML: &str = include_str!("../plugins/codex/config.toml");
+#[cfg(test)]
 const CODEX_MCP_JSON: &str = include_str!("../plugins/codex/mcp.json");
 const GEMINI_MCP_JSON: &str = include_str!("../plugins/gemini/mcp.json");
 const MCP_GENERIC_JSON: &str = include_str!("../plugins/mcp/mcp.json");
@@ -60,7 +62,7 @@ impl PluginTarget {
         }
     }
 
-    fn description(&self) -> &'static str {
+    pub fn description(&self) -> &'static str {
         match self {
             Self::Claude => "Claude Code skill + MCP server config",
             Self::Codex => "Codex MCP server config",
@@ -84,7 +86,7 @@ impl PluginTarget {
         ]
     }
 
-    fn supports_global(&self) -> bool {
+    pub fn supports_global(&self) -> bool {
         matches!(
             self,
             Self::Claude | Self::Codex | Self::Gemini | Self::Amp | Self::Mcp
@@ -99,6 +101,8 @@ enum WriteStrategy {
     Create,
     /// Merge agentkernel entry into existing JSON mcpServers object.
     MergeJsonMcpServer,
+    /// Merge the AgentKernel server into Codex's current config.toml format.
+    MergeCodexToml,
 }
 
 /// A single file to be installed.
@@ -144,9 +148,9 @@ fn plugin_files(target: PluginTarget) -> Vec<PluginFile> {
             },
         ],
         PluginTarget::Codex => vec![PluginFile {
-            rel_path: ".mcp.json",
-            content: CODEX_MCP_JSON,
-            strategy: WriteStrategy::MergeJsonMcpServer,
+            rel_path: ".codex/config.toml",
+            content: CODEX_CONFIG_TOML,
+            strategy: WriteStrategy::MergeCodexToml,
         }],
         PluginTarget::Gemini => vec![PluginFile {
             rel_path: ".gemini/settings.json",
@@ -219,6 +223,7 @@ pub fn install_plugin(target: PluginTarget, opts: &InstallOptions) -> Result<()>
         let result = match file.strategy {
             WriteStrategy::Create => install_create(&dest, file.content, opts),
             WriteStrategy::MergeJsonMcpServer => install_merge_mcp(&dest, file.content, opts),
+            WriteStrategy::MergeCodexToml => install_merge_codex_toml(&dest, file.content, opts),
         };
         if matches!(result, InstallResult::Error(..)) {
             has_error = true;
@@ -272,6 +277,33 @@ fn global_root(target: PluginTarget) -> Result<PathBuf> {
         | PluginTarget::Mcp => Ok(home),
         _ => bail!("{} plugins are per-project only", target.name()),
     }
+}
+
+/// Describe the files an integration install would touch without changing them.
+pub fn preview_plugin(target: PluginTarget, global: bool) -> Result<Vec<PathBuf>> {
+    let root = if global {
+        if !target.supports_global() {
+            bail!("{} plugins are per-project only", target.name());
+        }
+        global_root(target)?
+    } else {
+        std::env::current_dir()?
+    };
+    Ok(plugin_files(target)
+        .into_iter()
+        .map(|file| root.join(file.rel_path))
+        .collect())
+}
+
+/// Return whether the integration is installed at project or global scope.
+pub fn installation_scopes(target: PluginTarget) -> (bool, bool) {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let project = check_installed(target, &cwd);
+    let global = target.supports_global()
+        && global_root(target)
+            .map(|root| check_installed(target, &root))
+            .unwrap_or(false);
+    (project, global)
 }
 
 /// Create a file, optionally overwriting.
@@ -387,6 +419,77 @@ fn install_merge_mcp(dest: &Path, mcp_content: &str, opts: &InstallOptions) -> I
     }
 }
 
+/// Merge the AgentKernel MCP table into Codex's `.codex/config.toml`.
+fn install_merge_codex_toml(dest: &Path, content: &str, opts: &InstallOptions) -> InstallResult {
+    let desired: toml::Value = match toml::from_str(content) {
+        Ok(value) => value,
+        Err(error) => return InstallResult::Error(dest.to_path_buf(), error.to_string()),
+    };
+    let desired_server = &desired["mcp_servers"]["agentkernel"];
+
+    let mut current = if dest.exists() {
+        match std::fs::read_to_string(dest)
+            .map_err(|error| error.to_string())
+            .and_then(|text| {
+                toml::from_str::<toml::Value>(&text).map_err(|error| error.to_string())
+            }) {
+            Ok(value) => value,
+            Err(error) => return InstallResult::Error(dest.to_path_buf(), error),
+        }
+    } else {
+        toml::Value::Table(Default::default())
+    };
+
+    if let Some(existing) = current
+        .get("mcp_servers")
+        .and_then(|value| value.get("agentkernel"))
+    {
+        if existing == desired_server {
+            return InstallResult::Skipped(dest.to_path_buf(), "already configured");
+        }
+        if !opts.force {
+            return InstallResult::Skipped(
+                dest.to_path_buf(),
+                "agentkernel entry exists with different config (use --force)",
+            );
+        }
+    }
+
+    if opts.dry_run {
+        return if dest.exists() {
+            InstallResult::Updated(dest.to_path_buf())
+        } else {
+            InstallResult::Created(dest.to_path_buf())
+        };
+    }
+
+    let table = match current.as_table_mut() {
+        Some(table) => table,
+        None => return InstallResult::Error(dest.to_path_buf(), "root is not a TOML table".into()),
+    };
+    let servers = table
+        .entry("mcp_servers")
+        .or_insert_with(|| toml::Value::Table(Default::default()));
+    let Some(servers) = servers.as_table_mut() else {
+        return InstallResult::Error(dest.to_path_buf(), "mcp_servers is not a TOML table".into());
+    };
+    servers.insert("agentkernel".into(), desired_server.clone());
+
+    if let Some(parent) = dest.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        return InstallResult::Error(dest.to_path_buf(), error.to_string());
+    }
+    let text = match toml::to_string_pretty(&current) {
+        Ok(text) => text,
+        Err(error) => return InstallResult::Error(dest.to_path_buf(), error.to_string()),
+    };
+    match std::fs::write(dest, text) {
+        Ok(()) => InstallResult::Updated(dest.to_path_buf()),
+        Err(error) => InstallResult::Error(dest.to_path_buf(), error.to_string()),
+    }
+}
+
 /// Check if a plugin is installed in the given directory.
 fn check_installed(target: PluginTarget, cwd: &Path) -> bool {
     let files = plugin_files(target);
@@ -406,6 +509,11 @@ fn check_installed(target: PluginTarget, cwd: &Path) -> bool {
                 }
                 false
             }
+            WriteStrategy::MergeCodexToml => std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|content| toml::from_str::<toml::Value>(&content).ok())
+                .and_then(|config| config.get("mcp_servers")?.get("agentkernel").cloned())
+                .is_some(),
         }
     })
 }
@@ -562,6 +670,27 @@ mod tests {
     }
 
     #[test]
+    fn catalog_integration_targets_cannot_drift() {
+        for entry in crate::agent_catalog::agents() {
+            if let Some(target) = &entry.integration_target {
+                assert!(
+                    PluginTarget::from_str(target).is_some(),
+                    "unknown target {target}"
+                );
+            }
+        }
+        for target in PluginTarget::all() {
+            if *target != PluginTarget::Mcp {
+                assert!(
+                    crate::agent_catalog::agents().iter().any(|entry| {
+                        entry.integration_target.as_deref() == Some(target.name())
+                    })
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_embedded_json_files_parse() {
         let _: serde_json::Value =
             serde_json::from_str(CODEX_MCP_JSON).expect("Codex mcp.json should parse");
@@ -576,10 +705,21 @@ mod tests {
     }
 
     #[test]
+    fn test_codex_config_toml_parses() {
+        let config: toml::Value =
+            toml::from_str(CODEX_CONFIG_TOML).expect("Codex config.toml should parse");
+        assert_eq!(
+            config["mcp_servers"]["agentkernel"]["command"].as_str(),
+            Some("agentkernel")
+        );
+    }
+
+    #[test]
     fn test_embedded_files_not_empty() {
         assert!(!CLAUDE_SKILL_MD.is_empty());
         assert!(!CLAUDE_COMMAND_MD.is_empty());
         assert!(!CODEX_MCP_JSON.is_empty());
+        assert!(!CODEX_CONFIG_TOML.is_empty());
         assert!(!GEMINI_MCP_JSON.is_empty());
         assert!(!MCP_GENERIC_JSON.is_empty());
         assert!(!OPENCODE_PACKAGE_JSON.is_empty());
@@ -678,6 +818,26 @@ mod tests {
         let content: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&dest).unwrap()).unwrap();
         assert!(content["mcpServers"]["agentkernel"].is_object());
+    }
+
+    #[test]
+    fn test_codex_toml_merge_preserves_existing_config() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dest = tmp.path().join("config.toml");
+        std::fs::write(&dest, "model = \"gpt-5.6-sol\"\n").unwrap();
+        let opts = InstallOptions {
+            global: false,
+            force: false,
+            dry_run: false,
+        };
+        let result = install_merge_codex_toml(&dest, CODEX_CONFIG_TOML, &opts);
+        assert!(matches!(result, InstallResult::Updated(_)));
+        let config: toml::Value = toml::from_str(&std::fs::read_to_string(dest).unwrap()).unwrap();
+        assert_eq!(config["model"].as_str(), Some("gpt-5.6-sol"));
+        assert_eq!(
+            config["mcp_servers"]["agentkernel"]["command"].as_str(),
+            Some("agentkernel")
+        );
     }
 
     #[test]

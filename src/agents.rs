@@ -7,6 +7,13 @@
 use anyhow::Result;
 use std::collections::HashMap;
 
+fn catalog_install(id: &str) -> &'static str {
+    crate::agent_catalog::find(id)
+        .expect("agent adapter must exist in the catalog")
+        .install_command
+        .as_str()
+}
+
 /// Agent type enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AgentType {
@@ -14,6 +21,7 @@ pub enum AgentType {
     Claude,
     Gemini,
     Codex,
+    Copilot,
     OpenCode,
     Amp,
     Pi,
@@ -28,6 +36,7 @@ impl AgentType {
             "claude" | "claude-code" => Some(Self::Claude),
             "gemini" | "gemini-cli" => Some(Self::Gemini),
             "codex" | "openai-codex" => Some(Self::Codex),
+            "copilot" | "github-copilot" => Some(Self::Copilot),
             "opencode" | "open-code" => Some(Self::OpenCode),
             "amp" | "ampcode" => Some(Self::Amp),
             "pi" | "pi-coding-agent" => Some(Self::Pi),
@@ -43,6 +52,7 @@ impl AgentType {
             Self::Claude => "Claude Code",
             Self::Gemini => "Gemini CLI",
             Self::Codex => "Codex",
+            Self::Copilot => "Copilot CLI",
             Self::OpenCode => "OpenCode",
             Self::Amp => "Amp",
             Self::Pi => "Pi",
@@ -57,12 +67,56 @@ impl AgentType {
             Self::Claude => "claude",
             Self::Gemini => "gemini",
             Self::Codex => "codex",
+            Self::Copilot => "copilot",
             Self::OpenCode => "opencode",
             Self::Amp => "amp",
             Self::Pi => "pi",
             Self::Hermes => "hermes",
             Self::Symphony => "symphony",
         }
+    }
+}
+
+/// GitHub Copilot CLI adapter.
+pub struct CopilotAgent {
+    config: AgentConfig,
+}
+
+impl CopilotAgent {
+    pub fn new(config: AgentConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl Agent for CopilotAgent {
+    fn agent_type(&self) -> AgentType {
+        AgentType::Copilot
+    }
+
+    fn launch_command(&self) -> Vec<String> {
+        let mut cmd = vec!["copilot".to_string()];
+        cmd.extend(self.config.args.clone());
+        cmd
+    }
+
+    fn env_vars(&self) -> &HashMap<String, String> {
+        &self.config.env_vars
+    }
+
+    fn api_key_env_var(&self) -> Option<&'static str> {
+        None
+    }
+
+    fn is_available(&self) -> bool {
+        std::process::Command::new("copilot")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn install_instructions(&self) -> &'static str {
+        catalog_install("copilot")
     }
 }
 
@@ -165,7 +219,7 @@ impl Agent for ClaudeAgent {
     }
 
     fn install_instructions(&self) -> &'static str {
-        "Install Claude Code: npm install -g @anthropic-ai/claude-code@2.1.239"
+        catalog_install("claude-code")
     }
 }
 
@@ -208,7 +262,7 @@ impl Agent for GeminiAgent {
     }
 
     fn install_instructions(&self) -> &'static str {
-        "Install Gemini CLI: npm install -g @google/gemini-cli@0.56.0"
+        catalog_install("gemini")
     }
 }
 
@@ -251,7 +305,7 @@ impl Agent for CodexAgent {
     }
 
     fn install_instructions(&self) -> &'static str {
-        "Install Codex CLI: npm install -g @openai/codex@0.149.0"
+        catalog_install("codex")
     }
 }
 
@@ -295,7 +349,7 @@ impl Agent for OpenCodeAgent {
     }
 
     fn install_instructions(&self) -> &'static str {
-        "Install OpenCode: npm install -g opencode-ai@1.18.21"
+        catalog_install("opencode")
     }
 }
 
@@ -338,7 +392,7 @@ impl Agent for AmpAgent {
     }
 
     fn install_instructions(&self) -> &'static str {
-        "Install Amp: npm install -g --allow-scripts=@ampcode/cli @ampcode/cli@0.0.1787342526-gc11bfb"
+        catalog_install("amp")
     }
 }
 
@@ -382,7 +436,7 @@ impl Agent for PiAgent {
     }
 
     fn install_instructions(&self) -> &'static str {
-        "Install Pi: npm install -g @earendil-works/pi-coding-agent@0.84.2"
+        catalog_install("pi")
     }
 }
 
@@ -426,7 +480,7 @@ impl Agent for HermesAgent {
     }
 
     fn install_instructions(&self) -> &'static str {
-        "Install Hermes Agent: curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
+        catalog_install("hermes")
     }
 }
 
@@ -469,7 +523,7 @@ impl Agent for SymphonyAgent {
     }
 
     fn install_instructions(&self) -> &'static str {
-        "Install Symphony: git clone https://github.com/openai/symphony && cd symphony/elixir && mix setup && mix build"
+        catalog_install("symphony")
     }
 }
 
@@ -481,6 +535,7 @@ pub fn create_agent(agent_type: AgentType, config: Option<AgentConfig>) -> Box<d
         AgentType::Claude => Box::new(ClaudeAgent::new(config)),
         AgentType::Gemini => Box::new(GeminiAgent::new(config)),
         AgentType::Codex => Box::new(CodexAgent::new(config)),
+        AgentType::Copilot => Box::new(CopilotAgent::new(config)),
         AgentType::OpenCode => Box::new(OpenCodeAgent::new(config)),
         AgentType::Amp => Box::new(AmpAgent::new(config)),
         AgentType::Pi => Box::new(PiAgent::new(config)),
@@ -549,16 +604,14 @@ impl AgentStatus {
 
 /// List all available agents and their status
 pub fn list_agents() -> Vec<AgentStatus> {
-    vec![
-        check_agent_availability(AgentType::Claude),
-        check_agent_availability(AgentType::Gemini),
-        check_agent_availability(AgentType::Codex),
-        check_agent_availability(AgentType::OpenCode),
-        check_agent_availability(AgentType::Amp),
-        check_agent_availability(AgentType::Pi),
-        check_agent_availability(AgentType::Hermes),
-        check_agent_availability(AgentType::Symphony),
-    ]
+    crate::agent_catalog::agents()
+        .iter()
+        .map(|entry| {
+            let agent_type =
+                AgentType::from_str(&entry.id).expect("every catalog agent must have an adapter");
+            check_agent_availability(agent_type)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -571,6 +624,7 @@ mod tests {
         assert_eq!(AgentType::from_str("Claude"), Some(AgentType::Claude));
         assert_eq!(AgentType::from_str("gemini"), Some(AgentType::Gemini));
         assert_eq!(AgentType::from_str("codex"), Some(AgentType::Codex));
+        assert_eq!(AgentType::from_str("copilot"), Some(AgentType::Copilot));
         assert_eq!(AgentType::from_str("opencode"), Some(AgentType::OpenCode));
         assert_eq!(AgentType::from_str("amp"), Some(AgentType::Amp));
         assert_eq!(AgentType::from_str("ampcode"), Some(AgentType::Amp));
@@ -605,5 +659,13 @@ mod tests {
         let agent = create_agent(AgentType::Claude, None);
         assert_eq!(agent.agent_type(), AgentType::Claude);
         assert_eq!(agent.api_key_env_var(), Some("ANTHROPIC_API_KEY"));
+    }
+
+    #[test]
+    fn catalog_and_agent_adapters_cannot_drift() {
+        for entry in crate::agent_catalog::agents() {
+            let ty = AgentType::from_str(&entry.id).expect("missing agent adapter");
+            assert_eq!(ty.command(), entry.executable);
+        }
     }
 }

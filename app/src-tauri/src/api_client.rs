@@ -446,6 +446,26 @@ impl ApiClient {
             .await
     }
 
+    /// Preview or confirm an AgentKernel integration install on the server host.
+    pub async fn install_agent_integration(
+        &self,
+        name: &str,
+        scope: &str,
+        confirm: bool,
+    ) -> anyhow::Result<crate::types::AgentIntegrationResult> {
+        #[derive(serde::Serialize)]
+        struct Request<'a> {
+            scope: &'a str,
+            confirm: bool,
+        }
+        self.request(
+            reqwest::Method::POST,
+            &format!("/agents/{name}/integration"),
+            Some(&Request { scope, confirm }),
+        )
+        .await
+    }
+
     // -----------------------------------------------------------------
     // LLM Usage
     // -----------------------------------------------------------------

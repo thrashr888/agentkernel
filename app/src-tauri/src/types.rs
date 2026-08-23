@@ -282,6 +282,24 @@ pub struct AgentInfo {
     pub display_name: String,
     pub enabled: bool,
     pub description: String,
+    pub package: Option<String>,
+    pub cli_installed: bool,
+    pub cli_version: Option<String>,
+    pub tested_version: String,
+    pub compatibility_status: String,
+    pub install_command: String,
+    pub integration_supported: bool,
+    pub integration_project_installed: bool,
+    pub integration_global_installed: bool,
+    pub integration_global_supported: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentIntegrationResult {
+    pub target: String,
+    pub scope: String,
+    pub confirmed: bool,
+    pub files: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
