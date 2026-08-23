@@ -371,7 +371,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(migration_count, 10);
+        assert_eq!(migration_count, 11);
     }
 
     #[test]
@@ -429,6 +429,6 @@ INSERT INTO orchestrations(
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     }
 }
