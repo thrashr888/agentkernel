@@ -62,6 +62,11 @@ impl KubernetesSandbox {
 
     /// Build the Kubernetes API client
     async fn build_client(config: &OrchestratorConfig) -> Result<Client> {
+        // Multiple optional dependencies enable different rustls providers. Select the
+        // provider AgentKernel uses before kube builds its HTTPS client so binaries
+        // with those feature combinations cannot panic during client construction.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         // Try in-cluster config first (when running inside K8s)
         if let Ok(config) = KubeConfig::incluster() {
             return Client::try_from(config).context("Failed to create in-cluster K8s client");

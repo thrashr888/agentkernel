@@ -11,10 +11,10 @@ a schedule or by explicit dispatch.
 | --- | --- | --- | --- | --- | --- |
 | Docker | Current GitHub-hosted Docker | `backend-compatibility.yml`, `container_backend_smoke` | Pull request and weekly | Runtime maintainers (@thrashr888) | Blocking |
 | Podman | Current Ubuntu Podman | `backend-compatibility.yml`, `container_backend_smoke` | Pull request and weekly | Runtime maintainers (@thrashr888) | Blocking |
-| Apple Containers | macOS 26+, Apple silicon, current 1.2.x CLI | `apple-container-compatibility.yml` | Pull request and weekly | macOS backend maintainer (@thrashr888) | Blocking when runner is available |
+| Apple Containers | macOS 26+, Apple silicon, pinned 1.2.2 CLI | `apple-container-compatibility.yml` | Pull request, weekly, and approved live dispatch | macOS backend maintainer (@thrashr888) | Hosted contract blocking; live lifecycle dedicated-host gate |
 | Firecracker | 1.16.1 with the 6.18.45 guest kernel | `firecracker-kvm-smoke.yml` | Weekly and approved dispatch | Runtime maintainers (@thrashr888) | Dedicated-host gate |
 | Hyperlight | `hyperlight-wasm` 0.14, Linux x86_64 KVM | `hyperlight.yml` | Pull request and weekly | Runtime maintainers (@thrashr888) | Blocking |
-| Kubernetes | 1.34, 1.35, and 1.36 | `kubernetes-compatibility.yml` | Pull request and weekly | Orchestrator maintainers (@thrashr888) | Blocking |
+| Kubernetes | 1.34 and 1.35; automatic 1.36 probe | `kubernetes-compatibility.yml` | Pull request and weekly | Orchestrator maintainers (@thrashr888) | 1.34/1.35 blocking; 1.36 activates when published |
 | Nomad | 1.10.5 and 2.0.4 | `nomad-compatibility.yml` | Pull request and weekly | Orchestrator maintainers (@thrashr888) | Blocking |
 | PostgreSQL, MySQL, Redis, Valkey | PostgreSQL 17, MySQL 8.4, Redis 7, Valkey 9.1 | `store-compatibility.yml` | Pull request, weekly, and dispatch | Storage maintainers (@thrashr888) | Blocking |
 
@@ -48,7 +48,21 @@ workflow timeout and cleanup procedure before enabling it.
 
 ## Explicit non-blocking boundaries
 
-The Hyperlight native arm64 probe is the only intentionally non-blocking backend
+GitHub-hosted Apple-silicon runners do not expose nested virtualization, so the
+blocking pull-request lane installs Apple's signed 1.2.2 package, verifies the
+macOS/architecture contract, runs structured-output tests, and compiles the
+lifecycle smoke. The real lifecycle is an opt-in dispatch on the access-controlled
+`agentkernel-apple-containers` self-hosted runner. The macOS backend maintainer
+(@thrashr888) owns that runner and must run the live lane before releases that
+change the Apple backend.
+
+Kubernetes 1.36 does not yet have a published `kindest/node:v1.36.0` image. The
+matrix probes that exact target on every run and automatically executes the full
+lifecycle when it appears; 1.34 and 1.35 remain blocking today. Orchestrator
+maintainers (@thrashr888) own the probe and must make 1.36 a required target in
+the same change that first turns the probe green.
+
+The Hyperlight native arm64 probe is an intentionally non-blocking backend
 compatibility exception. It is limited to the known `hyperlight-host` 0.14 arm64
 compiler failure, has an expiry check on **2026-11-30**, and is owned by the
 runtime maintainers (@thrashr888). It must become blocking when a published

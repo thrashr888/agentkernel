@@ -32,10 +32,13 @@ jobs:
         include:
           - version: "1.34.0"
             cluster: agentkernel-134
+            required: true
           - version: "1.35.0"
             cluster: agentkernel-135
+            required: true
           - version: "1.36.0"
             cluster: agentkernel-136
+            required: false
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
@@ -45,33 +48,53 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: kubernetes-${{ matrix.version }}
+      - name: Probe kind node image
+        id: image
+        env:
+          NODE_IMAGE: kindest/node:v${{ matrix.version }}
+          REQUIRED: ${{ matrix.required }}
+        run: |
+          if docker manifest inspect "$NODE_IMAGE" >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          elif [ "$REQUIRED" = "true" ]; then
+            echo "Required kind node image is unavailable: $NODE_IMAGE" >&2
+            exit 1
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Future compatibility target is not published yet: $NODE_IMAGE"
+          fi
       - name: Start kind cluster
+        if: steps.image.outputs.available == 'true'
         uses: helm/kind-action@v1
         with:
           node_image: kindest/node:v${{ matrix.version }}
           cluster_name: ${{ matrix.cluster }}
       - name: Create test namespace
+        if: steps.image.outputs.available == 'true'
         run: kubectl create namespace agentkernel-test
       - name: Run lifecycle compatibility tests
+        if: steps.image.outputs.available == 'true'
         run: >-
           cargo test --locked --features kubernetes
           --test kubernetes_integration_test test_kubernetes_lifecycle
           -- --ignored --nocapture --test-threads=1
       - name: Run exec compatibility tests
+        if: steps.image.outputs.available == 'true'
         run: >-
           cargo test --locked --features kubernetes
           --test kubernetes_integration_test test_kubernetes_exec_with_env
           -- --ignored --nocapture --test-threads=1
       - name: Run file injection compatibility tests
+        if: steps.image.outputs.available == 'true'
         run: >-
           cargo test --locked --features kubernetes
           --test kubernetes_integration_test test_kubernetes_file_injection
           -- --ignored --nocapture --test-threads=1
       - name: Collect cluster diagnostics
-        if: failure()
+        if: failure() && steps.image.outputs.available == 'true'
         run: |
           kubectl get pods --all-namespaces -o wide || true
           kubectl describe namespace agentkernel-test || true
       - name: Delete test namespace
-        if: always()
+        if: always() && steps.image.outputs.available == 'true'
         run: kubectl delete namespace agentkernel-test --ignore-not-found --wait=false
