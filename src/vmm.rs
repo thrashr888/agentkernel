@@ -294,12 +294,6 @@ pub struct SandboxState {
     /// Optional lifecycle automation policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_policy: Option<SandboxLifecyclePolicy>,
-    /// Authenticated user that owns this sandbox for enterprise accounting.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner_user_id: Option<String>,
-    /// Organization that owns this sandbox for enterprise accounting.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner_org_id: Option<String>,
 }
 
 impl SandboxState {
@@ -1069,8 +1063,6 @@ impl VmManager {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
-            owner_user_id: None,
-            owner_org_id: None,
         };
 
         self.save_sandbox(&state)?;
@@ -3772,8 +3764,6 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
-            owner_user_id: None,
-            owner_org_id: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -3899,8 +3889,6 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
-            owner_user_id: None,
-            owner_org_id: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -3987,8 +3975,6 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
-            owner_user_id: None,
-            owner_org_id: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -4091,8 +4077,6 @@ mod tests {
                 dormant_at: None,
                 dormant_reason: None,
                 lifecycle_policy: None,
-                owner_user_id: None,
-                owner_org_id: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();
@@ -4176,8 +4160,6 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
-            owner_user_id: None,
-            owner_org_id: None,
         };
         std::fs::create_dir_all(temp_dir.path().join("sandboxes")).unwrap();
         manager.sandboxes.insert("label-test".to_string(), state);
@@ -4261,8 +4243,6 @@ mod tests {
                 dormant_at: None,
                 dormant_reason: None,
                 lifecycle_policy: None,
-                owner_user_id: None,
-                owner_org_id: None,
             };
             manager.sandboxes.insert(name.to_string(), state);
         }
@@ -4347,8 +4327,6 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
-            owner_user_id: None,
-            owner_org_id: None,
         };
         manager.sandboxes.insert("desc-test".to_string(), state);
 
@@ -4429,8 +4407,6 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
-            owner_user_id: None,
-            owner_org_id: None,
         };
 
         // Save to disk
@@ -4507,8 +4483,6 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
-            owner_user_id: None,
-            owner_org_id: None,
         }
     }
 

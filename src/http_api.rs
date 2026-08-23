@@ -16,7 +16,7 @@
 //! Authorization: Bearer <api_key>
 //! ```
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
@@ -35,6 +35,7 @@ use crate::asciicast::{self, AsciicastEvent, AsciicastHeader, EventType};
 use crate::backend::{
     BackendCapabilities, BackendType, backend_capabilities, backend_readiness, detect_best_backend,
 };
+use crate::job_scheduler::{JobScheduler, JobSchedulerHandle};
 use crate::languages;
 use crate::opencode::OpenCodeState;
 use crate::orchestration_store::{
@@ -1131,6 +1132,37 @@ impl AppState {
             .get()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("VmManager could not be initialized"))
+    }
+
+    /// Load, validate, and attach user schedules before the listener starts.
+    /// Invalid schedule IDs and targets therefore fail daemon startup instead
+    /// of silently disabling automation.
+    fn configure_job_scheduler(&mut self, config_path: Option<&std::path::Path>) -> Result<()> {
+        let path = config_path
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("agentkernel.toml"));
+        if !path.exists() {
+            return Ok(());
+        }
+        let config = crate::config::Config::from_file(&path)
+            .with_context(|| format!("failed to load daemon config {}", path.display()))?;
+        let Some(store) = self.orchestration_store.clone() else {
+            if config.schedules.is_empty() {
+                return Ok(());
+            }
+            anyhow::bail!("configured schedules require durable orchestration storage")
+        };
+        if let Some(scheduler) = JobScheduler::from_config(&config, store, self.vm_manager.clone())?
+        {
+            self.job_scheduler = Some(Arc::new(scheduler));
+        }
+        Ok(())
+    }
+
+    fn start_job_scheduler(&mut self) {
+        if let Some(scheduler) = self.job_scheduler.clone() {
+            self.job_scheduler_handle = Some(scheduler.spawn());
+        }
     }
 
     async fn get_manager(&self) -> Result<tokio::sync::RwLockWriteGuard<'_, VmManager>> {
@@ -6899,6 +6931,7 @@ fn sandbox_access_denied() -> Response<BoxBody> {
 }
 
 #[cfg(feature = "enterprise")]
+#[allow(clippy::result_large_err)]
 fn require_sandbox_access(
     state: &AppState,
     identity: &crate::identity::AgentIdentity,
