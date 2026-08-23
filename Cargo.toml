@@ -1,6 +1,6 @@
 [package]
 name = "agentkernel"
-version = "0.19.1"
+version = "0.20.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Run AI coding agents in secure, isolated microVMs"
