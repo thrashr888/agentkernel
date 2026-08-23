@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink, Link } from "react-router-dom";
+import { MarkGithubIcon } from "@primer/octicons-react/MarkGithubIcon";
 import {
   LayoutDashboard,
   Box,
@@ -19,7 +20,6 @@ import {
   Timer,
   Database,
   BookOpen,
-  Github,
   ExternalLink,
   ShieldCheck,
   ShieldOff,
@@ -265,10 +265,12 @@ export function Sidebar() {
             <ExternalLink className="h-2.5 w-2.5" />
           </button>
           <button
+            type="button"
+            aria-label="Open AgentKernel on GitHub"
             onClick={() => open("https://github.com/thrashr888/agentkernel")}
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
-            <Github className="h-3 w-3" />
+            <MarkGithubIcon className="h-3 w-3" size={12} />
             GitHub
             <ExternalLink className="h-2.5 w-2.5" />
           </button>
