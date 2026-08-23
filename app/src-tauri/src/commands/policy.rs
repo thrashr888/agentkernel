@@ -231,6 +231,7 @@ enum PolicyVerification {
 /// transaction. The callbacks are deliberately injected so unit tests can
 /// exercise restart, verification, and rollback without starting a process or
 /// contacting a real server.
+#[allow(clippy::too_many_arguments)]
 async fn run_activation_transaction<Restart, RestartFuture, Verify, VerifyFuture>(
     config_path: &Path,
     policy_path: &Path,
