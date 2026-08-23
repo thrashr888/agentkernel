@@ -24,6 +24,7 @@ mod interactive_permissions;
 mod job_scheduler;
 mod languages;
 mod llm_intercept;
+mod llm_spend;
 mod mcp;
 mod metrics;
 mod object_runtime;

@@ -51,6 +51,8 @@ tags:
     description: Durable store management (sqlite, kv, queue)
   - name: Events
     description: Real-time sandbox lifecycle event stream
+  - name: LLM Spend
+    description: Authenticated, token-only LLM usage aggregates
 
 paths:
   /health:
@@ -66,6 +68,58 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
+
+  /llm/spend:
+    get:
+      tags: [LLM Spend]
+      summary: Query identity-aware LLM token usage
+      description: |
+        Returns daily aggregates from intercepted LLM traffic. This endpoint
+        requires a validated JWT or configured API key even when the rest of
+        the server allows anonymous local requests. Non-admin identities are
+        hard-filtered to their authenticated organization and user. The
+        response contains token counts only; prompts, responses, headers,
+        secrets, and monetary estimates are never returned.
+      operationId: getLlmSpend
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: agent
+          in: query
+          schema: {type: string}
+        - name: user
+          in: query
+          schema: {type: string}
+        - name: project
+          in: query
+          schema: {type: string}
+        - name: from
+          in: query
+          description: Inclusive UTC date (YYYY-MM-DD) or RFC3339 timestamp
+          schema: {type: string}
+        - name: to
+          in: query
+          description: Inclusive UTC date (YYYY-MM-DD) or RFC3339 timestamp
+          schema: {type: string}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 100}
+        - name: offset
+          in: query
+          schema: {type: integer, minimum: 0, maximum: 100000, default: 0}
+      responses:
+        '200':
+          description: Daily token aggregates
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LlmSpendResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /run:
     post:
@@ -2603,6 +2657,63 @@ components:
         rows_affected:
           type: integer
 
+    LlmSpendMetric:
+      type: object
+      required:
+        - bucket
+        - tenant
+        - agent
+        - user
+        - project
+        - provider
+        - model
+        - request_count
+        - streaming_count
+        - input_tokens
+        - output_tokens
+        - total_tokens
+        - last_request
+      properties:
+        bucket: {type: string, format: date}
+        tenant: {type: string}
+        agent: {type: string}
+        user: {type: string}
+        project: {type: string}
+        provider: {type: string}
+        model: {type: string}
+        request_count: {type: integer, format: int64}
+        streaming_count: {type: integer, format: int64}
+        input_tokens: {type: integer, format: int64}
+        output_tokens: {type: integer, format: int64}
+        total_tokens: {type: integer, format: int64}
+        last_request: {type: string, format: date-time}
+
+    MonetaryCostStatus:
+      type: object
+      required: [available, reason]
+      properties:
+        available: {type: boolean}
+        currency: {type: string, nullable: true}
+        reason: {type: string}
+
+    LlmSpendResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {type: boolean}
+        data:
+          type: object
+          required: [metrics, retention_days, monetary_cost]
+          properties:
+            metrics:
+              type: array
+              items: {$ref: '#/components/schemas/LlmSpendMetric'}
+            next_offset: {type: integer, nullable: true}
+            retention_days: {type: integer}
+            monetary_cost:
+              $ref: '#/components/schemas/MonetaryCostStatus'
+        error: {type: string, nullable: true}
+
     CreateSchedule:
       type: object
       required: [name, method]
@@ -2677,6 +2788,27 @@ components:
           example:
             success: false
             error: "Failed to start container"
+
+    Unauthorized:
+      description: Authentication required or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    Forbidden:
+      description: Authenticated identity is outside the requested scope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    ServiceUnavailable:
+      description: Durable aggregation storage is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
 
   securitySchemes:
     BearerAuth:

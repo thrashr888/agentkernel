@@ -1149,6 +1149,55 @@ async fn extract_identity(
     }
 }
 
+#[cfg(feature = "enterprise")]
+fn trusted_owner_identity(
+    identity: &crate::identity::AgentIdentity,
+    state: &AppState,
+) -> Option<(String, String)> {
+    let tenant = identity
+        .org_id()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            state
+                .enterprise_config
+                .as_ref()
+                .and_then(|config| config.org_id.as_deref())
+        })
+        .unwrap_or("local")
+        .to_string();
+    if let Some(subject) = identity.subject().filter(|value| !value.trim().is_empty()) {
+        return Some((tenant, subject.to_string()));
+    }
+    // API keys are server-scoped, so use a one-way fingerprint as the user
+    // dimension. The secret itself never enters state, logs, or metrics.
+    identity.api_key.as_deref().and_then(|key| {
+        state
+            .api_keys
+            .iter()
+            .any(|expected| constant_time_eq(key, expected))
+            .then(|| (tenant, api_key_owner_id(key)))
+    })
+}
+
+#[cfg(not(feature = "enterprise"))]
+fn trusted_owner_identity(req: &Request<Incoming>, state: &AppState) -> Option<(String, String)> {
+    let token = req
+        .headers()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|header| header.strip_prefix("Bearer "))?;
+    state
+        .api_keys
+        .iter()
+        .any(|expected| constant_time_eq(token, expected))
+        .then(|| ("local".to_string(), api_key_owner_id(token)))
+}
+
+fn api_key_owner_id(key: &str) -> String {
+    let digest = Sha256::digest(key.as_bytes());
+    format!("api-key:{}", hex::encode(digest))
+}
+
 /// Enforce enterprise policy for an action on a sandbox.
 ///
 /// Returns Ok(()) if the action is permitted (or no policy engine is active).
@@ -1521,8 +1570,11 @@ async fn handle_request(
         (Method::DELETE, ["proxy", "hooks", name]) => handle_remove_proxy_hook(name, state).await,
 
         // LLM usage
-        (Method::GET, ["llm", "usage"]) => handle_llm_usage_all().await,
-        (Method::GET, ["llm", "usage", sandbox]) => handle_llm_usage_sandbox(sandbox).await,
+        (Method::GET, ["llm", "usage"]) => handle_llm_usage_all(req, state.clone()).await,
+        (Method::GET, ["llm", "usage", sandbox]) => {
+            handle_llm_usage_sandbox(req, sandbox, state.clone()).await
+        }
+        (Method::GET, ["llm", "spend"]) => handle_llm_spend(req, state.clone()).await,
 
         // LLM key management
         (Method::GET, ["llm", "keys"]) => handle_llm_keys_list().await,
@@ -3317,6 +3369,16 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
     // Enterprise policy enforcement (extract identity before consuming body)
     #[cfg(feature = "enterprise")]
     let identity = extract_identity(&req, &state).await;
+    let trusted_owner = {
+        #[cfg(feature = "enterprise")]
+        {
+            trusted_owner_identity(&identity, &state)
+        }
+        #[cfg(not(feature = "enterprise"))]
+        {
+            trusted_owner_identity(&req, &state)
+        }
+    };
 
     let body: CreateRequest = match read_json_body(req).await {
         Ok(b) => b,
@@ -3469,6 +3531,16 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    if let Some((tenant, user)) = trusted_owner.as_ref()
+        && let Err(e) = manager.set_owner_identity(&body.name, tenant, user)
+    {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to set sandbox owner: {}", e)),
         );
     }
 
@@ -7431,15 +7503,185 @@ async fn handle_delete_secret(name: &str) -> Response<BoxBody> {
 // LLM usage
 // ---------------------------------------------------------------------------
 
-async fn handle_llm_usage_all() -> Response<BoxBody> {
-    let store = crate::llm_intercept::LLM_USAGE.read().await;
-    json_response(StatusCode::OK, &ApiResponse::success(store.all_usage()))
+#[allow(clippy::result_large_err)]
+async fn llm_scope(
+    req: &Request<Incoming>,
+    state: &AppState,
+) -> Result<(String, String, bool), Response<BoxBody>> {
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = extract_identity(req, state).await;
+        let Some((tenant, user)) = trusted_owner_identity(&identity, state) else {
+            return Err(json_response(
+                StatusCode::UNAUTHORIZED,
+                &ApiResponse::<()>::error(
+                    "LLM usage requires a validated JWT or configured API key",
+                ),
+            ));
+        };
+        Ok((
+            tenant,
+            user,
+            identity.has_role("admin") || identity.has_role("billing_admin"),
+        ))
+    }
+    #[cfg(not(feature = "enterprise"))]
+    {
+        let Some((tenant, user)) = trusted_owner_identity(req, state) else {
+            return Err(json_response(
+                StatusCode::UNAUTHORIZED,
+                &ApiResponse::<()>::error("LLM usage requires a configured API key"),
+            ));
+        };
+        Ok((tenant, user, false))
+    }
 }
 
-async fn handle_llm_usage_sandbox(sandbox: &str) -> Response<BoxBody> {
+async fn handle_llm_usage_all(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    let (tenant, user, is_admin) = match llm_scope(&req, &state).await {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
     let store = crate::llm_intercept::LLM_USAGE.read().await;
+    let usage: std::collections::HashMap<_, _> = store
+        .all_usage()
+        .iter()
+        .filter(|(sandbox, _)| {
+            store
+                .scope_for_sandbox(sandbox)
+                .is_some_and(|scope| scope.tenant == tenant && (is_admin || scope.user == user))
+        })
+        .map(|(sandbox, entries)| (sandbox.clone(), entries.clone()))
+        .collect();
+    json_response(StatusCode::OK, &ApiResponse::success(usage))
+}
+
+async fn handle_llm_usage_sandbox(
+    req: Request<Incoming>,
+    sandbox: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    let (tenant, user, is_admin) = match llm_scope(&req, &state).await {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
+    let store = crate::llm_intercept::LLM_USAGE.read().await;
+    let visible = store
+        .scope_for_sandbox(sandbox)
+        .is_some_and(|scope| scope.tenant == tenant && (is_admin || scope.user == user));
+    if !visible {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("LLM usage not found"),
+        );
+    }
     let usage = store.usage_for_sandbox(sandbox);
     json_response(StatusCode::OK, &ApiResponse::success(usage))
+}
+
+fn llm_query_value(query: Option<&str>, key: &str) -> Option<String> {
+    query?.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        (name == key).then(|| {
+            urlencoding::decode(value)
+                .unwrap_or(std::borrow::Cow::Borrowed(value))
+                .into_owned()
+        })
+    })
+}
+
+fn llm_pagination_value(
+    query: Option<&str>,
+    key: &str,
+    default: usize,
+    max: usize,
+) -> Result<usize, String> {
+    let Some(raw) = llm_query_value(query, key) else {
+        return Ok(default);
+    };
+    let value = raw
+        .parse::<usize>()
+        .map_err(|_| format!("{key} must be a non-negative integer"))?;
+    if (key == "limit" && !(1..=max).contains(&value)) || (key == "offset" && value > max) {
+        return Err(if key == "limit" {
+            format!("limit must be between 1 and {max}")
+        } else {
+            format!("offset must be at most {max}")
+        });
+    }
+    Ok(value)
+}
+
+async fn handle_llm_spend(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    let limit = match llm_pagination_value(
+        req.uri().query(),
+        "limit",
+        100,
+        crate::llm_spend::MAX_PAGE_SIZE,
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            return json_response(StatusCode::BAD_REQUEST, &ApiResponse::<()>::error(error));
+        }
+    };
+    let offset = match llm_pagination_value(
+        req.uri().query(),
+        "offset",
+        0,
+        crate::llm_spend::MAX_QUERY_OFFSET,
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            return json_response(StatusCode::BAD_REQUEST, &ApiResponse::<()>::error(error));
+        }
+    };
+    let mut filter = crate::llm_spend::LlmSpendFilter {
+        agent: llm_query_value(req.uri().query(), "agent"),
+        user: llm_query_value(req.uri().query(), "user"),
+        project: llm_query_value(req.uri().query(), "project"),
+        from: llm_query_value(req.uri().query(), "from"),
+        to: llm_query_value(req.uri().query(), "to"),
+        limit: Some(limit),
+        offset: Some(offset),
+        tenant: None,
+    };
+
+    let (tenant, owner_user, is_admin) = match llm_scope(&req, &state).await {
+        Ok((tenant, user, is_admin)) => (tenant, Some(user), is_admin),
+        Err(response) => return response,
+    };
+    filter.tenant = Some(tenant);
+    if !is_admin {
+        let Some(owner_user) = owner_user else {
+            return json_response(
+                StatusCode::FORBIDDEN,
+                &ApiResponse::<()>::error("Authenticated identity has no spend user scope"),
+            );
+        };
+        if let Some(requested_user) = filter.user.as_deref()
+            && requested_user != owner_user
+        {
+            return json_response(
+                StatusCode::FORBIDDEN,
+                &ApiResponse::<()>::error("Spend user filter is outside the authenticated scope"),
+            );
+        }
+        filter.user = Some(owner_user);
+    }
+
+    let Some(store) = crate::llm_spend::global_store() else {
+        return json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &ApiResponse::<()>::error("Durable LLM spend storage is unavailable"),
+        );
+    };
+    match store.query(&filter) {
+        Ok(report) => json_response(StatusCode::OK, &ApiResponse::success(report)),
+        Err(error) => json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(error.to_string()),
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -9569,6 +9811,33 @@ init_script = "echo ready"
     fn test_app_state_without_api_key() {
         let state = AppState::with_api_keys(vec![]);
         assert!(state.api_keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn llm_spend_requires_credentials_even_when_other_routes_are_anonymous() {
+        let state = Arc::new(AppState::with_api_keys(vec![]));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |request| {
+                let state = state.clone();
+                handle_request(request, state)
+            });
+            http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::get(format!("http://{address}/llm/spend"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = response.text().await.unwrap();
+        assert!(!body.contains("metrics"));
+        task.await.unwrap();
     }
 
     #[cfg(test)]

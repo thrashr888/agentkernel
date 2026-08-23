@@ -756,6 +756,10 @@ async fn mitm_bridge(
                                         } else {
                                             "none".to_string()
                                         },
+                                        tenant: None,
+                                        agent: None,
+                                        user: None,
+                                        project: None,
                                     };
                                     llm_intercept::record_llm_event(&llm_event).await;
                                     crate::metrics::record_llm_request(
@@ -805,6 +809,10 @@ async fn mitm_bridge(
                                         } else {
                                             "none".to_string()
                                         },
+                                        tenant: None,
+                                        agent: None,
+                                        user: None,
+                                        project: None,
                                     };
                                     llm_intercept::record_llm_event(&llm_event).await;
                                     crate::metrics::record_llm_request(
@@ -992,6 +1000,10 @@ async fn handle_plain_http(
                     } else {
                         "none".to_string()
                     },
+                    tenant: None,
+                    agent: None,
+                    user: None,
+                    project: None,
                 };
                 llm_intercept::record_llm_event(&llm_event).await;
                 crate::metrics::record_llm_request(

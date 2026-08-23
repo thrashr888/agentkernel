@@ -7,7 +7,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use tokio::sync::RwLock;
+use std::sync::RwLock as StdRwLock;
+use tokio::sync::{RwLock, mpsc};
 
 // ---- LLM Domain Registry ----
 
@@ -103,7 +104,7 @@ impl LlmDomainRegistry {
 // ---- LLM Event ----
 
 /// An intercepted LLM API request/response pair.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmEvent {
     pub timestamp: String,
     pub sandbox: String,
@@ -121,6 +122,95 @@ pub struct LlmEvent {
     pub secret_injected: bool,
     /// Source of the API key: "org", "sandbox", or "none"
     pub key_source: String,
+    /// Optional logical agent identity. Older logs omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    /// Optional logical agent identity. Older logs omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Optional authenticated owner identity. Older logs omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Optional caller-provided project identifier. Paths are not inferred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+/// Metadata registered by the sandbox manager before starting a proxy.
+///
+/// A proxy event does not carry the authenticated HTTP request that created a
+/// sandbox, so ownership must be explicitly registered at sandbox start.
+/// Missing values stay unknown rather than being guessed.
+#[derive(Debug, Clone, Default)]
+pub struct SandboxLlmMetadata {
+    pub tenant: Option<String>,
+    pub agent: Option<String>,
+    pub user: Option<String>,
+    pub project: Option<String>,
+}
+
+static SANDBOX_METADATA: LazyLock<StdRwLock<HashMap<String, SandboxLlmMetadata>>> =
+    LazyLock::new(|| StdRwLock::new(HashMap::new()));
+static DURABLE_QUEUE: std::sync::OnceLock<mpsc::Sender<LlmEvent>> = std::sync::OnceLock::new();
+
+fn durable_sender() -> Option<&'static mpsc::Sender<LlmEvent>> {
+    if let Some(sender) = DURABLE_QUEUE.get() {
+        return Some(sender);
+    }
+    let handle = tokio::runtime::Handle::try_current().ok()?;
+    let (sender, mut receiver) = mpsc::channel(1024);
+    if DURABLE_QUEUE.set(sender).is_ok() {
+        handle.spawn(async move {
+            while let Some(event) = receiver.recv().await {
+                match tokio::task::spawn_blocking(move || crate::llm_spend::record_event(&event))
+                    .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        eprintln!("[llm-spend] durable aggregation failed: {error}");
+                    }
+                    Err(error) => {
+                        eprintln!("[llm-spend] durable aggregation task failed: {error}");
+                    }
+                }
+            }
+        });
+    }
+    DURABLE_QUEUE.get()
+}
+
+/// Register bounded identity metadata for a running sandbox.
+pub fn register_sandbox_metadata(
+    sandbox: &str,
+    tenant: Option<String>,
+    agent: Option<String>,
+    user: Option<String>,
+    project: Option<String>,
+) {
+    let mut entries = SANDBOX_METADATA.write().unwrap_or_else(|e| e.into_inner());
+    // Keep stale proxy metadata from growing forever in long-lived services.
+    if entries.len() >= 2048
+        && !entries.contains_key(sandbox)
+        && let Some(key) = entries.keys().next().cloned()
+    {
+        entries.remove(&key);
+    }
+    entries.insert(
+        sandbox.to_string(),
+        SandboxLlmMetadata {
+            tenant,
+            agent,
+            user,
+            project,
+        },
+    );
+}
+
+/// Remove metadata when a sandbox is permanently removed.
+pub fn clear_sandbox_metadata(sandbox: &str) {
+    if let Ok(mut entries) = SANDBOX_METADATA.write() {
+        entries.remove(sandbox);
+    }
 }
 
 // ---- Body Parsing ----
@@ -219,6 +309,14 @@ pub static LLM_USAGE: LazyLock<RwLock<LlmUsageStore>> =
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct LlmUsageStore {
     pub by_sandbox: HashMap<String, Vec<LlmUsageEntry>>,
+    #[serde(skip)]
+    sandbox_scope: HashMap<String, LlmScope>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LlmScope {
+    pub tenant: String,
+    pub user: String,
 }
 
 /// Accumulated usage for a single provider+model combination within a sandbox.
@@ -238,6 +336,12 @@ impl LlmUsageStore {
     /// Record an LLM event, upserting by sandbox + provider + model.
     pub fn record(&mut self, event: &LlmEvent) {
         let model = event.model.clone().unwrap_or_else(|| "unknown".to_string());
+        self.sandbox_scope
+            .entry(event.sandbox.clone())
+            .or_insert_with(|| LlmScope {
+                tenant: event.tenant.clone().unwrap_or_else(|| "local".to_string()),
+                user: event.user.clone().unwrap_or_else(|| "unknown".to_string()),
+            });
         let entries = self.by_sandbox.entry(event.sandbox.clone()).or_default();
 
         if let Some(entry) = entries
@@ -276,6 +380,11 @@ impl LlmUsageStore {
 
     pub fn clear_sandbox(&mut self, sandbox: &str) {
         self.by_sandbox.remove(sandbox);
+        self.sandbox_scope.remove(sandbox);
+    }
+
+    pub fn scope_for_sandbox(&self, sandbox: &str) -> Option<LlmScope> {
+        self.sandbox_scope.get(sandbox).cloned()
     }
 }
 
@@ -284,7 +393,35 @@ impl LlmUsageStore {
 /// Callers should also invoke `crate::metrics::record_llm_request()` for
 /// Prometheus counters when the metrics module is available (binary crate).
 pub async fn record_llm_event(event: &LlmEvent) {
-    LLM_USAGE.write().await.record(event);
+    let mut enriched = event.clone();
+    if let Ok(entries) = SANDBOX_METADATA.read()
+        && let Some(metadata) = entries.get(&event.sandbox)
+    {
+        if enriched.agent.is_none() {
+            enriched.agent.clone_from(&metadata.agent);
+        }
+        if enriched.tenant.is_none() {
+            enriched.tenant.clone_from(&metadata.tenant);
+        }
+        if enriched.user.is_none() {
+            enriched.user.clone_from(&metadata.user);
+        }
+        if enriched.project.is_none() {
+            enriched.project.clone_from(&metadata.project);
+        }
+    }
+
+    LLM_USAGE.write().await.record(&enriched);
+    crate::metrics::record_llm_spend(&enriched);
+
+    // SQLite I/O is deliberately off the proxy request executor. The bounded
+    // queue provides backpressure instead of spawning one blocking task per
+    // request; a storage failure is non-fatal to proxy compatibility.
+    if let Some(sender) = durable_sender()
+        && let Err(error) = sender.send(enriched).await
+    {
+        eprintln!("[llm-spend] durable aggregation queue unavailable: {error}");
+    }
 }
 
 #[cfg(test)]
@@ -439,6 +576,10 @@ mod tests {
             streaming: false,
             secret_injected: true,
             key_source: "sandbox".into(),
+            tenant: None,
+            agent: None,
+            user: None,
+            project: None,
         };
         store.record(&event);
         store.record(&event);
@@ -471,6 +612,10 @@ mod tests {
             streaming: true,
             secret_injected: true,
             key_source: "sandbox".into(),
+            tenant: None,
+            agent: None,
+            user: None,
+            project: None,
         };
         store.record(&event);
         let entries = store.usage_for_sandbox("test-sb");
@@ -496,6 +641,10 @@ mod tests {
             streaming: false,
             secret_injected: true,
             key_source: "sandbox".into(),
+            tenant: None,
+            agent: None,
+            user: None,
+            project: None,
         };
         store.record(&base);
 
@@ -526,6 +675,10 @@ mod tests {
             streaming: false,
             secret_injected: true,
             key_source: "sandbox".into(),
+            tenant: None,
+            agent: None,
+            user: None,
+            project: None,
         };
         store.record(&event);
         store.clear_sandbox("test-sb");

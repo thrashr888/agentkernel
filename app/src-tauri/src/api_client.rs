@@ -512,6 +512,12 @@ impl ApiClient {
         .await
     }
 
+    /// Get identity-aware daily LLM spend aggregates.
+    pub async fn get_llm_spend(&self) -> anyhow::Result<crate::types::LlmSpendReport> {
+        self.request(reqwest::Method::GET, "/llm/spend", None::<&()>)
+            .await
+    }
+
     // -----------------------------------------------------------------
     // Policy (Enterprise)
     // -----------------------------------------------------------------

@@ -226,6 +226,35 @@ export interface LlmUsageEntry {
   last_request: string;
 }
 
+export interface LlmSpendMetric {
+  bucket: string;
+  tenant: string;
+  agent: string;
+  user: string;
+  project: string;
+  provider: string;
+  model: string;
+  request_count: number;
+  streaming_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  last_request: string;
+}
+
+export interface MonetaryCostStatus {
+  available: boolean;
+  currency?: string;
+  reason: string;
+}
+
+export interface LlmSpendReport {
+  metrics: LlmSpendMetric[];
+  next_offset?: number;
+  retention_days: number;
+  monetary_cost: MonetaryCostStatus;
+}
+
 // Durable Objects
 export interface DurableObjectInfo {
   id: string;

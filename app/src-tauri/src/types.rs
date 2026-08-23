@@ -426,6 +426,39 @@ pub struct LlmUsageEntry {
     pub last_request: String,
 }
 
+/// One bounded daily identity-aware LLM usage aggregate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmSpendMetric {
+    pub bucket: String,
+    pub tenant: String,
+    pub agent: String,
+    pub user: String,
+    pub project: String,
+    pub provider: String,
+    pub model: String,
+    pub request_count: u64,
+    pub streaming_count: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub last_request: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonetaryCostStatus {
+    pub available: bool,
+    pub currency: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmSpendReport {
+    pub metrics: Vec<LlmSpendMetric>,
+    pub next_offset: Option<usize>,
+    pub retention_days: i64,
+    pub monetary_cost: MonetaryCostStatus,
+}
+
 // ---------------------------------------------------------------------------
 // Durable Objects
 // ---------------------------------------------------------------------------

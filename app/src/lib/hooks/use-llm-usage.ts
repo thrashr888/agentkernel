@@ -17,3 +17,11 @@ export function useLlmUsageBySandbox(sandbox: string) {
     refetchInterval: 5000,
   });
 }
+
+export function useLlmSpend() {
+  return useQuery({
+    queryKey: ["llm-spend"],
+    queryFn: api.getLlmSpend,
+    refetchInterval: 10_000,
+  });
+}

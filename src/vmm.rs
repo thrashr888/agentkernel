@@ -205,6 +205,13 @@ pub struct SandboxState {
     /// User-defined labels for fleet management and filtering.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub labels: HashMap<String, String>,
+    /// Trusted tenant assigned by the authenticated API at creation time.
+    /// Never populated from user-controlled labels or proxied request data.
+    #[serde(default)]
+    pub owner_org_id: Option<String>,
+    /// Trusted owner assigned by the authenticated API at creation time.
+    #[serde(default)]
+    pub owner_user_id: Option<String>,
     /// User-defined description for the sandbox.
     #[serde(default)]
     pub description: Option<String>,
@@ -951,6 +958,8 @@ impl VmManager {
             created_from_template: None,
             template_help_text: None,
             labels: HashMap::new(),
+            owner_org_id: None,
+            owner_user_id: None,
             description: None,
             last_activity_at: Some(created_at),
             archived_at: None,
@@ -1063,6 +1072,19 @@ impl VmManager {
             .get_mut(name)
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
         state.labels = labels.clone();
+        let snapshot = state.clone();
+        self.save_sandbox(&snapshot)?;
+        Ok(())
+    }
+
+    /// Persist trusted ownership metadata supplied by the authenticated API.
+    pub fn set_owner_identity(&mut self, name: &str, tenant: &str, user: &str) -> Result<()> {
+        let state = self
+            .sandboxes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        state.owner_org_id = Some(tenant.to_string());
+        state.owner_user_id = Some(user.to_string());
         let snapshot = state.clone();
         self.save_sandbox(&snapshot)?;
         Ok(())
@@ -1489,6 +1511,17 @@ impl VmManager {
             .get(name)
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?
             .clone();
+
+        crate::llm_intercept::register_sandbox_metadata(
+            name,
+            state
+                .owner_org_id
+                .clone()
+                .or_else(|| Some("local".to_string())),
+            state.agent.clone(),
+            state.owner_user_id.clone(),
+            state.labels.get("project").cloned(),
+        );
 
         if state.archived_at.is_some() {
             bail!(
@@ -2682,6 +2715,7 @@ impl VmManager {
             .write()
             .await
             .clear_sandbox(name);
+        crate::llm_intercept::clear_sandbox_metadata(name);
 
         Ok(())
     }
@@ -3281,6 +3315,8 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             labels: HashMap::new(),
+            owner_org_id: None,
+            owner_user_id: None,
             description: None,
             last_activity_at: None,
             archived_at: None,
@@ -3371,6 +3407,8 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             labels: HashMap::new(),
+            owner_org_id: None,
+            owner_user_id: None,
             description: None,
             last_activity_at: None,
             archived_at: None,
@@ -3449,6 +3487,8 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             labels: HashMap::new(),
+            owner_org_id: None,
+            owner_user_id: None,
             description: None,
             last_activity_at: None,
             archived_at: None,
@@ -3543,6 +3583,8 @@ mod tests {
                 created_from_template: None,
                 template_help_text: None,
                 labels: HashMap::new(),
+                owner_org_id: None,
+                owner_user_id: None,
                 description: None,
                 last_activity_at: None,
                 archived_at: None,
@@ -3618,6 +3660,8 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             labels: HashMap::new(),
+            owner_org_id: None,
+            owner_user_id: None,
             description: None,
             last_activity_at: None,
             archived_at: None,
@@ -3693,6 +3737,8 @@ mod tests {
                 created_from_template: None,
                 template_help_text: None,
                 labels,
+                owner_org_id: None,
+                owner_user_id: None,
                 description: None,
                 last_activity_at: None,
                 archived_at: None,
@@ -3769,6 +3815,8 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             labels: HashMap::new(),
+            owner_org_id: None,
+            owner_user_id: None,
             description: None,
             last_activity_at: None,
             archived_at: None,
@@ -3841,6 +3889,8 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             labels: labels.clone(),
+            owner_org_id: None,
+            owner_user_id: None,
             description: Some("Test sandbox".to_string()),
             last_activity_at: None,
             archived_at: None,
@@ -3909,6 +3959,8 @@ mod tests {
             created_from_template: None,
             template_help_text: None,
             labels: HashMap::new(),
+            owner_org_id: None,
+            owner_user_id: None,
             description: None,
             last_activity_at: Some("2026-01-01T00:00:00Z".to_string()),
             archived_at: None,
