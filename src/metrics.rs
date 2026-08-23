@@ -150,6 +150,36 @@ static LLM_TOKENS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     c
 });
 
+static LLM_SPEND_REQUESTS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let c = IntCounterVec::new(
+        prometheus::opts!(
+            "agentkernel_llm_spend_requests_total",
+            "Total intercepted LLM requests by provider and model"
+        ),
+        &["provider", "model"],
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(c.clone()))
+        .expect("metric can be registered");
+    c
+});
+
+static LLM_SPEND_TOKENS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let c = IntCounterVec::new(
+        prometheus::opts!(
+            "agentkernel_llm_spend_tokens_total",
+            "Total intercepted LLM tokens by provider, model, and direction"
+        ),
+        &["provider", "model", "direction"],
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(c.clone()))
+        .expect("metric can be registered");
+    c
+});
+
 // ---- Build info ----
 
 static BUILD_INFO: LazyLock<IntGaugeVec> = LazyLock::new(|| {
@@ -216,6 +246,48 @@ pub fn record_llm_request(provider: &str, model: &str, input_tokens: u64, output
             .with_label_values(&[provider, "output"])
             .inc_by(output_tokens);
     }
+}
+
+/// Record identity-aware usage without exposing request bodies or secrets.
+pub fn record_llm_spend(event: &crate::llm_intercept::LlmEvent) {
+    let labels = [
+        metric_dimension(Some(&event.provider)),
+        metric_dimension(event.model.as_deref()),
+    ];
+    let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    LLM_SPEND_REQUESTS_TOTAL
+        .with_label_values(&label_refs)
+        .inc();
+    for (direction, value) in [
+        ("input", event.input_tokens.unwrap_or(0)),
+        ("output", event.output_tokens.unwrap_or(0)),
+        (
+            "total",
+            event.total_tokens.unwrap_or_else(|| {
+                event
+                    .input_tokens
+                    .unwrap_or(0)
+                    .saturating_add(event.output_tokens.unwrap_or(0))
+            }),
+        ),
+    ] {
+        if value > 0 {
+            let mut token_labels = labels.to_vec();
+            token_labels.push(direction.to_string());
+            let token_refs: Vec<&str> = token_labels.iter().map(String::as_str).collect();
+            LLM_SPEND_TOKENS_TOTAL
+                .with_label_values(&token_refs)
+                .inc_by(value);
+        }
+    }
+}
+
+fn metric_dimension(value: Option<&str>) -> String {
+    let value = value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("unknown");
+    value.chars().take(128).collect()
 }
 
 /// Record a command execution (counter + histogram).

@@ -1246,6 +1246,30 @@ curl -X POST http://localhost:18888/stores/019abc12-.../execute \
 }
 ```
 
+### LLM Spend
+
+Query daily token aggregates from the LLM proxy/interceptor at
+GET /llm/spend. This endpoint requires a validated JWT or configured API key,
+including on servers where other routes allow anonymous local access. Non-admin
+callers are restricted to their authenticated organization and user. The
+project filter is descriptive only and does not grant access.
+
+Example:
+
+    curl 'http://localhost:18888/llm/spend?from=2026-08-01&to=2026-08-31&limit=100' \
+      -H "Authorization: Bearer $AGENTKERNEL_API_KEY"
+
+The response is daily, bounded aggregate data containing no prompt, response,
+header, API-key, or monetary-cost fields. Provider pricing is not configured
+by AgentKernel, so monetary cost is reported as unavailable. The aggregate
+SQLite database retains at most 180 days of daily rows. Existing JSONL proxy
+file hooks can be replayed once with the LlmSpendStore::ingest_jsonl library
+API; legacy events without trusted identity remain unknown and are not visible
+to ordinary tenant scopes. Storage is also capped at 10,000 aggregate rows per
+tenant/user and UTC day; additional distinct dimensions are combined in an
+access-preserving `__overflow__` bucket. `limit` must be 1-200 and `offset` must
+be at most 100,000; malformed values are rejected with HTTP 400.
+
 ## Error Responses
 
 ```json

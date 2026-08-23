@@ -25,6 +25,7 @@ import type {
   PolicyReloadResult,
   PolicyAuditEntry,
   LlmUsageEntry,
+  LlmSpendReport,
   DurableObjectInfo,
   CreateObjectRequest,
   ScheduleInfo,
@@ -139,6 +140,7 @@ export const api = {
     invoke<Record<string, LlmUsageEntry[]>>("get_llm_usage"),
   getLlmUsageBySandbox: (sandbox: string) =>
     invoke<LlmUsageEntry[]>("get_llm_usage_by_sandbox", { sandbox }),
+  getLlmSpend: () => invoke<LlmSpendReport>("get_llm_spend"),
 
   // Durable Objects
   listObjects: () => invoke<DurableObjectInfo[]>("list_objects"),

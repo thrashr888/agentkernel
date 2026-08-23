@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSandboxes } from "@/lib/hooks/use-sandboxes";
-import { useLlmUsage } from "@/lib/hooks/use-llm-usage";
+import { useLlmSpend, useLlmUsage } from "@/lib/hooks/use-llm-usage";
 import { api } from "@/lib/api";
 import { StatusCards } from "@/components/dashboard/status-cards";
 import { QuickActions } from "@/components/dashboard/quick-actions";
@@ -40,6 +40,7 @@ const AGENTS = [
 export function Dashboard() {
   const { data: sandboxes, isLoading, error, refetch } = useSandboxes();
   const { data: llmUsage } = useLlmUsage();
+  const { data: llmSpend } = useLlmSpend();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -58,6 +59,17 @@ export function Dashboard() {
     if (totalRequests === 0) return null;
     return { totalRequests, totalTokens, providers: providers.size };
   }, [llmUsage]);
+
+  const spendStats = React.useMemo(() => {
+    if (!llmSpend?.metrics.length) return null;
+    return llmSpend.metrics.reduce(
+      (totals, metric) => ({
+        requests: totals.requests + metric.request_count,
+        tokens: totals.tokens + metric.total_tokens,
+      }),
+      { requests: 0, tokens: 0 },
+    );
+  }, [llmSpend]);
 
   const openTerminalMutation = useMutation({
     mutationFn: (sandboxName: string) => api.openTerminal(sandboxName),
@@ -165,6 +177,56 @@ export function Dashboard() {
               </span>
             </span>
           </div>
+        </div>
+      )}
+
+      {llmSpend && spendStats && (
+        <div className="rounded-md border">
+          <div className="flex items-center justify-between border-b px-4 py-3">
+            <div>
+              <h2 className="text-sm font-semibold">LLM Spend visibility</h2>
+              <p className="text-xs text-muted-foreground">
+                Token usage only · retained for {llmSpend.retention_days} days
+              </p>
+            </div>
+            <div className="text-right text-sm">
+              <span className="font-mono font-medium">
+                {spendStats.tokens.toLocaleString()}
+              </span>{" "}
+              <span className="text-muted-foreground">tokens</span>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs text-muted-foreground">
+                  <th className="px-4 py-2 font-medium">Agent</th>
+                  <th className="px-4 py-2 font-medium">User</th>
+                  <th className="px-4 py-2 font-medium">Project</th>
+                  <th className="px-4 py-2 text-right font-medium">Requests</th>
+                  <th className="px-4 py-2 text-right font-medium">Tokens</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {llmSpend.metrics.slice(0, 8).map((metric, index) => (
+                  <tr key={index}>
+                    <td className="px-4 py-2 font-medium">{metric.agent}</td>
+                    <td className="px-4 py-2">{metric.user}</td>
+                    <td className="px-4 py-2">{metric.project}</td>
+                    <td className="px-4 py-2 text-right font-mono">
+                      {metric.request_count.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono">
+                      {metric.total_tokens.toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="px-4 py-3 text-xs text-muted-foreground">
+            Monetary cost is unavailable until provider pricing is configured.
+          </p>
         </div>
       )}
 

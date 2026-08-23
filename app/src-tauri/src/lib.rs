@@ -470,6 +470,7 @@ pub fn run() {
             // llm usage
             commands::llm_usage::get_llm_usage,
             commands::llm_usage::get_llm_usage_by_sandbox,
+            commands::llm_usage::get_llm_spend,
             // permissions
             commands::permissions::list_permissions,
             commands::permissions::grant_permission,

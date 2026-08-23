@@ -14,6 +14,7 @@ pub mod hyperlight_backend;
 pub mod interactive_permissions;
 pub mod languages;
 pub mod llm_intercept;
+pub mod llm_spend;
 pub mod metrics;
 pub mod orchestration_store;
 pub mod permissions;

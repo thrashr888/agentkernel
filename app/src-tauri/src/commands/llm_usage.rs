@@ -25,3 +25,12 @@ pub async fn get_llm_usage_by_sandbox(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// Get identity-aware daily LLM spend aggregates.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_llm_spend(
+    state: State<'_, AppState>,
+) -> Result<crate::types::LlmSpendReport, String> {
+    let client = state.client.lock().map_err(|e| e.to_string())?.clone();
+    client.get_llm_spend().await.map_err(|e| e.to_string())
+}
