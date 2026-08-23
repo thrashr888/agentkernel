@@ -1839,19 +1839,17 @@ memory_mb = 512
                     .get_state(&name)
                     .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
 
-                // Generate a TOML config from the sandbox state
-                let config = format!(
-                    "[sandbox]\n\
-                 name = \"{}\"\n\
-                 base_image = \"{}\"\n\
-                 \n\
-                 [resources]\n\
-                 vcpus = {}\n\
-                 memory_mb = {}\n",
-                    state.name, state.image, state.vcpus, state.memory_mb,
+                let config = crate::config::SandboxConfigExport::from_parts(
+                    &state.name,
+                    &state.image,
+                    state.init_script.as_deref(),
+                    state.vcpus,
+                    state.memory_mb,
+                    state.agent.as_deref(),
+                    state.ports.iter().map(ToString::to_string).collect(),
                 );
 
-                print!("{}", config);
+                print!("{}", toml::to_string_pretty(&config)?);
             }
             SandboxAction::ImportConfig {
                 file,

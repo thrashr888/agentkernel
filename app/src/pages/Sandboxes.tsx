@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Plus, MoreHorizontal, Trash2, Camera, Square, Play, ChevronLeft, ChevronRight, Terminal, Copy, ArrowUpDown, ArrowUp, ArrowDown, Search, X } from "lucide-react";
+import { Plus, MoreHorizontal, Trash2, Camera, Square, Play, ChevronLeft, ChevronRight, Terminal, Copy, ArrowUpDown, ArrowUp, ArrowDown, Search, X, Upload } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSandboxes } from "@/lib/hooks/use-sandboxes";
 import { api } from "@/lib/api";
@@ -92,6 +92,20 @@ export function Sandboxes() {
     },
     onError: (err: unknown, _vars, context) => {
       if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
+    },
+  });
+
+  const importConfigMutation = useMutation({
+    mutationFn: (config: string) =>
+      api.importSandboxConfig(config, formName.trim() || undefined),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+      setDialogOpen(false);
+      resetForm();
+      toast.success("Sandbox imported!");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -195,6 +209,23 @@ export function Sandboxes() {
       ...(Object.keys(labels).length > 0 ? { labels } : {}),
       ...(formDescription.trim() ? { description: formDescription.trim() } : {}),
     });
+  }
+
+  function handleImportConfig() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".toml,text/plain";
+    input.onchange = (event) => {
+      const file = (event.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      file
+        .text()
+        .then((config) => importConfigMutation.mutate(config))
+        .catch((err: unknown) => {
+          toast.error(err instanceof Error ? err.message : String(err));
+        });
+    };
+    input.click();
   }
 
   function toggleSort(col: SortColumn) {
@@ -386,8 +417,16 @@ export function Sandboxes() {
                 Cancel
               </Button>
               <Button
+                variant="outline"
+                onClick={handleImportConfig}
+                disabled={importConfigMutation.isPending || createMutation.isPending}
+              >
+                <Upload className="mr-2 h-4 w-4" />
+                {importConfigMutation.isPending ? "Importing..." : "Import Config"}
+              </Button>
+              <Button
                 onClick={handleCreate}
-                disabled={!formName.trim() || createMutation.isPending}
+                disabled={!formName.trim() || createMutation.isPending || importConfigMutation.isPending}
               >
                 {createMutation.isPending ? "Creating..." : "Create"}
               </Button>
