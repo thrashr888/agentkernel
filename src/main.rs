@@ -50,6 +50,7 @@ mod snapshot;
 #[allow(dead_code)]
 mod ssh;
 mod stats;
+mod task_coordinator;
 mod task_worker;
 mod task_worker_vmm;
 mod tasks;
@@ -74,6 +75,7 @@ pub mod policy;
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::config::Config;
 use crate::setup::{check_installation, run_setup};
@@ -376,6 +378,11 @@ enum Commands {
         #[arg(short = 'B', long)]
         backend: Option<String>,
     },
+    /// Manage durable agent tasks
+    Task {
+        #[command(subcommand)]
+        action: TaskAction,
+    },
     /// Build a custom image from a Dockerfile
     Build {
         /// Name/tag for the built image
@@ -405,6 +412,16 @@ enum Commands {
     Policy {
         #[command(subcommand)]
         action: PolicyAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum TaskAction {
+    /// Run queued tasks with bounded parallel workers
+    Run {
+        /// Maximum number of tasks executing at once
+        #[arg(short = 'p', long, default_value_t = 4, value_parser = clap::value_parser!(usize))]
+        parallel: usize,
     },
 }
 
@@ -3596,6 +3613,69 @@ memory_mb = 512
                 );
             }
         }
+        Commands::Task { action } => match action {
+            TaskAction::Run { parallel } => {
+                if parallel > 64 {
+                    bail!("task parallelism must be between 1 and 64");
+                }
+                let manager = crate::tasks::TaskManager::open_default()?;
+                let coordinator = Arc::new(task_coordinator::TaskCoordinator::<
+                    task_worker_vmm::VmTaskExecutor,
+                    _,
+                >::new(manager, parallel, || {
+                    let manager = VmManager::new()?;
+                    Ok(task_worker_vmm::VmTaskExecutor::new(Arc::new(
+                        tokio::sync::RwLock::new(manager),
+                    )))
+                })?);
+                println!(
+                    "Running queued tasks with up to {} worker(s)...",
+                    coordinator.max_concurrency()
+                );
+                let run = coordinator.clone();
+                let mut running = Box::pin(run.run_with_progress(|progress| {
+                    println!(
+                        "tasks: {}/{} finished ({} running, {} queued, {} failed, {} cancelled, {} skipped)",
+                        progress.finished(),
+                        progress.total,
+                        progress.running,
+                        progress.queued,
+                        progress.failed,
+                        progress.cancelled,
+                        progress.skipped
+                    );
+                }));
+                let summary = tokio::select! {
+                    result = &mut running => result?,
+                    _ = tokio::signal::ctrl_c() => {
+                        eprintln!("Cancellation requested; stopping queued tasks...");
+                        coordinator.cancel();
+                        running.await?
+                    }
+                };
+                let progress = summary.progress();
+                println!(
+                    "Completed {} task(s), failed {}, cancelled {}, skipped {} (recovered {}).",
+                    summary.completed(),
+                    summary.failed(),
+                    summary.cancelled(),
+                    summary.skipped(),
+                    summary.recovered
+                );
+                if summary.failed() > 0 {
+                    bail!("{} task(s) failed", summary.failed());
+                }
+                if summary.cancelled_by_user {
+                    bail!("task run cancelled");
+                }
+                if summary.skipped() > 0 || progress.queued > 0 || progress.running > 0 {
+                    bail!(
+                        "{} task(s) were not completed by this coordinator",
+                        summary.skipped() + progress.queued + progress.running
+                    );
+                }
+            }
+        },
         Commands::Images { action } => match action {
             ImagesAction::List { all } => {
                 let imgs = images::list_images(all)?;

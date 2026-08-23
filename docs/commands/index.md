@@ -72,6 +72,7 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 |---------|-------------|
 | [`pipeline`](pipelines.md) | Run a multi-step pipeline (TOML-defined) |
 | [`parallel`](parallel.md) | Run multiple jobs concurrently |
+| [`task run`](tasks.md) | Drain durable agent tasks with bounded concurrency |
 
 ### Volumes
 
