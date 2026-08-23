@@ -1,0 +1,58 @@
+name: Hosted provider live smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: Hosted provider to exercise
+        required: true
+        type: choice
+        options: [daytona, runloop, e2b, modal]
+      confirm_cleanup:
+        description: Confirm that every created resource will be destroyed
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provider-live-${{ inputs.provider }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    if: ${{ inputs.confirm_cleanup }}
+    name: ${{ inputs.provider }} credentialed smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AGENTKERNEL_LIVE_PROVIDER: ${{ inputs.provider }}
+      AGENTKERNEL_LIVE_ROOT: ${{ runner.temp }}/agentkernel-provider-live
+      DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+      DAYTONA_API_URL: ${{ secrets.DAYTONA_API_URL }}
+      DAYTONA_ORGANIZATION_ID: ${{ secrets.DAYTONA_ORGANIZATION_ID }}
+      RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
+      RUNLOOP_BASE_URL: ${{ secrets.RUNLOOP_BASE_URL }}
+      E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENDPOINT: ${{ secrets.MODAL_ENDPOINT }}
+      MODAL_ENVIRONMENT: ${{ secrets.MODAL_ENVIRONMENT }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: scripts/package-lock.json
+      - run: npm ci
+        working-directory: scripts
+      - name: Run bounded live smoke
+        run: node --test test/provider-live-smoke.test.mjs
+        working-directory: scripts
+      - name: Destroy any leftover provider resources
+        if: always()
+        run: node test/provider-live-cleanup.mjs
+        working-directory: scripts

@@ -1,0 +1,85 @@
+name: Apple Containers compatibility
+
+on:
+  pull_request:
+    branches: [main, codex/apple-container-1-2-modernization, codex/modernization-followups]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/backend/apple.rs
+      - src/backend/mod.rs
+      - tests/apple_container_smoke.rs
+      - .github/workflows/apple-container-compatibility.yml
+  schedule:
+    - cron: "11 9 * * 5"
+  workflow_dispatch:
+    inputs:
+      run_live:
+        description: Run the lifecycle smoke on a dedicated Apple Containers host
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.89"
+  APPLE_CONTAINER_VERSION: "1.2.2"
+
+jobs:
+  contract:
+    name: Apple Containers host and contract
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: apple-container
+      - name: Install signed Apple Containers CLI
+        run: |
+          installer="$RUNNER_TEMP/container.pkg"
+          curl --fail --location --silent --show-error \
+            --output "$installer" \
+            "https://github.com/apple/container/releases/download/${APPLE_CONTAINER_VERSION}/container-${APPLE_CONTAINER_VERSION}-installer-signed.pkg"
+          pkgutil --check-signature "$installer"
+          sudo installer -pkg "$installer" -target /
+      - name: Verify supported host and CLI
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          major="$(sw_vers -productVersion | cut -d. -f1)"
+          test "$major" -ge 26
+          container --version
+      - name: Run structured-output unit tests
+        run: cargo test --locked --lib backend::apple
+      - name: Compile lifecycle compatibility smoke
+        run: cargo test --locked --test apple_container_smoke --no-run
+
+  live-lifecycle:
+    name: Apple Containers live lifecycle
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_live }}
+    runs-on: [self-hosted, macOS, ARM64, agentkernel-apple-containers]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Verify dedicated host
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          container --version
+      - name: Start Apple container system
+        run: container system start --enable-kernel-install
+      - name: Run lifecycle compatibility smoke
+        run: cargo test --locked --test apple_container_smoke -- --ignored --nocapture
+      - name: Show container state on failure
+        if: failure()
+        run: container list || true

@@ -10,6 +10,8 @@ on:
       - src/orchestration_store.rs
       - tests/store_compatibility.rs
       - .github/workflows/store-compatibility.yml
+  schedule:
+    - cron: "37 8 * * 2"
   workflow_dispatch:
 
 env:

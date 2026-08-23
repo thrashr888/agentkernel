@@ -127,16 +127,30 @@ test("provider JSON-over-stdio bridge contract remains stable", async () => {
     path.join(os.tmpdir(), "agentkernel-provider-contract-"),
   );
   try {
-    for (const provider of ["runloop", "e2b", "modal"]) {
+    for (const provider of ["daytona", "runloop", "e2b", "modal"]) {
       const sandboxName = `${provider}-sdk-contract`;
       const request = { sandbox_name: sandboxName };
       const created = runMockBridge(
         provider,
-        { ...request, operation: "create", ports: [] },
+        {
+          ...request,
+          operation: "create",
+          ports: [{ container_port: 3000, protocol: "tcp" }],
+        },
         tempRoot,
       );
       assert.equal(created.success, true);
       assert.equal(created.running, true);
+      assert.equal(created.endpoints.length, 1);
+      assert.match(created.endpoints[0].url, /^https:\/\//);
+
+      const executed = runMockBridge(
+        provider,
+        { ...request, operation: "exec", command: ["sh", "-c", "printf contract"] },
+        tempRoot,
+      );
+      assert.equal(executed.exit_code, 0);
+      assert.equal(executed.stdout, "contract");
 
       const content = Buffer.from(`${provider}-ok`).toString("base64");
       runMockBridge(
@@ -156,6 +170,20 @@ test("provider JSON-over-stdio bridge contract remains stable", async () => {
       );
       assert.equal(read.content_base64, content);
 
+      runMockBridge(
+        provider,
+        { ...request, operation: "mkdir", path: "/workspace/nested", recursive: true },
+        tempRoot,
+      );
+
+      const snapshot = runMockBridge(
+        provider,
+        { ...request, operation: "snapshot", snapshot_name: `${provider}-snapshot` },
+        tempRoot,
+      );
+      assert.equal(snapshot.success, true);
+      assert.match(snapshot.remote_metadata.snapshot_handle, /-snapshot$/);
+
       const status = runMockBridge(
         provider,
         { ...request, operation: "status" },
@@ -170,6 +198,36 @@ test("provider JSON-over-stdio bridge contract remains stable", async () => {
         tempRoot,
       );
       assert.equal(stopped.running, false);
+
+      const resumed = runMockBridge(
+        provider,
+        { ...request, operation: "resume" },
+        tempRoot,
+      );
+      assert.equal(resumed.running, true);
+
+      const restored = runMockBridge(
+        provider,
+        {
+          ...request,
+          operation: "restore",
+          snapshot_name: snapshot.remote_metadata.snapshot_handle,
+        },
+        tempRoot,
+      );
+      assert.equal(restored.success, true);
+
+      const deletedSnapshot = runMockBridge(
+        provider,
+        {
+          ...request,
+          operation: "delete_snapshot",
+          snapshot_name: snapshot.remote_metadata.snapshot_handle,
+        },
+        tempRoot,
+      );
+      assert.equal(deletedSnapshot.success, true);
+
       const destroyed = runMockBridge(
         provider,
         { ...request, operation: "destroy" },

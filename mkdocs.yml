@@ -98,6 +98,7 @@ nav:
     - Swift: sdks/swift.md
   - Operations:
     - Overview: operations/index.md
+    - Backend compatibility: operations/backend-compatibility.md
     - Kubernetes: operations/kubernetes.md
     - Nomad: operations/nomad.md
     - Deployment: operations/deploy.md
