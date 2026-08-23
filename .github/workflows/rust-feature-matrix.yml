@@ -1,0 +1,49 @@
+name: Rust feature matrix
+
+on:
+  pull_request:
+    branches: [main, codex/apple-container-1-2-modernization, codex/modernization-followups]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - tests/**
+      - .github/workflows/rust-feature-matrix.yml
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.89"
+
+jobs:
+  check:
+    name: Rust 1.89 / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: no default features
+            features: ""
+          - name: Kubernetes only
+            features: kubernetes
+          - name: Nomad only
+            features: nomad
+          - name: enterprise only
+            features: enterprise
+          - name: orchestrators combined
+            features: kubernetes,nomad,enterprise
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: feature-${{ matrix.name }}
+      - name: Check supported feature set
+        if: matrix.features != ''
+        run: cargo check --locked --no-default-features --features "${{ matrix.features }}"
+      - name: Check no-default baseline
+        if: matrix.features == ''
+        run: cargo check --locked --no-default-features

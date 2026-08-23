@@ -1,0 +1,75 @@
+name: Nomad compatibility
+
+on:
+  pull_request:
+    branches: [main, codex/apple-container-1-2-modernization, codex/modernization-followups]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/backend/nomad.rs
+      - src/config.rs
+      - tests/nomad_integration_test.rs
+      - .github/workflows/nomad-compatibility.yml
+  schedule:
+    - cron: "17 10 * * 2"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.89"
+  NOMAD_ADDR: http://127.0.0.1:4646
+  NOMAD_TEST_DRIVER: exec
+
+jobs:
+  compatibility:
+    name: Nomad ${{ matrix.nomad }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        nomad: ["1.10.5", "2.0.4"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nomad-${{ matrix.nomad }}
+      - name: Install verified Nomad release
+        env:
+          NOMAD_VERSION: ${{ matrix.nomad }}
+        run: |
+          curl --fail --silent --show-error --location \
+            --output nomad.zip \
+            "https://releases.hashicorp.com/nomad/${NOMAD_VERSION}/nomad_${NOMAD_VERSION}_linux_amd64.zip"
+          curl --fail --silent --show-error --location \
+            --output SHA256SUMS \
+            "https://releases.hashicorp.com/nomad/${NOMAD_VERSION}/nomad_${NOMAD_VERSION}_SHA256SUMS"
+          grep " nomad_${NOMAD_VERSION}_linux_amd64.zip$" SHA256SUMS > SHA256SUMS.linux
+          sha256sum --check SHA256SUMS.linux
+          unzip -q nomad.zip
+          sudo install nomad /usr/local/bin/nomad
+          nomad version
+      - name: Start Nomad development agent
+        run: |
+          nomad agent -dev -bind=127.0.0.1 > nomad.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent "${NOMAD_ADDR}/v1/status/leader" > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat nomad.log
+          exit 1
+      - name: Run lifecycle compatibility smoke
+        run: >-
+          cargo test --locked --test nomad_integration_test --features nomad
+          test_nomad_lifecycle -- --ignored --nocapture --test-threads=1
+      - name: Run exec environment compatibility smoke
+        run: >-
+          cargo test --locked --test nomad_integration_test --features nomad
+          test_nomad_exec_with_env -- --ignored --nocapture --test-threads=1
+      - name: Show Nomad log on failure
+        if: failure()
+        run: cat nomad.log

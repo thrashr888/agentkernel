@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main, codex/apple-container-1-2-modernization]
+    branches: [main, codex/apple-container-1-2-modernization, codex/modernization-followups]
 
 env:
   CARGO_TERM_COLOR: always
