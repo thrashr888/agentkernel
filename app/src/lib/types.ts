@@ -329,22 +329,45 @@ export interface BenchmarkResult {
 }
 
 // Session Recording
-export interface SessionEntry {
-  command: string[];
-  output: string;
-  exit_code: number;
-  timestamp: string;
-  duration_ms: number;
-}
-
 export interface SessionSummary {
-  sandbox: string;
-  entry_count: number;
+  id: string;
+  filename: string;
+  title?: string;
+  command?: string;
+  timestamp?: number;
+  duration?: number;
+  width: number;
+  height: number;
+  event_count: number;
+  size_bytes: number;
 }
 
-export interface SandboxSession {
-  sandbox: string;
-  entries: SessionEntry[];
+export interface SessionEvent {
+  time: number;
+  event_type: "output" | "input";
+  data: string;
+}
+
+export interface SessionRecording {
+  id: string;
+  filename: string;
+  title?: string;
+  command?: string;
+  timestamp?: number;
+  duration?: number;
+  width: number;
+  height: number;
+  event_count: number;
+  size_bytes: number;
+  header: {
+    version: number;
+    width: number;
+    height: number;
+    duration?: number;
+    title?: string;
+    command?: string;
+  };
+  events: SessionEvent[];
 }
 
 // Policy (enterprise)

@@ -824,23 +824,32 @@ impl ApiClient {
     // Sessions
     // -----------------------------------------------------------------
 
-    /// List all sandbox sessions (recorded exec history).
+    /// List all asciicast session recordings.
     pub async fn list_sessions(&self) -> anyhow::Result<Vec<crate::types::SessionSummary>> {
         self.request(reqwest::Method::GET, "/sessions", None::<&()>)
             .await
     }
 
-    /// Get session recording for a specific sandbox.
-    pub async fn get_sandbox_session(
-        &self,
-        name: &str,
-    ) -> anyhow::Result<crate::types::SandboxSession> {
+    /// Get session recording metadata and parsed events.
+    pub async fn get_session(&self, id: &str) -> anyhow::Result<crate::types::SessionRecording> {
         self.request(
             reqwest::Method::GET,
-            &format!("/sandboxes/{name}/session"),
+            &format!("/sessions/{id}"),
             None::<&()>,
         )
         .await
+    }
+
+    /// Get the original asciicast v2 artifact for a session.
+    pub async fn get_session_cast(&self, id: &str) -> anyhow::Result<String> {
+        let url = format!("{}/sessions/{id}/cast", self.base_url);
+        let response = self.http.get(url).send().await?;
+        let status = response.status().as_u16();
+        let text = response.text().await?;
+        if status >= 400 {
+            anyhow::bail!("API error (HTTP {status}): {text}");
+        }
+        Ok(text)
     }
 
     // -----------------------------------------------------------------
