@@ -178,10 +178,20 @@ func (c *Client) ListSandboxes(ctx context.Context) ([]SandboxInfo, error) {
 	return result, err
 }
 
+// GetBackends discovers server-supported and ready sandbox backends.
+func (c *Client) GetBackends(ctx context.Context) (*BackendDiscovery, error) {
+	var result BackendDiscovery
+	if err := c.request(ctx, http.MethodGet, "/backends", nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // CreateSandbox creates a new sandbox.
 func (c *Client) CreateSandbox(ctx context.Context, name string, opts *CreateSandboxOptions) (*SandboxInfo, error) {
 	body := createRequest{Name: name}
 	if opts != nil {
+		body.Backend = opts.Backend
 		body.Image = opts.Image
 		body.VCPUs = opts.VCPUs
 		body.MemoryMB = opts.MemoryMB

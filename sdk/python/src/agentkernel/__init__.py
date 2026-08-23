@@ -23,6 +23,9 @@ from .errors import (
 )
 from .types import (
     AriaSnapshot,
+    BackendCapabilities,
+    BackendDescriptor,
+    BackendDiscovery,
     BatchCommand,
     BatchFileWriteResponse,
     BatchResult,
@@ -56,6 +59,9 @@ from .types import (
 
 __all__ = [
     "AgentKernel",
+    "BackendCapabilities",
+    "BackendDescriptor",
+    "BackendDiscovery",
     "AsyncAgentKernel",
     "SandboxSession",
     "AsyncSandboxSession",

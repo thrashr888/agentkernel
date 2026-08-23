@@ -97,6 +97,11 @@ public actor AgentKernel {
         try await request(method: "GET", path: "/sandboxes")
     }
 
+    /// Discover server-supported and ready sandbox backends.
+    public func getBackends() async throws -> BackendDiscovery {
+        try await request(method: "GET", path: "/backends")
+    }
+
     /// Create a new sandbox.
     public func createSandbox(
         _ name: String,
@@ -104,6 +109,7 @@ public actor AgentKernel {
     ) async throws -> SandboxInfo {
         let body = CreateRequest(
             name: name,
+            backend: options?.backend,
             image: options?.image,
             vcpus: options?.vcpus,
             memory_mb: options?.memoryMB,

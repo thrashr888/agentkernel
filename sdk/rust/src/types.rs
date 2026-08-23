@@ -40,6 +40,38 @@ pub struct SandboxInfo {
     pub created_at: Option<String>,
 }
 
+/// Backend capabilities reported by the server.
+#[derive(Debug, Deserialize)]
+pub struct BackendCapabilities {
+    pub mount_cwd: bool,
+    pub mount_home: bool,
+    pub attach: bool,
+    pub host_volumes: bool,
+    pub ssh: bool,
+    pub proxy_secret_bindings: bool,
+    pub secret_files: bool,
+    pub snapshots: bool,
+    pub resume: bool,
+    pub endpoints: bool,
+}
+
+/// Server-side backend readiness information.
+#[derive(Debug, Deserialize)]
+pub struct BackendDescriptor {
+    pub backend: String,
+    pub configured: bool,
+    pub usable: bool,
+    pub readiness_reason: String,
+    pub capabilities: BackendCapabilities,
+}
+
+/// Result of backend discovery.
+#[derive(Debug, Deserialize)]
+pub struct BackendDiscovery {
+    pub default_backend: Option<String>,
+    pub backends: Vec<BackendDescriptor>,
+}
+
 /// SSE stream event.
 #[derive(Debug)]
 pub struct StreamEvent {
@@ -89,6 +121,9 @@ pub(crate) struct RunRequest {
 /// Options for creating a sandbox with a git source.
 #[derive(Debug, Default, Serialize)]
 pub struct CreateSandboxOptions {
+    /// Backend identifier; omit or use `automatic` for server selection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
     /// Docker image to use.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
@@ -125,6 +160,8 @@ pub struct CreateSandboxOptions {
 #[derive(Serialize)]
 pub(crate) struct CreateRequest {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

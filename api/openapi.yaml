@@ -397,8 +397,31 @@ paths:
                 $ref: '#/components/schemas/SandboxResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '422':
+          description: Requested backend is unavailable on this server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/InternalError'
+
+  /backends:
+    get:
+      tags: [Sandboxes]
+      summary: Discover sandbox backends
+      description: |
+        Reports the backend selected by Automatic creation and every backend
+        known to this server, including readiness and capability information.
+        The endpoint does not require a sandbox manager to be initialized.
+      operationId: listBackends
+      responses:
+        '200':
+          description: Backend discovery result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendDiscoveryResponse'
 
   /sandboxes/{name}:
     parameters:
@@ -1548,6 +1571,10 @@ components:
           maxLength: 64
           description: Unique name for the sandbox
           example: "my-sandbox"
+        backend:
+          type: string
+          description: Backend identifier. Omit or use `automatic` for server selection.
+          example: "docker"
         image:
           type: string
           default: "alpine:3.24"
@@ -1795,6 +1822,58 @@ components:
             api_key_configured:
               type: boolean
               example: false
+
+    BackendDiscoveryResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/BackendDiscovery'
+
+    BackendDiscovery:
+      type: object
+      required: [backends]
+      properties:
+        default_backend:
+          type: string
+          nullable: true
+          description: Backend used when creation requests Automatic selection
+        backends:
+          type: array
+          items:
+            $ref: '#/components/schemas/BackendDescriptor'
+
+    BackendDescriptor:
+      type: object
+      required: [backend, configured, usable, readiness_reason, capabilities]
+      properties:
+        backend:
+          type: string
+        configured:
+          type: boolean
+        usable:
+          type: boolean
+        readiness_reason:
+          type: string
+        capabilities:
+          $ref: '#/components/schemas/BackendCapabilities'
+
+    BackendCapabilities:
+      type: object
+      required: [mount_cwd, mount_home, attach, host_volumes, ssh, proxy_secret_bindings, secret_files, snapshots, resume, endpoints]
+      properties:
+        mount_cwd: {type: boolean}
+        mount_home: {type: boolean}
+        attach: {type: boolean}
+        host_volumes: {type: boolean}
+        ssh: {type: boolean}
+        proxy_secret_bindings: {type: boolean}
+        secret_files: {type: boolean}
+        snapshots: {type: boolean}
+        resume: {type: boolean}
+        endpoints: {type: boolean}
 
     StatsResponse:
       type: object

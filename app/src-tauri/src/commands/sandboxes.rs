@@ -171,6 +171,7 @@ pub async fn quickstart_agent(
     // Create sandbox with agent field + secret bindings for LLM proxy
     let req = CreateSandboxRequest {
         name: sandbox_name.clone(),
+        backend: None,
         image: Some(image.to_string()),
         vcpus: Some(2),
         memory_mb: Some(1024),

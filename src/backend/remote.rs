@@ -251,6 +251,25 @@ pub(crate) fn remote_bridge_command() -> Result<(String, Vec<String>)> {
     remote_bridge_command_for(None)
 }
 
+/// Return whether a bridge command can be resolved without launching it.
+/// Provider credentials are deliberately not inspected here; callers that
+/// report readiness should combine this with their provider configuration
+/// check without ever returning credential values.
+pub(crate) fn remote_bridge_configured() -> bool {
+    remote_bridge_command().is_ok()
+}
+
+/// Agent Computer is not implemented by the built-in bridge. Only a
+/// user-supplied bridge is allowed to advertise it as configured/usable.
+pub(crate) fn remote_bridge_custom_configured() -> bool {
+    std::env::var("AGENTKERNEL_REMOTE_BRIDGE")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+        || load_project_config(None)
+            .and_then(|config| config.remote.bridge)
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
 pub(crate) fn remote_bridge_command_for(
     config_path: Option<&str>,
 ) -> Result<(String, Vec<String>)> {

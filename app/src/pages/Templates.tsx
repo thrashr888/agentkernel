@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTemplates } from "@/lib/hooks/use-templates";
 import { api } from "@/lib/api";
-import type { CreateSandboxRequest, TemplateInfo } from "@/lib/types";
+import type { BackendDescriptor, CreateSandboxRequest, TemplateInfo } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -41,6 +41,14 @@ export function Templates() {
   );
   const [sandboxName, setSandboxName] = useState("");
   const [profile, setProfile] = useState("moderate");
+  const [backend, setBackend] = useState("automatic");
+  const [backendChoices, setBackendChoices] = useState<BackendDescriptor[]>([]);
+
+  useEffect(() => {
+    api.getBackends()
+      .then((discovery) => setBackendChoices(discovery.backends.filter((item) => item.usable)))
+      .catch(() => setBackendChoices([]));
+  }, []);
 
   const createMutation = useMutation({
     mutationFn: (req: CreateSandboxRequest) => api.createSandbox(req),
@@ -49,6 +57,7 @@ export function Templates() {
       setSelectedTemplate(null);
       setSandboxName("");
       setProfile("moderate");
+      setBackend("automatic");
       toast.success("Sandbox created from template");
     },
     onError: (err: unknown) => {
@@ -66,6 +75,7 @@ export function Templates() {
       ports: selectedTemplate.ports,
       secret_files: selectedTemplate.secret_files,
       profile: profile,
+      ...(backend !== "automatic" ? { backend } : {}),
       init_script: selectedTemplate.init_script,
       secret_mappings: selectedTemplate.secrets,
       created_from_template: selectedTemplate.name,
@@ -247,6 +257,22 @@ export function Templates() {
                   </p>
                 </div>
               )}
+            <div className="grid gap-2">
+              <Label>Backend</Label>
+              <Select value={backend} onValueChange={setBackend}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="automatic">Automatic (server default)</SelectItem>
+                  {backendChoices.map((item) => (
+                    <SelectItem key={item.backend} value={item.backend}>
+                      {item.backend}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="grid gap-2">
               <Label>Security Profile</Label>
               <Select value={profile} onValueChange={setProfile}>

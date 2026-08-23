@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 from ._config import resolve_config
 from .errors import AgentKernelError, NetworkError, error_from_status
 from .types import (
+    BackendDiscovery,
     BatchFileWriteResponse,
     BatchRunResponse,
     DetachedCommand,
@@ -167,6 +168,10 @@ class AgentKernel:
         data = self._request("GET", "/sandboxes")
         return [SandboxInfo(**s) for s in data]
 
+    def get_backends(self) -> BackendDiscovery:
+        """Discover server-supported and ready sandbox backends."""
+        return BackendDiscovery(**self._request("GET", "/backends"))
+
     def create_sandbox(
         self,
         name: str,
@@ -175,6 +180,7 @@ class AgentKernel:
         vcpus: int | None = None,
         memory_mb: int | None = None,
         profile: SecurityProfile | None = None,
+        backend: str | None = None,
         source_url: str | None = None,
         source_ref: str | None = None,
         volumes: list[str] | None = None,
@@ -184,6 +190,7 @@ class AgentKernel:
         """Create a new sandbox."""
         body = {
             "name": name,
+            "backend": backend,
             "image": image,
             "vcpus": vcpus,
             "memory_mb": memory_mb,

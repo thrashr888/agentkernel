@@ -13,6 +13,7 @@ import type {
   Settings,
   AuditLogEntry,
   StatusInfo,
+  BackendDiscovery,
   DoctorResult,
   GcResult,
   FileReadResponse,
@@ -50,6 +51,7 @@ export const api = {
   // Diagnostics
   getStatus: () => invoke<StatusInfo>("get_status"),
   getDoctor: () => invoke<DoctorResult>("get_doctor"),
+  getBackends: () => invoke<BackendDiscovery>("get_backends"),
   prepareBackend: () => invoke<string>("prepare_backend"),
   runGc: () => invoke<GcResult>("run_gc"),
 

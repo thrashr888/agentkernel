@@ -26,6 +26,8 @@ public struct RunOptions: Sendable {
 
 /// Options for creating a sandbox.
 public struct CreateSandboxOptions: Sendable {
+    /// Backend identifier; omit or use `automatic` for server selection.
+    public var backend: String?
     public var image: String?
     public var vcpus: Int?
     public var memoryMB: Int?
@@ -46,6 +48,7 @@ public struct CreateSandboxOptions: Sendable {
 
     public init(
         image: String? = nil,
+        backend: String? = nil,
         vcpus: Int? = nil,
         memoryMB: Int? = nil,
         profile: SecurityProfile? = nil,
@@ -56,6 +59,7 @@ public struct CreateSandboxOptions: Sendable {
         secretFiles: [String]? = nil
     ) {
         self.image = image
+        self.backend = backend
         self.vcpus = vcpus
         self.memoryMB = memoryMB
         self.profile = profile
@@ -102,6 +106,35 @@ public struct SandboxInfo: Codable, Sendable {
     public let created_at: String?
 }
 
+/// Backend capabilities reported by the server.
+public struct BackendCapabilities: Codable, Sendable {
+    public let mount_cwd: Bool
+    public let mount_home: Bool
+    public let attach: Bool
+    public let host_volumes: Bool
+    public let ssh: Bool
+    public let proxy_secret_bindings: Bool
+    public let secret_files: Bool
+    public let snapshots: Bool
+    public let resume: Bool
+    public let endpoints: Bool
+}
+
+/// Server-side backend readiness information.
+public struct BackendDescriptor: Codable, Sendable {
+    public let backend: String
+    public let configured: Bool
+    public let usable: Bool
+    public let readiness_reason: String
+    public let capabilities: BackendCapabilities
+}
+
+/// Result of backend discovery.
+public struct BackendDiscovery: Codable, Sendable {
+    public let default_backend: String?
+    public let backends: [BackendDescriptor]
+}
+
 /// SSE stream event.
 ///
 /// Uses `@unchecked Sendable` because `[String: Any]` isn't `Sendable`,
@@ -136,6 +169,7 @@ struct RunRequest: Encodable {
 /// Create sandbox request body.
 struct CreateRequest: Encodable {
     let name: String
+    let backend: String?
     let image: String?
     let vcpus: Int?
     let memory_mb: Int?

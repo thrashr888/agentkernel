@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 from ._config import resolve_config
 from .errors import AgentKernelError, NetworkError, error_from_status
 from .types import (
+    BackendDiscovery,
     BatchFileWriteResponse,
     BatchRunResponse,
     DetachedCommand,
@@ -181,6 +182,10 @@ class AsyncAgentKernel:
         data = await self._request("GET", "/sandboxes")
         return [SandboxInfo(**s) for s in data]
 
+    async def get_backends(self) -> BackendDiscovery:
+        """Discover server-supported and ready sandbox backends."""
+        return BackendDiscovery(**await self._request("GET", "/backends"))
+
     async def create_sandbox(
         self,
         name: str,
@@ -189,6 +194,7 @@ class AsyncAgentKernel:
         vcpus: int | None = None,
         memory_mb: int | None = None,
         profile: SecurityProfile | None = None,
+        backend: str | None = None,
         source_url: str | None = None,
         source_ref: str | None = None,
         volumes: list[str] | None = None,
@@ -199,6 +205,7 @@ class AsyncAgentKernel:
             "/sandboxes",
             json={
                 "name": name,
+                "backend": backend,
                 "image": image,
                 "vcpus": vcpus,
                 "memory_mb": memory_mb,

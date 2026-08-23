@@ -4,7 +4,7 @@ import { Plus, MoreHorizontal, Trash2, Camera, Square, Play, ChevronLeft, Chevro
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSandboxes } from "@/lib/hooks/use-sandboxes";
 import { api } from "@/lib/api";
-import type { CreateSandboxRequest } from "@/lib/types";
+import type { BackendDescriptor, CreateSandboxRequest } from "@/lib/types";
 import { SandboxStatusBadge } from "@/components/sandbox/sandbox-status-badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -66,11 +66,21 @@ export function Sandboxes() {
   const [formVcpus, setFormVcpus] = useState(1);
   const [formMemory, setFormMemory] = useState(512);
   const [formProfile, setFormProfile] = useState("restrictive");
+  const [formBackend, setFormBackend] = useState("automatic");
   const [formAgent, setFormAgent] = useState("");
   const [formLabels, setFormLabels] = useState("");
   const [formDescription, setFormDescription] = useState("");
+  const [backendChoices, setBackendChoices] = useState<BackendDescriptor[]>([]);
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 24;
+
+  // Backend discovery is optional for compatibility with older servers. In
+  // that case the only offered choice remains Automatic.
+  useEffect(() => {
+    api.getBackends()
+      .then((discovery) => setBackendChoices(discovery.backends.filter((backend) => backend.usable)))
+      .catch(() => setBackendChoices([]));
+  }, []);
 
   // Sort, filter, search state
   type SortColumn = "name" | "status" | "image" | "ip" | "created";
@@ -185,6 +195,7 @@ export function Sandboxes() {
     setFormVcpus(1);
     setFormMemory(512);
     setFormProfile("restrictive");
+    setFormBackend("automatic");
     setFormAgent("");
     setFormLabels("");
     setFormDescription("");
@@ -205,6 +216,7 @@ export function Sandboxes() {
       vcpus: formVcpus,
       memory_mb: formMemory,
       profile: formProfile,
+      ...(formBackend !== "automatic" ? { backend: formBackend } : {}),
       ...(formAgent && formAgent !== "none" ? { agent: formAgent } : {}),
       ...(Object.keys(labels).length > 0 ? { labels } : {}),
       ...(formDescription.trim() ? { description: formDescription.trim() } : {}),
@@ -310,6 +322,25 @@ export function Sandboxes() {
                   value={formDescription}
                   onChange={(e) => setFormDescription(e.target.value)}
                 />
+              </div>
+              <div className="grid gap-2">
+                <Label>Backend</Label>
+                <Select value={formBackend} onValueChange={setFormBackend}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="automatic">Automatic (server default)</SelectItem>
+                    {backendChoices.map((backend) => (
+                      <SelectItem key={backend.backend} value={backend.backend}>
+                        {backend.backend}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Only backends reported ready by the server are listed.
+                </p>
               </div>
               <div className="grid gap-2">
                 <Label>Agent (optional)</Label>
