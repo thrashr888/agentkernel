@@ -142,6 +142,28 @@ allow_sudo_exec = false
 
 HTTP API authentication uses the `Authorization: Bearer <api_key>` header when enabled.
 
+## [scheduling]
+
+Workspace lifecycle scheduling is enforced by the long-running `agentkernel serve`
+daemon. The scheduler is disabled until at least one policy is configured. Cron
+expressions use five UTC fields: minute, hour, day of month, month, and day of
+week. A matching cron minute starts each stopped, non-dormant sandbox once.
+
+```toml
+[scheduling]
+enabled = true
+autostop_after_minutes = 30       # Stop running sandboxes after 30 idle minutes
+autostart_cron = "0 9 * * 1-5"    # Start workspaces at 09:00 UTC on weekdays
+dormant_after_days = 14           # Mark stopped, unused workspaces dormant
+remove_dormant_after_days = 30    # Reclaim dormant workspaces after 30 days
+check_interval_seconds = 60       # Enforcement poll interval
+```
+
+Dormant workspaces are not autostarted. A manual start clears the dormant mark
+and records fresh activity. The daemon performs the checks continuously while
+the API server is running; existing per-sandbox lifecycle policies are also
+reconciled during the same pass. Use `enabled = false` to pause enforcement.
+
 ## [ssh]
 
 SSH access configuration. When enabled, an OpenSSH server is injected into the sandbox with certificate-only authentication.

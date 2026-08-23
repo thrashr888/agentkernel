@@ -217,6 +217,12 @@ pub struct SandboxState {
     /// Human-readable archive reason.
     #[serde(default)]
     pub archived_reason: Option<String>,
+    /// When this sandbox entered the dormant state, RFC3339.
+    #[serde(default)]
+    pub dormant_at: Option<String>,
+    /// Human-readable reason for entering the dormant state.
+    #[serde(default)]
+    pub dormant_reason: Option<String>,
     /// Optional lifecycle automation policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_policy: Option<SandboxLifecyclePolicy>,
@@ -227,6 +233,8 @@ impl SandboxState {
     pub fn status(&self, running: bool) -> &'static str {
         if self.archived_at.is_some() {
             "archived"
+        } else if self.dormant_at.is_some() {
+            "dormant"
         } else if running {
             "running"
         } else {
@@ -249,6 +257,10 @@ impl SandboxState {
 
     fn archived_time(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         self.archived_at.as_deref().and_then(Self::parse_rfc3339)
+    }
+
+    fn dormant_time(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.dormant_at.as_deref().and_then(Self::parse_rfc3339)
     }
 
     fn remote_context(&self) -> RemoteSandboxContext {
@@ -943,6 +955,8 @@ impl VmManager {
             last_activity_at: Some(created_at),
             archived_at: None,
             archived_reason: None,
+            dormant_at: None,
+            dormant_reason: None,
             lifecycle_policy: None,
         };
 
@@ -1127,6 +1141,42 @@ impl VmManager {
         let snapshot = state.clone();
         self.save_sandbox(&snapshot)?;
         Ok(())
+    }
+
+    /// Mark a stopped sandbox dormant after a configured period of disuse.
+    pub fn mark_dormant(&mut self, name: &str, at: &str, reason: &str) -> Result<()> {
+        let state = self
+            .sandboxes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        if state.dormant_at.is_none() {
+            state.dormant_at = Some(at.to_string());
+            state.dormant_reason = Some(reason.to_string());
+            let snapshot = state.clone();
+            self.save_sandbox(&snapshot)?;
+        }
+        Ok(())
+    }
+
+    /// Return the last activity timestamp for scheduler evaluation.
+    pub fn activity_time(&self, name: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.sandboxes
+            .get(name)
+            .and_then(SandboxState::last_activity_time)
+    }
+
+    /// Return the dormant timestamp for scheduler evaluation.
+    pub fn dormant_time(&self, name: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.sandboxes
+            .get(name)
+            .and_then(SandboxState::dormant_time)
+    }
+
+    /// Return all persisted sandbox names in stable order.
+    pub fn sandbox_names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.sandboxes.keys().cloned().collect();
+        names.sort();
+        names
     }
 
     /// Set secret bindings for a sandbox (raw CLI strings for proxy injection).
@@ -1405,6 +1455,8 @@ impl VmManager {
 
         state.archived_at = None;
         state.archived_reason = None;
+        state.dormant_at = None;
+        state.dormant_reason = None;
         state.last_activity_at = Some(chrono::Utc::now().to_rfc3339());
 
         let snapshot = state.clone();
@@ -2127,6 +2179,13 @@ impl VmManager {
         }
 
         self.running.insert(name.to_string(), sandbox);
+        // A manual start is an explicit revival of a dormant workspace.
+        if let Some(state) = self.sandboxes.get_mut(name) {
+            state.dormant_at = None;
+            state.dormant_reason = None;
+            let snapshot = state.clone();
+            self.save_sandbox(&snapshot)?;
+        }
         if let Err(e) = self.sync_runtime_metadata(name) {
             eprintln!(
                 "Warning: failed to sync remote metadata for '{}': {}",
@@ -3226,6 +3285,8 @@ mod tests {
             last_activity_at: None,
             archived_at: None,
             archived_reason: None,
+            dormant_at: None,
+            dormant_reason: None,
             lifecycle_policy: None,
         };
 
@@ -3314,6 +3375,8 @@ mod tests {
             last_activity_at: None,
             archived_at: None,
             archived_reason: None,
+            dormant_at: None,
+            dormant_reason: None,
             lifecycle_policy: None,
         };
 
@@ -3390,6 +3453,8 @@ mod tests {
             last_activity_at: None,
             archived_at: None,
             archived_reason: None,
+            dormant_at: None,
+            dormant_reason: None,
             lifecycle_policy: None,
         };
         let json = serde_json::to_string(&state).unwrap();
@@ -3482,6 +3547,8 @@ mod tests {
                 last_activity_at: None,
                 archived_at: None,
                 archived_reason: None,
+                dormant_at: None,
+                dormant_reason: None,
                 lifecycle_policy: None,
             };
             let json = serde_json::to_string(&state).unwrap();
@@ -3555,6 +3622,8 @@ mod tests {
             last_activity_at: None,
             archived_at: None,
             archived_reason: None,
+            dormant_at: None,
+            dormant_reason: None,
             lifecycle_policy: None,
         };
         std::fs::create_dir_all(temp_dir.path().join("sandboxes")).unwrap();
@@ -3628,6 +3697,8 @@ mod tests {
                 last_activity_at: None,
                 archived_at: None,
                 archived_reason: None,
+                dormant_at: None,
+                dormant_reason: None,
                 lifecycle_policy: None,
             };
             manager.sandboxes.insert(name.to_string(), state);
@@ -3702,6 +3773,8 @@ mod tests {
             last_activity_at: None,
             archived_at: None,
             archived_reason: None,
+            dormant_at: None,
+            dormant_reason: None,
             lifecycle_policy: None,
         };
         manager.sandboxes.insert("desc-test".to_string(), state);
@@ -3772,6 +3845,8 @@ mod tests {
             last_activity_at: None,
             archived_at: None,
             archived_reason: None,
+            dormant_at: None,
+            dormant_reason: None,
             lifecycle_policy: None,
         };
 
@@ -3838,6 +3913,8 @@ mod tests {
             last_activity_at: Some("2026-01-01T00:00:00Z".to_string()),
             archived_at: None,
             archived_reason: None,
+            dormant_at: None,
+            dormant_reason: None,
             lifecycle_policy: None,
         }
     }
@@ -3925,6 +4002,27 @@ mod tests {
         assert!(recovered.archived_at.is_none());
         assert!(recovered.archived_reason.is_none());
         assert!(recovered.last_activity_at.is_some());
+    }
+
+    #[test]
+    fn test_mark_dormant_persists_state_and_status() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        manager
+            .sandboxes
+            .insert("dormant-test".to_string(), lifecycle_state("dormant-test"));
+
+        manager
+            .mark_dormant("dormant-test", "2026-02-01T00:00:00Z", "unused for 30 days")
+            .unwrap();
+        let state = manager.get_state("dormant-test").unwrap();
+        assert_eq!(state.dormant_at.as_deref(), Some("2026-02-01T00:00:00Z"));
+        assert_eq!(state.dormant_reason.as_deref(), Some("unused for 30 days"));
+        assert_eq!(state.status(false), "dormant");
+        assert_eq!(
+            manager.dormant_time("dormant-test").unwrap().to_rfc3339(),
+            "2026-02-01T00:00:00+00:00"
+        );
     }
 
     #[tokio::test]

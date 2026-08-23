@@ -240,6 +240,88 @@ pub struct ApiConfig {
     pub allow_sudo_exec: bool,
 }
 
+/// Workspace lifecycle scheduling configuration.
+///
+/// Scheduling is evaluated by the long-running API daemon.  All times are
+/// measured from the sandbox's persisted `last_activity_at` timestamp and
+/// cron expressions are evaluated in UTC using the standard five-field cron
+/// format (minute, hour, day of month, month, day of week).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceSchedulingConfig {
+    /// Enable the scheduler loop.  It is enabled by default, but remains
+    /// dormant until at least one policy is configured.
+    #[serde(default = "default_scheduling_enabled")]
+    pub enabled: bool,
+    /// Stop running sandboxes after this many idle minutes.
+    #[serde(
+        default,
+        alias = "autostop_minutes",
+        alias = "auto_stop_after_minutes",
+        alias = "auto_stop_minutes"
+    )]
+    pub autostop_after_minutes: Option<u64>,
+    /// Start stopped, non-dormant sandboxes when this UTC cron expression
+    /// matches.  A matching expression is a start trigger, not a continuous
+    /// running window.
+    #[serde(
+        default,
+        alias = "autostart_schedule",
+        alias = "auto_start_schedule",
+        alias = "auto_start_cron"
+    )]
+    pub autostart_cron: Option<String>,
+    /// Mark stopped sandboxes dormant after this many unused days.
+    #[serde(default, alias = "dormant_days", alias = "mark_dormant_after_days")]
+    pub dormant_after_days: Option<u64>,
+    /// Remove dormant sandboxes after this many days in the dormant state.
+    #[serde(
+        default,
+        alias = "delete_dormant_after_days",
+        alias = "dormant_cleanup_after_days",
+        alias = "remove_dormant_days"
+    )]
+    pub remove_dormant_after_days: Option<u64>,
+    /// Poll interval for the daemon enforcement loop.
+    #[serde(default = "default_scheduling_interval_seconds", alias = "interval")]
+    pub check_interval_seconds: u64,
+}
+
+fn default_scheduling_enabled() -> bool {
+    true
+}
+
+fn default_scheduling_interval_seconds() -> u64 {
+    60
+}
+
+impl Default for WorkspaceSchedulingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_scheduling_enabled(),
+            autostop_after_minutes: None,
+            autostart_cron: None,
+            dormant_after_days: None,
+            remove_dormant_after_days: None,
+            check_interval_seconds: default_scheduling_interval_seconds(),
+        }
+    }
+}
+
+impl WorkspaceSchedulingConfig {
+    /// Whether any lifecycle policy needs enforcement.
+    pub fn has_policies(&self) -> bool {
+        self.autostop_after_minutes.is_some()
+            || self.autostart_cron.is_some()
+            || self.dormant_after_days.is_some()
+            || self.remove_dormant_after_days.is_some()
+    }
+
+    /// Whether the daemon should run the scheduler.
+    pub fn is_active(&self) -> bool {
+        self.enabled && self.has_policies()
+    }
+}
+
 /// Trust anchor configuration for enterprise policy signing
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrustAnchorsConfig {
@@ -385,6 +467,10 @@ pub struct Config {
     /// API server configuration
     #[serde(default)]
     pub api: ApiConfig,
+    /// Workspace lifecycle scheduling.  `workspace` is accepted as an alias
+    /// for users who prefer grouping this policy under the workspace name.
+    #[serde(default, alias = "workspace")]
+    pub scheduling: WorkspaceSchedulingConfig,
     /// Proxy hooks configuration
     #[serde(default)]
     pub proxy: ProxyHooksConfig,
@@ -763,6 +849,7 @@ impl Config {
             remote: RemoteConfig::default(),
             enterprise: EnterpriseConfig::default(),
             api: ApiConfig::default(),
+            scheduling: WorkspaceSchedulingConfig::default(),
             proxy: ProxyHooksConfig::default(),
             secrets: std::collections::BTreeMap::new(),
             llm_keys: LlmKeysConfig::default(),
