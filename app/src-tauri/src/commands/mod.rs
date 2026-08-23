@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod audit;
+pub mod batch;
 pub mod benchmark;
 pub mod config;
 pub mod diagnostics;

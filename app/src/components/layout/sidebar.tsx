@@ -25,6 +25,7 @@ import {
   ShieldOff,
   ShieldAlert,
   Layers,
+  GitFork,
   Zap,
   Terminal,
   HardDrive,
@@ -102,6 +103,7 @@ const navSections = [
     label: "Resources",
     items: [
       { to: "/jobs", label: "Jobs", icon: Layers },
+      { to: "/parallel", label: "Parallel Jobs", icon: GitFork },
       { to: "/images", label: "Images", icon: HardDrive },
       { to: "/sessions", label: "Sessions", icon: Terminal },
     ],

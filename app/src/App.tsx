@@ -18,6 +18,7 @@ import { Objects } from "@/pages/Objects";
 import { Schedules } from "@/pages/Schedules";
 import { Stores } from "@/pages/Stores";
 import { Jobs } from "@/pages/Jobs";
+import { ParallelJobs } from "@/pages/ParallelJobs";
 import { Images } from "@/pages/Images";
 import { Benchmark } from "@/pages/Benchmark";
 import { Sessions } from "@/pages/Sessions";
@@ -50,6 +51,7 @@ function App() {
         <Route path="/secrets" element={<Secrets />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/jobs" element={<Jobs />} />
+        <Route path="/parallel" element={<ParallelJobs />} />
         <Route path="/images" element={<Images />} />
         <Route path="/benchmark" element={<Benchmark />} />
         <Route path="/sessions" element={<Sessions />} />

@@ -65,6 +65,25 @@ pub struct RunOutput {
     pub output: String,
 }
 
+/// A command submitted to the parallel batch-run endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchCommand {
+    pub command: Vec<String>,
+}
+
+/// Result for one command submitted to the parallel batch-run endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchResult {
+    pub output: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Response from parallel batch execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchRunResponse {
+    pub results: Vec<BatchResult>,
+}
+
 /// Response from reading a file in a sandbox.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileReadResponse {

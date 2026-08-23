@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   SandboxInfo,
   RunOutput,
+  BatchCommand,
+  BatchRunResponse,
   SnapshotMeta,
   ExtendTtlResponse,
   DetachedCommand,
@@ -81,6 +83,10 @@ export const api = {
   // Quick Run — temporary sandbox, execute, clean up
   quickRun: (command: string[], image?: string, profile?: string) =>
     invoke<RunOutput>("quick_run", { command, image, profile }),
+
+  // Parallel execution — run the same API command in multiple ephemeral sandboxes
+  batchRun: (commands: BatchCommand[]) =>
+    invoke<BatchRunResponse>("batch_run", { commands }),
 
   // Execution — params are flat, not a nested struct
   execCommand: (name: string, command: string[], env?: string[], workdir?: string) =>
