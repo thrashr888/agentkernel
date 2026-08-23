@@ -58,6 +58,11 @@ pub struct ServerEntry {
     /// Optional explicit SSH tunnel management for remote entries.
     #[serde(default)]
     pub ssh_tunnel: Option<SshTunnelConfig>,
+    /// Explicit configuration file used by an app-managed local server.
+    /// Relative paths are never passed to the sidecar; they are canonicalized
+    /// before launch.
+    #[serde(default)]
+    pub config_path: Option<String>,
 }
 
 /// Persisted user settings for the desktop app.
@@ -93,6 +98,7 @@ impl Default for Settings {
                 api_key: key.clone(),
                 managed: Some(true),
                 ssh_tunnel: None,
+                config_path: None,
             }],
             theme: "system".to_string(),
             poll_interval_ms: 3000,
@@ -135,6 +141,7 @@ impl Settings {
                 api_key: self.api_key.clone(),
                 managed: Some(true),
                 ssh_tunnel: None,
+                config_path: None,
             });
             if self.active_server.is_none() {
                 self.active_server = Some("Local".to_string());

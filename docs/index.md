@@ -269,6 +269,27 @@ forbid(
 
 Every policy decision is logged in OCSF-compatible JSONL for compliance auditing (SOC 2, HIPAA, FedRAMP). Policies are signed with Ed25519 to prevent tampering, with version monotonicity checks to block downgrades.
 
+### Desktop policy activation
+
+The desktop app starts its app-owned Local sidecar with one canonical absolute
+configuration path under the AgentKernel desktop configuration directory. The
+Policy page reports whether the enterprise feature is compiled, configured,
+active, enforcing, and healthy, along with the policy source, version, and any
+initialization error.
+
+Only an app-managed loopback Local server can be activated from the desktop.
+Remote and separately managed servers are strictly read-only; ask the server
+administrator to change their Cedar policy. Local activation validates the
+TOML and Cedar text first, then atomically replaces `agentkernel.toml` and
+`policy.cedar`, preserving `.bak` copies. If the restarted sidecar does not
+report active, enforcing, and healthy, both files are restored and the prior
+configuration is restarted.
+
+When no meaningful policy material is available in a non-fail-closed offline
+mode, the compatibility `default_permit_all` fallback is labeled explicitly.
+It is not considered policy enforcement. Use a local Cedar file or a managed
+policy server for meaningful authorization.
+
 Build with `cargo build --features enterprise`. See [example policies](https://github.com/thrashr888/agentkernel/tree/main/examples/enterprise/policies) for RBAC, MFA enforcement, runtime restrictions, and org isolation patterns.
 
 ## Docker vs. agentkernel

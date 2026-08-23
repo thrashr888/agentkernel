@@ -108,6 +108,43 @@ fn port_for_server(entry: &ServerEntry) -> u16 {
         .unwrap_or(18888)
 }
 
+/// Stable configuration location owned by the desktop app. A sidecar always
+/// receives this absolute path, so policy cannot change when the app is
+/// launched from a different working directory.
+pub fn default_local_config_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("agentkernel-desktop")
+        .join("agentkernel.toml")
+}
+
+pub fn config_path_for_server(entry: &ServerEntry) -> Result<PathBuf, String> {
+    let configured = entry
+        .config_path
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(default_local_config_path);
+    if configured.exists() {
+        std::fs::canonicalize(&configured)
+            .map_err(|e| format!("Failed to canonicalize server config: {e}"))
+    } else {
+        let parent = configured
+            .parent()
+            .ok_or_else(|| "Server config has no parent directory".to_string())?;
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create server config directory: {e}"))?;
+        }
+        let parent = std::fs::canonicalize(parent)
+            .map_err(|e| format!("Failed to resolve server config directory: {e}"))?;
+        Ok(parent.join(
+            configured
+                .file_name()
+                .ok_or_else(|| "Server config has no file name".to_string())?,
+        ))
+    }
+}
+
 /// Find the CLI binary shipped by Tauri, with development fallbacks.
 ///
 /// Tauri's `externalBin` configuration places the normalized sidecar next to
@@ -197,9 +234,20 @@ pub fn start_owned_server(
         "Bundled agentkernel sidecar is unavailable. Build the desktop sidecar or install 'agentkernel' for development.".to_string()
     })?;
     let port = port_for_server(&entry);
+    let config_path = config_path_for_server(&entry)?;
 
-    let child = Command::new(&binary)
-        .args(["serve", "--host", "127.0.0.1", "--port", &port.to_string()])
+    let mut command = Command::new(&binary);
+    command.args(["serve", "--host", "127.0.0.1", "--port", &port.to_string()]);
+    // Always pass the canonical path, including on first launch. This keeps
+    // the server's policy/config resolution stable instead of depending on
+    // whichever working directory launched the desktop app.
+    command.args([
+        "--config",
+        config_path
+            .to_str()
+            .ok_or_else(|| "Server config path is not valid UTF-8".to_string())?,
+    ]);
+    let child = command
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -208,6 +256,18 @@ pub fn start_owned_server(
     let pid = child.id();
     *child_lock = Some(child);
     Ok(format!("Server started (PID {pid}) on port {port}"))
+}
+
+/// Restart only the child process spawned by this desktop instance.
+///
+/// A remote or separately managed server is never represented by
+/// `ServerProcess`, so it cannot be stopped or restarted through this path.
+pub fn restart_owned_server(
+    server_process: &ServerProcess,
+    app_state: &AppState,
+) -> Result<String, String> {
+    let _ = server_process.stop()?;
+    start_owned_server(server_process, app_state)
 }
 
 /// Start the app-owned server when the desktop application launches.
@@ -276,6 +336,7 @@ mod tests {
             api_key: None,
             managed: Some(managed),
             ssh_tunnel: None,
+            config_path: None,
         }
     }
 

@@ -366,6 +366,7 @@ export interface ServerEntry {
   /** True when the desktop app owns and starts this local server. */
   managed?: boolean;
   ssh_tunnel?: SshTunnelConfig;
+  config_path?: string;
 }
 
 // Settings
@@ -454,10 +455,23 @@ export interface SessionRecording {
 // Policy (enterprise)
 export interface PolicyStatus {
   enabled: boolean;
+  compiled?: boolean;
+  configured?: boolean;
+  active?: boolean;
+  enforcing?: boolean;
+  healthy?: boolean;
   version: number;
   org_id?: string;
   offline_mode?: string;
   policy_server?: string;
+  source?: string;
+  policy_source?: string;
+  config_path?: string;
+  initialization_error?: string;
+  init_error?: string;
+  fail_closed?: boolean;
+  meaningful?: boolean;
+  admin_guidance?: string;
 }
 
 export interface PolicyCheckResult {
@@ -470,6 +484,27 @@ export interface PolicyCheckResult {
 export interface PolicyReloadResult {
   reloaded: boolean;
   version: number;
+}
+
+export interface PolicyActivationRequest {
+  config: string;
+  policy: string;
+}
+
+export interface PolicyEditorMaterial {
+  config: string;
+  policy: string;
+  config_path: string;
+  policy_path: string;
+}
+
+export interface PolicyActivationResult {
+  status: PolicyStatus;
+  config_path: string;
+  policy_path: string;
+  config_backup?: string;
+  policy_backup?: string;
+  rolled_back: boolean;
 }
 
 export interface PolicyAuditEntry {

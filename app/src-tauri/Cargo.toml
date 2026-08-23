@@ -29,6 +29,7 @@ dirs = "6"
 toml = "1.1"
 url = "2"
 which = "8"
+cedar-policy = "4"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-debug-bridge = { version = "0.5.1", optional = true }
 

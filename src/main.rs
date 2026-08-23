@@ -2736,9 +2736,9 @@ memory_mb = 512
         Commands::Serve {
             host,
             port,
+            config,
             api_key,
             api_key_file,
-            config,
             tls,
             tls_cert,
             tls_key,

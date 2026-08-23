@@ -478,6 +478,10 @@ pub struct EnterpriseConfig {
     /// URL of the enterprise policy server
     #[serde(default)]
     pub policy_server: Option<String>,
+    /// Path to a local Cedar policy file. Relative paths are resolved from
+    /// the explicit server configuration file directory.
+    #[serde(default)]
+    pub policy_file: Option<String>,
     /// Organization identifier
     #[serde(default)]
     pub org_id: Option<String>,
@@ -518,6 +522,7 @@ impl Default for EnterpriseConfig {
         Self {
             enabled: false,
             policy_server: None,
+            policy_file: None,
             org_id: None,
             api_key_env: None,
             offline_mode: default_offline_mode(),

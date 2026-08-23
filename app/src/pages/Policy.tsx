@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Shield,
@@ -6,6 +6,7 @@ import {
   Play,
   CheckCircle2,
   XCircle,
+  Save,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "@/components/ui/use-toast";
@@ -28,7 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { PolicyCheckResult } from "@/lib/types";
+import type { PolicyActivationRequest, PolicyCheckResult } from "@/lib/types";
 
 const ACTIONS = [
   "Run",
@@ -48,6 +49,8 @@ export function Policy() {
   const [checkResult, setCheckResult] = useState<PolicyCheckResult | null>(
     null
   );
+  const [editorConfig, setEditorConfig] = useState("");
+  const [editorPolicy, setEditorPolicy] = useState("");
 
   // --- Queries ---
 
@@ -61,6 +64,24 @@ export function Policy() {
     queryFn: () => api.getPolicyStatus(),
     retry: false,
   });
+
+  const materialQuery = useQuery({
+    queryKey: ["local-policy-material"],
+    queryFn: () => api.getLocalPolicyMaterial(),
+    retry: false,
+  });
+  const materialError = materialQuery.error
+    ? materialQuery.error instanceof Error
+      ? materialQuery.error.message
+      : String(materialQuery.error)
+    : null;
+
+  useEffect(() => {
+    if (materialQuery.data) {
+      setEditorConfig(materialQuery.data.config);
+      setEditorPolicy(materialQuery.data.policy);
+    }
+  }, [materialQuery.data]);
 
   // --- Mutations ---
 
@@ -85,6 +106,22 @@ export function Policy() {
           err instanceof Error ? err.message : String(err),
           "error"
         );
+    },
+  });
+
+  const activateMutation = useMutation({
+    mutationFn: (request: PolicyActivationRequest) =>
+      api.activateLocalPolicy(request),
+    onSuccess: (data) => {
+      toast(
+        `Local policy activated${data.config_backup ? " (previous files backed up)" : ""}`,
+        "success"
+      );
+      queryClient.invalidateQueries({ queryKey: ["policy-status"] });
+      queryClient.invalidateQueries({ queryKey: ["local-policy-material"] });
+    },
+    onError: (err) => {
+      toast(err instanceof Error ? err.message : String(err), "error");
     },
   });
 
@@ -183,9 +220,9 @@ export function Policy() {
               </div>
               <div className="flex items-center gap-2">
                 <Badge
-                  variant={policyStatus.enabled ? "success" : "secondary"}
+                  variant={policyStatus.enforcing && policyStatus.healthy ? "success" : "secondary"}
                 >
-                  {policyStatus.enabled ? "Enabled" : "Disabled"}
+                  {policyStatus.enforcing && policyStatus.healthy ? "Enforcing" : "Not enforcing"}
                 </Badge>
                 <Button
                   variant="outline"
@@ -203,10 +240,34 @@ export function Policy() {
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2 border-b pb-3 text-sm sm:grid-cols-5">
+                {([
+                  ["Compiled", policyStatus.compiled],
+                  ["Configured", policyStatus.configured],
+                  ["Active", policyStatus.active],
+                  ["Enforcing", policyStatus.enforcing],
+                  ["Healthy", policyStatus.healthy],
+                ] as const).map(([label, value]) => (
+                  <div key={label} className="flex items-center gap-1.5">
+                    {value ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+                    ) : (
+                      <XCircle className="h-3.5 w-3.5 text-muted-foreground" />
+                    )}
+                    <span>{label}</span>
+                  </div>
+                ))}
+              </div>
               <div className="flex items-center justify-between border-b pb-2">
                 <span className="text-sm font-medium">Version</span>
                 <span className="font-mono text-sm text-muted-foreground">
                   {policyStatus.version}
+                </span>
+              </div>
+              <div className="flex items-center justify-between border-b pb-2">
+                <span className="text-sm font-medium">Policy Source</span>
+                <span className="font-mono text-sm text-muted-foreground">
+                  {policyStatus.source ?? "none"}
                 </span>
               </div>
               <div className="flex items-center justify-between border-b pb-2">
@@ -227,12 +288,105 @@ export function Policy() {
                   {policyStatus.policy_server ?? "N/A"}
                 </span>
               </div>
+              {policyStatus.config_path && (
+                <div className="flex items-center justify-between border-t pt-2">
+                  <span className="text-sm font-medium">Configuration Path</span>
+                  <span className="max-w-[70%] truncate font-mono text-sm text-muted-foreground" title={policyStatus.config_path}>
+                    {policyStatus.config_path}
+                  </span>
+                </div>
+              )}
+              {policyStatus.initialization_error && (
+                <p className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                  Policy initialization failed: {policyStatus.initialization_error}
+                </p>
+              )}
+              {policyStatus.source === "default_permit_all" && (
+                <p className="rounded-md border border-yellow-500/40 bg-yellow-500/5 p-3 text-sm text-yellow-700 dark:text-yellow-300">
+                  Permit-all compatibility fallback: this is not meaningful policy enforcement. Configure a local Cedar file or a managed policy server.
+                </p>
+              )}
+              {policyStatus.admin_guidance && (
+                <p className="rounded-md border p-3 text-sm text-muted-foreground">
+                  {policyStatus.admin_guidance}
+                </p>
+              )}
             </div>
           </CardContent>
         </Card>
       )}
 
-      {/* Section 2: Policy Check Tester */}
+      {/* Section 2: Local policy editor */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Save className="h-5 w-5" />
+            Local policy activation
+          </CardTitle>
+          <CardDescription>
+            Edit the app-owned TOML and Cedar files, then atomically restart the local sidecar.
+            Remote and separately managed servers are read-only.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {materialQuery.error ? (
+            <p className="rounded-md border border-yellow-500/40 bg-yellow-500/5 p-3 text-sm text-yellow-700 dark:text-yellow-300">
+              {materialError}
+              {materialError?.includes("read-only") &&
+                " Ask the server administrator to update policy."}
+            </p>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="policy-config">AgentKernel TOML</Label>
+                <textarea
+                  id="policy-config"
+                  className="min-h-48 w-full rounded-md border bg-background px-3 py-2 font-mono text-sm"
+                  value={editorConfig}
+                  onChange={(event) => setEditorConfig(event.target.value)}
+                  disabled={materialQuery.isLoading || activateMutation.isPending}
+                  spellCheck={false}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="policy-cedar">Cedar policy</Label>
+                <textarea
+                  id="policy-cedar"
+                  className="min-h-48 w-full rounded-md border bg-background px-3 py-2 font-mono text-sm"
+                  value={editorPolicy}
+                  onChange={(event) => setEditorPolicy(event.target.value)}
+                  disabled={materialQuery.isLoading || activateMutation.isPending}
+                  spellCheck={false}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <p className="text-xs text-muted-foreground">
+                  Validation happens before either file changes. A failed startup restores both files and the previous sidecar.
+                </p>
+                <Button
+                  onClick={() =>
+                    activateMutation.mutate({
+                      config: editorConfig,
+                      policy: editorPolicy,
+                    })
+                  }
+                  disabled={
+                    materialQuery.isLoading ||
+                    activateMutation.isPending ||
+                    !editorConfig.trim() ||
+                    !editorPolicy.trim()
+                  }
+                >
+                  <Save className="mr-2 h-4 w-4" />
+                  {activateMutation.isPending ? "Activating..." : "Activate locally"}
+                </Button>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Section 3: Policy Check Tester */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">

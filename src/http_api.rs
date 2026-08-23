@@ -26,6 +26,7 @@ use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::time::{Duration, sleep};
@@ -123,8 +124,11 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     diff == 0
 }
 
-fn load_api_key_from_config() -> Option<String> {
-    let config_path = std::path::PathBuf::from("agentkernel.toml");
+fn load_api_key_from_config(config_path: Option<&std::path::Path>) -> Option<String> {
+    let config_path = config_path.map(std::path::Path::to_path_buf).or_else(|| {
+        let fallback = std::path::PathBuf::from("agentkernel.toml");
+        fallback.exists().then_some(fallback)
+    })?;
     if !config_path.exists() {
         return None;
     }
@@ -164,17 +168,22 @@ fn load_api_key_from_config() -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-fn load_api_key() -> Option<String> {
+fn load_api_key(config_path: Option<&std::path::Path>) -> Option<String> {
     if let Ok(key) = std::env::var("AGENTKERNEL_API_KEY")
         && !key.trim().is_empty()
     {
         return Some(key);
     }
-    load_api_key_from_config()
+    load_api_key_from_config(config_path)
 }
 
-fn load_api_allow_sudo_exec_from_config() -> bool {
-    let config_path = std::path::PathBuf::from("agentkernel.toml");
+fn load_api_allow_sudo_exec_from_config(config_path: Option<&std::path::Path>) -> bool {
+    let Some(config_path) = config_path.map(std::path::Path::to_path_buf).or_else(|| {
+        let fallback = std::path::PathBuf::from("agentkernel.toml");
+        fallback.exists().then_some(fallback)
+    }) else {
+        return false;
+    };
     if !config_path.exists() {
         return false;
     }
@@ -775,6 +784,9 @@ struct RunResponse {
 
 /// Shared state for the HTTP server
 struct AppState {
+    /// Canonical configuration path selected at server startup. Keeping this
+    /// explicit avoids silently changing policy based on the process cwd.
+    config_path: Option<std::path::PathBuf>,
     /// API keys for authentication (empty = no auth required)
     api_keys: Vec<String>,
     /// Whether HTTP API callers may request root execution (`sudo: true`).
@@ -811,6 +823,10 @@ struct AppState {
     /// Enterprise policy engine (when enterprise feature is enabled)
     #[cfg(feature = "enterprise")]
     policy_engine: Option<tokio::sync::RwLock<crate::policy::PolicyEngine>>,
+    /// Initialization failures are retained for status and fail-closed
+    /// request handling; they must never be represented as enabled.
+    #[cfg(feature = "enterprise")]
+    policy_init_error: Option<String>,
 }
 
 impl AppState {
@@ -818,15 +834,16 @@ impl AppState {
         api_keys_override: Vec<String>,
         otel_endpoint: Option<String>,
         webhook_urls: Vec<String>,
+        config_path: Option<std::path::PathBuf>,
     ) -> Self {
         let mut api_keys = api_keys_override;
         // If no keys provided via CLI, fall back to env var / config file
         if api_keys.is_empty()
-            && let Some(key) = load_api_key()
+            && let Some(key) = load_api_key(config_path.as_deref())
         {
             api_keys.push(key);
         }
-        let allow_sudo_exec = load_api_allow_sudo_exec_from_config();
+        let allow_sudo_exec = load_api_allow_sudo_exec_from_config(config_path.as_deref());
         if !api_keys.is_empty() {
             eprintln!(
                 "API key authentication enabled ({} key{})",
@@ -869,7 +886,8 @@ impl AppState {
             });
 
         #[cfg(feature = "enterprise")]
-        let (enterprise_config, policy_engine) = Self::init_enterprise();
+        let (enterprise_config, policy_engine, policy_init_error) =
+            Self::init_enterprise(config_path.as_deref());
 
         let vm_manager = Arc::new(std::sync::OnceLock::new());
         if let Ok(mgr) = VmManager::new() {
@@ -889,10 +907,13 @@ impl AppState {
             force_backend_unavailable: false,
             event_bus,
             otel_provider,
+            config_path,
             #[cfg(feature = "enterprise")]
             enterprise_config,
             #[cfg(feature = "enterprise")]
             policy_engine,
+            #[cfg(feature = "enterprise")]
+            policy_init_error,
         }
     }
 
@@ -917,10 +938,13 @@ impl AppState {
             force_backend_unavailable: false,
             event_bus: None,
             otel_provider: None,
+            config_path: None,
             #[cfg(feature = "enterprise")]
             enterprise_config: None,
             #[cfg(feature = "enterprise")]
             policy_engine: None,
+            #[cfg(feature = "enterprise")]
+            policy_init_error: None,
         }
     }
 
@@ -932,35 +956,49 @@ impl AppState {
     }
 
     #[cfg(feature = "enterprise")]
-    fn init_enterprise() -> (
+    fn init_enterprise(
+        config_path: Option<&std::path::Path>,
+    ) -> (
         Option<crate::config::EnterpriseConfig>,
         Option<tokio::sync::RwLock<crate::policy::PolicyEngine>>,
+        Option<String>,
     ) {
-        let config_path = std::path::PathBuf::from("agentkernel.toml");
+        let config_path = config_path.map(std::path::Path::to_path_buf).or_else(|| {
+            let fallback = std::path::PathBuf::from("agentkernel.toml");
+            fallback.exists().then_some(fallback)
+        });
+        let Some(config_path) = config_path else {
+            return (None, None, None);
+        };
         if !config_path.exists() {
-            return (None, None);
+            return (None, None, None);
         }
 
         let cfg = match crate::config::Config::from_file(&config_path) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[enterprise] Failed to load config: {}", e);
-                return (None, None);
+                return (None, None, Some(format!("Failed to load config: {e}")));
             }
         };
 
         if !cfg.enterprise.enabled {
-            return (Some(cfg.enterprise), None);
+            return (Some(cfg.enterprise), None, None);
         }
 
-        match crate::policy::PolicyEngine::new(&cfg.enterprise) {
+        let base_dir = config_path.parent().unwrap_or(std::path::Path::new("."));
+        match crate::policy::PolicyEngine::new_with_base_dir(&cfg.enterprise, base_dir) {
             Ok(engine) => {
                 eprintln!("[enterprise] Policy engine initialized for HTTP API");
-                (Some(cfg.enterprise), Some(tokio::sync::RwLock::new(engine)))
+                (
+                    Some(cfg.enterprise),
+                    Some(tokio::sync::RwLock::new(engine)),
+                    None,
+                )
             }
             Err(e) => {
                 eprintln!("[enterprise] Failed to initialize policy engine: {}", e);
-                (Some(cfg.enterprise), None)
+                (Some(cfg.enterprise), None, Some(e.to_string()))
             }
         }
     }
@@ -1210,6 +1248,21 @@ async fn enforce_policy(
     sandbox_name: &str,
 ) -> Result<(), Response<BoxBody>> {
     let Some(ref engine_lock) = state.policy_engine else {
+        if state
+            .enterprise_config
+            .as_ref()
+            .is_some_and(|config| config.enabled)
+            || state.policy_init_error.is_some()
+        {
+            let detail = state
+                .policy_init_error
+                .as_deref()
+                .unwrap_or("policy engine is not active");
+            return Err(json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &ApiResponse::<()>::error(format!("Policy enforcement unavailable: {detail}")),
+            ));
+        }
         return Ok(());
     };
     let Some(ref enterprise) = state.enterprise_config else {
@@ -6211,11 +6264,24 @@ async fn handle_batch_run(req: Request<Incoming>, state: Arc<AppState>) -> Respo
 #[cfg(feature = "enterprise")]
 #[derive(Debug, Serialize)]
 struct PolicyStatusResponse {
+    compiled: bool,
+    configured: bool,
+    active: bool,
+    enforcing: bool,
+    healthy: bool,
     enabled: bool,
     version: u64,
     org_id: Option<String>,
     offline_mode: String,
     policy_server: Option<String>,
+    source: String,
+    policy_source: String,
+    config_path: Option<String>,
+    initialization_error: Option<String>,
+    init_error: Option<String>,
+    fail_closed: bool,
+    meaningful: bool,
+    admin_guidance: Option<String>,
 }
 
 /// Policy check request
@@ -6242,30 +6308,68 @@ async fn handle_policy_status(state: Arc<AppState>) -> Response<BoxBody> {
         return json_response(
             StatusCode::OK,
             &ApiResponse::success(PolicyStatusResponse {
+                compiled: cfg!(feature = "enterprise"),
+                configured: false,
+                active: false,
+                enforcing: false,
+                healthy: state.policy_init_error.is_none(),
                 enabled: false,
                 version: 0,
                 org_id: None,
                 offline_mode: "disabled".to_string(),
                 policy_server: None,
+                source: "none".to_string(),
+                policy_source: "none".to_string(),
+                config_path: state.config_path.as_ref().map(|p| p.display().to_string()),
+                initialization_error: state.policy_init_error.clone(),
+                init_error: state.policy_init_error.clone(),
+                fail_closed: false,
+                meaningful: false,
+                admin_guidance: None,
             }),
         );
     };
 
-    let version = if let Some(ref engine_lock) = state.policy_engine {
+    let (version, source, meaningful) = if let Some(ref engine_lock) = state.policy_engine {
         let engine = engine_lock.read().await;
-        engine.version().await
+        (
+            engine.version().await,
+            engine.policy_source().await,
+            engine.meaningful().await,
+        )
     } else {
-        0
+        (0, "none".to_string(), false)
     };
+    let configured = enterprise.enabled;
+    let active = state.policy_engine.is_some();
+    let healthy = state.policy_init_error.is_none();
+    let enforcing = active && meaningful;
+    let fail_closed = enterprise.offline_mode == "fail_closed";
+    let admin_guidance = enterprise.policy_server.as_ref().map(|_| {
+        "Remote policy servers are read-only here; ask an administrator to update the server configuration.".to_string()
+    });
 
     json_response(
         StatusCode::OK,
         &ApiResponse::success(PolicyStatusResponse {
-            enabled: enterprise.enabled,
+            compiled: cfg!(feature = "enterprise"),
+            configured,
+            active,
+            enforcing,
+            healthy,
+            enabled: active && enforcing && healthy,
             version,
             org_id: enterprise.org_id.clone(),
             offline_mode: enterprise.offline_mode.clone(),
             policy_server: enterprise.policy_server.clone(),
+            source: source.clone(),
+            policy_source: source,
+            config_path: state.config_path.as_ref().map(|p| p.display().to_string()),
+            initialization_error: state.policy_init_error.clone(),
+            init_error: state.policy_init_error.clone(),
+            fail_closed,
+            meaningful,
+            admin_guidance,
         }),
     )
 }
@@ -6278,11 +6382,33 @@ async fn handle_policy_check(req: Request<Incoming>, state: Arc<AppState>) -> Re
     };
 
     let Some(ref engine_lock) = state.policy_engine else {
+        let configured = state
+            .enterprise_config
+            .as_ref()
+            .is_some_and(|config| config.enabled)
+            || state.policy_init_error.is_some();
+        let fail_closed = state
+            .enterprise_config
+            .as_ref()
+            .is_some_and(|config| config.enabled && config.offline_mode == "fail_closed");
         return json_response(
             StatusCode::OK,
             &ApiResponse::success(PolicyCheckResponse {
-                decision: "permit".to_string(),
-                reason: "No policy engine active (enterprise disabled)".to_string(),
+                decision: if configured { "deny" } else { "permit" }.to_string(),
+                reason: if fail_closed {
+                    "Policy engine unavailable; fail-closed configuration denies the request"
+                        .to_string()
+                } else if configured {
+                    format!(
+                        "Policy engine initialization failed: {}",
+                        state
+                            .policy_init_error
+                            .as_deref()
+                            .unwrap_or("unknown error")
+                    )
+                } else {
+                    "No policy engine active (enterprise disabled)".to_string()
+                },
                 matched_policies: vec![],
                 evaluation_time_us: 0,
             }),
@@ -7020,7 +7146,7 @@ fn spawn_workspace_scheduler(state: Arc<AppState>, config_path: Option<&std::pat
 /// Run the HTTP API server (plain HTTP)
 #[allow(dead_code)]
 pub async fn run_server(addr: SocketAddr, api_keys: Vec<String>) -> Result<()> {
-    let mut app_state = AppState::new(api_keys, None, vec![]);
+    let mut app_state = AppState::new(api_keys, None, vec![], None);
     app_state.configure_job_scheduler(None)?;
     app_state.start_job_scheduler();
     let state = Arc::new(app_state);
@@ -7080,6 +7206,7 @@ pub async fn run_server_with_tls(
     api_keys: Vec<String>,
     otel_endpoint: Option<String>,
     webhook_urls: Vec<String>,
+    config_path: Option<std::path::PathBuf>,
 ) -> Result<()> {
     run_server_with_tls_config(
         addr,
@@ -7087,7 +7214,7 @@ pub async fn run_server_with_tls(
         api_keys,
         otel_endpoint,
         webhook_urls,
-        None,
+        config_path,
     )
     .await
 }
@@ -7101,6 +7228,13 @@ pub async fn run_server_with_tls_config(
     webhook_urls: Vec<String>,
     config_path: Option<std::path::PathBuf>,
 ) -> Result<()> {
+    // Resolve the path once at process start. The policy engine, API status,
+    // and scheduler must all refer to the same file even when the process is
+    // launched from a different working directory later.
+    let config_path = config_path
+        .as_deref()
+        .map(canonical_config_path)
+        .transpose()?;
     let acceptor = match tls_config {
         Some(ref tls) => {
             let acceptor = tls.load_or_generate()?;
@@ -7109,7 +7243,7 @@ pub async fn run_server_with_tls_config(
         None => None,
     };
 
-    let mut app_state = AppState::new(api_keys, otel_endpoint, webhook_urls);
+    let mut app_state = AppState::new(api_keys, otel_endpoint, webhook_urls, config_path.clone());
     app_state.configure_job_scheduler(config_path.as_deref())?;
     app_state.start_job_scheduler();
     let state = Arc::new(app_state);
@@ -7175,6 +7309,33 @@ pub async fn run_server_with_tls_config(
             }
         });
     }
+}
+
+/// Resolve a server configuration path without requiring the file to exist.
+/// Existing path components are canonicalized so symlinks cannot make the
+/// status endpoint report a different file from the one the server loaded.
+fn canonical_config_path(path: &Path) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    if absolute.exists() {
+        return Ok(std::fs::canonicalize(absolute)?);
+    }
+
+    let file_name = absolute
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Server configuration path has no file name"))?;
+    let parent = absolute
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Server configuration path has no parent"))?;
+    let canonical_parent = if parent.exists() {
+        std::fs::canonicalize(parent)?
+    } else {
+        parent.to_path_buf()
+    };
+    Ok(canonical_parent.join(file_name))
 }
 
 // ---------------------------------------------------------------------------
@@ -9838,6 +9999,22 @@ init_script = "echo ready"
         let body = response.text().await.unwrap();
         assert!(!body.contains("metrics"));
         task.await.unwrap();
+    }
+
+    #[test]
+    fn explicit_config_path_is_canonical_even_before_first_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let path = nested.join("agentkernel.toml");
+        let canonical = canonical_config_path(&path).unwrap();
+        assert!(canonical.is_absolute());
+        assert_eq!(
+            canonical,
+            std::fs::canonicalize(&nested)
+                .unwrap()
+                .join("agentkernel.toml")
+        );
     }
 
     #[cfg(test)]

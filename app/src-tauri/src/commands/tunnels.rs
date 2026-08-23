@@ -725,6 +725,7 @@ mod tests {
             api_key: None,
             managed: Some(false),
             ssh_tunnel: Some(config),
+            config_path: None,
         }
     }
 

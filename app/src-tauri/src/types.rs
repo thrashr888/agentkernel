@@ -365,6 +365,16 @@ pub struct AgentIntegrationResult {
 pub struct PolicyStatus {
     pub enabled: bool,
     #[serde(default)]
+    pub compiled: bool,
+    #[serde(default)]
+    pub configured: bool,
+    #[serde(default)]
+    pub active: bool,
+    #[serde(default)]
+    pub enforcing: bool,
+    #[serde(default)]
+    pub healthy: bool,
+    #[serde(default)]
     pub version: u64,
     #[serde(default)]
     pub org_id: Option<String>,
@@ -372,6 +382,22 @@ pub struct PolicyStatus {
     pub offline_mode: Option<String>,
     #[serde(default)]
     pub policy_server: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub policy_source: Option<String>,
+    #[serde(default)]
+    pub config_path: Option<String>,
+    #[serde(default)]
+    pub initialization_error: Option<String>,
+    #[serde(default)]
+    pub init_error: Option<String>,
+    #[serde(default)]
+    pub fail_closed: bool,
+    #[serde(default)]
+    pub meaningful: bool,
+    #[serde(default)]
+    pub admin_guidance: Option<String>,
 }
 
 /// Result of a policy check.
@@ -391,6 +417,34 @@ pub struct PolicyReloadResult {
     pub reloaded: bool,
     #[serde(default)]
     pub version: u64,
+}
+
+/// Material supplied by the desktop policy editor for local activation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyActivationRequest {
+    pub config: String,
+    pub policy: String,
+}
+
+/// Material loaded into the desktop's local policy editor. Paths are
+/// informational; activation still resolves and validates them server-side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyEditorMaterial {
+    pub config: String,
+    pub policy: String,
+    pub config_path: String,
+    pub policy_path: String,
+}
+
+/// Result of an app-owned local policy activation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyActivationResult {
+    pub status: PolicyStatus,
+    pub config_path: String,
+    pub policy_path: String,
+    pub config_backup: Option<String>,
+    pub policy_backup: Option<String>,
+    pub rolled_back: bool,
 }
 
 /// A policy audit log entry.
