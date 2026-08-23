@@ -392,6 +392,7 @@ mod tests {
             container_work_dir: None,
             git_worktree: None,
             config_path: None,
+            tenant_id: None,
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
