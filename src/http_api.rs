@@ -10936,10 +10936,27 @@ max_total_sandboxes = 3
 
     #[cfg(feature = "enterprise")]
     #[test]
-    fn malformed_explicit_config_fails_quota_closed() {
+    fn policy_init_failure_keeps_quota_fail_closed() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("malformed.toml");
-        std::fs::write(&config_path, "[enterprise\ninvalid").unwrap();
+        std::fs::write(
+            &config_path,
+            r#"
+[sandbox]
+name = "quota-test"
+
+[enterprise]
+enabled = true
+policy_file = "missing-policy.cedar"
+
+[enterprise.quotas]
+enabled = true
+
+[enterprise.quotas.default]
+max_total_sandboxes = 0
+"#,
+        )
+        .unwrap();
 
         let state = AppState::new_with_config(vec![], None, vec![], Some(&config_path)).unwrap();
         let quota = state.quota_controller.blocking_lock();
