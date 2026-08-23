@@ -53,7 +53,8 @@ jobs:
           nomad version
       - name: Start Nomad development agent
         run: |
-          nomad agent -dev -bind=127.0.0.1 > nomad.log 2>&1 &
+          # Nomad's Linux exec driver requires the client agent to run as root.
+          sudo nomad agent -dev -bind=127.0.0.1 > nomad.log 2>&1 &
           for attempt in {1..30}; do
             if curl --fail --silent "${NOMAD_ADDR}/v1/status/leader" > /dev/null; then
               exit 0
