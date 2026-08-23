@@ -132,6 +132,20 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);
 "#,
     ),
+    (
+        8,
+        r#"
+ALTER TABLE tasks ADD COLUMN isolation_json TEXT;
+"#,
+    ),
+    (
+        9,
+        r#"
+ALTER TABLE tasks ADD COLUMN worker_id TEXT;
+ALTER TABLE tasks ADD COLUMN lease_expires_at TEXT;
+CREATE INDEX IF NOT EXISTS idx_tasks_lease ON tasks(status, lease_expires_at);
+"#,
+    ),
 ];
 
 /// SQLite durable storage wrapper with schema bootstrap.
@@ -274,7 +288,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(migration_count, 7);
+        assert_eq!(migration_count, 9);
     }
 
     #[test]
@@ -332,6 +346,6 @@ INSERT INTO orchestrations(
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
     }
 }

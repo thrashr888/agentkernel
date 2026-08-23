@@ -18,7 +18,7 @@ use crate::proxy::{ProxyConfig, ProxyHandle, SecretBinding};
 use crate::secrets::{SecretBackend, SecretVault};
 use crate::validation;
 use crate::volume::{VolumeManager, VolumeMount};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 /// Error returned when a command exits with a non-zero exit code.
 /// Distinguished from infrastructure errors so HTTP handlers can return
@@ -2550,17 +2550,23 @@ impl VmManager {
             let _ = handle.shutdown_tx.send(());
         }
         if let Some(mut sandbox) = self.running.remove(name) {
-            let _ = sandbox.remove().await;
+            if let Err(error) = sandbox.remove().await {
+                self.running.insert(name.to_string(), sandbox);
+                return Err(error).with_context(|| format!("failed to remove sandbox '{name}'"));
+            }
         } else if let Some(state) = self.sandboxes.get(name).cloned() {
             let backend = state.backend.unwrap_or(self.backend);
-            if let Ok(mut sandbox) = create_sandbox_with_state(
+            let mut sandbox = create_sandbox_with_state(
                 backend,
                 name,
                 &crate::config::OrchestratorConfig::default(),
                 backend.is_remote().then(|| state.remote_context()),
-            ) {
-                let _ = sandbox.remove().await;
-            }
+            )
+            .with_context(|| format!("failed to initialize sandbox '{name}' for removal"))?;
+            sandbox
+                .remove()
+                .await
+                .with_context(|| format!("failed to remove sandbox '{name}'"))?;
         }
 
         self.delete_sandbox(name)?;

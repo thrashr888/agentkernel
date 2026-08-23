@@ -1478,9 +1478,15 @@ components:
         status:
           type: string
           enum: [queued, running, completed, failed, cancelled]
+        isolation:
+          nullable: true
+          description: Per-task sandbox and Git worktree allocated by the worker
+          allOf:
+            - $ref: '#/components/schemas/TaskIsolation'
         result:
           type: string
           nullable: true
+          description: Agent output or a reviewable Git diff when completed
         error:
           type: string
           nullable: true
@@ -1490,6 +1496,25 @@ components:
         updated_at:
           type: string
           format: date-time
+
+    TaskIsolation:
+      type: object
+      required: [sandbox, branch]
+      properties:
+        sandbox:
+          type: string
+          description: Dedicated sandbox used by this task
+        branch:
+          type: string
+          description: Dedicated Git branch created from the base ref
+        worktree:
+          type: string
+          nullable: true
+          description: Opaque identifier of the dedicated Git worktree
+        base_ref:
+          type: string
+          nullable: true
+          description: Commit from which the task branch was created
 
     TaskResponse:
       type: object

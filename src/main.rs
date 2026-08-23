@@ -50,6 +50,8 @@ mod snapshot;
 #[allow(dead_code)]
 mod ssh;
 mod stats;
+mod task_worker;
+mod task_worker_vmm;
 mod tasks;
 mod template;
 mod tls;
