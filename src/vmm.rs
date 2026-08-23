@@ -101,6 +101,19 @@ pub struct SandboxLifecyclePolicy {
     pub auto_delete_after_seconds: Option<u64>,
 }
 
+/// Host-side Git checkout created for an agent sandbox.
+///
+/// The branch is intentionally retained after sandbox removal so commits
+/// produced by an agent remain recoverable; only the disposable checkout is
+/// cleaned up automatically.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SandboxGitWorktree {
+    pub repository: String,
+    pub path: String,
+    pub branch: String,
+    pub base_ref: String,
+}
+
 /// Action produced by lifecycle reconciliation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LifecycleAction {
@@ -155,6 +168,9 @@ pub struct SandboxState {
     /// Container-side workspace path (defaults to /workspace).
     #[serde(default)]
     pub container_work_dir: Option<String>,
+    /// Managed host-side Git worktree used to isolate this sandbox's agent.
+    #[serde(default)]
+    pub git_worktree: Option<SandboxGitWorktree>,
     /// Original config file path used to create or start this sandbox.
     #[serde(default)]
     pub config_path: Option<String>,
@@ -960,6 +976,7 @@ impl VmManager {
             endpoints: Vec::new(),
             work_dir: None,
             container_work_dir: None,
+            git_worktree: None,
             config_path: None,
             ttl_seconds,
             expires_at,
@@ -1098,6 +1115,113 @@ impl VmManager {
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
         self.save_sandbox(state)?;
         Ok(())
+    }
+
+    /// Create (or return) the dedicated Git checkout for a sandbox.
+    ///
+    /// This is intentionally explicit: existing callers that mount a host
+    /// directory continue to do so unchanged. The generated checkout path is
+    /// owned by AgentKernel and is persisted with the sandbox so restarts and
+    /// repeated setup calls are idempotent.
+    pub fn create_git_worktree(&mut self, name: &str, repository: &Path) -> Result<String> {
+        let state = self
+            .sandboxes
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+
+        if let Some(existing) = state.git_worktree.as_ref() {
+            let existing_path = PathBuf::from(&existing.path);
+            if existing_path.exists() {
+                let recorded = crate::git_worktree::ManagedWorktree {
+                    repository: PathBuf::from(&existing.repository),
+                    path: existing_path,
+                    branch: existing.branch.clone(),
+                    base_ref: existing.base_ref.clone(),
+                };
+                if crate::git_worktree::same_repository(repository, &recorded.repository)? {
+                    crate::git_worktree::verify(&recorded, &self.data_dir.join("worktrees"))?;
+                    return Ok(existing.path.clone());
+                }
+                bail!(
+                    "Sandbox '{}' already has a Git worktree for '{}', not '{}'; refusing to replace it",
+                    name,
+                    existing.repository,
+                    repository.display()
+                );
+            }
+            bail!(
+                "Sandbox '{}' records missing Git worktree '{}'; refusing to recreate it automatically",
+                name,
+                existing.path
+            );
+        }
+
+        let managed = crate::git_worktree::create(
+            repository,
+            &self.data_dir.join("worktrees"),
+            name,
+            &state.uuid,
+        )?;
+        let metadata = SandboxGitWorktree {
+            repository: managed.repository.to_string_lossy().into_owned(),
+            path: managed.path.to_string_lossy().into_owned(),
+            branch: managed.branch,
+            base_ref: managed.base_ref,
+        };
+        let mut updated = state.clone();
+        updated.work_dir = Some(metadata.path.clone());
+        updated.git_worktree = Some(metadata);
+        if let Err(error) = self.save_sandbox(&updated) {
+            let cleanup = crate::git_worktree::remove(
+                &crate::git_worktree::ManagedWorktree {
+                    repository: PathBuf::from(&updated.git_worktree.as_ref().unwrap().repository),
+                    path: PathBuf::from(&updated.git_worktree.as_ref().unwrap().path),
+                    branch: updated.git_worktree.as_ref().unwrap().branch.clone(),
+                    base_ref: updated.git_worktree.as_ref().unwrap().base_ref.clone(),
+                },
+                &self.data_dir.join("worktrees"),
+            );
+            self.sandboxes.insert(name.to_string(), state);
+            if let Err(cleanup_error) = cleanup {
+                return Err(error).context(format!(
+                    "failed to persist Git worktree metadata; cleanup also failed: {cleanup_error}"
+                ));
+            }
+            return Err(error).context("failed to persist Git worktree metadata");
+        }
+        self.sandboxes.insert(name.to_string(), updated);
+        Ok(managed.path.to_string_lossy().into_owned())
+    }
+
+    fn remove_git_worktree(&self, state: &SandboxState) -> Result<()> {
+        let Some(metadata) = state.git_worktree.as_ref() else {
+            return Ok(());
+        };
+        crate::git_worktree::remove(
+            &crate::git_worktree::ManagedWorktree {
+                repository: PathBuf::from(&metadata.repository),
+                path: PathBuf::from(&metadata.path),
+                branch: metadata.branch.clone(),
+                base_ref: metadata.base_ref.clone(),
+            },
+            &self.data_dir.join("worktrees"),
+        )
+    }
+
+    fn ensure_clean_git_worktree(&self, state: &SandboxState) -> Result<()> {
+        let Some(metadata) = state.git_worktree.as_ref() else {
+            return Ok(());
+        };
+        crate::git_worktree::ensure_clean_removable(
+            &crate::git_worktree::ManagedWorktree {
+                repository: PathBuf::from(&metadata.repository),
+                path: PathBuf::from(&metadata.path),
+                branch: metadata.branch.clone(),
+                base_ref: metadata.base_ref.clone(),
+            },
+            &self.data_dir.join("worktrees"),
+        )
     }
 
     pub fn set_config_path(&mut self, name: &str, config_path: Option<String>) -> Result<()> {
@@ -1597,6 +1721,16 @@ impl VmManager {
             state.labels.get("project").cloned(),
         );
 
+        // A persisted managed checkout is the sandbox's workspace, regardless
+        // of which entry point starts it (CLI restart, API, or lifecycle
+        // recovery). Keep the isolation guarantee even when the original
+        // `--git-worktree` flag was used with `--no-start` or the caller's
+        // permission profile otherwise disables `mount_cwd`.
+        let mut effective_perms = perms.clone();
+        if state.git_worktree.is_some() {
+            effective_perms.mount_cwd = true;
+        }
+
         if state.archived_at.is_some() {
             bail!(
                 "Sandbox '{}' is archived. Recover it before starting (POST /sandboxes/{}/recover).",
@@ -1618,7 +1752,7 @@ impl VmManager {
         let backend = state.backend.unwrap_or(self.backend);
         let capabilities = backend_capabilities(backend);
 
-        if perms.mount_home && !capabilities.mount_home {
+        if effective_perms.mount_home && !capabilities.mount_home {
             bail!(
                 "Backend '{}' does not support mounting the host home directory",
                 backend
@@ -1646,7 +1780,7 @@ impl VmManager {
         )?;
 
         // Convert permissions to SandboxConfig
-        let work_dir = if perms.mount_cwd {
+        let work_dir = if effective_perms.mount_cwd {
             state.work_dir.clone().or_else(|| {
                 std::env::current_dir()
                     .ok()
@@ -1658,7 +1792,7 @@ impl VmManager {
         let container_work_dir = state.container_work_dir.clone();
 
         // Build environment variables if pass_env is enabled
-        let mut env: Vec<(String, String)> = if perms.pass_env {
+        let mut env: Vec<(String, String)> = if effective_perms.pass_env {
             ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM"]
                 .iter()
                 .filter_map(|&var| std::env::var(var).ok().map(|val| (var.to_string(), val)))
@@ -2031,14 +2165,14 @@ impl VmManager {
         let config = SandboxConfig {
             image: state.image.clone(),
             vcpus: state.vcpus,
-            memory_mb: perms.max_memory_mb.unwrap_or(state.memory_mb),
-            mount_cwd: perms.mount_cwd,
+            memory_mb: effective_perms.max_memory_mb.unwrap_or(state.memory_mb),
+            mount_cwd: effective_perms.mount_cwd,
             work_dir,
             container_work_dir,
             env,
-            network: perms.network,
-            read_only: perms.read_only_root,
-            mount_home: perms.mount_home,
+            network: effective_perms.network,
+            read_only: effective_perms.read_only_root,
+            mount_home: effective_perms.mount_home,
             files: files.to_vec(),
             ports: state.ports.clone(),
             ssh: ssh_config.clone(),
@@ -2808,6 +2942,14 @@ impl VmManager {
             .get(name)
             .and_then(|state| state.backend)
             .unwrap_or(self.backend);
+        // Preflight before stopping/removing the backend. A dirty managed
+        // checkout must leave the running sandbox and its persisted state
+        // untouched so the agent's work remains accessible for cleanup.
+        if let Some(state) = self.sandboxes.get(name).cloned()
+            && let Err(error) = self.ensure_clean_git_worktree(&state)
+        {
+            return Err(error).with_context(|| format!("refusing to remove sandbox '{name}'"));
+        }
         // Shut down the proxy if running
         if let Some(handle) = PROXY_HANDLES.write().await.remove(name) {
             let _ = handle.shutdown_tx.send(());
@@ -2829,6 +2971,15 @@ impl VmManager {
                 .remove()
                 .await
                 .with_context(|| format!("failed to remove sandbox '{name}'"))?;
+        }
+
+        // Remove only the AgentKernel-owned checkout. Keep its dedicated
+        // branch so any commits made by the agent remain recoverable.
+        if let Some(state) = self.sandboxes.get(name).cloned()
+            && let Err(error) = self.remove_git_worktree(&state)
+        {
+            return Err(error)
+                .with_context(|| format!("failed to clean up Git worktree for sandbox '{name}'"));
         }
 
         self.delete_sandbox(name)?;
@@ -3432,6 +3583,7 @@ mod tests {
             endpoints: Vec::new(),
             work_dir: None,
             container_work_dir: None,
+            git_worktree: None,
             config_path: None,
             ttl_seconds: None,
             expires_at: None,
@@ -3555,6 +3707,7 @@ mod tests {
             endpoints: Vec::new(),
             work_dir: None,
             container_work_dir: None,
+            git_worktree: None,
             config_path: None,
             ttl_seconds: None,
             expires_at: None,
@@ -3639,6 +3792,7 @@ mod tests {
             endpoints: Vec::new(),
             work_dir: None,
             container_work_dir: None,
+            git_worktree: None,
             config_path: None,
             ttl_seconds: None,
             expires_at: None,
@@ -3739,6 +3893,7 @@ mod tests {
                 endpoints: Vec::new(),
                 work_dir: None,
                 container_work_dir: None,
+                git_worktree: None,
                 config_path: None,
                 ttl_seconds: None,
                 expires_at: None,
@@ -3820,6 +3975,7 @@ mod tests {
             endpoints: Vec::new(),
             work_dir: None,
             container_work_dir: None,
+            git_worktree: None,
             config_path: None,
             ttl_seconds: None,
             expires_at: None,
@@ -3901,6 +4057,7 @@ mod tests {
                 endpoints: Vec::new(),
                 work_dir: None,
                 container_work_dir: None,
+                git_worktree: None,
                 config_path: None,
                 ttl_seconds: None,
                 expires_at: None,
@@ -3983,6 +4140,7 @@ mod tests {
             endpoints: Vec::new(),
             work_dir: None,
             container_work_dir: None,
+            git_worktree: None,
             config_path: None,
             ttl_seconds: None,
             expires_at: None,
@@ -4061,6 +4219,7 @@ mod tests {
             endpoints: Vec::new(),
             work_dir: None,
             container_work_dir: None,
+            git_worktree: None,
             config_path: None,
             ttl_seconds: None,
             expires_at: None,
@@ -4135,6 +4294,7 @@ mod tests {
             endpoints: Vec::new(),
             work_dir: None,
             container_work_dir: None,
+            git_worktree: None,
             config_path: None,
             ttl_seconds: Some(3600),
             expires_at: Some("2026-01-01T01:00:00Z".to_string()),

@@ -26,6 +26,7 @@ agentkernel sandbox create [OPTIONS] [NAME]
 | `--template <NAME>` | Use a built-in or custom template |
 | `--agent <AGENT>` | Agent type: `claude`, `codex`, `gemini`, `opencode` |
 | `--dir <PATH>` | Project directory to mount |
+| `--git-worktree` | Create an isolated host-side Git worktree and mount it at `/workspace` |
 | `-B, --backend <BACKEND>` | Backend: `docker`, `podman`, `firecracker`, `apple` |
 | `--branch` | Auto-name from git project and branch |
 | `--ttl <DURATION>` | Auto-expire after duration (e.g. `1h`, `30m`, `3d`) |
@@ -62,6 +63,9 @@ agentkernel sandbox create claude-dev --config examples/agents/claude-code/agent
 ```bash
 # Mount current directory into sandbox
 agentkernel sandbox create my-project --config agentkernel.toml --dir .
+
+# Give the agent a disposable checkout while retaining its branch and commits
+agentkernel sandbox create my-project --dir . --git-worktree
 ```
 
 ### From a Development Container file
@@ -132,6 +136,14 @@ Ports are also configurable in `agentkernel.toml`:
 ```toml
 [network]
 ports = ["8080:80", "3000"]
+```
+
+Git worktree isolation can also be enabled in the project config:
+
+```toml
+[git]
+# The generated checkout is stored under ~/.local/share/agentkernel/worktrees.
+worktree = true
 ```
 
 ### Specify backend

@@ -53,6 +53,15 @@ pub struct BuildConfig {
     pub no_cache: bool,
 }
 
+/// Host-side Git integration for agent sandboxes.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GitConfig {
+    /// Create a dedicated managed worktree when a host workspace is mounted.
+    /// Disabled by default to preserve existing mount behavior.
+    #[serde(default)]
+    pub worktree: bool,
+}
+
 /// Configuration for Kubernetes/Nomad orchestration backends
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestratorConfig {
@@ -596,6 +605,9 @@ pub struct Config {
     /// Build configuration for custom Dockerfiles
     #[serde(default)]
     pub build: BuildConfig,
+    /// Git worktree isolation configuration.
+    #[serde(default)]
+    pub git: GitConfig,
     /// Files to inject into the sandbox at startup
     #[serde(default, rename = "files")]
     pub files: Vec<FileEntry>,
@@ -991,6 +1003,7 @@ impl Config {
             network: NetworkConfig::default(),
             security: SecurityConfig::default(),
             build: BuildConfig::default(),
+            git: GitConfig::default(),
             files: Vec::new(),
             orchestrator: OrchestratorConfig::default(),
             remote: RemoteConfig::default(),

@@ -17,6 +17,7 @@ mod durable_storage;
 mod events;
 mod firecracker_client;
 mod git_utils;
+mod git_worktree;
 mod http_api;
 mod hyperlight_backend;
 mod image_builder;
@@ -491,6 +492,9 @@ enum SandboxAction {
         /// Project directory to mount into sandbox
         #[arg(short, long)]
         dir: Option<PathBuf>,
+        /// Create an AgentKernel-managed Git worktree for the mounted project
+        #[arg(long)]
+        git_worktree: bool,
         /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
@@ -1082,6 +1086,7 @@ memory_mb = 512
                 auto_devcontainer,
                 image,
                 dir,
+                git_worktree,
                 backend,
                 template: tmpl,
                 ttl,
@@ -1215,7 +1220,19 @@ memory_mb = 512
                     eprintln!("Warning: {}", warning);
                 }
 
-                let start_perms = cfg.get_permissions();
+                let mut start_perms = cfg.get_permissions();
+                let git_worktree = git_worktree || cfg.git.worktree;
+                if git_worktree && source.is_some() {
+                    bail!(
+                        "--git-worktree cannot be combined with --source; worktree isolation requires a host Git workspace"
+                    );
+                }
+                if git_worktree {
+                    // The explicit isolation opt-in also opts into mounting
+                    // the generated checkout at /workspace. Other permission
+                    // settings remain unchanged.
+                    start_perms.mount_cwd = true;
+                }
                 let start_files = if let Some(ref base_dir) = config_base_dir {
                     cfg.load_files(base_dir)?
                 } else {
@@ -1340,7 +1357,16 @@ memory_mb = 512
                         .map(|dc| dc.path.to_string_lossy().into_owned())
                 });
                 manager.set_config_path(&name, stored_config_path)?;
-                if start_perms.mount_cwd {
+                if git_worktree {
+                    let worktree = manager.create_git_worktree(&name, &workspace_root)?;
+                    println!("  Git worktree: {}", worktree);
+                    if let Some(metadata) = manager
+                        .get_state(&name)
+                        .and_then(|s| s.git_worktree.as_ref())
+                    {
+                        println!("  Git branch:   {}", metadata.branch);
+                    }
+                } else if start_perms.mount_cwd {
                     manager
                         .set_work_dir(&name, Some(workspace_root.to_string_lossy().to_string()))?;
                 }
@@ -4999,6 +5025,11 @@ fn run_info(name: &str) -> Result<()> {
     }
     if let Some(ref revision) = state.workspace_revision {
         println!("Workspace Rev:  {}", revision);
+    }
+    if let Some(ref worktree) = state.git_worktree {
+        println!("Git Worktree:   {}", worktree.path);
+        println!("Git Branch:     {}", worktree.branch);
+        println!("Git Repository: {}", worktree.repository);
     }
     if !state.labels.is_empty() {
         let labels_str = state
