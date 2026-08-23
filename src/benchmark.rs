@@ -41,6 +41,7 @@ struct BenchmarkStats {
     remove: Vec<Duration>,
     startup: Vec<Duration>,
     lifecycle_total: Vec<Duration>,
+    /// End-to-end `agentkernel run` latency, including process/config startup.
     cli_total: Vec<Duration>,
 }
 
@@ -143,6 +144,7 @@ pub struct BackendBenchmarkReport {
     pub startup: MetricSummary,
     pub exec: MetricSummary,
     pub lifecycle_total: MetricSummary,
+    /// End-to-end `agentkernel run` latency, including process/config startup.
     pub total: MetricSummary,
     pub throughput_per_second: f64,
     pub scores: ScoreBreakdown,
@@ -521,6 +523,26 @@ mod tests {
         };
         assert_eq!(r.startup(), Duration::from_millis(30));
         assert_eq!(r.lifecycle_total(), Duration::from_millis(80));
+    }
+
+    #[test]
+    fn test_report_uses_end_to_end_cli_latency_for_total_score() {
+        let mut stats = BenchmarkStats::new(BackendType::Docker, 0);
+        stats.push(IterResult {
+            create: Duration::from_millis(10),
+            start: Duration::from_millis(20),
+            exec: Duration::from_millis(30),
+            stop: Duration::from_millis(15),
+            remove: Duration::from_millis(5),
+            // This includes process startup, config loading, and the actual
+            // `agentkernel run` invocation measured by the harness.
+            cli_total: Duration::from_millis(250),
+        });
+
+        let report = stats.to_report();
+        assert_eq!(report.lifecycle_total.avg_ms, 80.0);
+        assert_eq!(report.total.avg_ms, 250.0);
+        assert!(report.scores.latency_score < report.scores.startup_score);
     }
 
     #[test]

@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(feature = "enterprise")]
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use tokio::sync::RwLock;
 
 /// Global proxy handle registry. Proxy handles must outlive individual VmManager
@@ -43,33 +43,59 @@ static PROXY_HANDLES: std::sync::LazyLock<RwLock<HashMap<String, ProxyHandle>>> 
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
 #[cfg(feature = "enterprise")]
-static POLICY_ENGINE_CACHE: LazyLock<Option<Arc<crate::policy::PolicyEngine>>> =
-    LazyLock::new(|| {
-        let default_config = PathBuf::from("agentkernel.toml");
-        if !default_config.exists() {
-            return None;
-        }
+struct CachedPolicyEngine {
+    file_signature: Option<crate::config::ConfigFingerprint>,
+    engine: Option<Arc<crate::policy::PolicyEngine>>,
+}
 
-        let cfg = match Config::from_file(&default_config) {
-            Ok(cfg) => cfg,
-            Err(_) => return None,
-        };
+#[cfg(feature = "enterprise")]
+static POLICY_ENGINE_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedPolicyEngine>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-        if !cfg.enterprise.enabled {
-            return None;
-        }
+#[cfg(feature = "enterprise")]
+fn cached_policy_engine() -> Option<Arc<crate::policy::PolicyEngine>> {
+    let default_config = std::env::current_dir()
+        .ok()
+        .map(|dir| dir.join("agentkernel.toml"))?;
+    let file_signature = Config::file_fingerprint(&default_config);
 
-        match crate::policy::PolicyEngine::new(&cfg.enterprise) {
-            Ok(engine) => {
-                eprintln!("[enterprise] Policy engine initialized");
-                Some(Arc::new(engine))
-            }
-            Err(e) => {
-                eprintln!("[enterprise] Failed to initialize policy engine: {}", e);
-                None
-            }
-        }
-    });
+    if let Some(entry) = POLICY_ENGINE_CACHE
+        .lock()
+        .expect("policy engine cache lock poisoned")
+        .get(&default_config)
+        && entry.file_signature == file_signature
+    {
+        return entry.engine.clone();
+    }
+
+    let engine = Config::from_file_cached(&default_config)
+        .ok()
+        .filter(|cfg| cfg.enterprise.enabled)
+        .and_then(
+            |cfg| match crate::policy::PolicyEngine::new(&cfg.enterprise) {
+                Ok(engine) => {
+                    eprintln!("[enterprise] Policy engine initialized");
+                    Some(Arc::new(engine))
+                }
+                Err(error) => {
+                    eprintln!("[enterprise] Failed to initialize policy engine: {error}");
+                    None
+                }
+            },
+        );
+
+    POLICY_ENGINE_CACHE
+        .lock()
+        .expect("policy engine cache lock poisoned")
+        .insert(
+            default_config,
+            CachedPolicyEngine {
+                file_signature,
+                engine: engine.clone(),
+            },
+        );
+    engine
+}
 use tokio::sync::OnceCell;
 
 /// Global container pool for fast ephemeral runs
@@ -456,9 +482,10 @@ impl VmManager {
         // Find next available CID
         let max_cid = sandboxes.values().map(|s| s.vsock_cid).max().unwrap_or(2);
 
-        // Initialize enterprise policy engine once per process when configured
+        // Reuse the enterprise policy engine for this working directory until
+        // its config file changes.
         #[cfg(feature = "enterprise")]
-        let policy_engine = POLICY_ENGINE_CACHE.clone();
+        let policy_engine = cached_policy_engine();
 
         let mut manager = Self {
             backend,
@@ -1836,7 +1863,7 @@ impl VmManager {
         if let Some(path) = git_config_path
             && !is_devcontainer_path
         {
-            match Config::from_file(&path) {
+            match Config::from_file_cached(&path) {
                 Ok(config) => env.extend(config.agent.git_config_env()),
                 Err(error) => eprintln!(
                     "Warning: Failed to load agent Git identity from {}: {}",
@@ -1969,7 +1996,7 @@ impl VmManager {
         {
             let config_path = std::path::PathBuf::from("agentkernel.toml");
             if config_path.exists()
-                && let Ok(toml_cfg) = Config::from_file(&config_path)
+                && let Ok(toml_cfg) = Config::from_file_cached(&config_path)
                 && !toml_cfg.llm_keys.is_empty()
             {
                 let vault = SecretVault::new(SecretBackend::default());
@@ -2510,7 +2537,7 @@ impl VmManager {
     /// Logs a PolicyViolation audit event and returns an error if blocked.
     fn enforce_command_policy(cmd: &[String]) -> Result<()> {
         if let Some(binary) = cmd.first()
-            && let Ok(cfg) = Config::from_file(&PathBuf::from("agentkernel.toml"))
+            && let Ok(cfg) = Config::from_file_cached(&PathBuf::from("agentkernel.toml"))
             && !cfg.security.commands.is_allowed(binary)
         {
             log_event(AuditEvent::PolicyViolation {
