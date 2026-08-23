@@ -521,6 +521,31 @@ pub struct TrustAnchorsConfig {
     pub keys: Vec<String>,
 }
 
+/// Explicit mapping from a provisioned SCIM group to local authorization.
+///
+/// Group IDs are used instead of display names so a rename cannot silently
+/// change a user's authorization.  The tenant is part of the mapping to keep
+/// an otherwise-valid group ID from being reused across tenants.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScimGroupMapping {
+    /// SCIM tenant ID this mapping applies to.
+    pub tenant_id: String,
+    /// Stable SCIM group ID to map. Exactly one of `group_id` and
+    /// `group_external_id` must be configured.
+    #[serde(default)]
+    pub group_id: Option<String>,
+    /// Stable IdP-provided SCIM `externalId` to map. This is usually the
+    /// practical choice because the server generates SCIM resource IDs.
+    #[serde(default)]
+    pub group_external_id: Option<String>,
+    /// Cedar roles granted while a user is an active member of the group.
+    #[serde(default)]
+    pub roles: Vec<String>,
+    /// Optional tenant team ID materialized for Cedar team-based policies.
+    #[serde(default)]
+    pub team_id: Option<String>,
+}
+
 /// Enterprise policy management configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnterpriseConfig {
@@ -555,6 +580,9 @@ pub struct EnterpriseConfig {
     /// JWKS URL for JWT validation (optional, enables JWT auth)
     #[serde(default)]
     pub jwks_url: Option<String>,
+    /// Explicit, tenant-scoped SCIM group authorization mappings.
+    #[serde(default)]
+    pub scim_group_mappings: Vec<ScimGroupMapping>,
 }
 
 fn default_enterprise_roles() -> Vec<String> {
@@ -582,6 +610,7 @@ impl Default for EnterpriseConfig {
             trust_anchors: TrustAnchorsConfig::default(),
             default_roles: default_enterprise_roles(),
             jwks_url: None,
+            scim_group_mappings: Vec::new(),
         }
     }
 }

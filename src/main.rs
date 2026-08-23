@@ -45,6 +45,7 @@ mod receipt;
 mod rootfs;
 mod runtime;
 mod sandbox_pool;
+mod scim;
 mod seatbelt;
 mod secrets;
 mod secure_fs;
@@ -4770,6 +4771,7 @@ async fn handle_policy_command(action: PolicyAction) -> Result<()> {
                     .clone()
                     .unwrap_or_else(|| "default".to_string()),
                 roles: cfg.enterprise.default_roles.clone(),
+                teams: Vec::new(),
                 mfa_verified: false,
             };
 

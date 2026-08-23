@@ -28,6 +28,7 @@ fn demo_principal(name: &str, email: &str, org: &str, roles: &[&str], mfa: bool)
         email: email.to_string(),
         org_id: org.to_string(),
         roles: roles.iter().map(|r| r.to_string()).collect(),
+        teams: Vec::new(),
         mfa_verified: mfa,
     }
 }

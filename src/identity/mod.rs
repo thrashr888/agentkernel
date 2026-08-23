@@ -118,6 +118,7 @@ impl AgentIdentity {
                 email: claims.email.clone(),
                 org_id: claims.org_id.clone(),
                 roles: claims.roles.clone(),
+                teams: Vec::new(),
                 mfa_verified: claims.mfa_verified,
             }
         } else {
@@ -137,6 +138,7 @@ impl AgentIdentity {
                 email: String::new(),
                 org_id: default_org.to_string(),
                 roles: default_roles.to_vec(),
+                teams: Vec::new(),
                 mfa_verified: false,
             }
         }

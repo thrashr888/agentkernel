@@ -522,6 +522,7 @@ fn build_principal_from_sandbox(sandbox: &AgentSandbox) -> Principal {
             .cloned()
             .unwrap_or_else(|| "default".to_string()),
         roles,
+        teams: Vec::new(),
         mfa_verified: annotations
             .get("agentkernel/mfa-verified")
             .map(|v| v == "true")
