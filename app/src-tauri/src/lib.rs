@@ -508,7 +508,8 @@ pub fn run() {
             commands::benchmark::run_benchmark,
             // sessions
             commands::sessions::list_sessions,
-            commands::sessions::get_sandbox_session,
+            commands::sessions::get_session,
+            commands::sessions::get_session_cast,
             // config export/import
             commands::config::export_sandbox_config,
             commands::config::import_sandbox_config,

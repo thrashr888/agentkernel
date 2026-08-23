@@ -566,28 +566,36 @@ pub struct BenchmarkResult {
 // Session Recording
 // ---------------------------------------------------------------------------
 
-/// A single recorded command execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionEntry {
-    pub command: Vec<String>,
-    pub output: String,
-    pub exit_code: i32,
-    pub timestamp: String,
-    pub duration_ms: f64,
-}
-
-/// Summary of a sandbox session (from list endpoint).
+/// Summary of an asciicast v2 session recording.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSummary {
-    pub sandbox: String,
-    pub entry_count: u64,
+    pub id: String,
+    pub filename: String,
+    pub title: Option<String>,
+    pub command: Option<String>,
+    pub timestamp: Option<i64>,
+    pub duration: Option<f64>,
+    pub width: u32,
+    pub height: u32,
+    pub event_count: usize,
+    pub size_bytes: u64,
 }
 
-/// Recorded session for a sandbox (from detail endpoint).
+/// One event from an asciicast v2 session recording.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SandboxSession {
-    pub sandbox: String,
-    pub entries: Vec<SessionEntry>,
+pub struct SessionEvent {
+    pub time: f64,
+    pub event_type: String,
+    pub data: String,
+}
+
+/// Full session recording metadata and parsed events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRecording {
+    #[serde(flatten)]
+    pub summary: SessionSummary,
+    pub header: serde_json::Value,
+    pub events: Vec<SessionEvent>,
 }
 
 // ---------------------------------------------------------------------------

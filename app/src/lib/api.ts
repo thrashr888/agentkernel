@@ -37,7 +37,7 @@ import type {
   DockerImageDiskUsage,
   BenchmarkResult,
   SessionSummary,
-  SandboxSession,
+  SessionRecording,
   PermissionGrant,
   GrantPermissionRequest,
   PermissionCheckResult as PermissionCheckResultType,
@@ -188,8 +188,10 @@ export const api = {
 
   // Session Recording
   listSessions: () => invoke<SessionSummary[]>("list_sessions"),
-  getSandboxSession: (name: string) =>
-    invoke<SandboxSession>("get_sandbox_session", { name }),
+  getSession: (id: string) =>
+    invoke<SessionRecording>("get_session", { id }),
+  getSessionCast: (id: string) =>
+    invoke<string>("get_session_cast", { id }),
 
   // Export/Import Config
   exportSandboxConfig: (name: string) =>

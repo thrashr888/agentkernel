@@ -30,6 +30,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::time::{Duration, sleep};
 
+use crate::asciicast::{self, AsciicastEvent, AsciicastHeader, EventType};
 use crate::languages;
 use crate::opencode::OpenCodeState;
 use crate::orchestration_store::{
@@ -1325,10 +1326,9 @@ async fn handle_request(
         (Method::POST, ["benchmark"]) => handle_benchmark(state).await,
 
         // Session recording
-        (Method::GET, ["sessions"]) => handle_list_sandbox_sessions(state).await,
-        (Method::GET, ["sandboxes", name, "session"]) => {
-            handle_get_sandbox_session(name, state).await
-        }
+        (Method::GET, ["sessions"]) => handle_list_recordings().await,
+        (Method::GET, ["sessions", id]) => handle_get_recording(id).await,
+        (Method::GET, ["sessions", id, "cast"]) => handle_get_recording_cast(id).await,
 
         // Sandbox config export/import
         (Method::GET, ["sandboxes", name, "config"]) => {
@@ -7508,70 +7508,245 @@ async fn handle_benchmark(state: Arc<AppState>) -> Response<BoxBody> {
 }
 
 // ---------------------------------------------------------------------------
-// Session Recording (reads from audit log)
+// Session Recording (reads asciicast v2 artifacts from ~/.agentkernel/recordings)
 // ---------------------------------------------------------------------------
 
-async fn handle_list_sandbox_sessions(state: Arc<AppState>) -> Response<BoxBody> {
-    let manager = match state.get_manager().await {
-        Ok(m) => m,
-        Err(e) => {
-            return json_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &ApiResponse::<()>::error(e.to_string()),
-            );
-        }
-    };
-
-    #[derive(Serialize)]
-    struct SandboxSession {
-        sandbox: String,
-        entry_count: usize,
-    }
-
-    // List all sandboxes and report which ones exist (as proxy for session data)
-    let sessions: Vec<SandboxSession> = manager
-        .list()
-        .into_iter()
-        .map(|(name, _, _)| SandboxSession {
-            sandbox: name.to_string(),
-            entry_count: 0,
-        })
-        .collect();
-
-    json_response(StatusCode::OK, &ApiResponse::success(sessions))
+#[derive(Debug, Serialize)]
+struct SessionRecordingSummary {
+    id: String,
+    filename: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration: Option<f64>,
+    width: u32,
+    height: u32,
+    event_count: usize,
+    size_bytes: u64,
 }
 
-async fn handle_get_sandbox_session(name: &str, state: Arc<AppState>) -> Response<BoxBody> {
-    let manager = match state.get_manager().await {
-        Ok(m) => m,
-        Err(e) => {
-            return json_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &ApiResponse::<()>::error(e.to_string()),
-            );
-        }
-    };
+#[derive(Debug, Serialize)]
+struct SessionRecordingEvent {
+    time: f64,
+    event_type: &'static str,
+    data: String,
+}
 
-    if !manager.exists(name) {
+#[derive(Debug, Serialize)]
+struct SessionRecordingDetails {
+    #[serde(flatten)]
+    summary: SessionRecordingSummary,
+    header: AsciicastHeader,
+    events: Vec<SessionRecordingEvent>,
+}
+
+fn valid_recording_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('.')
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn recording_path(id: &str) -> Result<std::path::PathBuf, &'static str> {
+    if !valid_recording_id(id) {
+        return Err("Invalid session id");
+    }
+    Ok(asciicast::default_recordings_dir().join(format!("{id}.cast")))
+}
+
+fn recording_is_regular_file(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
+}
+
+fn is_asciicast_v2(header: &AsciicastHeader) -> bool {
+    header.version == 2
+}
+
+fn recording_event(event: AsciicastEvent) -> SessionRecordingEvent {
+    let event_type = match event.event_type {
+        EventType::Output => "output",
+        EventType::Input => "input",
+    };
+    SessionRecordingEvent {
+        time: event.time,
+        event_type,
+        data: event.data,
+    }
+}
+
+fn recording_summary(
+    path: &std::path::Path,
+    header: &AsciicastHeader,
+    events: &[AsciicastEvent],
+) -> std::io::Result<SessionRecordingSummary> {
+    let metadata = std::fs::metadata(path)?;
+    let id = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_string();
+    Ok(SessionRecordingSummary {
+        id,
+        filename: path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string(),
+        title: header.title.clone(),
+        command: header.command.clone(),
+        timestamp: header.timestamp,
+        duration: header.duration,
+        width: header.width,
+        height: header.height,
+        event_count: events.len(),
+        size_bytes: metadata.len(),
+    })
+}
+
+fn recording_error_response(error: &str) -> Response<BoxBody> {
+    json_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        &ApiResponse::<()>::error(error),
+    )
+}
+
+async fn handle_list_recordings() -> Response<BoxBody> {
+    let directory = asciicast::default_recordings_dir();
+    if !directory.exists() {
         return json_response(
-            StatusCode::NOT_FOUND,
-            &ApiResponse::<()>::error(format!("Sandbox '{}' not found", name)),
+            StatusCode::OK,
+            &ApiResponse::success(Vec::<SessionRecordingSummary>::new()),
         );
     }
 
-    #[derive(Serialize)]
-    struct SandboxSession {
-        sandbox: String,
-        entries: Vec<()>,
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) => {
+            return recording_error_response(&format!("Failed to read recordings: {error}"));
+        }
+    };
+
+    let mut recordings = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("cast")
+            || !entry.file_type().is_ok_and(|file_type| file_type.is_file())
+        {
+            continue;
+        }
+        let id = match path.file_stem().and_then(|stem| stem.to_str()) {
+            Some(id) if valid_recording_id(id) => id,
+            _ => continue,
+        };
+        if let Ok((header, events)) = asciicast::read_asciicast(&path)
+            && is_asciicast_v2(&header)
+            && let Ok(summary) = recording_summary(&path, &header, &events)
+        {
+            debug_assert_eq!(summary.id, id);
+            recordings.push(summary);
+        }
+    }
+    recordings.sort_by(|left, right| {
+        right
+            .timestamp
+            .cmp(&left.timestamp)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    json_response(StatusCode::OK, &ApiResponse::success(recordings))
+}
+
+async fn handle_get_recording(id: &str) -> Response<BoxBody> {
+    let path = match recording_path(id) {
+        Ok(path) => path,
+        Err(error) => {
+            return json_response(StatusCode::BAD_REQUEST, &ApiResponse::<()>::error(error));
+        }
+    };
+    if !recording_is_regular_file(&path) {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Session recording not found"),
+        );
     }
 
+    let (header, events) = match asciicast::read_asciicast(&path) {
+        Ok(recording) => recording,
+        Err(error) => {
+            return recording_error_response(&format!("Invalid session recording: {error}"));
+        }
+    };
+    if !is_asciicast_v2(&header) {
+        return recording_error_response(
+            "Unsupported session recording format; expected asciicast v2",
+        );
+    }
+    let summary = match recording_summary(&path, &header, &events) {
+        Ok(summary) => summary,
+        Err(error) => {
+            return recording_error_response(&format!(
+                "Failed to inspect session recording: {error}"
+            ));
+        }
+    };
+    let events = events.into_iter().map(recording_event).collect();
     json_response(
         StatusCode::OK,
-        &ApiResponse::success(SandboxSession {
-            sandbox: name.to_string(),
-            entries: vec![],
+        &ApiResponse::success(SessionRecordingDetails {
+            summary,
+            header,
+            events,
         }),
     )
+}
+
+fn text_response(
+    status: StatusCode,
+    content_type: &'static str,
+    body: String,
+) -> Response<BoxBody> {
+    Response::builder()
+        .status(status)
+        .header("Content-Type", content_type)
+        .body(full(body))
+        .unwrap()
+}
+
+async fn handle_get_recording_cast(id: &str) -> Response<BoxBody> {
+    let path = match recording_path(id) {
+        Ok(path) => path,
+        Err(error) => {
+            return json_response(StatusCode::BAD_REQUEST, &ApiResponse::<()>::error(error));
+        }
+    };
+    if !recording_is_regular_file(&path) {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Session recording not found"),
+        );
+    }
+
+    match asciicast::read_asciicast(&path) {
+        Ok((header, _)) if is_asciicast_v2(&header) => {}
+        Ok(_) => {
+            return recording_error_response(
+                "Unsupported session recording format; expected asciicast v2",
+            );
+        }
+        Err(error) => {
+            return recording_error_response(&format!("Invalid session recording: {error}"));
+        }
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(cast) => text_response(StatusCode::OK, "text/plain; charset=utf-8", cast),
+        Err(error) => {
+            recording_error_response(&format!("Failed to read session recording: {error}"))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -8044,6 +8219,53 @@ init_script = "echo ready"
         assert_eq!(parsed.ports[0].container_port, 80);
         assert_eq!(parsed.agent.as_deref(), Some("codex"));
         assert_eq!(parsed.init_script.as_deref(), Some("echo ready"));
+    }
+
+    #[test]
+    fn test_recording_ids_cannot_escape_recordings_directory() {
+        assert!(valid_recording_id("sandbox-20260823-120000"));
+        assert!(valid_recording_id("recording.v2"));
+        assert!(!valid_recording_id(""));
+        assert!(!valid_recording_id("../secrets"));
+        assert!(!valid_recording_id("recording/cast"));
+        assert!(!valid_recording_id("%2e%2e%2fsecrets"));
+        assert!(!valid_recording_id(".hidden"));
+    }
+
+    #[test]
+    fn test_recording_event_serializes_asciicast_types() {
+        let output = recording_event(AsciicastEvent::new(1.25, EventType::Output, "hello\r\n"));
+        let input = recording_event(AsciicastEvent::new(1.5, EventType::Input, "ls\r\n"));
+        assert_eq!(output.event_type, "output");
+        assert_eq!(output.time, 1.25);
+        assert_eq!(output.data, "hello\r\n");
+        assert_eq!(input.event_type, "input");
+    }
+
+    #[test]
+    fn test_recording_summary_reads_cast_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("sandbox-20260823-120000.cast");
+        let header = AsciicastHeader::with_size(120, 40)
+            .with_title("Recorded shell")
+            .with_command("agentkernel attach sandbox");
+        let mut recorder = crate::asciicast::AsciicastRecorder::with_header(&path, header.clone());
+        recorder.record_output("hello\r\n");
+        recorder.save().unwrap();
+
+        let (read_header, events) = crate::asciicast::read_asciicast(&path).unwrap();
+        let summary = recording_summary(&path, &read_header, &events).unwrap();
+        assert_eq!(summary.id, "sandbox-20260823-120000");
+        assert_eq!(summary.filename, "sandbox-20260823-120000.cast");
+        assert_eq!(summary.width, 120);
+        assert_eq!(summary.height, 40);
+        assert_eq!(summary.event_count, 1);
+        assert_eq!(summary.title.as_deref(), Some("Recorded shell"));
+        assert_eq!(
+            summary.command.as_deref(),
+            Some("agentkernel attach sandbox")
+        );
+        assert!(summary.size_bytes > 0);
     }
 
     // === Request deserialization tests ===
