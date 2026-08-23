@@ -1334,8 +1334,13 @@ async fn handle_request(
         (Method::GET, ["sandboxes", name, "config"]) => {
             handle_export_sandbox_config(name, state).await
         }
+        (Method::POST, ["sandboxes", "import-config"]) => {
+            handle_import_sandbox_config(req, state, None).await
+        }
+        // Keep the original path working for existing API clients while the
+        // desktop app uses the name-independent import endpoint.
         (Method::POST, ["sandboxes", name, "config"]) => {
-            handle_import_sandbox_config(req, name, state).await
+            handle_import_sandbox_config(req, state, Some(name)).await
         }
 
         // Interactive permissions
@@ -7594,7 +7599,21 @@ async fn handle_export_sandbox_config(name: &str, state: Arc<AppState>) -> Respo
         }
     };
 
-    match toml::to_string_pretty(sandbox_state) {
+    let config = crate::config::SandboxConfigExport::from_parts(
+        &sandbox_state.name,
+        &sandbox_state.image,
+        sandbox_state.init_script.as_deref(),
+        sandbox_state.vcpus,
+        sandbox_state.memory_mb,
+        sandbox_state.agent.as_deref(),
+        sandbox_state
+            .ports
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    );
+
+    match toml::to_string_pretty(&config) {
         Ok(config) => json_response(StatusCode::OK, &ApiResponse::success(config)),
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -7603,13 +7622,88 @@ async fn handle_export_sandbox_config(name: &str, state: Arc<AppState>) -> Respo
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct LegacySandboxConfig {
+    name: String,
+    image: String,
+    vcpus: u32,
+    memory_mb: u64,
+    #[serde(default)]
+    ports: Vec<crate::backend::PortMapping>,
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    init_script: Option<String>,
+}
+
+#[derive(Debug)]
+struct ImportedSandboxConfig {
+    name: String,
+    image: String,
+    vcpus: u32,
+    memory_mb: u64,
+    ports: Vec<crate::backend::PortMapping>,
+    agent: Option<String>,
+    init_script: Option<String>,
+    permissions: crate::permissions::Permissions,
+}
+
+/// Parse the current portable config format, while accepting TOML exported by
+/// older HTTP API versions that serialized the complete `SandboxState`.
+fn parse_imported_sandbox_config(content: &str) -> anyhow::Result<ImportedSandboxConfig> {
+    match crate::config::Config::from_str(content) {
+        Ok(config) => {
+            let ports = config.network.port_mappings()?;
+            let agent = toml::from_str::<toml::Value>(content)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("agent")
+                        .and_then(|agent| agent.get("preferred"))
+                        .and_then(toml::Value::as_str)
+                        .map(str::to_string)
+                });
+
+            Ok(ImportedSandboxConfig {
+                name: config.sandbox.name.clone(),
+                image: config.docker_image(),
+                vcpus: config.resources.vcpus,
+                memory_mb: config.resources.memory_mb,
+                ports,
+                agent,
+                init_script: config.sandbox.init_script.clone(),
+                permissions: config.get_permissions(),
+            })
+        }
+        Err(config_error) => match toml::from_str::<LegacySandboxConfig>(content) {
+            Ok(legacy) => Ok(ImportedSandboxConfig {
+                name: legacy.name,
+                image: legacy.image,
+                vcpus: legacy.vcpus,
+                memory_mb: legacy.memory_mb,
+                ports: legacy.ports,
+                agent: legacy.agent,
+                init_script: legacy.init_script,
+                permissions: crate::permissions::Permissions::default(),
+            }),
+            Err(legacy_error) => Err(anyhow::anyhow!(
+                "{config_error} (legacy format: {legacy_error})"
+            )),
+        },
+    }
+}
+
 async fn handle_import_sandbox_config(
     req: Request<Incoming>,
-    name: &str,
     state: Arc<AppState>,
+    path_name: Option<&str>,
 ) -> Response<BoxBody> {
     #[derive(Deserialize)]
     struct ImportRequest {
+        /// Optional name override. When omitted, the name from [sandbox] is
+        /// used, matching the CLI import command.
+        #[serde(default, alias = "as_name")]
+        name: Option<String>,
         config: String,
     }
 
@@ -7618,8 +7712,10 @@ async fn handle_import_sandbox_config(
         Err(resp) => return resp,
     };
 
-    // Parse the TOML config to extract sandbox parameters
-    let parsed: crate::vmm::SandboxState = match toml::from_str(&body.config) {
+    // Parse before touching the manager so malformed uploads fail without
+    // creating anything. The parser also accepts the old SandboxState-shaped
+    // export emitted by earlier versions of GET /sandboxes/:name/config.
+    let parsed = match parse_imported_sandbox_config(&body.config) {
         Ok(s) => s,
         Err(e) => {
             return json_response(
@@ -7628,6 +7724,25 @@ async fn handle_import_sandbox_config(
             );
         }
     };
+
+    let name = path_name
+        .map(str::to_string)
+        .or(body.name)
+        .unwrap_or_else(|| parsed.name.clone());
+    let name = name.trim().to_string();
+    if let Err(e) = validation::validate_sandbox_name(&name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    if let Err(e) = validation::validate_docker_image(&parsed.image) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
 
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
@@ -7639,9 +7754,16 @@ async fn handle_import_sandbox_config(
         }
     };
 
-    // Create a new sandbox with the imported config
     if let Err(e) = manager
-        .create(name, &parsed.image, parsed.vcpus, parsed.memory_mb)
+        .create_with_agent(
+            &name,
+            &parsed.image,
+            parsed.vcpus,
+            parsed.memory_mb,
+            None,
+            parsed.ports.clone(),
+            parsed.agent.clone(),
+        )
         .await
     {
         return json_response(
@@ -7650,10 +7772,31 @@ async fn handle_import_sandbox_config(
         );
     }
 
+    if let Some(script) = parsed.init_script.as_deref()
+        && let Err(e) = manager.set_init_script(&name, script)
+    {
+        let _ = manager.remove(&name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to set init script: {e}")),
+        );
+    }
+
+    if let Err(e) = manager
+        .start_with_permissions(&name, &parsed.permissions)
+        .await
+    {
+        let _ = manager.remove(&name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to start sandbox from config: {e}")),
+        );
+    }
+
     // Return info about the newly created sandbox
-    let running = manager.is_running(name);
+    let running = manager.is_running(&name);
     let ip = if running {
-        manager.get_container_ip(name)
+        manager.get_container_ip(&name)
     } else {
         None
     };
@@ -7661,9 +7804,9 @@ async fn handle_import_sandbox_config(
     json_response(
         StatusCode::OK,
         &ApiResponse::success(SandboxInfo {
-            name: name.to_string(),
+            name: name.clone(),
             uuid: manager
-                .get_state(name)
+                .get_state(&name)
                 .map(|s| s.uuid.clone())
                 .unwrap_or_default(),
             status: if running {
@@ -7672,7 +7815,7 @@ async fn handle_import_sandbox_config(
                 "stopped".to_string()
             },
             backend: manager
-                .get_state(name)
+                .get_state(&name)
                 .and_then(|s| s.backend)
                 .map(|b| format!("{}", b))
                 .unwrap_or_else(|| "unknown".to_string()),
@@ -7680,12 +7823,15 @@ async fn handle_import_sandbox_config(
             image: Some(parsed.image),
             vcpus: Some(parsed.vcpus),
             memory_mb: Some(parsed.memory_mb),
-            created_at: manager.get_state(name).map(|s| s.created_at.clone()),
+            created_at: manager.get_state(&name).map(|s| s.created_at.clone()),
             created_from_template: None,
             template_help_text: None,
-            ports: vec![],
+            ports: manager
+                .get_state(&name)
+                .map(|s| s.ports.iter().map(ToString::to_string).collect())
+                .unwrap_or_default(),
             endpoints: manager
-                .get_state(name)
+                .get_state(&name)
                 .map(|s| s.endpoints.clone())
                 .unwrap_or_default(),
             secret_files: vec![],
@@ -7696,7 +7842,7 @@ async fn handle_import_sandbox_config(
             description: None,
             last_activity_at: None,
             workspace_revision: manager
-                .get_state(name)
+                .get_state(&name)
                 .and_then(|s| s.workspace_revision.clone()),
             archived_at: None,
             archived_reason: None,
@@ -7866,6 +8012,38 @@ mod tests {
         assert!(json.contains("\"success\":false"));
         assert!(!json.contains("\"data\"")); // data is skipped when None
         assert!(json.contains("\"error\":\"failed\""));
+    }
+
+    #[test]
+    fn test_legacy_sandbox_state_config_remains_importable() {
+        // This shape matches the raw SandboxState TOML previously returned by
+        // GET /sandboxes/:name/config. Unknown runtime fields are intentionally
+        // ignored so old exports remain useful as portable imports.
+        let legacy = r#"
+name = "legacy-sandbox"
+uuid = "runtime-only-id"
+# Legacy compatibility fixture: preserve imports produced with the former default.
+image = "alpine:3.20"
+vcpus = 2
+memory_mb = 1024
+vsock_cid = 7
+created_at = "2026-01-01T00:00:00Z"
+ports = [{ host_port = 18080, container_port = 80, protocol = "tcp" }]
+agent = "codex"
+init_script = "echo ready"
+"#;
+
+        let parsed = parse_imported_sandbox_config(legacy).unwrap();
+        assert_eq!(parsed.name, "legacy-sandbox");
+        // Legacy compatibility: the importer must preserve explicitly exported images.
+        assert_eq!(parsed.image, "alpine:3.20");
+        assert_eq!(parsed.vcpus, 2);
+        assert_eq!(parsed.memory_mb, 1024);
+        assert_eq!(parsed.ports.len(), 1);
+        assert_eq!(parsed.ports[0].host_port, Some(18080));
+        assert_eq!(parsed.ports[0].container_port, 80);
+        assert_eq!(parsed.agent.as_deref(), Some("codex"));
+        assert_eq!(parsed.init_script.as_deref(), Some("echo ready"));
     }
 
     // === Request deserialization tests ===

@@ -860,17 +860,19 @@ impl ApiClient {
     /// Import sandbox configuration from TOML.
     pub async fn import_sandbox_config(
         &self,
-        name: &str,
+        name: Option<&str>,
         config: &str,
     ) -> anyhow::Result<SandboxInfo> {
         #[derive(serde::Serialize)]
         struct Body<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            name: Option<&'a str>,
             config: &'a str,
         }
         self.request(
             reqwest::Method::POST,
-            &format!("/sandboxes/{name}/config"),
-            Some(&Body { config }),
+            "/sandboxes/import-config",
+            Some(&Body { name, config }),
         )
         .await
     }

@@ -12,7 +12,6 @@ import {
   Loader2,
   X,
   Download,
-  Upload,
   FileDown,
   Brain,
   Shield,
@@ -197,17 +196,6 @@ export function SandboxDetail() {
       a.click();
       URL.revokeObjectURL(url);
       toast.success("Config exported");
-    },
-    onError: (err: unknown) => {
-      toast.error(err instanceof Error ? err.message : String(err));
-    },
-  });
-
-  const importConfigMutation = useMutation({
-    mutationFn: (config: string) => api.importSandboxConfig(name ?? "", config),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["sandbox", name] });
-      toast.success("Config imported");
     },
     onError: (err: unknown) => {
       toast.error(err instanceof Error ? err.message : String(err));
@@ -599,26 +587,6 @@ export function SandboxDetail() {
             title="Export Config"
           >
             <FileDown className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={() => {
-              const input = document.createElement("input");
-              input.type = "file";
-              input.accept = ".toml";
-              input.onchange = (e) => {
-                const file = (e.target as HTMLInputElement).files?.[0];
-                if (file) {
-                  file.text().then((text) => importConfigMutation.mutate(text));
-                }
-              };
-              input.click();
-            }}
-            disabled={importConfigMutation.isPending}
-            title="Import Config"
-          >
-            <Upload className="h-4 w-4" />
           </Button>
           <Button
             variant="outline"

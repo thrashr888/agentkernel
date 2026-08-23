@@ -194,7 +194,7 @@ export const api = {
   // Export/Import Config
   exportSandboxConfig: (name: string) =>
     invoke<string>("export_sandbox_config", { name }),
-  importSandboxConfig: (name: string, config: string) =>
+  importSandboxConfig: (config: string, name?: string) =>
     invoke<SandboxInfo>("import_sandbox_config", { name, config }),
 
   // Policy (enterprise)

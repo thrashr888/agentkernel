@@ -593,6 +593,68 @@ pub struct ResourcesConfig {
     pub memory_mb: u64,
 }
 
+/// Safe, portable subset of a sandbox configuration used by the export/import
+/// commands and the desktop app.
+///
+/// Runtime state (UUIDs, backend identifiers, timestamps, and secret
+/// bindings) is deliberately excluded so an exported file can be shared and
+/// re-imported without leaking host-specific or credential-bearing data.
+#[derive(Debug, Clone, Serialize)]
+pub struct SandboxConfigExport {
+    pub sandbox: SandboxConfigExportSection,
+    pub resources: ResourcesConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<SandboxConfigExportAgent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<SandboxConfigExportNetwork>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SandboxConfigExportSection {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub init_script: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SandboxConfigExportAgent {
+    pub preferred: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SandboxConfigExportNetwork {
+    pub ports: Vec<String>,
+}
+
+impl SandboxConfigExport {
+    /// Build an export from persisted sandbox settings without including
+    /// runtime identity or secret material.
+    pub fn from_parts(
+        name: &str,
+        image: &str,
+        init_script: Option<&str>,
+        vcpus: u32,
+        memory_mb: u64,
+        agent: Option<&str>,
+        ports: Vec<String>,
+    ) -> Self {
+        Self {
+            sandbox: SandboxConfigExportSection {
+                name: name.to_string(),
+                base_image: Some(image.to_string()),
+                init_script: init_script.map(str::to_string),
+            },
+            resources: ResourcesConfig { vcpus, memory_mb },
+            agent: agent.map(|preferred| SandboxConfigExportAgent {
+                preferred: preferred.to_string(),
+            }),
+            network: (!ports.is_empty()).then_some(SandboxConfigExportNetwork { ports }),
+        }
+    }
+}
+
 impl Default for ResourcesConfig {
     fn default() -> Self {
         Self {
@@ -1006,6 +1068,34 @@ mod tests {
         assert_eq!(config.resources.vcpus, 2);
         assert_eq!(config.resources.memory_mb, 1024);
         assert_eq!(config.network.vsock_cid, Some(5));
+    }
+
+    #[test]
+    fn test_sandbox_config_export_is_importable_and_portable() {
+        let export = SandboxConfigExport::from_parts(
+            "shared-sandbox",
+            "python:3.12-alpine",
+            Some("echo ready > /workspace/ready"),
+            2,
+            1024,
+            Some("codex"),
+            vec!["8080:80".to_string()],
+        );
+        let content = toml::to_string_pretty(&export).unwrap();
+        let parsed = Config::from_str(&content).unwrap();
+
+        assert_eq!(parsed.sandbox.name, "shared-sandbox");
+        assert_eq!(parsed.docker_image(), "python:3.12-alpine");
+        assert_eq!(parsed.resources.vcpus, 2);
+        assert_eq!(parsed.resources.memory_mb, 1024);
+        assert_eq!(parsed.agent.preferred, "codex");
+        assert_eq!(parsed.network.ports, vec!["8080:80"]);
+        assert_eq!(
+            parsed.sandbox.init_script.as_deref(),
+            Some("echo ready > /workspace/ready")
+        );
+        assert!(!content.contains("secret"));
+        assert!(!content.contains("uuid"));
     }
 
     #[test]
