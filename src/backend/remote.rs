@@ -702,7 +702,12 @@ impl Sandbox for RemoteSandbox {
         request.read_only = Some(config.read_only);
         request.env = Self::env_map(&config.env);
         request.ports = config.ports.clone();
-        request.path = Some("/workspace".to_string());
+        request.path = Some(
+            config
+                .container_work_dir
+                .clone()
+                .unwrap_or_else(|| "/workspace".to_string()),
+        );
 
         let response = self
             .bridge

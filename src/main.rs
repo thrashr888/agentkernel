@@ -11,6 +11,7 @@ mod browser_scripts;
 mod build;
 mod config;
 mod daemon;
+mod devcontainer;
 mod docker_backend;
 mod durable_storage;
 mod events;
@@ -104,6 +105,12 @@ enum Commands {
         /// Path to agentkernel.toml config file
         #[arg(short, long)]
         config: Option<PathBuf>,
+        /// Path to a Development Container JSONC file
+        #[arg(long, value_name = "PATH", conflicts_with = "config")]
+        devcontainer: Option<PathBuf>,
+        /// Auto-detect .devcontainer/devcontainer.json in the project
+        #[arg(long, conflicts_with_all = ["config", "devcontainer"])]
+        auto_devcontainer: bool,
         /// Keep the sandbox after execution (don't remove)
         #[arg(short, long)]
         keep: bool,
@@ -472,6 +479,15 @@ enum SandboxAction {
         /// Path to agentkernel.toml config file
         #[arg(short, long)]
         config: Option<PathBuf>,
+        /// Path to a Development Container JSONC file
+        #[arg(long, value_name = "PATH", conflicts_with = "config")]
+        devcontainer: Option<PathBuf>,
+        /// Auto-detect .devcontainer/devcontainer.json in the project
+        #[arg(long, conflicts_with_all = ["config", "devcontainer"])]
+        auto_devcontainer: bool,
+        /// Docker image to use (overrides config and devcontainer)
+        #[arg(short, long)]
+        image: Option<String>,
         /// Project directory to mount into sandbox
         #[arg(short, long)]
         dir: Option<PathBuf>,
@@ -1062,6 +1078,9 @@ memory_mb = 512
                 name,
                 agent,
                 config,
+                devcontainer,
+                auto_devcontainer,
+                image,
                 dir,
                 backend,
                 template: tmpl,
@@ -1131,9 +1150,14 @@ memory_mb = 512
                     }
                 }
 
-                // Load config: --config > --template > minimal default
+                // Load config: --config > --template > explicit/auto devcontainer > minimal default.
+                // A devcontainer is a complete project configuration; its
+                // image/build fields are applied before explicit CLI overrides.
                 let mut template_metadata: Option<(String, Option<String>)> = None;
-                let (cfg, config_base_dir) = if let Some(ref config_path) = config {
+                let project_dir = dir.as_deref().unwrap_or(Path::new("."));
+                let devcontainer_config =
+                    resolve_devcontainer(devcontainer.as_deref(), auto_devcontainer, project_dir)?;
+                let (mut cfg, config_base_dir) = if let Some(ref config_path) = config {
                     let cfg = Config::from_file(config_path)?;
                     let base_dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
                     (cfg, Some(base_dir))
@@ -1147,14 +1171,44 @@ memory_mb = 512
                     let mut cfg = resolved.parse()?;
                     cfg.sandbox.name = name.clone();
                     (cfg, None)
+                } else if let Some(ref dc) = devcontainer_config {
+                    dc.validate_supported()?;
+                    let mut cfg = Config::minimal(&name, &agent);
+                    dc.apply_to_config(&mut cfg);
+                    cfg.security.mount_cwd = Some(true);
+                    (cfg, dc.path.parent().map(Path::to_path_buf))
                 } else {
                     (Config::minimal(&name, &agent), None)
                 };
+                // CLI flags are authoritative over devcontainer values.
+                if let Some(image) = image {
+                    cfg.sandbox.base_image = Some(image);
+                    cfg.build = crate::config::BuildConfig::default();
+                }
                 let stored_config_path = config
                     .as_ref()
                     .map(|path| path.to_string_lossy().to_string());
-                let workspace_root =
+                let mut workspace_root =
                     resolve_workspace_root(config_base_dir.as_deref(), dir.as_deref())?;
+                let devcontainer_mounts = if let Some(ref dc) = devcontainer_config {
+                    let mounts = dc.supported_mounts()?;
+                    if dir.is_none()
+                        && let Some(host_path) = mounts.workspace_host_path.as_ref()
+                    {
+                        workspace_root = host_path.clone();
+                    }
+                    Some(mounts)
+                } else {
+                    None
+                };
+                if let Some(ref dc) = devcontainer_config
+                    && dir.is_none()
+                    && devcontainer_mounts
+                        .as_ref()
+                        .is_some_and(|m| m.workspace_host_path.is_none())
+                {
+                    workspace_root = dc.project_root.clone();
+                }
 
                 // Validate config and print warnings
                 for warning in cfg.validate() {
@@ -1229,7 +1283,11 @@ memory_mb = 512
                 }
 
                 // Parse volume mounts
-                let volume_mounts: Vec<volume::VolumeMount> = volumes
+                let mut volume_specs = volumes;
+                if let Some(ref mounts) = devcontainer_mounts {
+                    volume_specs.extend(mounts.volume_specs.iter().cloned());
+                }
+                let volume_mounts: Vec<volume::VolumeMount> = volume_specs
                     .iter()
                     .map(|s| volume::VolumeMount::parse(s))
                     .collect::<Result<Vec<_>>>()?;
@@ -1276,10 +1334,32 @@ memory_mb = 512
                         ports,
                     )
                     .await?;
+                let stored_config_path = stored_config_path.or_else(|| {
+                    devcontainer_config
+                        .as_ref()
+                        .map(|dc| dc.path.to_string_lossy().into_owned())
+                });
                 manager.set_config_path(&name, stored_config_path)?;
                 if start_perms.mount_cwd {
                     manager
                         .set_work_dir(&name, Some(workspace_root.to_string_lossy().to_string()))?;
+                }
+                if let Some(ref dc) = devcontainer_config {
+                    manager.set_environment(&name, &dc.environment)?;
+                    manager.set_post_create_commands(&name, &dc.post_create_commands)?;
+                    if let Some(container_path) = devcontainer_mounts
+                        .as_ref()
+                        .and_then(|mounts| mounts.workspace_container_path.clone())
+                        .or_else(|| dc.workspace_folder.clone())
+                    {
+                        manager.set_container_work_dir(&name, Some(container_path))?;
+                    }
+                    if !dc.vscode_extensions.is_empty() {
+                        println!(
+                            "  VS Code extensions recognized (not installed): {}",
+                            dc.vscode_extensions.join(", ")
+                        );
+                    }
                 }
 
                 // Parse and set labels
@@ -1544,7 +1624,14 @@ memory_mb = 512
                 let config_path = sandbox_config_path
                     .filter(|path| path.exists())
                     .unwrap_or_else(|| std::path::PathBuf::from("agentkernel.toml"));
-                let (start_perms, start_files) = if config_path.exists() {
+                // Explicit devcontainer paths may use a custom filename, so use the
+                // JSON extension rather than relying on the canonical filename when
+                // deciding whether a persisted state config is TOML.
+                let is_devcontainer_path = config_path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| matches!(extension, "json" | "jsonc"));
+                let (start_perms, start_files) = if config_path.exists() && !is_devcontainer_path {
                     let cfg = Config::from_file(&config_path)?;
                     for warning in cfg.validate() {
                         eprintln!("Warning: {}", warning);
@@ -2086,6 +2173,8 @@ memory_mb = 512
         Commands::Run {
             command,
             config,
+            devcontainer,
+            auto_devcontainer,
             keep,
             image,
             build: build_image,
@@ -2137,6 +2226,14 @@ memory_mb = 512
                 }
             };
 
+            let current_dir = std::env::current_dir()?;
+            let devcontainer_config =
+                resolve_devcontainer(devcontainer.as_deref(), auto_devcontainer, &current_dir)?;
+            if let Some(ref dc) = devcontainer_config {
+                dc.validate_supported()?;
+            }
+            let devcontainer_configured = devcontainer_config.is_some();
+
             // Warn if --ssh and --no-network are both set
             if ssh_flag && no_network {
                 eprintln!(
@@ -2153,6 +2250,11 @@ memory_mb = 512
 
             // Fast path: use container pool for ephemeral runs
             if fast {
+                if devcontainer_configured {
+                    bail!(
+                        "--fast cannot apply devcontainer environment, mounts, or postCreateCommand; omit --fast"
+                    );
+                }
                 if keep {
                     bail!("Cannot use --fast with --keep (pooled containers are ephemeral)");
                 }
@@ -2203,7 +2305,7 @@ memory_mb = 512
 
             // Daemon path: try daemon VM pool first (single round-trip)
             // Skip is_available() check - just try and fall back on error
-            if !keep && !build_image {
+            if !keep && !devcontainer_configured && !build_image {
                 let daemon_client = daemon::DaemonClient::new();
 
                 // Determine runtime from image/config
@@ -2261,6 +2363,17 @@ memory_mb = 512
                 eprintln!("Using template '{}' ({})", resolved.name, resolved.source);
                 let cfg = resolved.parse()?;
                 (cfg.docker_image(), Some(cfg), true)
+            } else if let Some(ref dc) = devcontainer_config {
+                let mut cfg = Config::minimal(
+                    current_dir
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("project"),
+                    "claude",
+                );
+                dc.apply_to_config(&mut cfg);
+                cfg.security.mount_cwd = Some(true);
+                (cfg.docker_image(), Some(cfg), true)
             } else if let Some(img) = languages::detect_from_command(&command) {
                 // Command-based detection first for `run`
                 (img, None, false)
@@ -2278,7 +2391,6 @@ memory_mb = 512
             };
 
             // Resolve whether this invocation intentionally selects a Dockerfile build
-            let current_dir = std::env::current_dir()?;
             let is_firecracker_backend = backend
                 .as_ref()
                 .is_some_and(|b| b == "firecracker" || b == "fc");
@@ -2339,6 +2451,9 @@ memory_mb = 512
             let mut perms = permissions::SecurityProfile::from_str(&profile)
                 .unwrap_or_default()
                 .permissions();
+            if devcontainer_configured {
+                perms.mount_cwd = true;
+            }
 
             // Apply --no-network override
             if no_network {
@@ -2361,6 +2476,10 @@ memory_mb = 512
                     .parent()
                     .unwrap_or_else(|| std::path::Path::new("."));
                 cfg.load_files(config_dir)?
+            } else if let Some(ref dc) = devcontainer_config {
+                let mut cfg = Config::minimal("devcontainer", "claude");
+                dc.apply_to_config(&mut cfg);
+                cfg.load_files(&dc.project_root)?
             } else {
                 // Check for default config file and load files if present
                 let default_config = PathBuf::from("agentkernel.toml");
@@ -2396,7 +2515,7 @@ memory_mb = 512
             // - Docker: single `docker run --rm` command
             // - Apple containers: single `container run --rm` (~940ms vs ~2200ms)
             // Only used when --keep is not specified
-            if !keep {
+            if !keep && !devcontainer_configured {
                 match VmManager::run_ephemeral_with_backend(
                     selected_backend,
                     &docker_image,
@@ -2529,6 +2648,36 @@ memory_mb = 512
             manager
                 .create_with_ttl(&sandbox_name, &docker_image, 1, 512, ttl_secs)
                 .await?;
+
+            if let Some(ref dc) = devcontainer_config {
+                let mounts = dc.supported_mounts()?;
+                let host_workspace = mounts
+                    .workspace_host_path
+                    .clone()
+                    .unwrap_or_else(|| dc.project_root.clone());
+                manager.set_work_dir(
+                    &sandbox_name,
+                    Some(host_workspace.to_string_lossy().into_owned()),
+                )?;
+                let container_workspace = mounts
+                    .workspace_container_path
+                    .clone()
+                    .or_else(|| dc.workspace_folder.clone());
+                manager.set_container_work_dir(&sandbox_name, container_workspace)?;
+                if !mounts.volume_specs.is_empty() {
+                    manager.set_volumes(&sandbox_name, &mounts.volume_specs)?;
+                }
+                manager.set_environment(&sandbox_name, &dc.environment)?;
+                manager.set_post_create_commands(&sandbox_name, &dc.post_create_commands)?;
+                manager
+                    .set_config_path(&sandbox_name, Some(dc.path.to_string_lossy().into_owned()))?;
+                if !dc.vscode_extensions.is_empty() {
+                    println!(
+                        "VS Code extensions recognized (not installed): {}",
+                        dc.vscode_extensions.join(", ")
+                    );
+                }
+            }
 
             // Start with permissions and inject files
             if let Err(e) = manager
@@ -5100,6 +5249,36 @@ fn resolve_workspace_root(config_base_dir: Option<&Path>, dir: Option<&Path>) ->
     Ok(workspace.canonicalize().unwrap_or(workspace))
 }
 
+/// Resolve the requested Development Container file. Explicit paths are
+/// authoritative; automatic detection is opt-in so an unrelated project file
+/// can never silently change a normal sandbox invocation.
+fn resolve_devcontainer(
+    explicit_path: Option<&Path>,
+    auto_detect: bool,
+    project_dir: &Path,
+) -> Result<Option<devcontainer::DevContainerConfig>> {
+    if let Some(path) = explicit_path {
+        return devcontainer::load(path).map(Some);
+    }
+    if !auto_detect {
+        return Ok(None);
+    }
+    let project_dir = if project_dir.is_absolute() {
+        project_dir.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(project_dir)
+    };
+    let path = devcontainer::discover(&project_dir)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "--auto-devcontainer requested, but {} was not found",
+            project_dir
+                .join(".devcontainer/devcontainer.json")
+                .display()
+        )
+    })?;
+    devcontainer::load(&path).map(Some)
+}
+
 /// Decide whether `run` should build a project image before execution.
 ///
 /// Explicit images always win. Config and template runs preserve their
@@ -5214,14 +5393,47 @@ async fn delegate_start_to_server(host: &str, port: u16, name: &str) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::{config_has_build_settings, resolve_workspace_root, should_build_run_image};
+    use super::{
+        Cli, Commands, SandboxAction, config_has_build_settings, resolve_devcontainer,
+        resolve_workspace_root, should_build_run_image,
+    };
     use crate::config::Config;
+    use clap::Parser;
     use tempfile::TempDir;
 
     fn project_with_dockerfile() -> TempDir {
         let temp_dir = TempDir::new().unwrap();
         std::fs::write(temp_dir.path().join("Dockerfile"), "FROM alpine:3.24\n").unwrap();
         temp_dir
+    }
+
+    #[test]
+    fn cli_accepts_explicit_devcontainer_path() {
+        let cli = Cli::try_parse_from([
+            "agentkernel",
+            "sandbox",
+            "create",
+            "demo",
+            "--devcontainer",
+            ".devcontainer/devcontainer.json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Sandbox {
+                action: SandboxAction::Create { devcontainer, .. },
+            } => assert_eq!(
+                devcontainer.as_deref(),
+                Some(std::path::Path::new(".devcontainer/devcontainer.json"))
+            ),
+            _ => panic!("expected sandbox create"),
+        }
+    }
+
+    #[test]
+    fn auto_devcontainer_requires_canonical_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let error = resolve_devcontainer(None, true, temp_dir.path()).unwrap_err();
+        assert!(error.to_string().contains("auto-devcontainer"));
     }
 
     #[test]

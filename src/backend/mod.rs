@@ -337,6 +337,8 @@ pub struct SandboxConfig {
     pub mount_cwd: bool,
     /// Path to mount as working directory
     pub work_dir: Option<String>,
+    /// Container-side working directory for the workspace mount.
+    pub container_work_dir: Option<String>,
     /// Environment variables to set
     pub env: Vec<(String, String)>,
     /// Network access enabled
@@ -363,6 +365,7 @@ impl Default for SandboxConfig {
             memory_mb: 512,
             mount_cwd: false,
             work_dir: None,
+            container_work_dir: None,
             env: Vec::new(),
             network: true,
             read_only: false,
@@ -401,6 +404,12 @@ impl SandboxConfig {
     pub fn with_mount_cwd(mut self, mount: bool, work_dir: Option<String>) -> Self {
         self.mount_cwd = mount;
         self.work_dir = work_dir;
+        self
+    }
+
+    /// Set the container-side working directory for the workspace mount.
+    pub fn with_container_work_dir(mut self, work_dir: Option<String>) -> Self {
+        self.container_work_dir = work_dir;
         self
     }
 

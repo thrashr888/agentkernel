@@ -19,6 +19,8 @@ agentkernel run [OPTIONS] <COMMAND>...
 | `-k, --keep` | Keep the sandbox after execution (for debugging) |
 | `-F, --fast` | Use container pool for faster startup (default: true) |
 | `-c, --config <FILE>` | Path to agentkernel.toml config file |
+| `--devcontainer <FILE>` | Path to a JSONC Development Container file |
+| `--auto-devcontainer` | Detect `.devcontainer/devcontainer.json` in the project |
 | `-B, --backend <BACKEND>` | Backend: `docker`, `podman`, `firecracker`, `apple`, etc. |
 | `--template <NAME>` | Use a template (built-in, local, `github:owner/repo/path`, or file) |
 | `--ttl <DURATION>` | TTL for kept sandboxes (e.g. `1h`, `30m`, `3d`; default: `1h`) |
@@ -65,6 +67,13 @@ agentkernel run --build -- npm test
 ```
 
 An explicit config or template keeps its configured Dockerfile build behavior.
+
+To run using a project's Development Container configuration (including its
+workspace mount, environment, and post-create command), use:
+
+```bash
+agentkernel run --auto-devcontainer -- npm test
+```
 
 ### Security profiles
 

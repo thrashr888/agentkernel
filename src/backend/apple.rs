@@ -256,9 +256,10 @@ impl AppleSandbox {
             && let Some(ref work_dir) = config.work_dir
         {
             args.push("-v".to_string());
-            args.push(format!("{}:/workspace", work_dir));
+            let container_work_dir = config.container_work_dir.as_deref().unwrap_or("/workspace");
+            args.push(format!("{}:{}", work_dir, container_work_dir));
             args.push("-w".to_string());
-            args.push("/workspace".to_string());
+            args.push(container_work_dir.to_string());
         }
 
         if config.mount_home
@@ -334,9 +335,10 @@ impl Sandbox for AppleSandbox {
             && let Some(ref work_dir) = config.work_dir
         {
             args.push("-v".to_string());
-            args.push(format!("{}:/workspace", work_dir));
+            let container_work_dir = config.container_work_dir.as_deref().unwrap_or("/workspace");
+            args.push(format!("{}:{}", work_dir, container_work_dir));
             args.push("-w".to_string());
-            args.push("/workspace".to_string());
+            args.push(container_work_dir.to_string());
         }
 
         // Mount home directory if requested

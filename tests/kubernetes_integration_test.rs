@@ -22,6 +22,7 @@ fn test_sandbox_config() -> agentkernel::backend::SandboxConfig {
         memory_mb: 256,
         mount_cwd: false,
         work_dir: None,
+        container_work_dir: None,
         env: Vec::new(),
         network: true,
         read_only: false,
