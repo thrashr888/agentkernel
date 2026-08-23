@@ -23,10 +23,11 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && npm run build:types",
+    "build:types": "tsc -p tsconfig.build.json && node scripts/finalize-declarations.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:package": "node tests/package-smoke.mjs && npm pack --dry-run",
+    "test:package": "node tests/package-smoke.mjs && tsc -p tests/tsconfig.package.json && npm pack --dry-run",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
     "prepublishOnly": "npm run build"
@@ -58,7 +59,7 @@
     "@types/node": "^24.13.3",
     "msw": "^2.15.0",
     "tsup": "^8.5.1",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   }
 }
