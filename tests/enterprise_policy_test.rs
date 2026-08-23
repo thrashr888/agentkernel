@@ -60,6 +60,7 @@ fn test_principal() -> Principal {
         email: "alice@acme.com".to_string(),
         org_id: "acme-corp".to_string(),
         roles: vec!["developer".to_string()],
+        teams: Vec::new(),
         mfa_verified: true,
     }
 }
