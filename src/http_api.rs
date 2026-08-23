@@ -346,6 +346,87 @@ struct ExecRequest {
     sudo: Option<bool>,
 }
 
+/// Path and optional remote parameters used by the sandbox Git API.
+///
+/// Paths are interpreted inside the sandbox.  Relative paths follow Daytona's
+/// convention and are resolved below `/workspace`; absolute paths are passed
+/// through after the same sandbox-path checks used by file and exec APIs.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitRepoRequest {
+    path: String,
+    #[serde(default)]
+    remote: Option<String>,
+    #[serde(default)]
+    branch: Option<String>,
+    #[serde(default)]
+    set_upstream: bool,
+    // Kept for SDK compatibility.  Credentials are intentionally rejected
+    // below rather than putting secrets in a process argument or environment.
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitAddRequest {
+    path: String,
+    files: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitCommitRequest {
+    path: String,
+    message: String,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    allow_empty: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitFileStatus {
+    name: String,
+    extra: String,
+    staging: String,
+    worktree: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStatusResponse {
+    current_branch: String,
+    file_status: Vec<GitFileStatus>,
+    branch_published: bool,
+    ahead: u32,
+    behind: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upstream: Option<String>,
+    detached: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct GitBranchesResponse {
+    branches: Vec<String>,
+    current: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GitCommitResponse {
+    hash: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GitOperationResponse {
+    output: String,
+}
+
 /// Request to create an orchestration.
 #[derive(Debug, Deserialize)]
 struct CreateOrchestrationRequest {
@@ -1147,6 +1228,24 @@ async fn handle_request(
 
         // Execute in a sandbox
         (Method::POST, ["sandboxes", name, "exec"]) => handle_exec_sandbox(req, name, state).await,
+
+        // Sandbox-scoped Git operations (Daytona toolbox parity)
+        (Method::GET, ["sandboxes", name, "git", "status"]) => {
+            handle_git_status(req, name, state).await
+        }
+        (Method::GET, ["sandboxes", name, "git", "branches"]) => {
+            handle_git_branches(req, name, state).await
+        }
+        (Method::POST, ["sandboxes", name, "git", "add"]) => handle_git_add(req, name, state).await,
+        (Method::POST, ["sandboxes", name, "git", "commit"]) => {
+            handle_git_commit(req, name, state).await
+        }
+        (Method::POST, ["sandboxes", name, "git", "pull"]) => {
+            handle_git_pull(req, name, state).await
+        }
+        (Method::POST, ["sandboxes", name, "git", "push"]) => {
+            handle_git_push(req, name, state).await
+        }
 
         // Detached exec: start a background command
         (Method::POST, ["sandboxes", name, "exec", "detach"]) => {
@@ -3512,6 +3611,583 @@ async fn handle_exec_sandbox(
                 )
             }
         }
+    }
+}
+
+// --- Sandbox Git handlers ---
+
+const DEFAULT_GIT_PATH: &str = "/workspace";
+
+fn validate_git_path(path: &str) -> anyhow::Result<String> {
+    if path.is_empty() {
+        anyhow::bail!("Git repository path is required");
+    }
+    if path.len() > 1024 {
+        anyhow::bail!("Git repository path is too long (max 1024 characters)");
+    }
+    if path
+        .chars()
+        .any(|ch| ch == '\0' || ch == '\n' || ch == '\r' || ch == '\\')
+    {
+        anyhow::bail!("Git repository path contains invalid control or separator characters");
+    }
+
+    if path.starts_with('/') {
+        validation::validate_exec_workdir(path)?;
+        crate::backend::validate_sandbox_path(path)?;
+        return Ok(path.to_string());
+    }
+
+    // Daytona accepts paths relative to the sandbox working directory.  Keep
+    // that convenience while making the resulting path unambiguously sandbox
+    // scoped and rejecting traversal/option-like values.
+    if path.starts_with('-') {
+        anyhow::bail!("Git repository path cannot start with '-'");
+    }
+    let relative = path.strip_prefix("./").unwrap_or(path);
+    let relative = relative.strip_prefix("workspace/").unwrap_or(relative);
+    let relative = relative.trim_end_matches('/');
+    if relative.is_empty() || relative == "." {
+        return Ok(DEFAULT_GIT_PATH.to_string());
+    }
+    let relative_path = std::path::Path::new(relative);
+    if relative_path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        anyhow::bail!("Git repository path cannot contain parent directory references");
+    }
+    let resolved = format!("{DEFAULT_GIT_PATH}/{relative}");
+    validation::validate_exec_workdir(&resolved)?;
+    crate::backend::validate_sandbox_path(&resolved)?;
+    Ok(resolved)
+}
+
+fn validate_git_file_path(path: &str) -> anyhow::Result<()> {
+    if path.is_empty() {
+        anyhow::bail!("Git file path cannot be empty");
+    }
+    if path.len() > 4096 {
+        anyhow::bail!("Git file path is too long (max 4096 characters)");
+    }
+    if path.starts_with('-') || path.starts_with('/') {
+        anyhow::bail!("Git file paths must be relative and cannot start with '-'");
+    }
+    if path
+        .chars()
+        .any(|ch| ch == '\0' || ch == '\n' || ch == '\r' || ch == '\\')
+    {
+        anyhow::bail!("Git file path contains invalid control or separator characters");
+    }
+    if std::path::Path::new(path)
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        anyhow::bail!("Git file path cannot contain parent directory references");
+    }
+    Ok(())
+}
+
+fn query_param(query: &str, name: &str) -> anyhow::Result<String> {
+    let mut value = None;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, raw) = pair
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("Invalid query parameter"))?;
+        let key = urlencoding::decode(key)
+            .map_err(|_| anyhow::anyhow!("Invalid query parameter encoding"))?;
+        let decoded = urlencoding::decode(raw)
+            .map_err(|_| anyhow::anyhow!("Invalid query parameter encoding"))?;
+        if key != name {
+            anyhow::bail!(
+                "Unsupported query parameter '{}'; only 'path' is accepted",
+                key
+            );
+        }
+        if value.replace(decoded.into_owned()).is_some() {
+            anyhow::bail!("Query parameter '{}' may only be specified once", name);
+        }
+    }
+    value.ok_or_else(|| anyhow::anyhow!("Query parameter 'path' is required"))
+}
+
+fn git_validation_error(error: impl std::fmt::Display) -> Response<BoxBody> {
+    json_response(
+        StatusCode::BAD_REQUEST,
+        &ApiResponse::<()>::error(error.to_string()),
+    )
+}
+
+fn validate_git_name(name: &str) -> Result<(), Box<Response<BoxBody>>> {
+    validation::validate_sandbox_name(name).map_err(|error| Box::new(git_validation_error(error)))
+}
+
+fn manager_error(error: anyhow::Error) -> Response<BoxBody> {
+    json_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        &ApiResponse::<()>::error(error.to_string()),
+    )
+}
+
+fn ensure_git_sandbox(manager: &VmManager, name: &str) -> Result<(), Box<Response<BoxBody>>> {
+    if !manager.exists(name) {
+        return Err(Box::new(json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("Sandbox '{}' not found", name)),
+        )));
+    }
+    if !manager.is_running(name) {
+        return Err(Box::new(json_response(
+            StatusCode::CONFLICT,
+            &ApiResponse::<()>::error(format!("Sandbox '{}' is not running", name)),
+        )));
+    }
+    Ok(())
+}
+
+async fn run_git(
+    manager: &mut VmManager,
+    name: &str,
+    path: &str,
+    args: &[String],
+) -> anyhow::Result<String> {
+    let mut command = Vec::with_capacity(args.len() + 1);
+    command.push("git".to_string());
+    command.extend(args.iter().cloned());
+    manager
+        .exec_cmd_full(
+            name,
+            &command,
+            &crate::backend::ExecOptions {
+                workdir: Some(path.to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+}
+
+fn git_command_error(operation: &str, error: &anyhow::Error) -> Response<BoxBody> {
+    let detail = if let Some(command_error) = error.downcast_ref::<crate::vmm::CommandFailed>() {
+        format!(
+            "git {} failed (exit code {}): {}",
+            operation,
+            command_error.exit_code,
+            command_error.output.trim()
+        )
+    } else {
+        format!("git {} failed: {}", operation, error)
+    };
+    json_response(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        &ApiResponse::<()>::error(detail),
+    )
+}
+
+fn parse_git_status(output: &str) -> GitStatusResponse {
+    let mut current_branch = String::new();
+    let mut upstream = None;
+    let mut detached = false;
+    let mut ahead = 0;
+    let mut behind = 0;
+    let mut file_status = Vec::new();
+
+    for (line_number, line) in output.lines().enumerate() {
+        if line_number == 0 && line.starts_with("## ") {
+            let header = &line[3..];
+            let (branch, tracking) = header.split_once("...").unwrap_or((header, ""));
+            let branch = branch.strip_prefix("No commits yet on ").unwrap_or(branch);
+            if branch.starts_with("HEAD (") || branch == "HEAD" {
+                detached = true;
+            } else {
+                current_branch = branch.to_string();
+            }
+            if !tracking.is_empty() {
+                let tracking = tracking
+                    .split_once(" [")
+                    .map(|(remote, _)| remote)
+                    .unwrap_or(tracking);
+                if !tracking.is_empty() {
+                    upstream = Some(tracking.to_string());
+                }
+            }
+            if let Some((_, counts)) = header.split_once(" [") {
+                let counts = counts.trim_end_matches(']');
+                for item in counts.split(", ") {
+                    if let Some(value) = item.strip_prefix("ahead ") {
+                        ahead = value.parse().unwrap_or(0);
+                    } else if let Some(value) = item.strip_prefix("behind ") {
+                        behind = value.parse().unwrap_or(0);
+                    }
+                }
+            }
+            continue;
+        }
+        if line.len() < 3 {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let staging = git_file_status(bytes[0]);
+        let worktree = git_file_status(bytes[1]);
+        let raw_name = &line[3..];
+        let (extra, name) = raw_name
+            .split_once(" -> ")
+            .map(|(old, new)| (old.to_string(), new.to_string()))
+            .unwrap_or_else(|| (String::new(), raw_name.to_string()));
+        file_status.push(GitFileStatus {
+            name,
+            extra,
+            staging: staging.to_string(),
+            worktree: worktree.to_string(),
+        });
+    }
+
+    GitStatusResponse {
+        current_branch,
+        file_status,
+        branch_published: upstream.is_some(),
+        ahead,
+        behind,
+        upstream,
+        detached,
+    }
+}
+
+fn git_file_status(status: u8) -> &'static str {
+    match status as char {
+        'M' => "Modified",
+        'A' => "Added",
+        'D' => "Deleted",
+        'R' => "Renamed",
+        'C' => "Copied",
+        'U' => "Updated but unmerged",
+        '?' => "Untracked",
+        _ => "Unmodified",
+    }
+}
+
+fn validate_git_ref(value: &str, label: &str) -> anyhow::Result<()> {
+    if value.is_empty() {
+        anyhow::bail!("{} cannot be empty", label);
+    }
+    validation::validate_git_ref(value)
+        .map_err(|error| anyhow::anyhow!("Invalid {}: {}", label, error))
+}
+
+fn reject_git_credentials(request: &GitRepoRequest) -> anyhow::Result<()> {
+    if request
+        .username
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+        || request
+            .password
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    {
+        anyhow::bail!(
+            "Git username/password authentication is not supported; configure credentials inside the sandbox"
+        );
+    }
+    Ok(())
+}
+
+async fn handle_git_status(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(response) = validate_git_name(name) {
+        return *response;
+    }
+    let path = match query_param(req.uri().query().unwrap_or(""), "path")
+        .and_then(|path| validate_git_path(&path))
+    {
+        Ok(path) => path,
+        Err(error) => return git_validation_error(error),
+    };
+    let mut manager = match state.get_manager().await {
+        Ok(manager) => manager,
+        Err(error) => return manager_error(error),
+    };
+    if let Err(response) = ensure_git_sandbox(&manager, name) {
+        return *response;
+    }
+    match run_git(
+        &mut manager,
+        name,
+        &path,
+        &[
+            "status".to_string(),
+            "--porcelain=v1".to_string(),
+            "--branch".to_string(),
+            "--ahead-behind".to_string(),
+        ],
+    )
+    .await
+    {
+        Ok(output) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success(parse_git_status(&output)),
+        ),
+        Err(error) => git_command_error("status", &error),
+    }
+}
+
+async fn handle_git_branches(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(response) = validate_git_name(name) {
+        return *response;
+    }
+    let path = match query_param(req.uri().query().unwrap_or(""), "path")
+        .and_then(|path| validate_git_path(&path))
+    {
+        Ok(path) => path,
+        Err(error) => return git_validation_error(error),
+    };
+    let mut manager = match state.get_manager().await {
+        Ok(manager) => manager,
+        Err(error) => return manager_error(error),
+    };
+    if let Err(response) = ensure_git_sandbox(&manager, name) {
+        return *response;
+    }
+    let branches = match run_git(
+        &mut manager,
+        name,
+        &path,
+        &[
+            "for-each-ref".to_string(),
+            "--format=%(refname:short)".to_string(),
+            "refs/heads".to_string(),
+        ],
+    )
+    .await
+    {
+        Ok(output) => output.lines().map(str::to_string).collect(),
+        Err(error) => return git_command_error("branches", &error),
+    };
+    let current = match run_git(
+        &mut manager,
+        name,
+        &path,
+        &["branch".to_string(), "--show-current".to_string()],
+    )
+    .await
+    {
+        Ok(output) => output.trim().to_string(),
+        Err(error) => return git_command_error("branches", &error),
+    };
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(GitBranchesResponse { branches, current }),
+    )
+}
+
+async fn handle_git_add(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(response) = validate_git_name(name) {
+        return *response;
+    }
+    let body: GitAddRequest = match read_json_body(req).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let path = match validate_git_path(&body.path) {
+        Ok(path) => path,
+        Err(error) => return git_validation_error(error),
+    };
+    if body.files.is_empty() {
+        return git_validation_error("files must contain at least one path");
+    }
+    for file in &body.files {
+        if let Err(error) = validate_git_file_path(file) {
+            return git_validation_error(error);
+        }
+    }
+    let mut args = vec!["add".to_string(), "--".to_string()];
+    args.extend(body.files);
+    let mut manager = match state.get_manager().await {
+        Ok(manager) => manager,
+        Err(error) => return manager_error(error),
+    };
+    if let Err(response) = ensure_git_sandbox(&manager, name) {
+        return *response;
+    }
+    match run_git(&mut manager, name, &path, &args).await {
+        Ok(output) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success(GitOperationResponse { output }),
+        ),
+        Err(error) => git_command_error("add", &error),
+    }
+}
+
+async fn handle_git_commit(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(response) = validate_git_name(name) {
+        return *response;
+    }
+    let body: GitCommitRequest = match read_json_body(req).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let path = match validate_git_path(&body.path) {
+        Ok(path) => path,
+        Err(error) => return git_validation_error(error),
+    };
+    if body.message.trim().is_empty()
+        || body
+            .message
+            .chars()
+            .any(|ch| ch == '\0' || ch == '\n' || ch == '\r')
+    {
+        return git_validation_error(
+            "commit message must be non-empty and cannot contain control characters",
+        );
+    }
+    if body.author.is_some() != body.email.is_some() {
+        return git_validation_error("author and email must be provided together");
+    }
+    if let Some(author) = body.author.as_ref()
+        && (author.trim().is_empty()
+            || author
+                .chars()
+                .any(|ch| ch == '\0' || ch == '\n' || ch == '\r' || ch == '<' || ch == '>'))
+    {
+        return git_validation_error("author contains invalid characters");
+    }
+    if let Some(email) = body.email.as_ref()
+        && (email.trim().is_empty()
+            || email.chars().any(|ch| {
+                ch.is_ascii_control() || ch.is_ascii_whitespace() || ch == '<' || ch == '>'
+            }))
+    {
+        return git_validation_error("email contains invalid characters");
+    }
+    let mut args = vec!["commit".to_string()];
+    if body.allow_empty {
+        args.push("--allow-empty".to_string());
+    }
+    if let (Some(author), Some(email)) = (body.author, body.email) {
+        args.extend(["--author".to_string(), format!("{} <{}>", author, email)]);
+    }
+    args.extend(["-m".to_string(), body.message]);
+    let mut manager = match state.get_manager().await {
+        Ok(manager) => manager,
+        Err(error) => return manager_error(error),
+    };
+    if let Err(response) = ensure_git_sandbox(&manager, name) {
+        return *response;
+    }
+    if let Err(error) = run_git(&mut manager, name, &path, &args).await {
+        return git_command_error("commit", &error);
+    }
+    match run_git(
+        &mut manager,
+        name,
+        &path,
+        &["rev-parse".to_string(), "HEAD".to_string()],
+    )
+    .await
+    {
+        Ok(hash) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success(GitCommitResponse {
+                hash: hash.trim().to_string(),
+            }),
+        ),
+        Err(error) => git_command_error("rev-parse", &error),
+    }
+}
+
+async fn handle_git_pull(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    handle_git_remote_operation(req, name, state, false).await
+}
+
+async fn handle_git_push(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    handle_git_remote_operation(req, name, state, true).await
+}
+
+async fn handle_git_remote_operation(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+    push: bool,
+) -> Response<BoxBody> {
+    if let Err(response) = validate_git_name(name) {
+        return *response;
+    }
+    let body: GitRepoRequest = match read_json_body(req).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let path = match validate_git_path(&body.path) {
+        Ok(path) => path,
+        Err(error) => return git_validation_error(error),
+    };
+    if let Err(error) = reject_git_credentials(&body) {
+        return git_validation_error(error);
+    }
+    if let Some(remote) = body.remote.as_ref()
+        && let Err(error) = validate_git_ref(remote, "remote")
+    {
+        return git_validation_error(error);
+    }
+    if let Some(branch) = body.branch.as_ref()
+        && let Err(error) = validate_git_ref(branch, "branch")
+    {
+        return git_validation_error(error);
+    }
+    if body.branch.is_some() && body.remote.is_none() {
+        return git_validation_error("remote is required when branch is provided");
+    }
+    if body.set_upstream && (!push || body.remote.is_none() || body.branch.is_none()) {
+        return git_validation_error("set_upstream requires push with both remote and branch");
+    }
+    let mut args = vec![if push { "push" } else { "pull" }.to_string()];
+    if body.set_upstream {
+        args.push("--set-upstream".to_string());
+    }
+    if let Some(remote) = body.remote {
+        args.push(remote);
+    }
+    if let Some(branch) = body.branch {
+        args.push(branch);
+    }
+    let operation = if push { "push" } else { "pull" };
+    let mut manager = match state.get_manager().await {
+        Ok(manager) => manager,
+        Err(error) => return manager_error(error),
+    };
+    if let Err(response) = ensure_git_sandbox(&manager, name) {
+        return *response;
+    }
+    match run_git(&mut manager, name, &path, &args).await {
+        Ok(output) => json_response(
+            StatusCode::OK,
+            &ApiResponse::success(GitOperationResponse { output }),
+        ),
+        Err(error) => git_command_error(operation, &error),
     }
 }
 
@@ -8666,5 +9342,85 @@ mod tests {
     #[test]
     fn test_default_encoding_returns_utf8() {
         assert_eq!(default_encoding(), "utf8");
+    }
+
+    // === Sandbox Git API tests ===
+
+    #[test]
+    fn test_validate_git_path_resolves_daytona_relative_paths() {
+        assert_eq!(
+            validate_git_path("workspace/repo").unwrap(),
+            "/workspace/repo"
+        );
+        assert_eq!(validate_git_path("./repo").unwrap(), "/workspace/repo");
+        assert_eq!(
+            validate_git_path("/workspace/repo").unwrap(),
+            "/workspace/repo"
+        );
+        assert!(validate_git_path("../outside").is_err());
+        assert!(validate_git_path("/workspace/../etc").is_err());
+        assert!(validate_git_path("-repo").is_err());
+    }
+
+    #[test]
+    fn test_validate_git_file_path_rejects_option_and_traversal() {
+        assert!(validate_git_file_path("src/main.rs").is_ok());
+        assert!(validate_git_file_path(".").is_ok());
+        assert!(validate_git_file_path("--cached").is_err());
+        assert!(validate_git_file_path("../secret").is_err());
+        assert!(validate_git_file_path("/absolute/file").is_err());
+    }
+
+    #[test]
+    fn test_parse_git_status_matches_daytona_shape() {
+        let status = parse_git_status(
+            "## feature/api...origin/feature/api [ahead 2, behind 1]\n M src/lib.rs\nA  added.txt\n?? untracked.txt\nR  old.txt -> new.txt\n",
+        );
+        assert_eq!(status.current_branch, "feature/api");
+        assert_eq!(status.upstream.as_deref(), Some("origin/feature/api"));
+        assert_eq!(status.ahead, 2);
+        assert_eq!(status.behind, 1);
+        assert!(status.branch_published);
+        assert!(!status.detached);
+        assert_eq!(status.file_status.len(), 4);
+        assert_eq!(status.file_status[0].name, "src/lib.rs");
+        assert_eq!(status.file_status[0].worktree, "Modified");
+        assert_eq!(status.file_status[1].staging, "Added");
+        assert_eq!(status.file_status[2].worktree, "Untracked");
+        assert_eq!(status.file_status[3].name, "new.txt");
+        assert_eq!(status.file_status[3].extra, "old.txt");
+
+        let json = serde_json::to_value(status).unwrap();
+        assert_eq!(json["currentBranch"], "feature/api");
+        assert!(json["fileStatus"].is_array());
+        assert_eq!(json["branchPublished"], true);
+    }
+
+    #[test]
+    fn test_parse_git_status_detached_head() {
+        let status = parse_git_status("## HEAD (no branch)\n?? notes.txt\n");
+        assert!(status.detached);
+        assert!(status.current_branch.is_empty());
+        assert!(!status.branch_published);
+    }
+
+    #[test]
+    fn test_git_query_path_is_percent_decoded_and_strict() {
+        assert_eq!(
+            query_param("path=%2Fworkspace%2Frepo", "path").unwrap(),
+            "/workspace/repo"
+        );
+        assert!(query_param("path=%2Fworkspace&extra=x", "path").is_err());
+        assert!(query_param("path=%2Fworkspace&path=%2Frepo", "path").is_err());
+        assert!(query_param("", "path").is_err());
+    }
+
+    #[test]
+    fn test_git_request_rejects_unknown_fields() {
+        let error = serde_json::from_str::<GitAddRequest>(
+            r#"{"path":"/workspace/repo","files":["."],"command":["git"]}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
     }
 }

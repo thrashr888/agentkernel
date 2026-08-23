@@ -444,6 +444,184 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /sandboxes/{name}/git/status:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+      - name: path
+        in: query
+        required: true
+        description: Git repository path inside the sandbox
+        schema:
+          type: string
+        example: /workspace/repo
+
+    get:
+      tags: [Sandboxes]
+      summary: Get Git repository status
+      operationId: getSandboxGitStatus
+      responses:
+        '200':
+          description: Git status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitStatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /sandboxes/{name}/git/branches:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+      - name: path
+        in: query
+        required: true
+        description: Git repository path inside the sandbox
+        schema:
+          type: string
+        example: /workspace/repo
+
+    get:
+      tags: [Sandboxes]
+      summary: List Git branches
+      operationId: listSandboxGitBranches
+      responses:
+        '200':
+          description: Git branches
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitBranchesResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /sandboxes/{name}/git/add:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+    post:
+      tags: [Sandboxes]
+      summary: Stage Git files
+      operationId: addSandboxGitFiles
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GitAddRequest'
+      responses:
+        '200':
+          description: Files staged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitOperationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /sandboxes/{name}/git/commit:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+    post:
+      tags: [Sandboxes]
+      summary: Commit staged Git changes
+      operationId: commitSandboxGitChanges
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GitCommitRequest'
+      responses:
+        '200':
+          description: Commit created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitCommitResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /sandboxes/{name}/git/pull:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+    post:
+      tags: [Sandboxes]
+      summary: Pull Git changes
+      operationId: pullSandboxGitChanges
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GitRepoRequest'
+      responses:
+        '200':
+          description: Changes pulled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitOperationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /sandboxes/{name}/git/push:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+    post:
+      tags: [Sandboxes]
+      summary: Push Git changes
+      operationId: pushSandboxGitChanges
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GitRepoRequest'
+      responses:
+        '200':
+          description: Changes pushed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitOperationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
   /sandboxes/{name}/files/{path}:
     parameters:
       - $ref: '#/components/parameters/SandboxName'
@@ -1244,6 +1422,152 @@ components:
           description: Command and arguments to execute
           example: ["ls", "-la"]
 
+    GitRepoRequest:
+      type: object
+      required: [path]
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+          description: Git repository path inside the sandbox
+        remote:
+          type: string
+          description: Optional validated Git remote name
+        branch:
+          type: string
+          description: Optional validated branch/ref name
+        set_upstream:
+          type: boolean
+          default: false
+        username:
+          type: string
+          description: Reserved for SDK compatibility; configure credentials in the sandbox
+        password:
+          type: string
+          format: password
+          description: Reserved for SDK compatibility; configure credentials in the sandbox
+
+    GitAddRequest:
+      type: object
+      required: [path, files]
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+          description: Git repository path inside the sandbox
+        files:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          description: Relative files to stage; use `.` for the whole repository
+
+    GitCommitRequest:
+      type: object
+      required: [path, message]
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+          description: Git repository path inside the sandbox
+        message:
+          type: string
+          minLength: 1
+        author:
+          type: string
+          description: Optional commit author name; must be paired with email
+        email:
+          type: string
+          description: Optional commit author email; must be paired with author
+        allow_empty:
+          type: boolean
+          default: false
+
+    GitFileStatus:
+      type: object
+      required: [name, extra, staging, worktree]
+      properties:
+        name:
+          type: string
+        extra:
+          type: string
+        staging:
+          type: string
+        worktree:
+          type: string
+
+    GitStatusResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          required: [currentBranch, fileStatus, branchPublished, ahead, behind, detached]
+          properties:
+            currentBranch:
+              type: string
+            fileStatus:
+              type: array
+              items:
+                $ref: '#/components/schemas/GitFileStatus'
+            branchPublished:
+              type: boolean
+            ahead:
+              type: integer
+              minimum: 0
+            behind:
+              type: integer
+              minimum: 0
+            upstream:
+              type: string
+            detached:
+              type: boolean
+
+    GitBranchesResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          required: [branches, current]
+          properties:
+            branches:
+              type: array
+              items:
+                type: string
+            current:
+              type: string
+
+    GitCommitResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          required: [hash]
+          properties:
+            hash:
+              type: string
+
+    GitOperationResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          required: [output]
+          properties:
+            output:
+              type: string
+
     HealthResponse:
       type: object
       properties:
@@ -1919,6 +2243,26 @@ components:
           example:
             success: false
             error: "Sandbox not found"
+
+    Conflict:
+      description: Sandbox is not running or operation conflicts with its state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Sandbox is not running"
+
+    UnprocessableEntity:
+      description: Git command failed inside the sandbox
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "git commit failed"
 
     InternalError:
       description: Internal server error
