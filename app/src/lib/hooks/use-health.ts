@@ -6,7 +6,9 @@ export function useHealth() {
     queryKey: ["health"],
     queryFn: api.checkConnection,
     refetchInterval: 5000,
-    retry: false,
+    // Allow the app-owned sidecar time to bind during application launch.
+    retry: 5,
+    retryDelay: 1000,
   });
 
   return {

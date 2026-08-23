@@ -11,6 +11,15 @@ pub struct ServerEntry {
     pub url: String,
     #[serde(default)]
     pub api_key: Option<String>,
+    /// Whether this entry is owned and started by the desktop application.
+    ///
+    /// `None` is retained for settings written by older desktop versions. The
+    /// migration treats their canonical Local loopback entry as app-owned,
+    /// while newly added entries explicitly opt out unless selected by the
+    /// user. Keeping the distinction lets upgrades start the bundled server
+    /// without taking over remote or separately managed endpoints.
+    #[serde(default)]
+    pub managed: Option<bool>,
 }
 
 /// Persisted user settings for the desktop app.
@@ -44,6 +53,7 @@ impl Default for Settings {
                 name: "Local".to_string(),
                 url: url.clone(),
                 api_key: key.clone(),
+                managed: Some(true),
             }],
             theme: "system".to_string(),
             poll_interval_ms: 3000,
@@ -84,6 +94,7 @@ impl Settings {
                 name: "Local".to_string(),
                 url: self.api_url.clone(),
                 api_key: self.api_key.clone(),
+                managed: Some(true),
             });
             if self.active_server.is_none() {
                 self.active_server = Some("Local".to_string());

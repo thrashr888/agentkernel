@@ -101,6 +101,16 @@ jobs:
       - run: npm ci
         working-directory: app
 
+      - name: Build bundled AgentKernel sidecar
+        run: cargo build --release --target ${{ matrix.target }} --bin agentkernel
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      - name: Stage bundled AgentKernel sidecar
+        run: |
+          mkdir -p app/src-tauri/binaries
+          cp "target/${{ matrix.target }}/release/agentkernel" \
+            "app/src-tauri/binaries/agentkernel-${{ matrix.target }}"
+
       - name: Import Developer ID certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}

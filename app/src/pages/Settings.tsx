@@ -127,6 +127,7 @@ export function Settings() {
         name: "Local",
         url: settings.api_url || "http://localhost:18888",
         api_key: settings.api_key || undefined,
+        managed: true,
       }]);
       setActiveServer(settings.active_server || settings.servers?.[0]?.name || "Local");
       setFormTheme(settings.theme);
@@ -162,7 +163,7 @@ export function Settings() {
 
   function handleAddServer() {
     const name = `Server ${servers.length + 1}`;
-    const updated = [...servers, { name, url: "http://localhost:18888" }];
+    const updated = [...servers, { name, url: "http://localhost:18888", managed: false }];
     setServers(updated);
     setEditingServerIndex(updated.length - 1);
   }

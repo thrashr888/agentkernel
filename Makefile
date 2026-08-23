@@ -9,7 +9,7 @@ RELEASE_DIR := dist
 .PHONY: all build build-release clean install test lint check help
 .PHONY: build-macos build-linux build-all release
 .PHONY: stress-test benchmark-test pool-benchmark
-.PHONY: app app-build serve
+.PHONY: app app-build app-sidecar app-sidecar-release serve
 
 # Default target
 all: build
@@ -127,12 +127,27 @@ release: package-macos-arm64 package-macos-x64 package-linux-x64 package-linux-a
 serve: build
 	cargo run -- serve
 
+# Build the sidecar used by local desktop development. Tauri requires a
+# target-suffixed binary even when the app is not being bundled yet.
+app-sidecar:
+	@target=$$(rustc -vV | sed -n 's/^host: //p'); \
+	cargo build --target "$$target" --bin $(NAME); \
+	mkdir -p app/src-tauri/binaries; \
+	cp "$(BUILD_DIR)/$$target/debug/$(NAME)" "app/src-tauri/binaries/$(NAME)-$$target"
+
+# Build the release sidecar that is embedded in the desktop .app.
+app-sidecar-release:
+	@target=$$(rustc -vV | sed -n 's/^host: //p'); \
+	cargo build --release --target "$$target" --bin $(NAME); \
+	mkdir -p app/src-tauri/binaries; \
+	cp "$(BUILD_DIR)/$$target/release/$(NAME)" "app/src-tauri/binaries/$(NAME)-$$target"
+
 # Run desktop app in dev mode
-app:
+app: app-sidecar
 	cd app && npm exec tauri dev -- --features debug-bridge
 
 # Build desktop app for release
-app-build:
+app-build: app-sidecar-release
 	cd app && npm exec tauri build
 
 # === Development ===

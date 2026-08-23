@@ -57,7 +57,10 @@ export function SetupWizard({ open, onComplete }: SetupWizardProps) {
     queryKey: ["setup-doctor"],
     queryFn: () => api.getDoctor(),
     enabled: step === 0,
-    retry: false,
+    // The bundled server is spawned during Tauri setup and may need a few
+    // seconds to bind before the first health check can succeed.
+    retry: 5,
+    retryDelay: 1000,
   });
 
   const backendReady = doctor?.checks.some(
