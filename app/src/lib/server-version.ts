@@ -20,7 +20,8 @@ function parseVersion(version: string): number[] | null {
   return [Number(match[1]), Number(match[2] ?? 0), Number(match[3] ?? 0)];
 }
 
-function isLocalServer(url: string): boolean {
+/** Return true when a server URL points at the local machine. */
+export function isLocalServer(url: string): boolean {
   try {
     const hostname = new URL(url).hostname.toLowerCase();
     return (

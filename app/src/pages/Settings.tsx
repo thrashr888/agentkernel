@@ -45,7 +45,11 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Settings as SettingsType, ServerEntry, SshTunnelConfig } from "@/lib/types";
-import { classifyLocalServerVersion, localServerVersionMessage } from "@/lib/server-version";
+import {
+  classifyLocalServerVersion,
+  isLocalServer,
+  localServerVersionMessage,
+} from "@/lib/server-version";
 
 function isRemoteServerUrl(value: string): boolean {
   try {
@@ -120,6 +124,17 @@ export function Settings() {
   const [appVersion, setAppVersion] = useState("");
 
   const activeServerEntry = servers.find((server) => server.name === activeServer);
+  const appManagedLocalServer = Boolean(
+    activeServerEntry &&
+      activeServerEntry.managed !== false &&
+      isLocalServer(activeServerEntry.url),
+  );
+  const { data: managedServerRunning = false } = useQuery({
+    queryKey: ["managed-server-status"],
+    queryFn: api.serverStatus,
+    enabled: appManagedLocalServer,
+    refetchInterval: 1000,
+  });
   const versionStatus = classifyLocalServerVersion(
     appVersion,
     status?.version ?? "",
@@ -278,6 +293,33 @@ export function Settings() {
       toast.error(prepareError instanceof Error ? prepareError.message : String(prepareError));
     } finally {
       setBackendPreparing(false);
+    }
+  }
+
+  async function handleServerToggle() {
+    setServerStarting(true);
+    try {
+      if (managedServerRunning) {
+        await api.stopServer();
+      } else {
+        await api.startServer();
+        // Give the child a short window to bind before refreshing health.
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          if ((await api.checkConnection().catch(() => "")) === "ok") break;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+      }
+      await queryClient.invalidateQueries({ queryKey: ["managed-server-status"] });
+      await queryClient.invalidateQueries({ queryKey: ["health"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["status"] }),
+        queryClient.invalidateQueries({ queryKey: ["doctor"] }),
+        queryClient.invalidateQueries({ queryKey: ["sandboxes"] }),
+      ]);
+    } catch (serverError) {
+      toast.error(serverError instanceof Error ? serverError.message : String(serverError));
+    } finally {
+      setServerStarting(false);
     }
   }
 
@@ -729,6 +771,35 @@ export function Settings() {
                 </Badge>
               </div>
             )}
+            <div className="flex items-center justify-between border-t pt-3">
+              <div>
+                <span className="text-sm font-medium">Desktop lifecycle</span>
+                <p className="text-xs text-muted-foreground">
+                  {appManagedLocalServer
+                    ? "The app owns this local server and stops it when it quits."
+                    : "This server is managed outside the desktop app."}
+                </p>
+              </div>
+              {appManagedLocalServer ? (
+                <Button
+                  variant={managedServerRunning ? "outline" : "default"}
+                  size="sm"
+                  onClick={() => void handleServerToggle()}
+                  disabled={serverStarting}
+                >
+                  {serverStarting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  {serverStarting
+                    ? managedServerRunning
+                      ? "Stopping..."
+                      : "Starting..."
+                    : managedServerRunning
+                      ? "Stop Server"
+                      : "Start Server"}
+                </Button>
+              ) : (
+                <Badge variant="secondary">External</Badge>
+              )}
+            </div>
             {isConnected && backendCheck && backendCheck.status !== "ok" && (
               <div className="space-y-3 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3">
                 <div>
@@ -759,38 +830,11 @@ export function Settings() {
                 </div>
               </div>
             )}
-            {!isConnected && (
+            {!isConnected && !appManagedLocalServer && (
               <div className="space-y-2 pt-1">
                 <p className="text-xs text-muted-foreground">
-                  The server is not reachable. Start it to manage sandboxes.
+                  The external server is not reachable. Start it outside the desktop app or check its connection settings.
                 </p>
-                <Button
-                  variant="default"
-                  size="sm"
-                  disabled={serverStarting}
-                  onClick={async () => {
-                    setServerStarting(true);
-                    try {
-                      await api.startServer();
-                      // Wait for server to bind
-                      await new Promise((r) => setTimeout(r, 2000));
-                      queryClient.invalidateQueries();
-                    } catch (e) {
-                      console.error("Failed to start server:", e);
-                    } finally {
-                      setServerStarting(false);
-                    }
-                  }}
-                >
-                  {serverStarting ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Starting...
-                    </>
-                  ) : (
-                    "Start Server"
-                  )}
-                </Button>
               </div>
             )}
           </div>
