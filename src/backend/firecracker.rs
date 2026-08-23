@@ -2,11 +2,12 @@
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use tokio::time::{Duration, sleep};
 
 use super::{BackendType, ExecResult, Sandbox, SandboxConfig};
+use crate::cow::{RootfsCow, RootfsCowStore};
 use crate::firecracker_client::{BootSource, Drive, FirecrackerClient, MachineConfig, VsockDevice};
 use crate::languages::docker_image_to_firecracker_runtime;
 use crate::vsock::VsockClient;
@@ -79,8 +80,9 @@ pub struct FirecrackerSandbox {
     vsock_cid: u32,
     kernel_path: Option<PathBuf>,
     rootfs_path: Option<PathBuf>,
-    /// Per-sandbox CoW copy of the rootfs, cleaned up on stop/drop
-    sandbox_rootfs: Option<PathBuf>,
+    /// Per-sandbox CoW rootfs, cleaned up on stop/drop only when ownership is
+    /// proven by the storage helper.
+    sandbox_rootfs: Option<RootfsCow>,
     running: bool,
 }
 
@@ -125,6 +127,17 @@ impl FirecrackerSandbox {
     pub fn with_rootfs(mut self, path: PathBuf) -> Self {
         self.rootfs_path = Some(path);
         self
+    }
+
+    /// Return the private rootfs image currently attached to this sandbox.
+    ///
+    /// Firecracker snapshots retain the path of their block device.  Callers
+    /// that need to preserve a snapshot across `stop` can copy this image
+    /// before stopping and restore it at the same path before loading the
+    /// snapshot.  The path is only available after `start` has prepared the
+    /// image and is not a promise that the file survives `stop`.
+    pub fn prepared_rootfs_path(&self) -> Option<&Path> {
+        self.sandbox_rootfs.as_ref().map(RootfsCow::path)
     }
 
     /// Find kernel path
@@ -221,7 +234,8 @@ impl FirecrackerSandbox {
 
         let rootfs_path = self
             .sandbox_rootfs
-            .clone()
+            .as_ref()
+            .map(|rootfs| rootfs.path().to_path_buf())
             .or_else(|| self.rootfs_path.clone())
             .or_else(|| Self::find_rootfs(&config.image).ok())
             .ok_or_else(|| anyhow::anyhow!("Rootfs path not set"))?;
@@ -281,6 +295,19 @@ impl FirecrackerSandbox {
 
         bail!("Guest agent not available after 10 seconds")
     }
+
+    fn abort_start(&mut self) {
+        if let Some(ref mut process) = self.process {
+            let _ = process.kill();
+            let _ = process.wait();
+        }
+        let _ = std::fs::remove_file(&self.socket_path);
+        let _ = std::fs::remove_file(&self.vsock_path);
+        if let Some(rootfs) = self.sandbox_rootfs.take() {
+            let _ = rootfs.cleanup();
+        }
+        self.running = false;
+    }
 }
 
 #[async_trait]
@@ -288,64 +315,63 @@ impl Sandbox for FirecrackerSandbox {
     async fn start(&mut self, config: &SandboxConfig) -> Result<()> {
         let firecracker_bin = find_firecracker()?;
 
-        // Create a per-sandbox CoW copy of the rootfs for filesystem isolation.
-        // Uses cp --reflink=auto for instant zero-copy on btrfs/XFS/APFS,
-        // falls back to a regular copy on filesystems without reflink support.
+        // Create a per-sandbox CoW rootfs for filesystem isolation.  The
+        // helper explicitly detects reflink support and falls back to the
+        // previous full-copy behavior.  Overlayfs is reported as a host
+        // capability but is not suitable for Firecracker's ext4 drive file.
         let base_rootfs = self
             .rootfs_path
             .clone()
             .or_else(|| Self::find_rootfs(&config.image).ok());
         if let Some(base) = base_rootfs {
-            let sandbox_path = PathBuf::from(format!("/tmp/agentkernel-{}-rootfs.ext4", self.name));
-            let reflink_ok = Command::new("cp")
-                .arg("--reflink=auto")
-                .arg(&base)
-                .arg(&sandbox_path)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if !reflink_ok {
-                std::fs::copy(&base, &sandbox_path).with_context(|| {
-                    format!(
-                        "Failed to copy rootfs {} -> {}",
-                        base.display(),
-                        sandbox_path.display()
-                    )
-                })?;
-            }
-            self.sandbox_rootfs = Some(sandbox_path);
+            let store = RootfsCowStore::open_default()?;
+            let rootfs = store
+                .prepare(&base)
+                .with_context(|| format!("failed to prepare writable rootfs for {}", self.name))?;
+            eprintln!(
+                "[firecracker] rootfs COW strategy={:?} path={}",
+                rootfs.strategy(),
+                rootfs.path().display()
+            );
+            self.sandbox_rootfs = Some(rootfs);
         }
 
-        // Start firecracker process
-        let process = Command::new(&firecracker_bin)
-            .arg("--api-sock")
-            .arg(&self.socket_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!("Failed to start firecracker: {}", firecracker_bin.display())
-            })?;
+        let startup = async {
+            // Start firecracker process
+            let process = Command::new(&firecracker_bin)
+                .arg("--api-sock")
+                .arg(&self.socket_path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .with_context(|| {
+                    format!("Failed to start firecracker: {}", firecracker_bin.display())
+                })?;
 
-        self.process = Some(process);
+            self.process = Some(process);
 
-        // Wait for socket
-        self.wait_for_socket().await?;
+            // Wait for socket, configure, start, and wait for the guest agent.
+            self.wait_for_socket().await?;
+            self.configure(config).await?;
+            self.start_instance().await?;
+            self.wait_for_agent().await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
 
-        // Configure the VM
-        self.configure(config).await?;
-
-        // Start the VM instance
-        self.start_instance().await?;
-
-        // Wait for guest agent
-        self.wait_for_agent().await?;
-
-        self.running = true;
-        Ok(())
+        match startup {
+            Ok(()) => {
+                self.running = true;
+                Ok(())
+            }
+            Err(error) => {
+                // Do not leave a partially started VM or its rootfs behind if
+                // startup fails after the COW artifact was published.
+                self.abort_start();
+                Err(error)
+            }
+        }
     }
 
     async fn exec(&mut self, cmd: &[&str]) -> Result<ExecResult> {
@@ -381,12 +407,13 @@ impl Sandbox for FirecrackerSandbox {
         // Clean up sockets and per-sandbox rootfs
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = std::fs::remove_file(&self.vsock_path);
-        if let Some(ref path) = self.sandbox_rootfs {
-            let _ = std::fs::remove_file(path);
-        }
-
+        let cleanup_result = self
+            .sandbox_rootfs
+            .take()
+            .map_or(Ok(()), |rootfs| rootfs.cleanup());
+        self.process = None;
         self.running = false;
-        Ok(())
+        cleanup_result
     }
 
     fn name(&self) -> &str {
@@ -442,8 +469,40 @@ impl Drop for FirecrackerSandbox {
         }
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = std::fs::remove_file(&self.vsock_path);
-        if let Some(ref path) = self.sandbox_rootfs {
-            let _ = std::fs::remove_file(path);
-        }
+        self.sandbox_rootfs.take();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stop_finalizes_state_when_rootfs_cleanup_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = RootfsCowStore::with_capabilities(
+            temp.path().join("cow"),
+            crate::cow::RootfsCowCapabilities {
+                reflink_copy: false,
+                overlayfs_available: false,
+            },
+        )
+        .unwrap();
+        let base = store.root().join("base.ext4");
+        std::fs::write(&base, b"rootfs contents").unwrap();
+        let rootfs = store.prepare(&base).unwrap();
+        let artifact_dir = rootfs.path().parent().unwrap().to_path_buf();
+        std::fs::remove_dir_all(&artifact_dir).unwrap();
+
+        let name = format!("stop-cleanup-test-{}", std::process::id());
+        let mut sandbox = FirecrackerSandbox::new(&name).unwrap();
+        sandbox.sandbox_rootfs = Some(rootfs);
+        sandbox.running = true;
+
+        let result = sandbox.stop().await;
+        assert!(result.is_err());
+        assert!(!sandbox.running);
+        assert!(sandbox.sandbox_rootfs.is_none());
+        assert!(sandbox.process.is_none());
     }
 }
