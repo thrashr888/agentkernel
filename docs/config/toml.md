@@ -43,6 +43,21 @@ NODE_VERSION = "22"           # Build arguments
 
 When `dockerfile` is specified, `agentkernel sandbox create` automatically builds the image.
 
+## [git]
+
+Configure per-sandbox host-side Git checkout isolation.
+
+```toml
+[git]
+worktree = true              # Same behavior as --git-worktree
+```
+
+When enabled, `sandbox create` creates a dedicated branch and checkout under
+`~/.local/share/agentkernel/worktrees`, then mounts that checkout at
+`/workspace`. The checkout is removed only when it is clean; uncommitted,
+untracked, or ignored agent changes are preserved and reported for explicit cleanup.
+The generated branch is retained so agent commits remain recoverable.
+
 ## [agent]
 
 AI agent settings.
