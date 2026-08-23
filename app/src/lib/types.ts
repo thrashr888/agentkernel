@@ -22,6 +22,21 @@ export interface RunOutput {
   output: string;
 }
 
+/** A command submitted to the parallel batch-run endpoint. */
+export interface BatchCommand {
+  command: string[];
+}
+
+/** Result for one command submitted to the parallel batch-run endpoint. */
+export interface BatchResult {
+  output?: string;
+  error?: string;
+}
+
+export interface BatchRunResponse {
+  results: BatchResult[];
+}
+
 export interface FileReadResponse {
   content: string;
   encoding: string;

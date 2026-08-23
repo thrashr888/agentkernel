@@ -217,6 +217,21 @@ impl ApiClient {
             .await
     }
 
+    /// Run multiple commands in parallel using the batch endpoint.
+    pub async fn batch_run(&self, commands: Vec<BatchCommand>) -> anyhow::Result<BatchRunResponse> {
+        #[derive(serde::Serialize)]
+        struct BatchRunRequest {
+            commands: Vec<BatchCommand>,
+        }
+
+        self.request(
+            reqwest::Method::POST,
+            "/batch/run",
+            Some(&BatchRunRequest { commands }),
+        )
+        .await
+    }
+
     // -----------------------------------------------------------------
     // Exec
     // -----------------------------------------------------------------

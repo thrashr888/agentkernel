@@ -498,6 +498,8 @@ pub fn run() {
             // docker images
             commands::images::list_images,
             commands::images::remove_image,
+            // parallel jobs
+            commands::batch::batch_run,
             // benchmark
             commands::benchmark::run_benchmark,
             // sessions
