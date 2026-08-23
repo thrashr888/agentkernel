@@ -1096,7 +1096,11 @@ impl AppState {
                     },
                     ..Default::default()
                 };
-                return (Some(fail_closed), None, Some(format!("Failed to load config: {e}")));
+                return (
+                    Some(fail_closed),
+                    None,
+                    Some(format!("Failed to load config: {e}")),
+                );
             }
         };
 
