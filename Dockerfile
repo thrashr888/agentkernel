@@ -31,6 +31,8 @@ COPY guest-agent ./guest-agent
 COPY claude-plugin ./claude-plugin
 COPY plugins ./plugins
 COPY templates ./templates
+COPY examples/agents/tested-versions.json ./examples/agents/tested-versions.json
+COPY docker ./docker
 COPY images/build ./images/build
 COPY images/kernel/microvm.config ./images/kernel/microvm.config
 

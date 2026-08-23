@@ -14,6 +14,9 @@
 !plugins/**
 !templates/
 !templates/**
+!examples/
+!examples/agents/
+!examples/agents/tested-versions.json
 !images/
 !images/build/
 !images/build/**
@@ -21,3 +24,4 @@
 !images/kernel/microvm.config
 !docker/
 !docker/entrypoint.sh
+!docker/Dockerfile.kvm-host

@@ -8,6 +8,17 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ## Unreleased
 
+## [v0.20.1](https://github.com/thrashr888/agentkernel/releases/tag/v0.20.1) — Packaging Roll-Forward
+
+_August 2026_
+
+### Fixed
+
+- **Docker and crates.io packaging** — include every repository file embedded with `include_str!`, including the tested agent catalog and Firecracker build inputs, in both the Docker build context and published CLI crate
+- **Packaging regression coverage** — verify that every embedded file is copied by the root Dockerfile, allowed by `.dockerignore`, and included in the Cargo package
+
+---
+
 ## [v0.20.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.20.0) — Platform Modernization
 
 _August 2026_

@@ -1,6 +1,6 @@
 [package]
 name = "agentkernel"
-version = "0.20.0"
+version = "0.20.1"
 edition = "2024"
 rust-version = "1.89"
 description = "Run AI coding agents in secure, isolated microVMs"
@@ -15,7 +15,10 @@ include = [
   "/claude-plugin/**/*",
   "/plugins/**/*",
   "/images/build/build-kernel.sh",
+  "/images/build/Dockerfile.kernel-builder",
   "/images/kernel/microvm.config",
+  "/examples/agents/tested-versions.json",
+  "/docker/Dockerfile.kvm-host",
   "/templates/*.toml",
   "/Cargo.toml",
   "/Cargo.lock",
