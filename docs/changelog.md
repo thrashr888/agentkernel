@@ -8,6 +8,39 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ## Unreleased
 
+## [v0.20.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.20.0) — Platform Modernization
+
+_August 2026_
+
+### Added
+
+- **Managed agent integrations** — the desktop app now uses a shared catalog of nine tested agent CLIs, shows installed versions and compatibility status, and previews project or global integration changes before applying them
+- **Desktop recovery actions** — unreachable servers and unavailable sandbox backends now offer direct Start Server, Prepare Backend, Retry, and Settings actions; server status remains available while a backend initializes
+- **Firecracker snapshot coverage** — added snapshot create/load support with vsock restoration overrides and an opt-in lifecycle, execution, networking, and snapshot smoke test
+- **Durable-store compatibility coverage** — added service round trips for Redis 7, Valkey 9.1, PostgreSQL 17, MySQL 8.4, and SQLite migration data preservation
+
+### Changed
+
+- **Alpine 3.24 default** — new sandboxes now use `alpine:3.24` across the CLI, API, pools, Kubernetes, Nomad, Helm, templates, and bundled agent images; existing explicit and persisted image selections remain unchanged
+- **Apple Container 1.2 support** — updated structured status and network parsing while retaining legacy output compatibility; non-macOS setup now fails explicitly instead of attempting Apple-only initialization
+- **Modern agent images** — bundled images now use Node.js 24 LTS and pinned versions of Codex, Claude Code, Gemini CLI, Copilot CLI, Amp, Pi, OpenCode, Hermes, and Symphony
+- **Provider SDK refresh** — migrated the Daytona bridge to the maintained `@daytona/sdk` package and refreshed the Runloop, E2B, and Modal adapters with contract tests
+- **Supported toolchains** — raised the Rust MSRV to 1.89; the Node SDK now requires Node.js 22.13 or newer and publishes tested ESM and CommonJS declarations
+
+### Fixed and secured
+
+- **Verified VM artifacts** — Firecracker and kernel downloads now verify pinned SHA-256 checksums; defaults are Firecracker `v1.16.1` and Linux `6.18.45`
+- **Apple Container networking** — fixed current IP discovery through `status.networks[].ipv4Address` while preserving legacy parsing
+- **Embedded guest agent** — synchronized standalone and embedded PTY sources to prevent release packaging drift
+- **Dependency security** — refreshed Rust, desktop, SDK, and build dependencies and modernized cryptographic and runtime integrations
+
+### Compatibility and CI
+
+- Added Rust feature-matrix checks, Nomad 1.10.5 and 2.0.4 lifecycle coverage, durable-store integration tests, agent-image smoke tests, and blocking Hyperlight x86_64 validation
+- Native Hyperlight arm64 remains a narrowly bounded upstream compatibility exception through November 30, 2026; the Firecracker KVM smoke test requires a labeled self-hosted KVM runner
+
+---
+
 ## [v0.19.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.19.0) — Agent Sandbox Expansion
 
 _August 2026_
