@@ -27,6 +27,7 @@ import type {
   PolicyActivationResult,
   PolicyEditorMaterial,
   PolicyAuditEntry,
+  QuotaStatus,
   LlmUsageEntry,
   LlmSpendReport,
   DurableObjectInfo,
@@ -220,6 +221,9 @@ export const api = {
     invoke<PolicyActivationResult>("activate_local_policy", { request }),
   getPolicyAudit: (last?: number) =>
     invoke<PolicyAuditEntry[]>("get_policy_audit", { last }),
+
+  // Resource quotas (enterprise)
+  getQuotas: () => invoke<QuotaStatus>("get_quotas"),
 
   // Interactive Permissions
   listPermissions: () => invoke<PermissionGrant[]>("list_permissions"),

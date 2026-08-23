@@ -488,6 +488,8 @@ pub fn run() {
             commands::policy::check_policy,
             commands::policy::reload_policy,
             commands::policy::get_policy_audit,
+            // quotas
+            commands::quotas::get_quotas,
             // settings
             commands::settings::get_settings,
             commands::settings::save_settings,

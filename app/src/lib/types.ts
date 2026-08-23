@@ -518,6 +518,32 @@ export interface PolicyAuditEntry {
   reason?: string;
 }
 
+export interface ResourceQuotaLimits {
+  max_running_sandboxes?: number;
+  max_total_sandboxes?: number;
+  max_total_vcpus?: number;
+  max_total_memory_mb?: number;
+}
+
+export interface QuotaUsage {
+  total_sandboxes: number;
+  running_sandboxes: number;
+  total_vcpus: number;
+  total_memory_mb: number;
+}
+
+export interface QuotaScopeStatus {
+  id: string;
+  limits: ResourceQuotaLimits;
+  usage: QuotaUsage;
+}
+
+export interface QuotaStatus {
+  enabled: boolean;
+  user: QuotaScopeStatus;
+  organization: QuotaScopeStatus;
+}
+
 // Interactive Permissions
 export type PermissionKind =
   | "sandbox_remove"

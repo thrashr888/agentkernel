@@ -53,6 +53,57 @@ curl -H "Authorization: Bearer your-secret" http://localhost:18888/sandboxes
 
 Multiple keys can be configured for key rotation or multi-tenant setups. Any valid key will authenticate the request.
 
+### Resource quota status (enterprise)
+
+```
+GET /quotas
+```
+
+Returns only the authenticated principal's user and organization scopes. It is
+safe for dashboards to poll this endpoint. Usage is reported even when
+`enabled` is `false`; limits are informational and no lifecycle request is
+denied. A server without enterprise quota support returns `404`, which
+clients should present as “quota reporting unavailable.”
+
+```json
+{
+  "success": true,
+  "data": {
+    "enabled": true,
+    "user": {
+      "id": "user-123",
+      "limits": {"max_running_sandboxes": 4, "max_total_vcpus": 16},
+      "usage": {"total_sandboxes": 2, "running_sandboxes": 1, "total_vcpus": 4, "total_memory_mb": 2048}
+    },
+    "organization": {
+      "id": "acme",
+      "limits": {"max_total_sandboxes": 100},
+      "usage": {"total_sandboxes": 12, "running_sandboxes": 5, "total_vcpus": 24, "total_memory_mb": 16384}
+    }
+  }
+}
+```
+
+Quota denials return HTTP `429` with a dimension-specific message and emit a
+`quota_denied` audit event. The check is serialized with the lifecycle
+mutation inside one daemon process, so concurrent HTTP create requests cannot
+oversubscribe a limit. Running multiple daemons against the same sandbox state
+is not yet a supported quota-enforcement topology.
+
+The quota-enforced surface is the persistent HTTP sandbox API: create, list,
+get, start, stop, resize, delete, logs, restore, and config import. Restore
+and import consume total capacity (restore is created stopped; its running
+slot is charged only when started). All sandbox-scoped HTTP routes—including
+exec, files, detached commands, browser, Git, and config export—are filtered
+to the authenticated user and organization. An explicit JWT `admin` role may
+cross owners. Requests for an unauthorized or legacy unowned sandbox return
+the same `404` as a missing sandbox; local CLI access is unaffected.
+
+Fast `/run` pool/ephemeral execution, CLI/MCP direct `VmManager` calls,
+scheduler autostart, and background object/task workers remain outside quota
+accounting. Multiple daemons sharing one sandbox state directory are not a
+supported quota-enforcement topology.
+
 ## Endpoints
 
 ### Health Check

@@ -12,6 +12,7 @@ pub mod llm_usage;
 pub mod objects;
 pub mod permissions;
 pub mod policy;
+pub mod quotas;
 pub mod sandboxes;
 pub mod schedules;
 pub mod secrets;

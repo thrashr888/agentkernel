@@ -528,6 +528,12 @@ impl ApiClient {
             .await
     }
 
+    /// Get the authenticated user's and organization's sandbox quotas.
+    pub async fn get_quotas(&self) -> anyhow::Result<crate::types::QuotaStatus> {
+        self.request(reqwest::Method::GET, "/quotas", None::<&()>)
+            .await
+    }
+
     /// Run policy check.
     pub async fn check_policy(
         &self,

@@ -55,6 +55,8 @@ tags:
     description: Authenticated, token-only LLM usage aggregates
   - name: SCIM
     description: Authenticated SCIM 2.0 user provisioning and group membership sync
+  - name: Quotas
+    description: Tenant-scoped enterprise resource quotas
 
 paths:
   /health:
@@ -122,6 +124,34 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /quotas:
+    get:
+      tags: [Quotas]
+      summary: Get tenant-scoped resource quota usage
+      description: |
+        Returns the authenticated user's and organization's configured limits
+        and current usage. When enterprise quotas are disabled, `enabled` is
+        false and usage is still returned for the authenticated tenant.
+        Quota accounting covers persistent HTTP create, list, get, start,
+        stop, resize, delete, logs, snapshot restore, and config import.
+        Snapshot restore is created stopped and consumes total capacity; its
+        running slot is charged when started. Ephemeral `/run`, CLI/MCP,
+        scheduler, and background object/task entrypoints are not
+        quota-accounted. All sandbox-scoped HTTP routes are owner-filtered;
+        only an explicit JWT `admin` role may cross owners. Unauthorized and
+        legacy unowned sandboxes return `404` without revealing ownership.
+      operationId: getQuotas
+      responses:
+        '200':
+          description: Quota status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuotaStatusResponse'
+        '401':
+          description: Authentication required when API keys are configured
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /run:
     post:
@@ -459,6 +489,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -553,6 +585,56 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /sandboxes/{name}/start:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+    post:
+      tags: [Sandboxes]
+      summary: Start a stopped sandbox
+      operationId: startSandbox
+      responses:
+        '200':
+          description: Sandbox started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /sandboxes/{name}/resize:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+    post:
+      tags: [Sandboxes]
+      summary: Resize a sandbox
+      operationId: resizeSandbox
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResizeSandboxRequest'
+      responses:
+        '200':
+          description: Sandbox resized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -1059,6 +1141,9 @@ paths:
       description: |
         Creates a new sandbox from a snapshot.
         Defaults to naming the restored sandbox "{original}-restored".
+        Snapshots are tenant-scoped; only the owning principal or an explicit
+        JWT `admin` may restore them. Restore consumes total quota capacity
+        and returns `429` when the authenticated tenant is at its limit.
       operationId: restoreSnapshot
       requestBody:
         content:
@@ -1082,6 +1167,8 @@ paths:
                 $ref: '#/components/schemas/RestoreSnapshotResponse'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -1996,6 +2083,70 @@ components:
         Resources:
           type: array
           items: {type: object}
+    QuotaLimits:
+      type: object
+      properties:
+        max_running_sandboxes:
+          type: integer
+          minimum: 0
+          description: Maximum concurrently running sandboxes; zero denies starts.
+        max_total_sandboxes:
+          type: integer
+          minimum: 0
+          description: Maximum persisted sandboxes, including stopped sandboxes.
+        max_total_vcpus:
+          type: integer
+          minimum: 0
+        max_total_memory_mb:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+
+    QuotaUsage:
+      type: object
+      required: [total_sandboxes, running_sandboxes, total_vcpus, total_memory_mb]
+      properties:
+        total_sandboxes:
+          type: integer
+        running_sandboxes:
+          type: integer
+        total_vcpus:
+          type: integer
+        total_memory_mb:
+          type: integer
+
+    QuotaScopeStatus:
+      type: object
+      required: [id, limits, usage]
+      properties:
+        id:
+          type: string
+        limits:
+          $ref: '#/components/schemas/QuotaLimits'
+        usage:
+          $ref: '#/components/schemas/QuotaUsage'
+
+    QuotaStatus:
+      type: object
+      required: [enabled, user, organization]
+      properties:
+        enabled:
+          type: boolean
+        user:
+          $ref: '#/components/schemas/QuotaScopeStatus'
+        organization:
+          $ref: '#/components/schemas/QuotaScopeStatus'
+
+    QuotaStatusResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/QuotaStatus'
+        error:
+          type: string
     RunRequest:
       type: object
       required: [command]
@@ -2163,6 +2314,17 @@ components:
           description: User-defined description
         lifecycle:
           $ref: '#/components/schemas/LifecyclePolicy'
+
+    ResizeSandboxRequest:
+      type: object
+      properties:
+        vcpus:
+          type: integer
+          minimum: 1
+        memory_mb:
+          type: integer
+          minimum: 1
+      minProperties: 1
 
     PatchSandboxRequest:
       type: object
@@ -3187,6 +3349,16 @@ components:
           example:
             success: false
             error: "git commit failed"
+
+    QuotaExceeded:
+      description: Tenant resource quota denied the lifecycle request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Resource quota denied: organization quota exceeded for max_total_sandboxes: current 12, requested 1, limit 12"
 
     InternalError:
       description: Internal server error
