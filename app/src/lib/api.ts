@@ -25,6 +25,7 @@ import type {
   PolicyReloadResult,
   PolicyActivationRequest,
   PolicyActivationResult,
+  PolicyEditorMaterial,
   PolicyAuditEntry,
   LlmUsageEntry,
   LlmSpendReport,
@@ -211,6 +212,7 @@ export const api = {
 
   // Policy (enterprise)
   getPolicyStatus: () => invoke<PolicyStatus>("get_policy_status"),
+  getLocalPolicyMaterial: () => invoke<PolicyEditorMaterial>("get_local_policy_material"),
   checkPolicy: (action: string, sandbox: string) =>
     invoke<PolicyCheckResult>("check_policy", { action, sandbox }),
   reloadPolicy: () => invoke<PolicyReloadResult>("reload_policy"),

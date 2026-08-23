@@ -426,6 +426,16 @@ pub struct PolicyActivationRequest {
     pub policy: String,
 }
 
+/// Material loaded into the desktop's local policy editor. Paths are
+/// informational; activation still resolves and validates them server-side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyEditorMaterial {
+    pub config: String,
+    pub policy: String,
+    pub config_path: String,
+    pub policy_path: String,
+}
+
 /// Result of an app-owned local policy activation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyActivationResult {

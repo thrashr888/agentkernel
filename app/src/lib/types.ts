@@ -491,6 +491,13 @@ export interface PolicyActivationRequest {
   policy: string;
 }
 
+export interface PolicyEditorMaterial {
+  config: string;
+  policy: string;
+  config_path: string;
+  policy_path: string;
+}
+
 export interface PolicyActivationResult {
   status: PolicyStatus;
   config_path: string;

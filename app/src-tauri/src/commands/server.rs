@@ -238,16 +238,15 @@ pub fn start_owned_server(
 
     let mut command = Command::new(&binary);
     command.args(["serve", "--host", "127.0.0.1", "--port", &port.to_string()]);
-    // A first-run app has no config yet. Once activation writes it, every
-    // subsequent launch passes the canonical explicit path.
-    if config_path.exists() {
-        command.args([
-            "--config",
-            config_path
-                .to_str()
-                .ok_or_else(|| "Server config path is not valid UTF-8".to_string())?,
-        ]);
-    }
+    // Always pass the canonical path, including on first launch. This keeps
+    // the server's policy/config resolution stable instead of depending on
+    // whichever working directory launched the desktop app.
+    command.args([
+        "--config",
+        config_path
+            .to_str()
+            .ok_or_else(|| "Server config path is not valid UTF-8".to_string())?,
+    ]);
     let child = command
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -257,6 +256,18 @@ pub fn start_owned_server(
     let pid = child.id();
     *child_lock = Some(child);
     Ok(format!("Server started (PID {pid}) on port {port}"))
+}
+
+/// Restart only the child process spawned by this desktop instance.
+///
+/// A remote or separately managed server is never represented by
+/// `ServerProcess`, so it cannot be stopped or restarted through this path.
+pub fn restart_owned_server(
+    server_process: &ServerProcess,
+    app_state: &AppState,
+) -> Result<String, String> {
+    let _ = server_process.stop()?;
+    start_owned_server(server_process, app_state)
 }
 
 /// Start the app-owned server when the desktop application launches.

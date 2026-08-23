@@ -26,6 +26,7 @@ use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::time::{Duration, sleep};
@@ -7227,6 +7228,13 @@ pub async fn run_server_with_tls_config(
     webhook_urls: Vec<String>,
     config_path: Option<std::path::PathBuf>,
 ) -> Result<()> {
+    // Resolve the path once at process start. The policy engine, API status,
+    // and scheduler must all refer to the same file even when the process is
+    // launched from a different working directory later.
+    let config_path = config_path
+        .as_deref()
+        .map(canonical_config_path)
+        .transpose()?;
     let acceptor = match tls_config {
         Some(ref tls) => {
             let acceptor = tls.load_or_generate()?;
@@ -7306,6 +7314,33 @@ pub async fn run_server_with_tls_config(
             }
         });
     }
+}
+
+/// Resolve a server configuration path without requiring the file to exist.
+/// Existing path components are canonicalized so symlinks cannot make the
+/// status endpoint report a different file from the one the server loaded.
+fn canonical_config_path(path: &Path) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    if absolute.exists() {
+        return Ok(std::fs::canonicalize(absolute)?);
+    }
+
+    let file_name = absolute
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Server configuration path has no file name"))?;
+    let parent = absolute
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Server configuration path has no parent"))?;
+    let canonical_parent = if parent.exists() {
+        std::fs::canonicalize(parent)?
+    } else {
+        parent.to_path_buf()
+    };
+    Ok(canonical_parent.join(file_name))
 }
 
 // ---------------------------------------------------------------------------
@@ -9969,6 +10004,22 @@ init_script = "echo ready"
         let body = response.text().await.unwrap();
         assert!(!body.contains("metrics"));
         task.await.unwrap();
+    }
+
+    #[test]
+    fn explicit_config_path_is_canonical_even_before_first_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let path = nested.join("agentkernel.toml");
+        let canonical = canonical_config_path(&path).unwrap();
+        assert!(canonical.is_absolute());
+        assert_eq!(
+            canonical,
+            std::fs::canonicalize(&nested)
+                .unwrap()
+                .join("agentkernel.toml")
+        );
     }
 
     #[cfg(test)]

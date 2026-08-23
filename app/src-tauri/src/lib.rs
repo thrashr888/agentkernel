@@ -483,6 +483,8 @@ pub fn run() {
             commands::permissions::check_permission,
             // policy
             commands::policy::get_policy_status,
+            commands::policy::get_local_policy_material,
+            commands::policy::activate_local_policy,
             commands::policy::check_policy,
             commands::policy::reload_policy,
             commands::policy::get_policy_audit,
