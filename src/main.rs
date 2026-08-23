@@ -62,6 +62,7 @@ mod volume;
 mod vsock;
 #[allow(dead_code)]
 mod vsock_secrets;
+mod workspace_scheduler;
 
 // Enterprise modules (behind feature flag)
 // identity has public API surface for CLI login, middleware, and Cedar helpers
@@ -274,6 +275,9 @@ enum Commands {
         /// Path to file containing API keys (one per line)
         #[arg(long)]
         api_key_file: Option<String>,
+        /// Path to the agentkernel.toml used by the server and scheduler
+        #[arg(short = 'c', long)]
+        config: Option<PathBuf>,
         /// Enable TLS for the API server
         #[arg(long)]
         tls: bool,
@@ -2583,6 +2587,7 @@ memory_mb = 512
             port,
             api_key,
             api_key_file,
+            config,
             tls,
             tls_cert,
             tls_key,
@@ -2632,8 +2637,15 @@ memory_mb = 512
                 None
             };
 
-            http_api::run_server_with_tls(addr, tls_config, api_keys, otel_endpoint, webhook_url)
-                .await?;
+            http_api::run_server_with_tls_config(
+                addr,
+                tls_config,
+                api_keys,
+                otel_endpoint,
+                webhook_url,
+                config,
+            )
+            .await?;
         }
         Commands::Ssh { action } => match action {
             SshAction::Connect {

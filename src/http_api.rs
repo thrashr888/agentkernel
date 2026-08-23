@@ -6806,11 +6806,34 @@ async fn execute_runtime_activity(activity: &RuntimeActivity) -> Result<String> 
 }
 
 /// Run the HTTP API server (plain HTTP)
+fn spawn_workspace_scheduler(state: Arc<AppState>, config_path: Option<&std::path::Path>) {
+    let Some(manager) = state.vm_manager.get().cloned() else {
+        return;
+    };
+
+    let default_config_path = std::path::Path::new("agentkernel.toml");
+    let config_path = config_path.unwrap_or(default_config_path);
+    let scheduling = match crate::config::Config::from_file(config_path) {
+        Ok(config) => config.scheduling,
+        Err(error) if config_path.exists() => {
+            eprintln!(
+                "[workspace-scheduler] unable to load {}: {error}",
+                config_path.display()
+            );
+            return;
+        }
+        Err(_) => crate::config::WorkspaceSchedulingConfig::default(),
+    };
+    let _ = crate::workspace_scheduler::spawn_enforcement_loop(manager, scheduling);
+}
+
+/// Run the HTTP API server (plain HTTP)
 #[allow(dead_code)]
 pub async fn run_server(addr: SocketAddr, api_keys: Vec<String>) -> Result<()> {
     let state = Arc::new(AppState::new(api_keys, None, vec![]));
     spawn_orchestration_worker(state.clone());
     spawn_task_worker(state.clone());
+    spawn_workspace_scheduler(state.clone(), None);
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) = (
         state.orchestration_store.clone(),
@@ -6857,12 +6880,33 @@ pub async fn run_server(addr: SocketAddr, api_keys: Vec<String>) -> Result<()> {
 ///
 /// If `tls_config.require_tls` is set but no TLS config is provided, this
 /// function returns an error immediately.
+#[allow(dead_code)]
 pub async fn run_server_with_tls(
     addr: SocketAddr,
     tls_config: Option<crate::tls::TlsConfig>,
     api_keys: Vec<String>,
     otel_endpoint: Option<String>,
     webhook_urls: Vec<String>,
+) -> Result<()> {
+    run_server_with_tls_config(
+        addr,
+        tls_config,
+        api_keys,
+        otel_endpoint,
+        webhook_urls,
+        None,
+    )
+    .await
+}
+
+/// Run the HTTP API server with an explicit configuration path.
+pub async fn run_server_with_tls_config(
+    addr: SocketAddr,
+    tls_config: Option<crate::tls::TlsConfig>,
+    api_keys: Vec<String>,
+    otel_endpoint: Option<String>,
+    webhook_urls: Vec<String>,
+    config_path: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let acceptor = match tls_config {
         Some(ref tls) => {
@@ -6875,6 +6919,7 @@ pub async fn run_server_with_tls(
     let state = Arc::new(AppState::new(api_keys, otel_endpoint, webhook_urls));
     spawn_orchestration_worker(state.clone());
     spawn_task_worker(state.clone());
+    spawn_workspace_scheduler(state.clone(), config_path.as_deref());
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) = (
         state.orchestration_store.clone(),
