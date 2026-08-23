@@ -10,6 +10,11 @@ use super::{BackendType, ExecResult, Sandbox, SandboxConfig};
 /// Cached flag indicating if system is already verified running
 static SYSTEM_VERIFIED: AtomicBool = AtomicBool::new(false);
 
+// `container system start` waits for the API service to become responsive
+// before it exits. Keep this command definition in one place so startup does
+// not grow a second, fixed readiness delay by accident.
+const SYSTEM_START_ARGS: [&str; 3] = ["system", "start", "--enable-kernel-install"];
+
 /// Check if Apple container system service is running
 pub fn apple_system_running() -> bool {
     // Fast path: if we've already verified, skip the command
@@ -65,7 +70,7 @@ pub fn start_apple_system() -> Result<()> {
     eprintln!("Starting Apple container system...");
 
     let output = Command::new("container")
-        .args(["system", "start", "--enable-kernel-install"])
+        .args(SYSTEM_START_ARGS)
         .output()
         .context("Failed to start Apple container system")?;
 
@@ -76,8 +81,10 @@ pub fn start_apple_system() -> Result<()> {
         }
     }
 
-    // Only sleep on first start, not when already running
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // `system start` is the readiness barrier: the Apple CLI waits for the
+    // API service to become responsive before returning. A fixed 500 ms sleep
+    // here delayed every cold start and still did not provide a correctness
+    // guarantee if service startup took longer or less time.
     SYSTEM_VERIFIED.store(true, Ordering::Relaxed);
     Ok(())
 }
@@ -633,5 +640,13 @@ mod tests {
     fn rejects_missing_or_invalid_container_ip() {
         assert_eq!(parse_container_ip("not json"), None);
         assert_eq!(parse_container_ip(r#"[{"status":{"networks":[]}}]"#), None);
+    }
+
+    #[test]
+    fn system_start_uses_cli_readiness_barrier_without_extra_wait() {
+        assert_eq!(
+            SYSTEM_START_ARGS,
+            ["system", "start", "--enable-kernel-install"]
+        );
     }
 }

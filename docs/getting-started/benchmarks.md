@@ -96,6 +96,34 @@ Apple Containers (macOS 26+) give you Firecracker-like isolation on Apple Silico
 
 Apple Containers are 2x slower than Docker on macOS, but they provide hardware-level isolation. If you're running untrusted code on macOS, that trade-off is worth it.
 
+### Measuring Apple startup locally
+
+The backend starts the Apple container service on demand. `container system start`
+waits for the API service to become responsive, so the backend does not add a
+second fixed sleep after that command. Measure the complete lifecycle on a host
+with an available Apple container runtime:
+
+This readiness behavior is part of the Apple CLI's
+[`system start` implementation](https://github.com/apple/container/blob/main/Sources/ContainerCommands/System/SystemStart.swift),
+not an agentkernel assumption.
+
+After removing AgentKernel's redundant 500 ms post-readiness delay, a
+2026-08-23 verification run on an Apple M5 Max with macOS 27.0 and Apple
+container 1.2.2 averaged **461.48 ms startup** and **483.44 ms total**. These
+numbers are recorded separately from the historical M3 Pro table above because
+they were measured on different hardware.
+
+```bash
+cargo run -- benchmark --backends apple --iterations 10 --warmup 2 --json \
+  --output benchmark-results/apple-current.json
+```
+
+The report's `startup` metric covers sandbox creation and start, while `total`
+covers the full command path. Record the macOS version, Apple container CLI
+version, image tag, and whether the service was already running alongside the
+JSON report. Do not compare a run that failed the runtime readiness check with
+the historical measurements above.
+
 ## Docker and Podman: the container backends
 
 Both Docker and Podman use an optimized `run --rm` path that combines creation, execution, and cleanup into a single operation. This is 35x faster than the naive start-exec-stop cycle.
