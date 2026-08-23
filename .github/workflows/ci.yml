@@ -164,7 +164,6 @@ jobs:
         run: cargo build
       - name: Run Docker integration tests
         run: cargo test --test cli_test --test sandbox_lifecycle_test --test file_operations_test -- --ignored
-        continue-on-error: true  # Docker tests may be flaky in CI
 
   # Security audit
   security:

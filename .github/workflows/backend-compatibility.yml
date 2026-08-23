@@ -1,0 +1,79 @@
+name: Backend compatibility
+
+on:
+  pull_request:
+    branches: [main, codex/apple-container-1-2-modernization, codex/modernization-followups]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/backend/**
+      - src/docker_backend.rs
+      - src/hyperlight_backend.rs
+      - src/vmm.rs
+      - tests/container_backend_smoke.rs
+      - scripts/**
+      - .github/workflows/backend-compatibility.yml
+  schedule:
+    - cron: "23 8 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.89"
+
+jobs:
+  deterministic:
+    name: Deterministic backend and provider checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: backend-deterministic
+      - name: Check default backend surface
+        run: cargo check --locked --all-targets
+      - name: Check no-default backend surface
+        run: cargo check --locked --no-default-features --all-targets
+      - name: Check provider and bridge contracts with fake clients
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: scripts/package-lock.json
+      - run: npm ci
+        working-directory: scripts
+      - run: npm test
+        working-directory: scripts
+
+  container-smoke:
+    name: ${{ matrix.backend }} lifecycle smoke
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [docker, podman]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: container-${{ matrix.backend }}
+      - name: Install Podman
+        if: matrix.backend == 'podman'
+        run: sudo apt-get update && sudo apt-get install --yes podman
+      - name: Build test binary
+        run: cargo build --locked
+      - name: Run ${{ matrix.backend }} contract
+        env:
+          AGENTKERNEL_CONTAINER_BACKEND: ${{ matrix.backend }}
+        run: cargo test --locked --test container_backend_smoke -- --ignored --nocapture

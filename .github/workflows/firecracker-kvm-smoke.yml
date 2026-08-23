@@ -1,6 +1,8 @@
 name: Firecracker KVM Smoke
 
 on:
+  schedule:
+    - cron: "59 7 * * 6"
   workflow_dispatch:
     inputs:
       confirm_safe_runner:
@@ -14,7 +16,7 @@ permissions:
 
 jobs:
   native-kvm-smoke:
-    if: ${{ inputs.confirm_safe_runner }}
+    if: ${{ github.event_name == 'schedule' || inputs.confirm_safe_runner }}
     runs-on: [self-hosted, Linux, X64, agentkernel-kvm-safe]
     timeout-minutes: 30
     env:

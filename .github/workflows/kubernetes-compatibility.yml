@@ -1,0 +1,77 @@
+name: Kubernetes compatibility
+
+on:
+  pull_request:
+    branches: [main, codex/apple-container-1-2-modernization, codex/modernization-followups]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/backend/kubernetes.rs
+      - src/backend/kubernetes_operator.rs
+      - src/config.rs
+      - tests/kubernetes_integration_test.rs
+      - .github/workflows/kubernetes-compatibility.yml
+  schedule:
+    - cron: "47 8 * * 4"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.89"
+
+jobs:
+  compatibility:
+    name: Kubernetes ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: "1.34.0"
+            cluster: agentkernel-134
+          - version: "1.35.0"
+            cluster: agentkernel-135
+          - version: "1.36.0"
+            cluster: agentkernel-136
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: kubernetes-${{ matrix.version }}
+      - name: Start kind cluster
+        uses: helm/kind-action@v1
+        with:
+          node_image: kindest/node:v${{ matrix.version }}
+          cluster_name: ${{ matrix.cluster }}
+      - name: Create test namespace
+        run: kubectl create namespace agentkernel-test
+      - name: Run lifecycle compatibility tests
+        run: >-
+          cargo test --locked --features kubernetes
+          --test kubernetes_integration_test test_kubernetes_lifecycle
+          -- --ignored --nocapture --test-threads=1
+      - name: Run exec compatibility tests
+        run: >-
+          cargo test --locked --features kubernetes
+          --test kubernetes_integration_test test_kubernetes_exec_with_env
+          -- --ignored --nocapture --test-threads=1
+      - name: Run file injection compatibility tests
+        run: >-
+          cargo test --locked --features kubernetes
+          --test kubernetes_integration_test test_kubernetes_file_injection
+          -- --ignored --nocapture --test-threads=1
+      - name: Collect cluster diagnostics
+        if: failure()
+        run: |
+          kubectl get pods --all-namespaces -o wide || true
+          kubectl describe namespace agentkernel-test || true
+      - name: Delete test namespace
+        if: always()
+        run: kubectl delete namespace agentkernel-test --ignore-not-found --wait=false
