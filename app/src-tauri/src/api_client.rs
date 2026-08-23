@@ -778,6 +778,38 @@ impl ApiClient {
         Ok(())
     }
 
+    /// Show container-runtime disk usage by resource type.
+    pub async fn image_disk_usage(
+        &self,
+    ) -> anyhow::Result<Vec<crate::types::DockerImageDiskUsage>> {
+        self.request(reqwest::Method::GET, "/images/usage", None::<&()>)
+            .await
+    }
+
+    /// Pull an image into the local container-runtime cache.
+    pub async fn pull_image(&self, image: &str) -> anyhow::Result<String> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            image: &'a str,
+        }
+        self.request(reqwest::Method::POST, "/images/pull", Some(&Body { image }))
+            .await
+    }
+
+    /// Remove unused images. AgentKernel-only pruning leaves unrelated images alone.
+    pub async fn prune_images(&self, agentkernel_only: bool) -> anyhow::Result<String> {
+        #[derive(serde::Serialize)]
+        struct Body {
+            agentkernel_only: bool,
+        }
+        self.request(
+            reqwest::Method::POST,
+            "/images/prune",
+            Some(&Body { agentkernel_only }),
+        )
+        .await
+    }
+
     // -----------------------------------------------------------------
     // Benchmark
     // -----------------------------------------------------------------

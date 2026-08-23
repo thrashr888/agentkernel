@@ -307,6 +307,14 @@ export interface DockerImage {
   created: string;
 }
 
+export interface DockerImageDiskUsage {
+  type: string;
+  total: string;
+  active: string;
+  size: string;
+  reclaimable: string;
+}
+
 // Benchmark
 export interface BenchmarkResult {
   create_ms: number;

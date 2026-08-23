@@ -34,6 +34,7 @@ import type {
   StoreExecuteResult,
   StoreCommandResult,
   DockerImage,
+  DockerImageDiskUsage,
   BenchmarkResult,
   SessionSummary,
   SandboxSession,
@@ -177,6 +178,10 @@ export const api = {
   // Docker Images
   listImages: () => invoke<DockerImage[]>("list_images"),
   removeImage: (id: string) => invoke<void>("remove_image", { id }),
+  imageDiskUsage: () => invoke<DockerImageDiskUsage[]>("image_disk_usage"),
+  pullImage: (image: string) => invoke<string>("pull_image", { image }),
+  pruneImages: (agentkernelOnly = true) =>
+    invoke<string>("prune_images", { agentkernel_only: agentkernelOnly }),
 
   // Benchmark
   runBenchmark: () => invoke<BenchmarkResult>("run_benchmark"),
