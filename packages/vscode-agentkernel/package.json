@@ -1,0 +1,129 @@
+{
+  "name": "agentkernel-vscode",
+  "displayName": "AgentKernel Sandboxes",
+  "description": "List AgentKernel sandboxes and open running sandboxes with VS Code Remote - SSH.",
+  "version": "0.1.0",
+  "publisher": "thrashr888",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thrashr888/agentkernel",
+    "directory": "packages/vscode-agentkernel"
+  },
+  "bugs": {
+    "url": "https://github.com/thrashr888/agentkernel/issues"
+  },
+  "homepage": "https://github.com/thrashr888/agentkernel",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "extensionKind": [
+    "ui"
+  ],
+  "extensionDependencies": [
+    "ms-vscode-remote.remote-ssh"
+  ],
+  "categories": [
+    "Other",
+    "Remote Development"
+  ],
+  "keywords": [
+    "agentkernel",
+    "sandbox",
+    "remote ssh",
+    "remote development"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onView:agentkernel.sandboxes",
+    "onCommand:agentkernel.refreshSandboxes",
+    "onCommand:agentkernel.connectToSandbox"
+  ],
+  "contributes": {
+    "views": {
+      "explorer": [
+        {
+          "id": "agentkernel.sandboxes",
+          "name": "AgentKernel Sandboxes",
+          "when": "true"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "agentkernel.refreshSandboxes",
+        "title": "AgentKernel: Refresh Sandboxes",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agentkernel.connectToSandbox",
+        "title": "AgentKernel: Connect to Sandbox"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "agentkernel.refreshSandboxes",
+          "when": "view == agentkernel.sandboxes",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "agentkernel.connectToSandbox",
+          "when": "view == agentkernel.sandboxes && viewItem == agentkernel.sandbox.running",
+          "group": "inline"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AgentKernel",
+      "properties": {
+        "agentkernel.apiUrl": {
+          "type": "string",
+          "default": "http://localhost:18888",
+          "description": "AgentKernel HTTP API URL.",
+          "scope": "machine-overridable"
+        },
+        "agentkernel.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Bearer token for the AgentKernel HTTP API.",
+          "password": true,
+          "scope": "machine-overridable"
+        },
+        "agentkernel.cliPath": {
+          "type": "string",
+          "default": "agentkernel",
+          "description": "Path to the AgentKernel CLI used to generate SSH configuration.",
+          "scope": "machine-overridable"
+        },
+        "agentkernel.sshConfigPath": {
+          "type": "string",
+          "default": "~/.ssh/config",
+          "description": "OpenSSH config file to update before connecting.",
+          "scope": "machine-overridable"
+        },
+        "agentkernel.refreshInterval": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "maximum": 3600,
+          "description": "Seconds between automatic sandbox list refreshes. Set to 0 to disable automatic refresh.",
+          "scope": "machine-overridable"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p tsconfig.json",
+    "check": "npm run compile -- --noEmit",
+    "test": "npm run compile && node --test test/*.test.js",
+    "package": "npm run compile && npx --yes @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.7.2"
+  }
+}
