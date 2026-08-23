@@ -390,6 +390,7 @@ mod tests {
             endpoints: Vec::new(),
             work_dir: None,
             container_work_dir: None,
+            git_worktree: None,
             config_path: None,
             ttl_seconds: None,
             expires_at: None,
