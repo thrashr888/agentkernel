@@ -553,6 +553,7 @@ mod tests {
                 url: "https://policy.example.test".to_string(),
                 api_key: None,
                 managed: Some(false),
+                ssh_tunnel: None,
                 config_path: None,
             }],
             theme: "system".to_string(),

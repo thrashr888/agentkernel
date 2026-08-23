@@ -7243,12 +7243,7 @@ pub async fn run_server_with_tls_config(
         None => None,
     };
 
-    let mut app_state = AppState::new(
-        api_keys,
-        otel_endpoint,
-        webhook_urls,
-        config_path.clone(),
-    );
+    let mut app_state = AppState::new(api_keys, otel_endpoint, webhook_urls, config_path.clone());
     app_state.configure_job_scheduler(config_path.as_deref())?;
     app_state.start_job_scheduler();
     let state = Arc::new(app_state);
