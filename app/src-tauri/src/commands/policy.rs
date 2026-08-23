@@ -41,8 +41,8 @@ struct FileSnapshot {
 /// desktop owns the policy file name so a config cannot redirect activation
 /// to an arbitrary path outside its app-managed config directory.
 fn prepare_activation(request: &PolicyActivationRequest) -> Result<String, String> {
-    let mut config: toml::Value = toml::from_str(&request.config)
-        .map_err(|e| format!("Invalid AgentKernel TOML: {e}"))?;
+    let mut config: toml::Value =
+        toml::from_str(&request.config).map_err(|e| format!("Invalid AgentKernel TOML: {e}"))?;
 
     let table = config
         .as_table_mut()
@@ -85,7 +85,10 @@ fn temporary_path(path: &Path) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("file");
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
     path.with_file_name(format!(".{name}.tmp-{}-{nanos}", std::process::id()))
 }
 
@@ -115,8 +118,7 @@ fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), String> {
         file.sync_all()
             .map_err(|e| format!("Failed to sync {}: {e}", temp.display()))?;
         drop(file);
-        fs::rename(&temp, path)
-            .map_err(|e| format!("Failed to replace {}: {e}", path.display()))
+        fs::rename(&temp, path).map_err(|e| format!("Failed to replace {}: {e}", path.display()))
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temp);
@@ -132,15 +134,15 @@ fn replacement_mode(path: &Path) -> u32 {
     // Config and policy files can contain API keys and tenant authorization
     // rules. New files are private, and an existing private mode (including
     // read-only modes) is preserved. A previously broad mode is hardened.
-    existing
-        .filter(|mode| mode & 0o077 == 0)
-        .unwrap_or(0o600)
+    existing.filter(|mode| mode & 0o077 == 0).unwrap_or(0o600)
 }
 
 fn backup_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(
         "{}.bak",
-        path.file_name().and_then(|name| name.to_str()).unwrap_or("file")
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("file")
     ))
 }
 
@@ -159,7 +161,10 @@ fn restore(snapshot: &FileSnapshot) -> Result<(), String> {
         None => match fs::remove_file(&snapshot.path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("Failed to remove {}: {error}", snapshot.path.display())),
+            Err(error) => Err(format!(
+                "Failed to remove {}: {error}",
+                snapshot.path.display()
+            )),
         },
     }
 }
@@ -437,9 +442,7 @@ pub async fn activate_local_policy(
         &prepared_config,
         &request.policy,
         expected_enabled,
-        || async {
-            crate::commands::server::restart_owned_server(&server_process, &state)
-        },
+        || async { crate::commands::server::restart_owned_server(&server_process, &state) },
         |verification| {
             let client = client.clone();
             async move {
@@ -604,12 +607,21 @@ mod tests {
         let snapshot = snapshot(&config_path).unwrap();
         let backup = write_backup(&snapshot).unwrap().unwrap();
         atomic_write(&config_path, b"new config").unwrap();
-        assert_eq!(fs::metadata(&config_path).unwrap().permissions().mode() & 0o777, 0o600);
-        assert_eq!(fs::metadata(backup).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&config_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(backup).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
 
         fs::set_permissions(&config_path, fs::Permissions::from_mode(0o400)).unwrap();
         atomic_write(&config_path, b"private config").unwrap();
-        assert_eq!(fs::metadata(&config_path).unwrap().permissions().mode() & 0o777, 0o400);
+        assert_eq!(
+            fs::metadata(&config_path).unwrap().permissions().mode() & 0o777,
+            0o400
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -675,7 +687,10 @@ mod tests {
         assert_eq!(restart_count, 1);
         assert_eq!(verification_count, 1);
         assert!(!result.rolled_back);
-        assert_eq!(fs::read_to_string(&config_path).unwrap(), "[enterprise]\nenabled = true\npolicy_file = \"policy.cedar\"\n");
+        assert_eq!(
+            fs::read_to_string(&config_path).unwrap(),
+            "[enterprise]\nenabled = true\npolicy_file = \"policy.cedar\"\n"
+        );
         assert_eq!(
             fs::read_to_string(&policy_path).unwrap(),
             "permit(principal, action, resource);"
@@ -729,10 +744,7 @@ mod tests {
         assert!(error.contains("sidecar initialization failed"));
         assert_eq!(restart_count, 2);
         assert_eq!(verification_kinds.len(), 2);
-        assert!(matches!(
-            verification_kinds[1],
-            PolicyVerification::Healthy
-        ));
+        assert!(matches!(verification_kinds[1], PolicyVerification::Healthy));
         assert_eq!(fs::read_to_string(&config_path).unwrap(), old_config_text);
         assert_eq!(fs::read_to_string(&policy_path).unwrap(), old_policy_text);
         let _ = fs::remove_dir_all(dir);
