@@ -526,6 +526,7 @@ pub struct BenchmarkResult {
     pub destroy_ms: f64,
     pub total_ms: f64,
     pub image: String,
+    pub backend: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub timestamp: String,

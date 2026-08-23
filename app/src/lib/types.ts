@@ -299,6 +299,7 @@ export interface BenchmarkResult {
   destroy_ms: number;
   total_ms: number;
   image: string;
+  backend: string;
   started_at?: string;
   finished_at?: string;
   timestamp: string;
