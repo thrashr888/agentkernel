@@ -129,6 +129,7 @@ export interface TakeSnapshotRequest {
 export interface TemplateInfo {
   name: string;
   description: string;
+  package?: string;
   category: string;
   base_image: string;
   vcpus: number;
@@ -152,6 +153,22 @@ export interface AgentInfo {
   display_name: string;
   enabled: boolean;
   description: string;
+  cli_installed: boolean;
+  cli_version?: string;
+  tested_version: string;
+  compatibility_status: "not_installed" | "tested" | "untested_version";
+  install_command: string;
+  integration_supported: boolean;
+  integration_project_installed: boolean;
+  integration_global_installed: boolean;
+  integration_global_supported: boolean;
+}
+
+export interface AgentIntegrationResult {
+  target: string;
+  scope: "project" | "global";
+  confirmed: boolean;
+  files: string[];
 }
 
 // LLM Usage

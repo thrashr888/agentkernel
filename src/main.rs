@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+mod agent_catalog;
 mod agents;
 mod apple_backend;
 mod asciicast;

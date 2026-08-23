@@ -2,7 +2,7 @@ name: Hyperlight
 
 on:
   pull_request:
-    branches: [main, codex/apple-container-1-2-modernization]
+    branches: [main, codex/apple-container-1-2-modernization, codex/modernization-followups]
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -11,6 +11,8 @@ on:
       - tests/hyperlight_benchmark.rs
       - .github/workflows/hyperlight.yml
   workflow_dispatch:
+  schedule:
+    - cron: "31 9 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,9 +31,74 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: hyperlight
+          # hyperlight-wasm builds a nested guest runtime under target/. Restoring
+          # only part of that tree can leave an include_bytes! path dangling.
+          cache-targets: false
       - name: Check Hyperlight-only build
         run: cargo check --locked --lib --no-default-features --features hyperlight
       - name: Lint Hyperlight-only build
         run: cargo clippy --locked --lib --no-default-features --features hyperlight -- -D warnings
       - name: Test Hyperlight-only library
         run: cargo test --locked --lib --no-default-features --features hyperlight
+
+  arm64-upstream-probe:
+    name: Hyperlight feature (Linux arm64 upstream probe)
+    runs-on: ubuntu-24.04-arm
+    # hyperlight-wasm 0.14 pins the pre-arm64 hyperlight-host 0.14 line. Keep
+    # probing the native target, but do not block releases until upstream ships
+    # a Rust 1.89-compatible hyperlight-wasm that consumes hyperlight-host 0.16+.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: hyperlight-arm64
+          cache-targets: false
+      - name: Probe native arm64 Hyperlight-only build
+        run: |
+          set +e
+          cargo check --locked --lib --no-default-features --features hyperlight \
+            --message-format=json > hyperlight-arm64.json 2> hyperlight-arm64.stderr
+          status=$?
+          set -e
+
+          if [[ "$status" -eq 0 ]]; then
+            echo 'Hyperlight arm64 now compiles; remove the exception and enable blocking arm64 lint/tests.'
+            exit 1
+          fi
+
+          cat hyperlight-arm64.stderr
+          jq -r 'select(.reason == "compiler-message" and .message.level == "error") | .message.rendered' \
+            hyperlight-arm64.json
+
+          error_count=$(jq -s '[.[] | select(.reason == "compiler-message" and .message.level == "error")] | length' hyperlight-arm64.json)
+          known_count=$(jq -s '[.[] | select(
+            .reason == "compiler-message"
+            and .message.level == "error"
+            and .message.code.code == "E0061"
+            and any(.message.spans[]?;
+              .is_primary
+              and (.file_name | endswith("/hyperlight-host-0.14.0/src/sandbox/uninitialized_evolve.rs"))
+            )
+          )] | length' hyperlight-arm64.json)
+
+          if [[ "$error_count" -eq 1 && "$known_count" -eq 1 ]]; then
+            echo '::warning::Known upstream hyperlight-host 0.14 arm64 compiler failure; exception expires 2026-11-30.'
+            exit 0
+          fi
+
+          echo 'Hyperlight arm64 failed for a reason outside the bounded upstream exception.'
+          exit "$status"
+
+  arm64-exception-expiry:
+    name: Hyperlight arm64 exception expiry
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce bounded upstream exception
+        run: |
+          if [[ "$(date -u +%Y-%m-%d)" > "2026-11-30" ]]; then
+            echo "Hyperlight arm64 exception expired; re-evaluate the published hyperlight-wasm line."
+            exit 1
+          fi

@@ -16,6 +16,7 @@ import type {
   FileReadResponse,
   SecretEntry,
   AgentInfo,
+  AgentIntegrationResult,
   PolicyStatus,
   PolicyCheckResult,
   PolicyReloadResult,
@@ -112,7 +113,8 @@ export const api = {
 
   // Agents/Plugins
   listAgents: () => invoke<AgentInfo[]>("list_agents"),
-  installAgent: (name: string) => invoke<string>("install_agent", { name }),
+  installAgent: (name: string, scope: "project" | "global", confirm: boolean) =>
+    invoke<AgentIntegrationResult>("install_agent", { name, scope, confirm }),
 
   // Settings
   getSettings: () => invoke<Settings>("get_settings"),

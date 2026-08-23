@@ -1259,6 +1259,9 @@ async fn handle_request(
 
         // Agents/plugins
         (Method::GET, ["agents"]) => handle_list_agents(state).await,
+        (Method::POST, ["agents", name, "integration"]) => {
+            handle_install_agent_integration(req, name).await
+        }
 
         // Browser v2: persistent pages with ARIA snapshots
         (Method::POST, ["sandboxes", name, "browser", "start"]) => {
@@ -6459,49 +6462,171 @@ async fn handle_list_agents(_state: Arc<AppState>) -> Response<BoxBody> {
     struct AgentInfo {
         name: String,
         display_name: String,
+        /// Deprecated compatibility alias for `cli_installed`.
         enabled: bool,
         description: String,
+        package: Option<String>,
+        cli_installed: bool,
+        cli_version: Option<String>,
+        tested_version: String,
+        compatibility_status: String,
+        install_command: String,
+        integration_supported: bool,
+        integration_project_installed: bool,
+        integration_global_installed: bool,
+        integration_global_supported: bool,
     }
 
-    let agent_defs: Vec<(&str, &str, &str, &str)> = vec![
-        (
-            "claude",
-            "Claude Code",
-            "claude",
-            "Anthropic's AI coding agent",
-        ),
-        (
-            "copilot",
-            "Copilot CLI",
-            "copilot",
-            "GitHub's AI coding agent",
-        ),
-        ("gemini", "Gemini CLI", "gemini", "Google's AI coding agent"),
-        ("codex", "Codex CLI", "codex", "OpenAI's AI coding agent"),
-        (
-            "opencode",
-            "OpenCode",
-            "opencode",
-            "Open-source AI coding agent",
-        ),
-        ("amp", "Amp", "amp", "Sourcegraph's AI coding agent"),
-        ("pi", "Pi", "pi", "Mario Zechner's coding agent"),
-    ];
-
-    let agents: Vec<AgentInfo> = agent_defs
-        .into_iter()
-        .map(|(name, display, bin, desc)| {
-            let enabled = binary_exists_in_path(bin);
+    let agents: Vec<AgentInfo> = crate::agent_catalog::agents()
+        .iter()
+        .map(|entry| {
+            let cli_installed = binary_exists_in_path(&entry.executable);
+            let cli_version = cli_installed.then(|| {
+                std::process::Command::new(&entry.executable)
+                    .arg(&entry.smoke_arg)
+                    .output()
+                    .map(|output| {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        format!("{} {}", stdout.trim(), stderr.trim())
+                            .trim()
+                            .to_string()
+                    })
+                    .unwrap_or_else(|_| "unknown".into())
+            });
+            let compatibility_status = match cli_version.as_deref() {
+                None => "not_installed",
+                Some(version) if version.contains(&entry.expected_output) => "tested",
+                Some(_) => "untested_version",
+            };
+            let target = entry
+                .integration_target
+                .as_deref()
+                .and_then(crate::plugin_installer::PluginTarget::from_str);
+            let (project_installed, global_installed) = target
+                .map(crate::plugin_installer::installation_scopes)
+                .unwrap_or((false, false));
             AgentInfo {
-                name: name.into(),
-                display_name: display.into(),
-                enabled,
-                description: desc.into(),
+                name: entry.id.clone(),
+                display_name: entry.display_name.clone(),
+                enabled: cli_installed,
+                description: entry.description.clone(),
+                package: entry.package.clone(),
+                cli_installed,
+                cli_version,
+                tested_version: entry.version.clone(),
+                compatibility_status: compatibility_status.into(),
+                install_command: entry.install_command.clone(),
+                integration_supported: target.is_some(),
+                integration_project_installed: project_installed,
+                integration_global_installed: global_installed,
+                integration_global_supported: target
+                    .map(|target| target.supports_global())
+                    .unwrap_or(false),
             }
         })
         .collect();
 
     json_response(StatusCode::OK, &ApiResponse::success(agents))
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentIntegrationRequest {
+    #[serde(default = "default_plugin_scope")]
+    scope: String,
+    #[serde(default)]
+    confirm: bool,
+}
+
+fn default_plugin_scope() -> String {
+    "project".into()
+}
+
+#[derive(Serialize)]
+struct AgentIntegrationResult {
+    target: String,
+    scope: String,
+    confirmed: bool,
+    files: Vec<String>,
+}
+
+async fn handle_install_agent_integration(req: Request<Incoming>, name: &str) -> Response<BoxBody> {
+    let request: AgentIntegrationRequest = match read_json_body(req).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let Some(entry) = crate::agent_catalog::find(name) else {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error(format!("Unknown agent: {name}")),
+        );
+    };
+    let Some(target_name) = entry.integration_target.as_deref() else {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(format!(
+                "{} does not have a managed AgentKernel integration",
+                entry.display_name
+            )),
+        );
+    };
+    let target = crate::plugin_installer::PluginTarget::from_str(target_name)
+        .expect("catalog integration targets are validated by tests");
+    let global = match request.scope.as_str() {
+        "project" => false,
+        "global" if target.supports_global() => true,
+        "global" => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(format!(
+                    "{} integrations are project-only",
+                    entry.display_name
+                )),
+            );
+        }
+        _ => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error("scope must be project or global"),
+            );
+        }
+    };
+    let files = match crate::plugin_installer::preview_plugin(target, global) {
+        Ok(files) => files
+            .into_iter()
+            .map(|path| path.display().to_string())
+            .collect(),
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(error.to_string()),
+            );
+        }
+    };
+
+    if request.confirm {
+        let options = crate::plugin_installer::InstallOptions {
+            global,
+            force: false,
+            dry_run: false,
+        };
+        if let Err(error) = crate::plugin_installer::install_plugin(target, &options) {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(error.to_string()),
+            );
+        }
+    }
+
+    json_response(
+        StatusCode::OK,
+        &ApiResponse::success(AgentIntegrationResult {
+            target: target.name().into(),
+            scope: request.scope,
+            confirmed: request.confirm,
+            files,
+        }),
+    )
 }
 
 fn is_executable(candidate: &std::path::Path) -> bool {
