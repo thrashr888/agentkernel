@@ -410,6 +410,17 @@ pub struct FirecrackerSandbox {
 }
 
 impl FirecrackerSandbox {
+    fn native_gate_asset(name: &str) -> Option<PathBuf> {
+        if !cfg!(all(target_os = "linux", target_arch = "x86_64"))
+            || std::env::var("AGENTKERNEL_KVM_SMOKE").as_deref() != Ok("1")
+        {
+            return None;
+        }
+        std::env::var_os(name)
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+    }
+
     /// Create a new Firecracker sandbox
     pub fn new(name: &str) -> Result<Self> {
         // Socket paths are runtime identities, not sandbox-name identities.
@@ -428,6 +439,9 @@ impl FirecrackerSandbox {
                 .as_millis() as u32
                 % 1000);
 
+        let kernel_path = Self::native_gate_asset("AGENTKERNEL_KVM_KERNEL");
+        let rootfs_path = Self::native_gate_asset("AGENTKERNEL_KVM_ROOTFS");
+
         Ok(Self {
             name: name.to_string(),
             runtime_dir,
@@ -435,8 +449,11 @@ impl FirecrackerSandbox {
             vsock_path,
             process: None,
             vsock_cid,
-            kernel_path: None,
-            rootfs_path: None,
+            // The dedicated native gate supplies these paths explicitly via
+            // environment variables. Production installations continue to
+            // use the managed image discovery below when they are unset.
+            kernel_path,
+            rootfs_path,
             sandbox_rootfs: None,
             running: false,
         })

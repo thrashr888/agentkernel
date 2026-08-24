@@ -575,7 +575,17 @@ impl VmManager {
 
         // Find rootfs path (only needed for Firecracker)
         let rootfs_dir = if backend == BackendType::Firecracker {
-            Self::find_images_dir().ok().map(|d| d.join("rootfs"))
+            // The access-controlled native KVM gate provides a prepared
+            // rootfs file directly. Derive the managed runtime directory so
+            // create() validates the same fixture that FirecrackerSandbox
+            // will attach at start time.
+            (cfg!(all(target_os = "linux", target_arch = "x86_64"))
+                && std::env::var("AGENTKERNEL_KVM_SMOKE").as_deref() == Ok("1"))
+            .then(|| std::env::var_os("AGENTKERNEL_KVM_ROOTFS").map(PathBuf::from))
+            .flatten()
+            .filter(|path| path.is_file())
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .or_else(|| Self::find_images_dir().ok().map(|d| d.join("rootfs")))
         } else {
             None
         };
@@ -997,6 +1007,22 @@ impl VmManager {
     /// Get rootfs path for a runtime (Firecracker only)
     pub fn rootfs_path(&self, runtime: &str) -> Result<PathBuf> {
         validation::validate_runtime(runtime)?;
+
+        // The dedicated native gate supplies one exact, immutable fixture.
+        // Keep this override opt-in and host-gated so an operator's stale
+        // environment cannot change normal production image selection.
+        if cfg!(all(target_os = "linux", target_arch = "x86_64"))
+            && std::env::var("AGENTKERNEL_KVM_SMOKE").as_deref() == Ok("1")
+            && let Some(path) = std::env::var_os("AGENTKERNEL_KVM_ROOTFS").map(PathBuf::from)
+        {
+            if !path.is_file() {
+                bail!(
+                    "AGENTKERNEL_KVM_ROOTFS does not point to a regular file: {}",
+                    path.display()
+                );
+            }
+            return Ok(path);
+        }
 
         let rootfs_dir = self
             .rootfs_dir
