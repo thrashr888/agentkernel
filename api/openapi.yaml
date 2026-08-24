@@ -2301,6 +2301,12 @@ components:
           type: string
           enum: [permissive, moderate, restrictive]
           description: Security profile
+        volumes:
+          type: array
+          items:
+            type: string
+          description: Persistent volume mounts in `slug:/container/path` or `slug:/container/path:ro` format. Volumes must already exist. Named mounts are supported by Docker and Podman backends.
+          example: ["my-data:/data", "cache:/cache:ro"]
         labels:
           type: object
           additionalProperties:

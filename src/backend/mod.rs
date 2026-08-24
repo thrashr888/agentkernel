@@ -256,7 +256,10 @@ pub fn backend_capabilities(backend: BackendType) -> BackendCapabilities {
         mount_cwd: true,
         mount_home: true,
         attach: !matches!(backend, BackendType::Hyperlight),
-        host_volumes: true,
+        // Named persistent volumes are currently translated into Docker/Podman
+        // `-v` arguments by the VMM. Other local backends must reject them
+        // rather than advertising support and silently dropping the mounts.
+        host_volumes: matches!(backend, BackendType::Docker | BackendType::Podman),
         ssh: true,
         proxy_secret_bindings: true,
         secret_files: true,
@@ -1350,6 +1353,19 @@ mod tests {
         assert!(caps.snapshots);
         assert!(!caps.proxy_secret_bindings);
         assert!(!caps.host_volumes);
+    }
+
+    #[test]
+    fn test_host_volume_capability_matches_implemented_backends() {
+        assert!(backend_capabilities(BackendType::Docker).host_volumes);
+        assert!(backend_capabilities(BackendType::Podman).host_volumes);
+        for backend in [
+            BackendType::Apple,
+            BackendType::Firecracker,
+            BackendType::Hyperlight,
+        ] {
+            assert!(!backend_capabilities(backend).host_volumes);
+        }
     }
 
     #[test]

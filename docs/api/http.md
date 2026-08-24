@@ -376,6 +376,7 @@ curl -X POST http://localhost:18888/sandboxes \
 | `vcpus` | integer | No | Number of vCPUs (default: 1) |
 | `memory_mb` | integer | No | Memory in MB (default: 512) |
 | `profile` | string | No | Security profile: `permissive`, `moderate`, `restrictive` |
+| `volumes` | string[] | No | Persistent mounts in `slug:/container/path` or `slug:/container/path:ro` format; volumes must already exist (Docker/Podman backends) |
 | `labels` | object | No | Key-value labels for fleet management and filtering |
 | `description` | string | No | Human-readable description |
 | `lifecycle` | object | No | Lifecycle policy (`auto_stop_after_seconds`, `auto_archive_after_seconds`, `auto_delete_after_seconds`) |
@@ -388,10 +389,15 @@ curl -X POST http://localhost:18888/sandboxes \
   -d '{
     "name": "eval-sandbox",
     "image": "python:3.12-alpine",
+    "volumes": ["my-data:/data", "cache:/cache:ro"],
     "labels": {"scenario": "drift_s3", "model": "sonnet", "eval_run": "pr-123"},
     "description": "Drift scenario evaluation"
-  }'
+}'
 ```
+
+Persistent named volumes are currently supported by the Docker and Podman
+backends. Other backends reject a create request that includes `volumes`
+instead of silently dropping the mounts.
 
 ### Update Sandbox
 
