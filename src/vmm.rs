@@ -4531,20 +4531,7 @@ mod tests {
     }
 
     fn new_test_manager(temp_dir: &TempDir) -> VmManager {
-        std::fs::create_dir_all(temp_dir.path().join("sandboxes")).unwrap();
-        VmManager {
-            sandboxes: HashMap::new(),
-            data_dir: temp_dir.path().to_path_buf(),
-            volume_base_dir: None,
-            bypass_backend_runtime: false,
-            backend: BackendType::Docker,
-            running: HashMap::new(),
-            rootfs_dir: None,
-            next_cid: 3,
-            detached: HashMap::new(),
-            #[cfg(feature = "enterprise")]
-            policy_engine: None,
-        }
+        VmManager::for_tests(temp_dir.path()).unwrap()
     }
 
     fn lifecycle_state(name: &str) -> SandboxState {
