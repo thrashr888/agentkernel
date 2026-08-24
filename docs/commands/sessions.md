@@ -23,10 +23,13 @@ agentkernel session start --name feature-x --agent claude -B docker
 # Output:
 # Session 'feature-x' started.
 #   Sandbox: session-feature-x
-# Attach with: agentkernel attach session-feature-x
+# Use: agentkernel attach session-feature-x
 ```
 
-The sandbox is named `session-<name>`. Use `exec` or `attach` to interact with it.
+The sandbox is named `session-<name>`. Use `exec` to interact with any supported
+backend. Interactive `attach` is available only on backends that support it;
+server-owned Firecracker sessions use `agentkernel exec session-<name> --
+<command>` or `agentkernel ssh session-<name>` when SSH is configured.
 
 ### List sessions
 
@@ -42,6 +45,7 @@ old-session          codex      stopped    3d                0
 
 ```bash
 agentkernel exec session-feature-x -- python3 -c "print('working')"
+# Docker and other interactive-attach backends only:
 agentkernel attach session-feature-x
 ```
 

@@ -21,6 +21,9 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 | [`sandbox create`](create.md) | Create a new sandbox |
 | [`sandbox start`](start-stop.md) | Start a stopped sandbox |
 | [`sandbox stop`](start-stop.md) | Stop a running sandbox |
+| [`sandbox pause`](start-stop.md) | Checkpoint a Firecracker sandbox with guest memory and processes (`suspend` alias) |
+| [`sandbox resume`](start-stop.md) | Resume a full-state Firecracker checkpoint |
+| [`sandbox fork`](start-stop.md) | Start a new sandbox from a paused Firecracker checkpoint |
 | [`sandbox remove`](start-stop.md) | Remove a sandbox |
 | [`sandbox list`](list.md) | List all sandboxes (with IP addresses) |
 | `sandbox info` | Show detailed information about a sandbox (with IP) |

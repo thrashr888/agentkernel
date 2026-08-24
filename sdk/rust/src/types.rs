@@ -52,6 +52,8 @@ pub struct BackendCapabilities {
     pub secret_files: bool,
     pub snapshots: bool,
     pub resume: bool,
+    pub full_state_pause_resume: bool,
+    pub full_state_fork: bool,
     pub endpoints: bool,
 }
 

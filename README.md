@@ -239,6 +239,12 @@ agentkernel snapshot take my-sandbox --name before-upgrade
 agentkernel snapshot list
 agentkernel snapshot restore before-upgrade --as rollback
 
+# Firecracker only: preserve memory and running processes
+agentkernel sandbox pause my-sandbox
+agentkernel sandbox fork my-sandbox --as candidate-b
+# candidate-b is running; the source remains paused and reusable
+agentkernel sandbox resume my-sandbox
+
 # Sessions: agent conversation lifecycle
 agentkernel session start --name feature-x --agent claude -B docker
 agentkernel session save feature-x
@@ -246,6 +252,15 @@ agentkernel session resume feature-x
 agentkernel session list
 agentkernel session delete feature-x
 ```
+
+The full-state lifecycle is distinct from filesystem snapshots. It initially
+requires Firecracker 1.16.1 on an exactly compatible x86_64 Linux/KVM host;
+other backends return an explicit unsupported error instead of silently losing
+process state. The CLI lifecycle commands require a running `agentkernel serve`
+process to own the Firecracker VMM. Forks duplicate guest memory and filesystem
+state, including userspace identifiers and any credentials already inside the
+guest. See the [Firecracker full-state operations
+guide](docs/operations/firecracker-full-state.md).
 
 ## Pipelines & Parallel Execution
 
@@ -405,15 +420,16 @@ agentkernel serve --api-key-file /etc/agentkernel/api-keys
 
 ### Authentication
 
-When `--api-key` or `--api-key-file` is set, all requests (except `GET /health`) must include an `Authorization: Bearer <key>` header. Multiple keys can be provided via repeated `--api-key` flags or a key file. Keys can also be set via the `AGENTKERNEL_API_KEY` env var or in `agentkernel.toml`.
+When `--api-key` or `--api-key-file` is set, requests must include an `Authorization: Bearer <key>` header except for the public operational endpoints `GET /health`, `GET /status`, `GET /metrics`, and `GET /stats`. Multiple keys can be provided via repeated `--api-key` flags or a key file. Keys can also be set via the `AGENTKERNEL_API_KEY` env var or in `agentkernel.toml`.
 
 ### Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check (no auth required) |
-| GET | `/status` | Server version and backend info |
-| GET | `/stats` | Sandbox count, resource usage (CPU/memory/disk) |
+| GET | `/status` | Server version and backend info (no auth required) |
+| GET | `/metrics` | Prometheus metrics (no auth required) |
+| GET | `/stats` | Sandbox count and resource usage (no auth required) |
 | POST | `/run` | Run command in temporary sandbox |
 | GET | `/sandboxes` | List all sandboxes (supports `?label=key:value` filter) |
 | POST | `/sandboxes` | Create a sandbox (supports `labels`, `description`) |
@@ -666,6 +682,7 @@ See [BENCHMARK.md](BENCHMARK.md) for detailed Hyperlight benchmarks.
 - [API](docs/api/index.md) - HTTP API and MCP server
 - [SDKs](docs/sdks/index.md) - Node.js, Python, Go, Rust, Swift
 - [Operations](docs/operations/index.md) - Kubernetes, Nomad, deployment
+- [Firecracker full-state lifecycle](docs/operations/firecracker-full-state.md) - pause, resume, fork, compatibility, and native KVM validation
 - [Changelog](docs/changelog.md)
 
 ## Examples

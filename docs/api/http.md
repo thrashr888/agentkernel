@@ -41,7 +41,7 @@ agentkernel serve --otel-endpoint http://localhost:4318 \
 
 ## Authentication
 
-When API key authentication is enabled (via `--api-key`, `--api-key-file`, `AGENTKERNEL_API_KEY`, or `[api].api_key` in config), all requests require an `Authorization` header, except for `/health` and `/status`:
+When API key authentication is enabled (via `--api-key`, `--api-key-file`, `AGENTKERNEL_API_KEY`, or `[api].api_key` in config), all requests require an `Authorization` header, except for the public `GET /health`, `GET /status`, `GET /metrics`, and `GET /stats` endpoints:
 
 ```text
 Authorization: Bearer your-secret
@@ -91,9 +91,10 @@ oversubscribe a limit. Running multiple daemons against the same sandbox state
 is not yet a supported quota-enforcement topology.
 
 The quota-enforced surface is the persistent HTTP sandbox API: create, list,
-get, start, stop, resize, delete, logs, restore, and config import. Restore
+get, start, stop, pause, resume, fork, resize, delete, logs, restore, and config import. Restore
 and import consume total capacity (restore is created stopped; its running
-slot is charged only when started). All sandbox-scoped HTTP routes—including
+slot is charged only when started). Resume and fork charge a running slot; a
+successful pause releases one. All sandbox-scoped HTTP routes—including
 exec, files, detached commands, browser, Git, and config export—are filtered
 to the authenticated user and organization. An explicit JWT `admin` role may
 cross owners. Requests for an unauthorized or legacy unowned sandbox return
@@ -233,7 +234,8 @@ curl -X POST http://localhost:18888/gc
 }
 ```
 
-Removes sandboxes that have exceeded their time-to-live.
+Removes sandboxes that have exceeded their time-to-live. In enterprise mode,
+this fleet-wide destructive operation requires an administrator identity.
 
 ### Run Command
 
@@ -518,6 +520,49 @@ curl -X POST http://localhost:18888/sandboxes/my-sandbox/exec \
 }
 ```
 
+### Start Sandbox
+
+```text
+POST /sandboxes/{name}/start
+```
+
+An empty request body starts with the default moderate permissions and no file
+injections, preserving the original API contract:
+
+```bash
+curl -X POST http://localhost:18888/sandboxes/my-sandbox/start
+```
+
+The local CLI can select a private start configuration it previously persisted
+for this sandbox:
+
+```bash
+curl -X POST http://localhost:18888/sandboxes/my-sandbox/start \
+  -H "Content-Type: application/json" \
+  -d '{
+    "configuration": {
+      "source": "persisted",
+      "token": "<64-character one-shot nonce from the local CLI>"
+    }
+  }'
+```
+
+The server derives this configuration from a private, atomic host manifest. Its
+unguessable nonce is one-shot and the manifest is bound to the sandbox UUID,
+persisted owner, and authenticated request identity. It is consumed on the
+first attempt, expires after five minutes, is superseded by the next local start
+configuration, and is scrubbed on sandbox removal. This prevents replay after a
+config change or remove/recreate cycle. The HTTP request cannot contain
+permission or file-injection values, so an authenticated API caller cannot use
+start to enable host mounts, environment passthrough, privileged mode, or other
+capabilities. The CLI creates this reference automatically; API clients
+normally omit the body.
+
+For an unowned sandbox created by the local CLI, successful validation of this
+one-shot reference also authorizes the server's first ownership claim. This
+continues to work after a server restart or a prior `GET` imported the state;
+merely discovering or refreshing an unowned sandbox never authorizes a claim.
+
 ### Stop Sandbox
 
 ```
@@ -527,6 +572,88 @@ POST /sandboxes/{name}/stop
 ```bash
 curl -X POST http://localhost:18888/sandboxes/my-sandbox/stop
 ```
+
+### Pause a Firecracker Sandbox
+
+Capture a durable full-VM checkpoint containing guest memory, process state,
+virtual-device state, and disk state. The resulting sandbox status is
+`paused`.
+
+```text
+POST /sandboxes/{name}/pause
+```
+
+```bash
+curl -X POST http://localhost:18888/sandboxes/experiment-a/pause
+```
+
+```json
+{"success":true,"data":"Sandbox paused"}
+```
+
+Pause is supported only for Firecracker sandboxes on x86_64 Linux/KVM. Unsupported
+backends return `422`; a lifecycle state conflict, such as pausing an already
+paused sandbox, returns `409`. Enterprise policy requires the Run action.
+
+### Resume a Firecracker Sandbox
+
+```text
+POST /sandboxes/{name}/resume
+```
+
+```bash
+curl -X POST http://localhost:18888/sandboxes/experiment-a/resume
+```
+
+```json
+{"success":true,"data":"Sandbox resumed"}
+```
+
+Resume restores the captured memory and process state. Enterprise deployments
+require the Run action and return `429` if resuming would exceed a
+running-sandbox or resource quota.
+
+### Fork a Paused Firecracker Sandbox
+
+Create a new running sandbox from the paused source. The source remains paused
+and can be resumed or forked again.
+
+```text
+POST /sandboxes/{name}/fork
+```
+
+```bash
+curl -X POST http://localhost:18888/sandboxes/experiment-a/fork \
+  -H "Content-Type: application/json" \
+  -d '{"as_name":"experiment-b"}'
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "sandbox": {
+      "name": "experiment-b",
+      "status": "running",
+      "backend": "firecracker"
+    },
+    "security_warning": "Forking duplicates userspace memory. Rotate cached identifiers and cryptographic tokens in each child; prefer proxy-managed secrets that never enter the VM."
+  }
+}
+```
+
+The request body accepts exactly one required string field, `as_name`. A name
+collision or unpaused source returns `409`; a non-Firecracker source returns
+`422`; enterprise quota denial returns `429`. The child atomically inherits the
+source ownership metadata. A request whose authenticated owner or tenant does
+not match the source is rejected with `403` before any child VM is restored.
+Enterprise policy requires Run on the source plus both Create and Run for the
+child; Create permission alone cannot authorize access to the source memory or
+disk state.
+
+> **Security warning:** Forking duplicates guest memory and filesystem state,
+> including credentials captured in the checkpoint. Rotate or revoke cloned
+> credentials when appropriate.
 
 ### Delete Sandbox
 
@@ -579,7 +706,9 @@ curl -X POST http://localhost:18888/sandboxes/my-sandbox/recover
 
 ### Reconcile Lifecycle Policies
 
-Applies lifecycle policies across all sandboxes (or previews actions).
+Applies lifecycle policies across all sandboxes (or previews actions). In
+enterprise mode, both apply and dry-run requests require an administrator
+identity because evaluation spans every tenant.
 
 ```
 POST /lifecycle/reconcile

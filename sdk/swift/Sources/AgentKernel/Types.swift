@@ -117,6 +117,8 @@ public struct BackendCapabilities: Codable, Sendable {
     public let secret_files: Bool
     public let snapshots: Bool
     public let resume: Bool
+    public let full_state_pause_resume: Bool
+    public let full_state_fork: Bool
     public let endpoints: Bool
 }
 

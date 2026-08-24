@@ -203,7 +203,10 @@ pub async fn validate_jwt(token: &str, jwks_url: &str) -> Result<JwtClaims> {
         .context("JWT header missing 'kid' field")?;
 
     // Fetch JWKS from the endpoint
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .context("Failed to build JWKS client")?;
     let jwks: JwksResponse = client
         .get(jwks_url)
         .send()

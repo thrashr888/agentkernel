@@ -19,6 +19,7 @@ mod docker_backend;
 mod durable_storage;
 mod events;
 mod firecracker_client;
+mod full_state;
 mod git_utils;
 mod git_worktree;
 mod http_api;
@@ -573,6 +574,25 @@ enum SandboxAction {
         /// Name of the sandbox to stop
         name: String,
     },
+    /// Pause a running Firecracker sandbox while preserving guest memory and processes
+    #[command(visible_alias = "suspend")]
+    Pause {
+        /// Name of the sandbox to pause
+        name: String,
+    },
+    /// Resume a paused Firecracker sandbox
+    Resume {
+        /// Name of the sandbox to resume
+        name: String,
+    },
+    /// Fork a paused Firecracker sandbox into a new running sandbox
+    Fork {
+        /// Name of the paused source sandbox
+        source: String,
+        /// Name for the forked sandbox
+        #[arg(long, value_name = "NAME")]
+        r#as: String,
+    },
     /// Remove a sandbox
     Remove {
         /// Name of the sandbox to remove
@@ -1096,8 +1116,8 @@ memory_mb = 512
             println!("Created agentkernel.toml for sandbox '{}'", sandbox_name);
             println!("\nNext steps:");
             println!("  agentkernel create {} --dir .", sandbox_name);
-            println!("  agentkernel start {}", sandbox_name);
-            println!("  agentkernel attach {}", sandbox_name);
+            println!("  agentkernel sandbox start {}", sandbox_name);
+            println!("  agentkernel exec {} -- <command>", sandbox_name);
         }
         Commands::Sandbox { action } => match *action {
             SandboxAction::Create {
@@ -1316,6 +1336,12 @@ memory_mb = 512
                 };
 
                 let mut manager = VmManager::with_backend(backend_type)?;
+                if manager.backend() == crate::backend::BackendType::Firecracker {
+                    let api_port = local_api_port();
+                    if !try_server_health("127.0.0.1", api_port).await {
+                        return Err(firecracker_server_required("create", api_port));
+                    }
+                }
 
                 if managed_network.is_some()
                     && !matches!(
@@ -1575,24 +1601,51 @@ memory_mb = 512
                     println!("  TTL: {} (expires automatically)", format_ttl(secs));
                 }
 
+                let effective_backend = manager
+                    .get_state(&name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                let firecracker = effective_backend == crate::backend::BackendType::Firecracker;
+
                 // Auto-start the sandbox unless --no-start was passed
                 if !no_start {
                     let has_secrets = !all_bindings.is_empty();
-                    let api_port = std::env::var("AGENTKERNEL_PORT")
-                        .ok()
-                        .and_then(|p| p.parse::<u16>().ok())
-                        .unwrap_or(18888);
+                    let api_port = local_api_port();
                     let server_running = try_server_health("127.0.0.1", api_port).await;
 
-                    if has_secrets && server_running {
+                    if firecracker {
+                        if !server_running {
+                            return Err(firecracker_server_required("start", api_port));
+                        }
+                        println!(
+                            "Starting Firecracker sandbox via API server (VM ownership will persist)..."
+                        );
+                        delegate_configured_start_to_server(
+                            "127.0.0.1",
+                            api_port,
+                            &name,
+                            &manager,
+                            &start_perms,
+                            &start_files,
+                        )
+                        .await?;
+                    } else if has_secrets && server_running {
                         // Delegate to HTTP server so the secrets proxy
                         // lives in the long-running server process
                         println!("Starting sandbox via API server (secrets proxy will persist)...");
-                        delegate_start_to_server("127.0.0.1", api_port, &name).await?;
+                        delegate_configured_start_to_server(
+                            "127.0.0.1",
+                            api_port,
+                            &name,
+                            &manager,
+                            &start_perms,
+                            &start_files,
+                        )
+                        .await?;
                     } else if has_secrets && !server_running {
                         eprintln!(
                             "Warning: Secrets proxy requires 'agentkernel serve' to be running.\n\
-                             Start the server first, then run: agentkernel start {}",
+                             Start the server first, then run: agentkernel sandbox start {}",
                             name
                         );
                     } else {
@@ -1621,7 +1674,18 @@ memory_mb = 512
                                 "-c".to_string(),
                                 "which git >/dev/null 2>&1 || apk add --no-cache git >/dev/null 2>&1 || apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1 || yum install -y git >/dev/null 2>&1 || true".to_string(),
                             ];
-                            let _ = manager.exec_cmd(&name, &install_cmd).await;
+                            if firecracker {
+                                let _ = delegate_sandbox_action_to_server(
+                                    "127.0.0.1",
+                                    api_port,
+                                    &name,
+                                    "exec",
+                                    Some(serde_json::json!({"command": install_cmd})),
+                                )
+                                .await;
+                            } else {
+                                let _ = manager.exec_cmd(&name, &install_cmd).await;
+                            }
 
                             let clone_cmd = vec![
                                 "git".to_string(),
@@ -1629,7 +1693,18 @@ memory_mb = 512
                                 url.to_string(),
                                 "/workspace".to_string(),
                             ];
-                            manager.exec_cmd(&name, &clone_cmd).await?;
+                            if firecracker {
+                                delegate_sandbox_action_to_server(
+                                    "127.0.0.1",
+                                    api_port,
+                                    &name,
+                                    "exec",
+                                    Some(serde_json::json!({"command": clone_cmd})),
+                                )
+                                .await?;
+                            } else {
+                                manager.exec_cmd(&name, &clone_cmd).await?;
+                            }
 
                             if let Some(ref git_ref_val) = git_ref {
                                 let checkout_cmd = vec![
@@ -1639,7 +1714,18 @@ memory_mb = 512
                                     "checkout".to_string(),
                                     git_ref_val.clone(),
                                 ];
-                                manager.exec_cmd(&name, &checkout_cmd).await?;
+                                if firecracker {
+                                    delegate_sandbox_action_to_server(
+                                        "127.0.0.1",
+                                        api_port,
+                                        &name,
+                                        "exec",
+                                        Some(serde_json::json!({"command": checkout_cmd})),
+                                    )
+                                    .await?;
+                                } else {
+                                    manager.exec_cmd(&name, &checkout_cmd).await?;
+                                }
                                 println!("Cloned {} (ref: {}) into /workspace", url, git_ref_val);
                             } else {
                                 println!("Cloned {} into /workspace", url);
@@ -1651,21 +1737,19 @@ memory_mb = 512
                     if !has_secrets || server_running {
                         println!("\nSandbox '{}' started.", name);
                         println!("To connect:");
-                        if enable_ssh {
-                            println!("  agentkernel ssh {}", name);
-                        } else {
-                            println!("  agentkernel attach {}", name);
-                        }
+                        println!(
+                            "  {}",
+                            sandbox_connection_command(&name, firecracker, enable_ssh)
+                        );
                     }
                 } else {
                     // --no-start: show manual next steps
                     println!("\nNext steps:");
-                    println!("  1. agentkernel start {}", name);
-                    if enable_ssh {
-                        println!("  2. agentkernel ssh {}", name);
-                    } else {
-                        println!("  2. agentkernel attach {}", name);
-                    }
+                    println!("  1. agentkernel sandbox start {}", name);
+                    println!(
+                        "  2. {}",
+                        sandbox_connection_command(&name, firecracker, enable_ssh)
+                    );
                 }
             }
             SandboxAction::Start { name, backend } => {
@@ -1701,39 +1785,6 @@ memory_mb = 512
                     );
                 }
 
-                // Check if sandbox has secret bindings that need a long-lived proxy
-                let has_secrets = manager
-                    .get_sandbox_state(&name)
-                    .is_some_and(|s| !s.secret_bindings.is_empty());
-
-                if has_secrets {
-                    let api_port = std::env::var("AGENTKERNEL_PORT")
-                        .ok()
-                        .and_then(|p| p.parse::<u16>().ok())
-                        .unwrap_or(18888);
-                    let server_running = try_server_health("127.0.0.1", api_port).await;
-                    if server_running {
-                        println!("Starting sandbox via API server (secrets proxy will persist)...");
-                        delegate_start_to_server("127.0.0.1", api_port, &name).await?;
-                        println!("Sandbox '{}' started.", name);
-                        if manager
-                            .get_sandbox_state(&name)
-                            .is_some_and(|s| s.ssh_enabled)
-                        {
-                            println!("\nTo connect: agentkernel ssh {}", name);
-                        } else {
-                            println!("\nTo attach: agentkernel attach {}", name);
-                        }
-                        return Ok(());
-                    } else {
-                        eprintln!(
-                            "Warning: Sandbox has secrets configured but 'agentkernel serve' is not running.\n\
-                             The secrets proxy will stop when this command exits.\n\
-                             For persistent proxy, start 'agentkernel serve' first."
-                        );
-                    }
-                }
-
                 let sandbox_config_path = manager
                     .get_state(&name)
                     .and_then(|state| state.config_path.clone())
@@ -1761,6 +1812,72 @@ memory_mb = 512
                     (crate::permissions::Permissions::default(), Vec::new())
                 };
 
+                if effective_backend == crate::backend::BackendType::Firecracker {
+                    let api_port = local_api_port();
+                    if !try_server_health("127.0.0.1", api_port).await {
+                        return Err(firecracker_server_required("start", api_port));
+                    }
+                    println!(
+                        "Starting Firecracker sandbox via API server (VM ownership will persist)..."
+                    );
+                    delegate_configured_start_to_server(
+                        "127.0.0.1",
+                        api_port,
+                        &name,
+                        &manager,
+                        &start_perms,
+                        &start_files,
+                    )
+                    .await?;
+                    println!("Sandbox '{}' started.", name);
+                    let ssh_enabled = manager
+                        .get_sandbox_state(&name)
+                        .is_some_and(|state| state.ssh_enabled);
+                    println!(
+                        "\nTo connect: {}",
+                        sandbox_connection_command(&name, true, ssh_enabled)
+                    );
+                    return Ok(());
+                }
+
+                // Check if sandbox has secret bindings that need a long-lived proxy
+                let has_secrets = manager
+                    .get_sandbox_state(&name)
+                    .is_some_and(|s| !s.secret_bindings.is_empty());
+
+                if has_secrets {
+                    let api_port = local_api_port();
+                    let server_running = try_server_health("127.0.0.1", api_port).await;
+                    if server_running {
+                        println!("Starting sandbox via API server (secrets proxy will persist)...");
+                        delegate_configured_start_to_server(
+                            "127.0.0.1",
+                            api_port,
+                            &name,
+                            &manager,
+                            &start_perms,
+                            &start_files,
+                        )
+                        .await?;
+                        println!("Sandbox '{}' started.", name);
+                        if manager
+                            .get_sandbox_state(&name)
+                            .is_some_and(|s| s.ssh_enabled)
+                        {
+                            println!("\nTo connect: agentkernel ssh {}", name);
+                        } else {
+                            println!("\nTo attach: agentkernel attach {}", name);
+                        }
+                        return Ok(());
+                    } else {
+                        eprintln!(
+                            "Warning: Sandbox has secrets configured but 'agentkernel serve' is not running.\n\
+                             The secrets proxy will stop when this command exits.\n\
+                             For persistent proxy, start 'agentkernel serve' first."
+                        );
+                    }
+                }
+
                 println!("Starting sandbox '{}'...", name);
                 manager
                     .start_with_permissions_and_files(&name, &start_perms, &start_files)
@@ -1785,15 +1902,130 @@ memory_mb = 512
                 }
 
                 println!("Stopping sandbox '{}'...", name);
-                manager.stop(&name).await?;
+                let backend = manager
+                    .get_state(&name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                if backend == crate::backend::BackendType::Firecracker {
+                    let api_port = local_api_port();
+                    if !try_server_health("127.0.0.1", api_port).await {
+                        return Err(firecracker_server_required("stop", api_port));
+                    }
+                    delegate_sandbox_action_to_server("127.0.0.1", api_port, &name, "stop", None)
+                        .await?;
+                } else {
+                    manager.stop(&name).await?;
+                }
                 println!("Sandbox '{}' stopped.", name);
+            }
+            SandboxAction::Pause { name } => {
+                validation::validate_sandbox_name(&name)?;
+
+                let mut manager = VmManager::new()?;
+                if !manager.exists(&name) {
+                    bail!("Sandbox '{}' not found", name);
+                }
+
+                println!("Pausing sandbox '{}'...", name);
+                let backend = manager
+                    .get_state(&name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                if backend == crate::backend::BackendType::Firecracker {
+                    let api_port = local_api_port();
+                    if !try_server_health("127.0.0.1", api_port).await {
+                        return Err(firecracker_server_required("pause", api_port));
+                    }
+                    delegate_sandbox_action_to_server("127.0.0.1", api_port, &name, "pause", None)
+                        .await?;
+                } else {
+                    manager.pause(&name).await?;
+                }
+                println!("Sandbox '{}' paused.", name);
+                println!("Resume it with: agentkernel sandbox resume {}", name);
+            }
+            SandboxAction::Resume { name } => {
+                validation::validate_sandbox_name(&name)?;
+
+                let mut manager = VmManager::new()?;
+                if !manager.exists(&name) {
+                    bail!("Sandbox '{}' not found", name);
+                }
+
+                println!("Resuming sandbox '{}'...", name);
+                let backend = manager
+                    .get_state(&name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                if backend == crate::backend::BackendType::Firecracker {
+                    let api_port = local_api_port();
+                    if !try_server_health("127.0.0.1", api_port).await {
+                        return Err(firecracker_server_required("resume", api_port));
+                    }
+                    delegate_sandbox_action_to_server("127.0.0.1", api_port, &name, "resume", None)
+                        .await?;
+                } else {
+                    manager.resume(&name).await?;
+                }
+                println!("Sandbox '{}' resumed.", name);
+                let ssh_enabled = manager
+                    .get_sandbox_state(&name)
+                    .is_some_and(|state| state.ssh_enabled);
+                println!(
+                    "\nTo connect: {}",
+                    sandbox_connection_command(
+                        &name,
+                        backend == crate::backend::BackendType::Firecracker,
+                        ssh_enabled,
+                    )
+                );
+            }
+            SandboxAction::Fork {
+                source,
+                r#as: child,
+            } => {
+                validation::validate_sandbox_name(&source)?;
+                validation::validate_sandbox_name(&child)?;
+
+                let mut manager = VmManager::new()?;
+                if !manager.exists(&source) {
+                    bail!("Sandbox '{}' not found", source);
+                }
+                if manager.exists(&child) {
+                    bail!("Sandbox '{}' already exists", child);
+                }
+
+                println!("Forking paused sandbox '{}' as '{}'...", source, child);
+                let backend = manager
+                    .get_state(&source)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                if backend == crate::backend::BackendType::Firecracker {
+                    let api_port = local_api_port();
+                    if !try_server_health("127.0.0.1", api_port).await {
+                        return Err(firecracker_server_required("fork", api_port));
+                    }
+                    delegate_sandbox_action_to_server(
+                        "127.0.0.1",
+                        api_port,
+                        &source,
+                        "fork",
+                        Some(serde_json::json!({"as_name": child})),
+                    )
+                    .await?;
+                } else {
+                    manager.fork_sandbox(&source, &child).await?;
+                }
+                println!("Sandbox '{}' forked from '{}'.", child, source);
+                eprintln!("Security warning: {}", full_state::FORK_SECURITY_WARNING);
+                println!("The fork is running; the source remains paused and can be reused.");
             }
             SandboxAction::Remove { name } => {
                 validation::validate_sandbox_name(&name)?;
 
                 let mut manager = VmManager::new()?;
                 println!("Removing sandbox '{}'...", name);
-                manager.remove(&name).await?;
+                remove_sandbox_via_authoritative_manager(&mut manager, &name).await?;
                 println!("Sandbox '{}' removed.", name);
             }
             SandboxAction::ExtendTtl { name, by } => {
@@ -1804,8 +2036,8 @@ memory_mb = 512
                     bail!("Sandbox '{}' not found", name);
                 }
 
-                let additional_secs = crate::ssh::parse_ttl_to_secs(&by)?;
-                let new_expiry = manager.extend_ttl(&name, additional_secs)?;
+                let new_expiry =
+                    extend_ttl_via_authoritative_manager(&mut manager, &name, &by).await?;
 
                 match new_expiry {
                     Some(exp) => println!("Extended TTL for '{}'. New expiry: {}", name, exp),
@@ -1960,11 +2192,27 @@ memory_mb = 512
                         "NAME", "STATUS", "BACKEND", "IP", "LABELS"
                     );
                     for (name, running, backend) in filtered {
-                        let status = if running { "running" } else { "stopped" };
+                        let local_status = manager
+                            .get_state(name)
+                            .map(|state| state.status(running))
+                            .unwrap_or(if running { "running" } else { "stopped" })
+                            .to_string();
+                        let authoritative =
+                            if backend == Some(crate::backend::BackendType::Firecracker) {
+                                delegated_firecracker_status(name).await?
+                            } else {
+                                None
+                            };
+                        let status = authoritative
+                            .as_ref()
+                            .map(|status| status.status.as_str())
+                            .unwrap_or(&local_status);
                         let backend_str = backend
                             .map(|b| format!("{}", b))
                             .unwrap_or_else(|| "unknown".to_string());
-                        let ip_str = if running {
+                        let ip_str = if let Some(authoritative) = authoritative.as_ref() {
+                            authoritative.ip.clone().unwrap_or_else(|| "-".to_string())
+                        } else if running {
                             manager
                                 .get_container_ip(name)
                                 .unwrap_or_else(|| "-".to_string())
@@ -2030,7 +2278,7 @@ memory_mb = 512
                 } else {
                     let mut removed = Vec::new();
                     for name in candidates {
-                        manager.remove(&name).await?;
+                        remove_sandbox_via_authoritative_manager(&mut manager, &name).await?;
                         removed.push(name);
                     }
                     println!("Removed {} sandbox(es):", removed.len());
@@ -2041,7 +2289,7 @@ memory_mb = 512
             }
             SandboxAction::Info { name } => {
                 validation::validate_sandbox_name(&name)?;
-                run_info(&name)?;
+                run_info(&name).await?;
             }
             SandboxAction::Export { name, output } => {
                 validation::validate_sandbox_name(&name)?;
@@ -2133,7 +2381,7 @@ memory_mb = 512
 
                 println!("Sandbox '{}' created from config.", name);
                 println!("\nNext steps:");
-                println!("  agentkernel start {}", name);
+                println!("  agentkernel sandbox start {}", name);
             }
             SandboxAction::Clean { force, all } => {
                 run_clean(force, all).await?;
@@ -2147,10 +2395,21 @@ memory_mb = 512
             if !manager.exists(&name) {
                 bail!("Sandbox '{}' not found", name);
             }
+            let backend = manager
+                .get_state(&name)
+                .and_then(|state| state.backend)
+                .unwrap_or(manager.backend());
+            let firecracker = backend == crate::backend::BackendType::Firecracker;
+
+            if firecracker {
+                bail!(
+                    "Interactive attach is not yet supported for server-owned Firecracker sandboxes; use 'agentkernel exec' or SSH instead"
+                );
+            }
 
             if !manager.is_running(&name) {
                 bail!(
-                    "Sandbox '{}' is not running. Start it with: agentkernel start {}",
+                    "Sandbox '{}' is not running. Start it with: agentkernel sandbox start {}",
                     name,
                     name
                 );
@@ -2236,6 +2495,11 @@ memory_mb = 512
             if !manager.exists(&name) {
                 bail!("Sandbox '{}' not found", name);
             }
+            let backend = manager
+                .get_state(&name)
+                .and_then(|state| state.backend)
+                .unwrap_or(manager.backend());
+            let firecracker = backend == crate::backend::BackendType::Firecracker;
 
             let receipt_invocation = receipt_path.as_ref().map(|_| {
                 receipt::Invocation::Exec(receipt::ExecInvocation {
@@ -2264,10 +2528,32 @@ memory_mb = 512
                 if receipt_path.is_some() {
                     bail!("--receipt is not supported with --detach");
                 }
+                if firecracker {
+                    bail!(
+                        "Detached exec is not yet supported for server-owned Firecracker sandboxes; run a foreground command instead"
+                    );
+                }
                 let cmd = manager.exec_detached(&name, &command, &opts).await?;
                 println!("{}", serde_json::to_string_pretty(&cmd)?);
             } else {
-                let result = manager.exec_cmd_full(&name, &command, &opts).await;
+                let result = if firecracker {
+                    let api_port = local_api_port();
+                    if !try_server_health("127.0.0.1", api_port).await {
+                        return Err(firecracker_server_required("exec", api_port));
+                    }
+                    delegate_exec_to_server(
+                        "127.0.0.1",
+                        api_port,
+                        &name,
+                        &command,
+                        &env,
+                        workdir.as_deref(),
+                        sudo,
+                    )
+                    .await
+                } else {
+                    manager.exec_cmd_full(&name, &command, &opts).await
+                };
                 match result {
                     Ok(output) => {
                         print!("{}", output);
@@ -2630,15 +2916,7 @@ memory_mb = 512
             } else {
                 None
             };
-            let selected_backend = if let Some(bt) = backend_type {
-                bt
-            } else {
-                crate::backend::detect_best_backend().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "No sandbox backend available. Need one of: KVM (Linux), Apple containers (macOS 26+), or Docker/Podman."
-                    )
-                })?
-            };
+            let selected_backend = resolve_requested_backend(backend_type)?;
 
             // Optimized path: use run_ephemeral for single-operation execution
             // This is faster than create→start→exec→stop→remove cycle:
@@ -2691,6 +2969,11 @@ memory_mb = 512
                 }
             }
 
+            let firecracker_run = selected_backend == crate::backend::BackendType::Firecracker;
+            let run_api_port = local_api_port();
+            if firecracker_run && !try_server_health("127.0.0.1", run_api_port).await {
+                return Err(firecracker_server_required("run a sandbox", run_api_port));
+            }
             let mut manager = VmManager::with_backend(Some(selected_backend))?;
 
             // Fallback: multi-step VM mode (for --keep or Firecracker backend)
@@ -2702,11 +2985,56 @@ memory_mb = 512
                 // Reuse existing sandbox if it already exists for this branch
                 if manager.exists(&name) {
                     eprintln!("Reusing existing sandbox for branch: {}", name);
-                    // Just exec in the existing sandbox
-                    if !manager.is_running(&name) {
-                        manager.start(&name).await?;
-                    }
-                    let result = manager.exec_cmd(&name, &command).await;
+                    let existing_backend = sandbox_backend(&manager, &name);
+                    let result = if existing_backend == crate::backend::BackendType::Firecracker {
+                        let api_port = local_api_port();
+                        if !try_server_health("127.0.0.1", api_port).await {
+                            return Err(firecracker_server_required(
+                                "reuse a branch sandbox",
+                                api_port,
+                            ));
+                        }
+                        let status = delegated_firecracker_status(&name).await?;
+                        match status.as_ref().map(|status| status.status.as_str()) {
+                            Some("running") => {}
+                            Some("paused") => {
+                                delegate_sandbox_action_to_server(
+                                    "127.0.0.1",
+                                    api_port,
+                                    &name,
+                                    "resume",
+                                    None,
+                                )
+                                .await?;
+                            }
+                            _ => {
+                                delegate_configured_start_to_server(
+                                    "127.0.0.1",
+                                    api_port,
+                                    &name,
+                                    &manager,
+                                    &perms,
+                                    &files,
+                                )
+                                .await?;
+                            }
+                        }
+                        delegate_exec_to_server(
+                            "127.0.0.1",
+                            api_port,
+                            &name,
+                            &command,
+                            &[],
+                            None,
+                            false,
+                        )
+                        .await
+                    } else {
+                        if !manager.is_running(&name) {
+                            manager.start(&name).await?;
+                        }
+                        manager.exec_cmd(&name, &command).await
+                    };
                     match result {
                         Ok(output) => {
                             print!("{}", output);
@@ -2809,18 +3137,49 @@ memory_mb = 512
                 }
             }
 
-            // Start with permissions and inject files
-            if let Err(e) = manager
-                .start_with_permissions_and_files(&sandbox_name, &perms, &files)
+            // A Firecracker runtime must be owned by the long-running daemon;
+            // the short-lived `run` process only publishes durable pre-start
+            // state and a UUID/generation-bound one-shot start capability.
+            let start_result = if firecracker_run {
+                delegate_configured_start_to_server(
+                    "127.0.0.1",
+                    run_api_port,
+                    &sandbox_name,
+                    &manager,
+                    &perms,
+                    &files,
+                )
                 .await
-            {
-                // Cleanup on failure
-                let _ = manager.remove(&sandbox_name).await;
+            } else {
+                manager
+                    .start_with_permissions_and_files(&sandbox_name, &perms, &files)
+                    .await
+            };
+            if let Err(e) = start_result {
+                if firecracker_run {
+                    let _ =
+                        delegate_remove_to_server("127.0.0.1", run_api_port, &sandbox_name).await;
+                } else {
+                    let _ = manager.remove(&sandbox_name).await;
+                }
                 bail!("Failed to start sandbox: {}", e);
             }
 
             // Execute command
-            let result = manager.exec_cmd(&sandbox_name, &command).await;
+            let result = if firecracker_run {
+                delegate_exec_to_server(
+                    "127.0.0.1",
+                    run_api_port,
+                    &sandbox_name,
+                    &command,
+                    &[],
+                    None,
+                    false,
+                )
+                .await
+            } else {
+                manager.exec_cmd(&sandbox_name, &command).await
+            };
 
             // Print output
             match &result {
@@ -2844,17 +3203,27 @@ memory_mb = 512
                 eprintln!("Execution receipt written to {}", path.display());
             }
 
-            // Stop
-            let _ = manager.stop(&sandbox_name).await;
-
-            // Remove (unless --keep)
-            if !keep {
-                let _ = manager.remove(&sandbox_name).await;
+            // Kept Firecracker sandboxes stay live in the daemon. Ephemeral
+            // Firecracker runs are removed directly by that same owner; never
+            // perform an ordinary stop that discards the writable overlay.
+            let cleanup_result = if firecracker_run && !keep {
+                delegate_remove_to_server("127.0.0.1", run_api_port, &sandbox_name).await
+            } else if !firecracker_run && !keep {
+                manager.remove(&sandbox_name).await
+            } else if !firecracker_run {
+                manager.stop(&sandbox_name).await
             } else {
+                Ok(())
+            };
+            if keep {
                 println!(
                     "\nSandbox '{}' kept. Remove with: agentkernel remove {}",
                     sandbox_name, sandbox_name
                 );
+            }
+            if let Err(cleanup_error) = cleanup_result {
+                return Err(cleanup_error)
+                    .context(format!("failed to finish run cleanup for '{sandbox_name}'"));
             }
 
             // Return error if command failed
@@ -3837,6 +4206,7 @@ memory_mb = 512
             } else {
                 None
             };
+            let backend_type = Some(resolve_batch_backend(backend_type, "parallel jobs")?);
 
             let total_start = std::time::Instant::now();
 
@@ -4196,7 +4566,8 @@ memory_mb = 512
             } else {
                 None
             };
-            let mut manager = VmManager::with_backend(backend_type)?;
+            let backend_type = resolve_batch_backend(backend_type, "pipelines")?;
+            let mut manager = VmManager::with_backend(Some(backend_type))?;
 
             let prefix = format!("pipe-{}", &uuid::Uuid::new_v4().to_string()[..8]);
             pipeline::run(&pipe, &mut manager, &prefix).await?;
@@ -4220,13 +4591,36 @@ memory_mb = 512
                     None
                 };
                 let mut manager = VmManager::with_backend(backend_type)?;
+                let firecracker = manager.backend() == crate::backend::BackendType::Firecracker;
+                if firecracker {
+                    let api_port = local_api_port();
+                    if !try_server_health("127.0.0.1", api_port).await {
+                        return Err(firecracker_server_required("start session", api_port));
+                    }
+                }
 
                 println!("Starting session '{}' (agent: {})...", name, agent);
                 manager.create(&sess.sandbox, &docker_image, 1, 512).await?;
-                manager.start(&sess.sandbox).await?;
+                if firecracker {
+                    let permissions = crate::permissions::Permissions::default();
+                    delegate_configured_start_to_server(
+                        "127.0.0.1",
+                        local_api_port(),
+                        &sess.sandbox,
+                        &manager,
+                        &permissions,
+                        &[],
+                    )
+                    .await?;
+                } else {
+                    manager.start(&sess.sandbox).await?;
+                }
                 println!("Session '{}' started.", name);
                 println!("  Sandbox: {}", sess.sandbox);
-                println!("\nAttach with: agentkernel attach {}", sess.sandbox);
+                println!(
+                    "\nUse: {}",
+                    sandbox_connection_command(&sess.sandbox, firecracker, false)
+                );
             }
             SessionAction::List => {
                 let sessions = session::list()?;
@@ -4252,8 +4646,29 @@ memory_mb = 512
                     .ok_or_else(|| anyhow::anyhow!("Session '{}' not found", name))?;
 
                 let mut manager = VmManager::new()?;
-                if manager.exists(&sess.sandbox) && manager.is_running(&sess.sandbox) {
-                    manager.stop(&sess.sandbox).await?;
+                if manager.exists(&sess.sandbox) {
+                    let backend = sandbox_backend(&manager, &sess.sandbox);
+                    if backend == crate::backend::BackendType::Firecracker {
+                        let api_port = local_api_port();
+                        if !try_server_health("127.0.0.1", api_port).await {
+                            return Err(firecracker_server_required("stop session", api_port));
+                        }
+                        if delegated_firecracker_status(&sess.sandbox)
+                            .await?
+                            .is_some_and(|status| status.status == "running")
+                        {
+                            delegate_sandbox_action_to_server(
+                                "127.0.0.1",
+                                api_port,
+                                &sess.sandbox,
+                                "stop",
+                                None,
+                            )
+                            .await?;
+                        }
+                    } else if manager.is_running(&sess.sandbox) {
+                        manager.stop(&sess.sandbox).await?;
+                    }
                 }
                 session::stop(&name)?;
                 println!("Session '{}' stopped.", name);
@@ -4346,12 +4761,52 @@ memory_mb = 512
                     }
                 }
 
-                if manager.exists(&sess.sandbox) && !manager.is_running(&sess.sandbox) {
-                    manager.start(&sess.sandbox).await?;
+                let firecracker = manager.exists(&sess.sandbox)
+                    && sandbox_backend(&manager, &sess.sandbox)
+                        == crate::backend::BackendType::Firecracker;
+                if manager.exists(&sess.sandbox) {
+                    let backend = sandbox_backend(&manager, &sess.sandbox);
+                    if backend == crate::backend::BackendType::Firecracker {
+                        let api_port = local_api_port();
+                        if !try_server_health("127.0.0.1", api_port).await {
+                            return Err(firecracker_server_required("resume session", api_port));
+                        }
+                        let status = delegated_firecracker_status(&sess.sandbox).await?;
+                        match status.as_ref().map(|status| status.status.as_str()) {
+                            Some("running") => {}
+                            Some("paused") => {
+                                delegate_sandbox_action_to_server(
+                                    "127.0.0.1",
+                                    api_port,
+                                    &sess.sandbox,
+                                    "resume",
+                                    None,
+                                )
+                                .await?;
+                            }
+                            _ => {
+                                let permissions = crate::permissions::Permissions::default();
+                                delegate_configured_start_to_server(
+                                    "127.0.0.1",
+                                    api_port,
+                                    &sess.sandbox,
+                                    &manager,
+                                    &permissions,
+                                    &[],
+                                )
+                                .await?;
+                            }
+                        }
+                    } else if !manager.is_running(&sess.sandbox) {
+                        manager.start(&sess.sandbox).await?;
+                    }
                 }
                 session::mark_running(&name)?;
                 println!("Session '{}' resumed.", name);
-                println!("\nAttach with: agentkernel attach {}", sess.sandbox);
+                println!(
+                    "\nUse: {}",
+                    sandbox_connection_command(&sess.sandbox, firecracker, false)
+                );
             }
             SessionAction::Delete { name } => {
                 let sess = session::get(&name)?
@@ -4359,10 +4814,7 @@ memory_mb = 512
 
                 let mut manager = VmManager::new()?;
                 if manager.exists(&sess.sandbox) {
-                    if manager.is_running(&sess.sandbox) {
-                        let _ = manager.stop(&sess.sandbox).await;
-                    }
-                    let _ = manager.remove(&sess.sandbox).await;
+                    remove_sandbox_via_authoritative_manager(&mut manager, &sess.sandbox).await?;
                 }
                 session::delete(&name)?;
                 println!("Session '{}' deleted.", name);
@@ -4495,8 +4947,8 @@ memory_mb = 512
 
                 println!("Sandbox '{}' restored from snapshot.", restore_name);
                 println!("\nNext steps:");
-                println!("  agentkernel start {}", restore_name);
-                println!("  agentkernel attach {}", restore_name);
+                println!("  agentkernel sandbox start {}", restore_name);
+                println!("  agentkernel exec {} -- <command>", restore_name);
             }
         },
         Commands::Llm { action } => match action {
@@ -5081,14 +5533,22 @@ fn parse_cp_path(path: &str) -> (Option<String>, String) {
     (None, path.to_string())
 }
 
-fn run_info(name: &str) -> Result<()> {
+async fn run_info(name: &str) -> Result<()> {
     let manager = VmManager::new()?;
     let state = manager
         .get_state(name)
         .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
 
     let running = manager.is_running(name);
-    let status_str = if running { "running" } else { "stopped" };
+    let authoritative = if state.backend == Some(crate::backend::BackendType::Firecracker) {
+        delegated_firecracker_status(name).await?
+    } else {
+        None
+    };
+    let status_str = authoritative
+        .as_ref()
+        .map(|status| status.status.as_str())
+        .unwrap_or_else(|| state.status(running));
     let backend_str = state
         .backend
         .map(|b| format!("{}", b))
@@ -5098,7 +5558,11 @@ fn run_info(name: &str) -> Result<()> {
     println!("Status:         {}", status_str);
     println!("Backend:        {}", backend_str);
     println!("Image:          {}", state.image);
-    if running && let Some(ip) = manager.get_container_ip(name) {
+    let ip = authoritative
+        .as_ref()
+        .and_then(|status| status.ip.clone())
+        .or_else(|| running.then(|| manager.get_container_ip(name)).flatten());
+    if let Some(ip) = ip {
         println!("IP:             {}", ip);
     }
     println!(
@@ -5108,6 +5572,12 @@ fn run_info(name: &str) -> Result<()> {
         state.memory_mb
     );
     println!("Created:        {}", state.created_at);
+    if let Some(ref paused_at) = state.paused_at {
+        println!("Paused:         {}", paused_at);
+    }
+    if let Some(ref source) = state.forked_from {
+        println!("Forked from:    {}", source);
+    }
     if let Some(ttl) = state.ttl_seconds {
         println!("TTL:            {}", format_ttl(ttl));
     }
@@ -5238,22 +5708,29 @@ async fn run_clean(force: bool, all: bool) -> Result<()> {
     let sandboxes = manager
         .list()
         .iter()
-        .map(|(n, r, _)| (n.to_string(), *r))
+        .map(|(name, running, backend)| (name.to_string(), *running, *backend))
         .collect::<Vec<_>>();
 
     let mut removed = 0usize;
     let mut skipped = 0usize;
 
-    for (name, running) in &sandboxes {
-        if *running && !force {
+    for (name, locally_running, backend) in &sandboxes {
+        let running = if *backend == Some(crate::backend::BackendType::Firecracker) {
+            delegated_firecracker_status(name)
+                .await?
+                .is_some_and(|status| status.status == "running")
+        } else {
+            *locally_running
+        };
+        if running && !force {
             println!("  Skipping '{}' (running, use --force to remove)", name);
             skipped += 1;
             continue;
         }
-        if *running {
+        if running {
             println!("  Stopping '{}'...", name);
         }
-        manager.remove(name).await?;
+        remove_sandbox_via_authoritative_manager(&mut manager, name).await?;
         println!("  Removed sandbox '{}'", name);
         removed += 1;
     }
@@ -5486,65 +5963,470 @@ fn format_ttl(secs: u64) -> String {
     }
 }
 
-/// Check if the HTTP API server is running on the given address.
-/// Returns true if a TCP connection succeeds within a short timeout.
-async fn try_server_health(host: &str, port: u16) -> bool {
-    let addr = format!("{}:{}", host, port);
-    matches!(
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            tokio::net::TcpStream::connect(&addr),
-        )
-        .await,
-        Ok(Ok(_))
-    )
+fn sandbox_connection_command(name: &str, firecracker: bool, ssh_enabled: bool) -> String {
+    if ssh_enabled {
+        format!("agentkernel ssh {name}")
+    } else if firecracker {
+        format!("agentkernel exec {name} -- <command>")
+    } else {
+        format!("agentkernel attach {name}")
+    }
 }
 
-/// Delegate sandbox start to the running HTTP server.
-/// Sends POST /sandboxes/{name}/start and checks for a 200 response.
-async fn delegate_start_to_server(host: &str, port: u16, name: &str) -> Result<()> {
-    use http_body_util::{BodyExt, Empty};
+/// Check that the plaintext loopback control endpoint is actually serving the
+/// AgentKernel health route. A raw TCP probe would incorrectly accept a TLS-
+/// only listener and make every delegated lifecycle request fail later.
+async fn try_server_health(host: &str, port: u16) -> bool {
+    use http_body_util::Full;
     use hyper::Request;
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
 
-    let uri: hyper::Uri = format!("http://{}:{}/sandboxes/{}/start", host, port, name)
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid URI: {}", e))?;
-
-    let client = Client::builder(TokioExecutor::new()).build_http::<Empty<bytes::Bytes>>();
-
-    let req = Request::builder()
-        .method(hyper::Method::POST)
+    let Ok(uri) = format!("http://{host}:{port}/health").parse::<hyper::Uri>() else {
+        return false;
+    };
+    let Ok(request) = Request::builder()
+        .method(hyper::Method::GET)
         .uri(uri)
-        .header("content-type", "application/json")
-        .body(Empty::<bytes::Bytes>::new())
-        .map_err(|e| anyhow::anyhow!("failed to build request: {}", e))?;
-
-    let resp = tokio::time::timeout(std::time::Duration::from_secs(30), client.request(req))
+        .body(Full::new(bytes::Bytes::new()))
+    else {
+        return false;
+    };
+    let client = Client::builder(TokioExecutor::new()).build_http::<Full<bytes::Bytes>>();
+    tokio::time::timeout(std::time::Duration::from_secs(1), client.request(request))
         .await
-        .map_err(|_| anyhow::anyhow!("timeout waiting for server to start sandbox"))?
-        .map_err(|e| anyhow::anyhow!("HTTP request failed: {}", e))?;
+        .is_ok_and(|result| result.is_ok_and(|response| response.status().is_success()))
+}
 
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        let status = resp.status();
-        let body = resp
-            .into_body()
-            .collect()
-            .await
-            .map(|c| String::from_utf8_lossy(&c.to_bytes()).to_string())
-            .unwrap_or_default();
-        bail!("Server returned {} when starting sandbox: {}", status, body);
+fn local_api_port() -> u16 {
+    std::env::var("AGENTKERNEL_PORT")
+        .ok()
+        .and_then(|port| port.parse::<u16>().ok())
+        .unwrap_or(18888)
+}
+
+fn firecracker_server_required(operation: &str, port: u16) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Firecracker sandbox {operation} requires a plaintext loopback control endpoint owned by the long-running API server. Start it with 'agentkernel serve --host 127.0.0.1 --port {port}' without --require-tls, then retry."
+    )
+}
+
+fn resolve_requested_backend(
+    requested: Option<crate::backend::BackendType>,
+) -> Result<crate::backend::BackendType> {
+    requested
+        .or_else(crate::backend::detect_best_backend)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No sandbox backend available. Need one of: KVM (Linux), Apple containers (macOS 26+), or Docker/Podman."
+            )
+        })
+}
+
+fn resolve_batch_backend(
+    requested: Option<crate::backend::BackendType>,
+    operation: &str,
+) -> Result<crate::backend::BackendType> {
+    let backend = resolve_requested_backend(requested)?;
+    if backend == crate::backend::BackendType::Firecracker {
+        bail!(
+            "{operation} are not yet routed through the authoritative Firecracker daemon; select Docker, Podman, or Apple explicitly"
+        );
     }
+    Ok(backend)
+}
+
+/// Delegate a sandbox POST action to the running HTTP server.
+///
+/// Firecracker processes must be owned by a long-lived process. CLI and MCP
+/// commands therefore route their Firecracker lifecycle mutations through the
+/// local server rather than creating a short-lived `VmManager` owner.
+async fn delegate_sandbox_action_to_server(
+    host: &str,
+    port: u16,
+    name: &str,
+    action: &str,
+    body: Option<serde_json::Value>,
+) -> Result<String> {
+    delegate_sandbox_request_to_server(
+        host,
+        port,
+        hyper::Method::POST,
+        name,
+        Some(action),
+        body,
+        action,
+    )
+    .await
+}
+
+fn delegated_sandbox_uri(
+    host: &str,
+    port: u16,
+    name: &str,
+    suffix: Option<&str>,
+) -> Result<hyper::Uri> {
+    let path = suffix
+        .map(|suffix| format!("/sandboxes/{name}/{suffix}"))
+        .unwrap_or_else(|| format!("/sandboxes/{name}"));
+    format!("http://{host}:{port}{path}")
+        .parse()
+        .map_err(|error| anyhow::anyhow!("invalid URI: {error}"))
+}
+
+async fn delegate_sandbox_request_to_server(
+    host: &str,
+    port: u16,
+    method: hyper::Method,
+    name: &str,
+    suffix: Option<&str>,
+    body: Option<serde_json::Value>,
+    operation: &str,
+) -> Result<String> {
+    use http_body_util::{BodyExt, Full};
+    use hyper::Request;
+    use hyper_util::client::legacy::Client;
+    use hyper_util::rt::TokioExecutor;
+
+    let uri = delegated_sandbox_uri(host, port, name, suffix)?;
+
+    let body = body
+        .map(|value| serde_json::to_vec(&value))
+        .transpose()?
+        .unwrap_or_default();
+
+    let client = Client::builder(TokioExecutor::new()).build_http::<Full<bytes::Bytes>>();
+
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json");
+    if let Ok(api_key) = std::env::var("AGENTKERNEL_API_KEY")
+        && !api_key.is_empty()
+    {
+        request = request.header(hyper::header::AUTHORIZATION, format!("Bearer {api_key}"));
+    }
+    let req = request
+        .body(Full::new(bytes::Bytes::from(body)))
+        .map_err(|e| anyhow::anyhow!("failed to build request: {e}"))?;
+
+    let resp = if let Some(timeout) = delegated_request_timeout(operation) {
+        tokio::time::timeout(timeout, client.request(req))
+            .await
+            .map_err(|_| anyhow::anyhow!("timeout waiting for server to {operation} sandbox"))?
+            .map_err(|e| anyhow::anyhow!("HTTP request failed: {e}"))?
+    } else {
+        client
+            .request(req)
+            .await
+            .map_err(|e| anyhow::anyhow!("HTTP request failed: {e}"))?
+    };
+
+    let status = resp.status();
+    let response_body = resp
+        .into_body()
+        .collect()
+        .await
+        .map(|collected| String::from_utf8_lossy(&collected.to_bytes()).to_string())
+        .unwrap_or_default();
+
+    if status.is_success() {
+        Ok(response_body)
+    } else {
+        Err(DelegatedHttpError {
+            status,
+            operation: operation.to_string(),
+            body: response_body,
+        }
+        .into())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Server returned {status} when attempting to {operation} sandbox: {body}")]
+struct DelegatedHttpError {
+    status: hyper::StatusCode,
+    operation: String,
+    body: String,
+}
+
+fn delegated_http_error(error: &anyhow::Error) -> Option<&DelegatedHttpError> {
+    error.downcast_ref::<DelegatedHttpError>()
+}
+
+fn delegated_exec_failure(error: &anyhow::Error) -> Option<crate::vmm::CommandFailed> {
+    let server_error = delegated_http_error(error)?;
+    if server_error.status != hyper::StatusCode::CONFLICT {
+        return None;
+    }
+    let body = serde_json::from_str::<serde_json::Value>(&server_error.body).ok()?;
+    let exit_code = body.get("exit_code")?.as_i64()?;
+    let exit_code = i32::try_from(exit_code).ok()?;
+    let output = body.get("output")?.as_str()?.to_string();
+    Some(crate::vmm::CommandFailed { exit_code, output })
+}
+
+fn delegated_request_timeout(operation: &str) -> Option<std::time::Duration> {
+    (!matches!(
+        operation,
+        "start" | "stop" | "pause" | "resume" | "fork" | "remove" | "exec"
+    ))
+    .then(|| std::time::Duration::from_secs(120))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DelegatedSandboxStatus {
+    status: String,
+    ip: Option<String>,
+}
+
+fn parse_delegated_sandbox_status(response: &str) -> Result<DelegatedSandboxStatus> {
+    let response: serde_json::Value = serde_json::from_str(response)
+        .context("local API server returned an invalid sandbox response")?;
+    let status = response
+        .pointer("/data/status")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("local API server response did not include sandbox status"))?
+        .to_string();
+    let ip = response
+        .pointer("/data/ip")
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string);
+    Ok(DelegatedSandboxStatus { status, ip })
+}
+
+async fn delegated_firecracker_status(name: &str) -> Result<Option<DelegatedSandboxStatus>> {
+    let port = local_api_port();
+    if !try_server_health("127.0.0.1", port).await {
+        return Ok(None);
+    }
+    let response = match delegate_sandbox_request_to_server(
+        "127.0.0.1",
+        port,
+        hyper::Method::GET,
+        name,
+        None,
+        None,
+        "inspect",
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(error)
+            if delegated_http_error(&error)
+                .is_some_and(|error| error.status == hyper::StatusCode::NOT_FOUND) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    parse_delegated_sandbox_status(&response).map(Some)
+}
+
+fn sandbox_backend(manager: &VmManager, name: &str) -> crate::backend::BackendType {
+    manager
+        .get_state(name)
+        .and_then(|state| state.backend)
+        .unwrap_or(manager.backend())
+}
+
+fn sandbox_uses_authoritative_server(manager: &VmManager, name: &str) -> bool {
+    manager.exists(name)
+        && sandbox_backend(manager, name) == crate::backend::BackendType::Firecracker
+}
+
+pub(crate) async fn remove_sandbox_via_authoritative_manager(
+    manager: &mut VmManager,
+    name: &str,
+) -> Result<()> {
+    let local_exists = manager.exists(name);
+    let local_firecracker = sandbox_uses_authoritative_server(manager, name);
+    let port = local_api_port();
+    if (!local_exists || local_firecracker) && try_server_health("127.0.0.1", port).await {
+        match delegate_remove_to_server("127.0.0.1", port, name).await {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if delegated_http_error(&error)
+                    .is_some_and(|error| error.status == hyper::StatusCode::NOT_FOUND) =>
+            {
+                let local_is_unowned = manager.get_state(name).is_some_and(|state| {
+                    state.owner_user_id.is_none() && state.owner_org_id.is_none()
+                });
+                if !local_exists || (local_firecracker && local_is_unowned) {
+                    return manager.remove(name).await.map(|_| ());
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    if local_firecracker {
+        return Err(firecracker_server_required("remove", port));
+    }
+    manager.remove(name).await.map(|_| ())
+}
+
+async fn delegate_configured_start_to_server(
+    host: &str,
+    port: u16,
+    name: &str,
+    manager: &VmManager,
+    permissions: &crate::permissions::Permissions,
+    files: &[crate::backend::FileInjection],
+) -> Result<()> {
+    let sandbox = manager
+        .get_state(name)
+        .ok_or_else(|| anyhow::anyhow!("Sandbox '{name}' not found"))?;
+    let request = crate::http_api::persist_start_configuration(
+        manager.get_data_dir(),
+        sandbox,
+        permissions,
+        files,
+    )?;
+    let result = async {
+        let body = serde_json::to_value(&request)?;
+        delegate_sandbox_action_to_server(host, port, name, "start", Some(body))
+            .await
+            .map(|_| ())
+    }
+    .await;
+    let cleanup =
+        crate::http_api::discard_persisted_start_configuration(manager.get_data_dir(), &request);
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(error), _) => Err(error),
+    }
+}
+
+async fn delegate_remove_to_server(host: &str, port: u16, name: &str) -> Result<()> {
+    delegate_sandbox_request_to_server(
+        host,
+        port,
+        hyper::Method::DELETE,
+        name,
+        None,
+        None,
+        "remove",
+    )
+    .await
+    .map(|_| ())
+}
+
+pub(crate) async fn delegate_extend_ttl_to_server(
+    host: &str,
+    port: u16,
+    name: &str,
+    by: &str,
+) -> Result<Option<String>> {
+    let response = delegate_sandbox_action_to_server(
+        host,
+        port,
+        name,
+        "extend",
+        Some(serde_json::json!({"by": by})),
+    )
+    .await?;
+    delegated_extend_ttl_expiry(&response)
+}
+
+pub(crate) async fn extend_ttl_via_authoritative_manager(
+    manager: &mut VmManager,
+    name: &str,
+    by: &str,
+) -> Result<Option<String>> {
+    if sandbox_backend(manager, name) != crate::backend::BackendType::Firecracker {
+        let additional_secs = crate::ssh::parse_ttl_to_secs(by)?;
+        return manager.extend_ttl(name, additional_secs);
+    }
+
+    let port = local_api_port();
+    if !try_server_health("127.0.0.1", port).await {
+        return Err(firecracker_server_required("extend TTL for", port));
+    }
+    match delegate_extend_ttl_to_server("127.0.0.1", port, name, by).await {
+        Ok(expiry) => Ok(expiry),
+        Err(error)
+            if delegated_http_error(&error)
+                .is_some_and(|error| error.status == hyper::StatusCode::NOT_FOUND)
+                && manager.get_state(name).is_some_and(|state| {
+                    state.owner_user_id.is_none() && state.owner_org_id.is_none()
+                }) =>
+        {
+            let additional_secs = crate::ssh::parse_ttl_to_secs(by)?;
+            manager.extend_ttl(name, additional_secs)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn delegated_extend_ttl_expiry(response: &str) -> Result<Option<String>> {
+    let response: serde_json::Value = serde_json::from_str(response)
+        .context("local API server returned an invalid extend-TTL response")?;
+    let expires_at = response.pointer("/data/expires_at").ok_or_else(|| {
+        anyhow::anyhow!("local API server response did not include the updated expiry")
+    })?;
+    match expires_at {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(value) => Ok(Some(value.clone())),
+        _ => bail!("local API server returned an invalid updated expiry"),
+    }
+}
+
+async fn delegate_exec_to_server(
+    host: &str,
+    port: u16,
+    name: &str,
+    command: &[String],
+    env: &[String],
+    workdir: Option<&str>,
+    sudo: bool,
+) -> Result<String> {
+    let response = match delegate_sandbox_action_to_server(
+        host,
+        port,
+        name,
+        "exec",
+        Some(serde_json::json!({
+            "command": command,
+            "env": env,
+            "workdir": workdir,
+            "sudo": sudo,
+        })),
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            if let Some(command_failure) = delegated_exec_failure(&error) {
+                return Err(command_failure.into());
+            }
+            return Err(error);
+        }
+    };
+    delegated_exec_output(&response)
+}
+
+fn delegated_exec_output(response: &str) -> Result<String> {
+    let response: serde_json::Value = serde_json::from_str(response)
+        .context("local API server returned an invalid exec response")?;
+    response
+        .pointer("/data/output")
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow::anyhow!("local API server exec response did not include output"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, Commands, SandboxAction, config_has_build_settings, resolve_devcontainer,
-        resolve_workspace_root, should_build_run_image,
+        Cli, Commands, DelegatedHttpError, SandboxAction, config_has_build_settings,
+        delegate_exec_to_server, delegated_exec_failure, delegated_exec_output,
+        delegated_extend_ttl_expiry, delegated_request_timeout, delegated_sandbox_uri,
+        firecracker_server_required, parse_delegated_sandbox_status, resolve_batch_backend,
+        resolve_devcontainer, resolve_requested_backend, resolve_workspace_root,
+        sandbox_connection_command, sandbox_uses_authoritative_server, should_build_run_image,
+        try_server_health,
     };
     use crate::config::Config;
     use clap::Parser;
@@ -5584,6 +6466,224 @@ mod tests {
             },
             _ => panic!("expected sandbox command"),
         }
+    }
+
+    #[test]
+    fn cli_accepts_pause_and_suspend_alias() {
+        for command in ["pause", "suspend"] {
+            let cli =
+                Cli::try_parse_from(["agentkernel", "sandbox", command, "paused-sandbox"]).unwrap();
+            match cli.command {
+                Commands::Sandbox { action } => match *action {
+                    SandboxAction::Pause { name } => assert_eq!(name, "paused-sandbox"),
+                    _ => panic!("expected sandbox pause for {command}"),
+                },
+                _ => panic!("expected sandbox pause for {command}"),
+            }
+        }
+    }
+
+    #[test]
+    fn cli_accepts_resume_and_fork_contract() {
+        let resume =
+            Cli::try_parse_from(["agentkernel", "sandbox", "resume", "paused-sandbox"]).unwrap();
+        match resume.command {
+            Commands::Sandbox { action } => match *action {
+                SandboxAction::Resume { name } => assert_eq!(name, "paused-sandbox"),
+                _ => panic!("expected sandbox resume"),
+            },
+            _ => panic!("expected sandbox resume"),
+        }
+
+        let fork = Cli::try_parse_from([
+            "agentkernel",
+            "sandbox",
+            "fork",
+            "paused-sandbox",
+            "--as",
+            "candidate-a",
+        ])
+        .unwrap();
+        match fork.command {
+            Commands::Sandbox { action } => match *action {
+                SandboxAction::Fork {
+                    source,
+                    r#as: child,
+                } => {
+                    assert_eq!(source, "paused-sandbox");
+                    assert_eq!(child, "candidate-a");
+                }
+                _ => panic!("expected sandbox fork"),
+            },
+            _ => panic!("expected sandbox fork"),
+        }
+    }
+
+    #[test]
+    fn delegated_sandbox_uri_covers_lifecycle_and_remove() {
+        let stop = delegated_sandbox_uri("127.0.0.1", 18888, "demo", Some("stop")).unwrap();
+        assert_eq!(
+            stop.to_string(),
+            "http://127.0.0.1:18888/sandboxes/demo/stop"
+        );
+
+        let remove = delegated_sandbox_uri("127.0.0.1", 18888, "demo", None).unwrap();
+        assert_eq!(remove.to_string(), "http://127.0.0.1:18888/sandboxes/demo");
+
+        let extend = delegated_sandbox_uri("127.0.0.1", 18888, "demo", Some("extend")).unwrap();
+        assert_eq!(
+            extend.to_string(),
+            "http://127.0.0.1:18888/sandboxes/demo/extend"
+        );
+    }
+
+    #[test]
+    fn delegated_exec_response_contract_and_server_error_are_actionable() {
+        let output = delegated_exec_output(r#"{"success":true,"data":{"output":"ok\n"}}"#).unwrap();
+        assert_eq!(output, "ok\n");
+        assert!(delegated_exec_output(r#"{"success":true}"#).is_err());
+
+        let error = firecracker_server_required("pause", 18888).to_string();
+        assert!(error.contains("agentkernel serve --host 127.0.0.1 --port 18888"));
+        assert!(error.contains("without --require-tls"));
+
+        let error: anyhow::Error = DelegatedHttpError {
+            status: hyper::StatusCode::CONFLICT,
+            operation: "exec".to_string(),
+            body: r#"{"success":false,"exit_code":17,"output":"partial output\n"}"#.to_string(),
+        }
+        .into();
+        let failed = delegated_exec_failure(&error).unwrap();
+        assert_eq!(failed.exit_code, 17);
+        assert_eq!(failed.output, "partial output\n");
+    }
+
+    #[test]
+    fn delegated_full_state_lifecycle_has_no_client_timeout() {
+        for operation in ["start", "stop", "pause", "resume", "fork", "remove", "exec"] {
+            assert_eq!(delegated_request_timeout(operation), None);
+        }
+        assert_eq!(
+            delegated_request_timeout("inspect"),
+            Some(std::time::Duration::from_secs(120))
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_health_probe_requires_plain_http_health_response() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        async fn serve_once(listener: TcpListener, response: &'static [u8]) {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream.write_all(response).await.unwrap();
+        }
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(serve_once(
+            listener,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        ));
+        assert!(try_server_health("127.0.0.1", port).await);
+        server.await.unwrap();
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(serve_once(
+            listener,
+            // A TLS record prefix must not be treated as a healthy plaintext
+            // AgentKernel control endpoint merely because TCP connected.
+            b"\x16\x03\x03\x00\x02\x02\x28",
+        ));
+        assert!(!try_server_health("127.0.0.1", port).await);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delegated_exec_preserves_guest_nonzero_exit_and_output() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let body = r#"{"success":false,"error":"Command exited with code 23","exit_code":23,"output":"partial stdout\n"}"#;
+        let response = format!(
+            "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let error = delegate_exec_to_server(
+            "127.0.0.1",
+            port,
+            "demo",
+            &["sh".to_string(), "-c".to_string(), "exit 23".to_string()],
+            &[],
+            None,
+            false,
+        )
+        .await
+        .unwrap_err();
+        let failed = error.downcast_ref::<crate::vmm::CommandFailed>().unwrap();
+        assert_eq!(failed.exit_code, 23);
+        assert_eq!(failed.output, "partial stdout\n");
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn delegated_sandbox_status_uses_server_response() {
+        let status = parse_delegated_sandbox_status(
+            r#"{"success":true,"data":{"name":"fork-a","status":"running","backend":"firecracker","ip":"172.16.0.2"}}"#,
+        )
+        .unwrap();
+        assert_eq!(status.status, "running");
+        assert_eq!(status.ip.as_deref(), Some("172.16.0.2"));
+        assert!(parse_delegated_sandbox_status(r#"{"success":true,"data":{}}"#).is_err());
+    }
+
+    #[test]
+    fn delegated_extend_ttl_uses_server_expiry() {
+        assert_eq!(
+            delegated_extend_ttl_expiry(
+                r#"{"success":true,"data":{"expires_at":"2026-08-24T12:00:00Z"}}"#,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("2026-08-24T12:00:00Z")
+        );
+        assert_eq!(
+            delegated_extend_ttl_expiry(r#"{"success":true,"data":{"expires_at":null}}"#,).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn persisted_firecracker_removal_routes_to_authoritative_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = crate::vmm::VmManager::for_tests(dir.path()).unwrap();
+        let sandbox = serde_json::from_value(serde_json::json!({
+            "name": "server-owned",
+            "uuid": "server-owned-uuid",
+            "image": "alpine:3.24",
+            "vcpus": 1,
+            "memory_mb": 512,
+            "vsock_cid": 3,
+            "created_at": "2026-01-01T00:00:00Z",
+            "backend": "Firecracker"
+        }))
+        .unwrap();
+        manager.insert_state_for_tests(sandbox);
+
+        assert!(sandbox_uses_authoritative_server(&manager, "server-owned"));
     }
 
     #[test]
@@ -5707,5 +6807,48 @@ mod tests {
             Some(&config),
             project.path()
         ));
+    }
+
+    #[test]
+    fn run_backend_resolution_preserves_explicit_firecracker() {
+        assert_eq!(
+            resolve_requested_backend(Some(crate::backend::BackendType::Firecracker)).unwrap(),
+            crate::backend::BackendType::Firecracker
+        );
+    }
+
+    #[test]
+    fn non_daemon_batch_commands_reject_firecracker_before_spawning_work() {
+        let error = resolve_batch_backend(
+            Some(crate::backend::BackendType::Firecracker),
+            "parallel jobs",
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("authoritative Firecracker daemon")
+        );
+        assert_eq!(
+            resolve_batch_backend(Some(crate::backend::BackendType::Docker), "parallel jobs")
+                .unwrap(),
+            crate::backend::BackendType::Docker
+        );
+    }
+
+    #[test]
+    fn firecracker_connection_guidance_never_recommends_attach() {
+        assert_eq!(
+            sandbox_connection_command("demo", true, false),
+            "agentkernel exec demo -- <command>"
+        );
+        assert_eq!(
+            sandbox_connection_command("demo", true, true),
+            "agentkernel ssh demo"
+        );
+        assert_eq!(
+            sandbox_connection_command("demo", false, false),
+            "agentkernel attach demo"
+        );
     }
 }

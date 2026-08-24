@@ -23,6 +23,37 @@ backends. The normal CI workflow owns formatting, linting, unit tests, and
 release builds; these compatibility workflows do not change release artifacts
 or release triggers.
 
+## State preservation capabilities
+
+"Snapshot", "stop/start", and "full-state pause" are separate contracts.
+Filesystem and provider snapshots preserve selected files or disks and start
+new processes on restore. Full-state pause preserves guest memory and the point
+of execution.
+
+| Backend | Existing snapshot/restore | Full-state pause/resume/fork |
+| --- | --- | --- |
+| Firecracker 1.16.1, Linux x86_64 KVM | No Firecracker-specific cold-snapshot contract | Supported only on an exactly compatible host after the native KVM gate passes |
+| Docker / Podman | Container-filesystem image where implemented | Unsupported |
+| Apple Containers | Exported container filesystem rebuilt as an image | Unsupported |
+| Hyperlight | None | Unsupported |
+| Kubernetes / Nomad | No portable AgentKernel full-state format | Unsupported |
+| Daytona / Runloop / E2B / Modal | Provider-specific workspace, disk, or snapshot semantics | Unsupported unless a future provider contract explicitly proves process-memory continuity |
+| Agent Computer | Custom bridge contract only | Unsupported |
+
+Unsupported full-state operations must fail before mutating the sandbox or
+creating artifacts. The CLI and MCP return an explicit capability error; the
+HTTP API maps the same condition to `422 Unprocessable Entity`. There is no
+automatic fallback to a filesystem snapshot. Users can request that weaker
+behavior explicitly with the existing `snapshot take` and `snapshot restore`
+commands.
+
+Discover this contract through `full_state_pause_resume` and
+`full_state_fork` in `GET /backends`; only Firecracker reports them as true.
+Do not infer full-state support from the legacy `snapshots` or `resume`
+booleans, which do not promise that memory or live processes survive. See
+[Firecracker full-state lifecycle](firecracker-full-state.md) for the artifact,
+compatibility, upgrade, and test contract.
+
 ## Hosted provider contracts
 
 `scripts/test/provider-sdks.test.mjs` checks the maintained SDK exports and runs
@@ -72,7 +103,12 @@ The Firecracker lane uses an explicitly labelled, access-controlled self-hosted
 runner because GitHub-hosted runners do not expose the required KVM device and
 guest assets. The lane is scheduled and manually dispatchable; it is not silently
 treated as evidence on ordinary pull requests. Runtime maintainers (@thrashr888)
-own runner health and asset refreshes.
+own runner health and asset refreshes. A release that claims full-state
+pause/resume/fork must additionally demonstrate RAM-only process continuity,
+two concurrent divergent forks with independent writable disks, vsock
+reconnection, corrupt-artifact failure, and cleanup on this native runner. The
+current macOS development host and ordinary GitHub-hosted CI cannot supply that
+evidence.
 
 The Kubernetes and Nomad orchestrators provide internal service discovery for
 declared sandbox ports: Kubernetes creates a per-sandbox ClusterIP Service,

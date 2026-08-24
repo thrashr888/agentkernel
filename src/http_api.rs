@@ -33,7 +33,8 @@ use tokio::time::{Duration, sleep};
 
 use crate::asciicast::{self, AsciicastEvent, AsciicastHeader, EventType};
 use crate::backend::{
-    BackendCapabilities, BackendType, backend_capabilities, backend_readiness, detect_best_backend,
+    BackendCapabilities, BackendType, FileInjection, backend_capabilities, backend_readiness,
+    detect_best_backend,
 };
 use crate::job_scheduler::{JobScheduleStatus, JobScheduler, JobSchedulerHandle};
 use crate::languages;
@@ -44,7 +45,7 @@ use crate::orchestration_store::{
     DurableStoreQueryResult, OrchestrationEvent, OrchestrationRecord, OrchestrationStatus,
     OrchestrationStore, ScheduleRecord, UpdateOrchestration,
 };
-use crate::permissions::SecurityProfile;
+use crate::permissions::{Permissions, SecurityProfile};
 use crate::secrets::{SecretBackend, SecretVault};
 use crate::task_worker::TaskWorker;
 use crate::task_worker_vmm::VmTaskExecutor;
@@ -344,6 +345,376 @@ struct CreateRequest {
     /// Lifecycle automation policy.
     #[serde(default)]
     lifecycle: Option<LifecyclePolicyRequest>,
+}
+
+/// Optional request body for starting a sandbox.
+///
+/// An omitted or empty body preserves the historical API behavior: moderate
+/// permissions and no startup file injections. The CLI may select a private
+/// host-side manifest when it delegates ownership of a Firecracker VM to the
+/// long-running server. Callers never supply capability values in this body.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StartSandboxRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    configuration: Option<PersistedStartReference>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedStartReference {
+    source: StartConfigurationSource,
+    token: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum StartConfigurationSource {
+    Persisted,
+}
+
+/// Private on-disk start configuration written by the local CLI.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct PersistedStartConfiguration {
+    sandbox_name: String,
+    sandbox_uuid: String,
+    sandbox_state_sha256: String,
+    tenant_id: Option<String>,
+    owner_user_id: Option<String>,
+    owner_org_id: Option<String>,
+    request_owner_id: String,
+    expires_at: String,
+    permissions: Permissions,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    files: Vec<StartFileInjectionRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PersistedStartBinding {
+    sandbox_name: String,
+    sandbox_uuid: String,
+    tenant_id: Option<String>,
+    owner_user_id: Option<String>,
+    owner_org_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StartFileInjectionRequest {
+    dest: String,
+    content_base64: String,
+}
+
+impl StartSandboxRequest {
+    fn into_runtime(
+        self,
+        data_dir: &Path,
+        binding: &PersistedStartBinding,
+        request_owner_id: &str,
+    ) -> Result<(Permissions, Vec<FileInjection>, Option<String>)> {
+        match self.configuration {
+            None => Ok((Permissions::default(), Vec::new(), None)),
+            Some(reference) => {
+                let configuration = take_persisted_start_configuration(data_dir, &reference)?;
+                configuration.validate_binding(binding, request_owner_id)?;
+                let state_sha256 = configuration.sandbox_state_sha256.clone();
+                let (permissions, files) = configuration.into_runtime()?;
+                Ok((permissions, files, Some(state_sha256)))
+            }
+        }
+    }
+}
+
+impl PersistedStartConfiguration {
+    fn from_runtime(
+        sandbox: &crate::vmm::SandboxState,
+        request_owner_id: String,
+        permissions: &Permissions,
+        files: &[FileInjection],
+    ) -> Result<Self> {
+        Ok(Self {
+            sandbox_name: sandbox.name.clone(),
+            sandbox_uuid: sandbox.uuid.clone(),
+            sandbox_state_sha256: sandbox_state_sha256(sandbox)?,
+            tenant_id: sandbox.tenant_id.clone(),
+            owner_user_id: sandbox.owner_user_id.clone(),
+            owner_org_id: sandbox.owner_org_id.clone(),
+            request_owner_id,
+            expires_at: (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+            permissions: permissions.clone(),
+            files: files
+                .iter()
+                .map(|file| StartFileInjectionRequest {
+                    dest: file.dest.clone(),
+                    content_base64: base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        &file.content,
+                    ),
+                })
+                .collect(),
+        })
+    }
+
+    fn validate_binding(
+        &self,
+        binding: &PersistedStartBinding,
+        request_owner_id: &str,
+    ) -> Result<()> {
+        let expires_at = chrono::DateTime::parse_from_rfc3339(&self.expires_at)
+            .context("persisted start configuration has an invalid expiration")?;
+        if chrono::Utc::now() > expires_at {
+            anyhow::bail!("persisted start configuration has expired");
+        }
+        if self.sandbox_name != binding.sandbox_name
+            || self.sandbox_uuid != binding.sandbox_uuid
+            || self.tenant_id != binding.tenant_id
+            || self.owner_user_id != binding.owner_user_id
+            || self.owner_org_id != binding.owner_org_id
+            || self.request_owner_id != request_owner_id
+        {
+            anyhow::bail!(
+                "persisted start configuration does not belong to this sandbox generation and owner"
+            );
+        }
+        Ok(())
+    }
+
+    fn into_runtime(self) -> Result<(Permissions, Vec<FileInjection>)> {
+        let files = self
+            .files
+            .into_iter()
+            .map(|file| {
+                let content = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &file.content_base64,
+                )
+                .with_context(|| {
+                    format!("invalid base64 content for startup file '{}'", file.dest)
+                })?;
+                Ok(FileInjection {
+                    content,
+                    dest: file.dest,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok((self.permissions, files))
+    }
+}
+
+fn sandbox_state_sha256(sandbox: &crate::vmm::SandboxState) -> Result<String> {
+    let value = serde_json::to_value(sandbox).context("failed to encode sandbox state")?;
+    let mut encoded = Vec::new();
+    write_canonical_json(&value, &mut encoded)?;
+    Ok(hex::encode(Sha256::digest(encoded)))
+}
+
+fn write_canonical_json(value: &serde_json::Value, output: &mut Vec<u8>) -> Result<()> {
+    match value {
+        serde_json::Value::Null => output.extend_from_slice(b"null"),
+        serde_json::Value::Bool(value) => {
+            output.extend_from_slice(if *value { b"true" } else { b"false" })
+        }
+        serde_json::Value::Number(value) => output.extend_from_slice(value.to_string().as_bytes()),
+        serde_json::Value::String(value) => serde_json::to_writer(output, value)?,
+        serde_json::Value::Array(values) => {
+            output.push(b'[');
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    output.push(b',');
+                }
+                write_canonical_json(value, output)?;
+            }
+            output.push(b']');
+        }
+        serde_json::Value::Object(values) => {
+            output.push(b'{');
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    output.push(b',');
+                }
+                serde_json::to_writer(&mut *output, key)?;
+                output.push(b':');
+                write_canonical_json(&values[key], output)?;
+            }
+            output.push(b'}');
+        }
+    }
+    Ok(())
+}
+
+impl PersistedStartBinding {
+    fn from_state(sandbox: &crate::vmm::SandboxState) -> Self {
+        Self {
+            sandbox_name: sandbox.name.clone(),
+            sandbox_uuid: sandbox.uuid.clone(),
+            tenant_id: sandbox.tenant_id.clone(),
+            owner_user_id: sandbox.owner_user_id.clone(),
+            owner_org_id: sandbox.owner_org_id.clone(),
+        }
+    }
+}
+
+fn persisted_start_configuration_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("delegated-start")
+}
+
+fn validate_persisted_start_token(token: &str) -> Result<()> {
+    if token.len() != 64
+        || !token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        anyhow::bail!("invalid persisted start configuration token");
+    }
+    Ok(())
+}
+
+fn persisted_start_configuration_path(data_dir: &Path, token: &str) -> Result<PathBuf> {
+    validate_persisted_start_token(token)?;
+    Ok(persisted_start_configuration_dir(data_dir).join(format!("{token}.json")))
+}
+
+pub(crate) fn persist_start_configuration(
+    data_dir: &Path,
+    sandbox: &crate::vmm::SandboxState,
+    permissions: &Permissions,
+    files: &[FileInjection],
+) -> Result<StartSandboxRequest> {
+    validation::validate_sandbox_name(&sandbox.name)?;
+    // A newer resolved configuration supersedes every unused token for this
+    // sandbox, so tightened settings cannot be bypassed with a stale request.
+    remove_persisted_start_configurations_for_sandbox(data_dir, &sandbox.name)?;
+    let token = hex::encode(rand::random::<[u8; 32]>());
+    let path = persisted_start_configuration_path(data_dir, &token)?;
+    crate::secure_fs::write_private_json(
+        &path,
+        &PersistedStartConfiguration::from_runtime(
+            sandbox,
+            local_start_request_owner_id(),
+            permissions,
+            files,
+        )?,
+    )
+    .with_context(|| {
+        format!(
+            "failed to persist start configuration for sandbox '{}'",
+            sandbox.name
+        )
+    })?;
+    Ok(StartSandboxRequest {
+        configuration: Some(PersistedStartReference {
+            source: StartConfigurationSource::Persisted,
+            token,
+        }),
+    })
+}
+
+pub(crate) fn discard_persisted_start_configuration(
+    data_dir: &Path,
+    request: &StartSandboxRequest,
+) -> Result<()> {
+    let Some(reference) = request.configuration.as_ref() else {
+        return Ok(());
+    };
+    let path = persisted_start_configuration_path(data_dir, &reference.token)?;
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).context("failed to discard persisted start configuration"),
+    }
+}
+
+fn take_persisted_start_configuration(
+    data_dir: &Path,
+    reference: &PersistedStartReference,
+) -> Result<PersistedStartConfiguration> {
+    let StartConfigurationSource::Persisted = reference.source;
+    let path = persisted_start_configuration_path(data_dir, &reference.token)?;
+    let consuming = persisted_start_configuration_dir(data_dir)
+        .join(format!(".consuming-{}", uuid::Uuid::now_v7()));
+    std::fs::rename(&path, &consuming)
+        .context("persisted start configuration is unavailable or already consumed")?;
+    let bytes = std::fs::read(&consuming)
+        .context("failed to read persisted start configuration after claiming it");
+    let removed = std::fs::remove_file(&consuming)
+        .context("failed to delete consumed persisted start configuration");
+    let bytes = bytes?;
+    removed?;
+    serde_json::from_slice(&bytes).context("persisted start configuration is invalid")
+}
+
+fn remove_persisted_start_configurations_for_sandbox(data_dir: &Path, name: &str) -> Result<()> {
+    let directory = persisted_start_configuration_dir(data_dir);
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).context("failed to inspect persisted start configurations");
+        }
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json")
+            && !file_name.starts_with(".consuming-")
+        {
+            continue;
+        }
+        let matches = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<PersistedStartConfiguration>(&bytes).ok())
+            .is_some_and(|configuration| configuration.sandbox_name == name);
+        if matches {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .context("failed to remove persisted start configuration for sandbox");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn local_start_request_owner_id() -> String {
+    std::env::var("AGENTKERNEL_API_KEY")
+        .ok()
+        .filter(|key| !key.is_empty())
+        .map(|key| api_key_owner_id(&key))
+        .unwrap_or_else(|| "anonymous".to_string())
+}
+
+fn start_request_owner_id(req: &Request<Incoming>) -> String {
+    req.headers()
+        .get(hyper::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|header| header.strip_prefix("Bearer "))
+        .filter(|token| !token.is_empty())
+        .map(api_key_owner_id)
+        .unwrap_or_else(|| "anonymous".to_string())
+}
+
+fn parse_start_sandbox_request(body: &[u8]) -> Result<StartSandboxRequest> {
+    if body.is_empty() {
+        return Ok(StartSandboxRequest::default());
+    }
+    serde_json::from_slice(body).context("invalid start request JSON")
+}
+
+/// Request to fork a paused full-state sandbox.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForkSandboxRequest {
+    /// Name for the forked sandbox.
+    as_name: String,
 }
 
 /// Parse and validate the persistent volume mounts accepted by sandbox create.
@@ -763,6 +1134,13 @@ struct SandboxInfo {
     lifecycle: Option<crate::vmm::SandboxLifecyclePolicy>,
 }
 
+/// Response data for a full-state sandbox fork.
+#[derive(Debug, Serialize)]
+struct ForkSandboxResult {
+    sandbox: SandboxInfo,
+    security_warning: String,
+}
+
 #[derive(Debug, Serialize)]
 struct BackendDiscovery {
     /// Backend selected by automatic sandbox creation, when one is ready.
@@ -920,6 +1298,22 @@ struct AppState {
 }
 
 impl AppState {
+    fn authentication_required(&self) -> bool {
+        #[cfg(feature = "enterprise")]
+        {
+            !self.api_keys.is_empty()
+                || self
+                    .enterprise_config
+                    .as_ref()
+                    .and_then(|config| config.jwks_url.as_deref())
+                    .is_some()
+        }
+        #[cfg(not(feature = "enterprise"))]
+        {
+            !self.api_keys.is_empty()
+        }
+    }
+
     fn new(
         api_keys_override: Vec<String>,
         otel_endpoint: Option<String>,
@@ -1183,6 +1577,15 @@ impl AppState {
             .ok_or_else(|| anyhow::anyhow!("VmManager could not be initialized"))
     }
 
+    /// Return an owned handle for daemon-owned lifecycle tasks.
+    ///
+    /// Unlike `get_manager`, this can be moved into a spawned task so dropping
+    /// an HTTP request future cannot cancel a mutation while it owns the only
+    /// live Firecracker handle.
+    fn manager_handle(&self) -> Result<Arc<tokio::sync::RwLock<VmManager>>> {
+        self.ensure_manager()
+    }
+
     /// Load, validate, and attach user schedules before the listener starts.
     /// Invalid schedule IDs and targets therefore fail daemon startup instead
     /// of silently disabling automation.
@@ -1289,9 +1692,13 @@ impl AppState {
 
     /// Check if a request is authenticated
     #[allow(clippy::result_large_err)]
-    fn check_auth(&self, req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
-        // If no API keys configured, allow all requests
-        if self.api_keys.is_empty() {
+    async fn check_auth(&self, req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
+        #[cfg(feature = "enterprise")]
+        let jwks_url = self
+            .enterprise_config
+            .as_ref()
+            .and_then(|config| config.jwks_url.as_deref());
+        if !self.authentication_required() {
             return Ok(());
         }
 
@@ -1305,13 +1712,20 @@ impl AppState {
             Some(header) if header.starts_with("Bearer ") => {
                 let token = &header[7..];
                 if self.api_keys.iter().any(|key| constant_time_eq(token, key)) {
-                    Ok(())
-                } else {
-                    Err(json_response(
-                        StatusCode::UNAUTHORIZED,
-                        &ApiResponse::<()>::error("Invalid API key"),
-                    ))
+                    return Ok(());
                 }
+
+                #[cfg(feature = "enterprise")]
+                if let Some(jwks_url) = jwks_url
+                    && crate::identity::validate_jwt(token, jwks_url).await.is_ok()
+                {
+                    return Ok(());
+                }
+
+                Err(json_response(
+                    StatusCode::UNAUTHORIZED,
+                    &ApiResponse::<()>::error("Invalid bearer token"),
+                ))
             }
             Some(_) => Err(json_response(
                 StatusCode::UNAUTHORIZED,
@@ -1566,6 +1980,13 @@ async fn handle_request(
         return Ok(json_response(StatusCode::OK, &ApiResponse::success("ok")));
     }
 
+    // Status intentionally remains public like health so local clients can
+    // distinguish a reachable daemon from an unavailable backend before they
+    // have credentials or attempt a lifecycle mutation.
+    if method == Method::GET && segments.as_slice() == ["status"] {
+        return Ok(handle_status(state).await);
+    }
+
     // Prometheus metrics endpoint (no auth, like health)
     if method == Method::GET && segments.as_slice() == ["metrics"] {
         let body = crate::metrics::gather();
@@ -1582,7 +2003,7 @@ async fn handle_request(
     }
 
     // Check authentication for all other endpoints
-    if let Err(resp) = state.check_auth(&req) {
+    if let Err(resp) = state.check_auth(&req).await {
         if segments.first() == Some(&"scim") {
             return Ok(crate::scim::authentication_required());
         }
@@ -1610,6 +2031,12 @@ async fn handle_request(
         && !(method == Method::POST
             && segments.len() == 3
             && segments.get(2) == Some(&"config"))
+        // Start performs its ownership check after it has consumed and
+        // validated the one-shot, UUID-bound first-claim token. Owned starts
+        // and unowned starts without a valid token are still denied there.
+        && !(method == Method::POST
+            && segments.len() == 3
+            && segments.get(2) == Some(&"start"))
         && let Ok(manager) = state.get_manager().await
         && let Some(sandbox) = manager.get_state(name)
     {
@@ -1939,6 +2366,19 @@ async fn handle_request(
         // Stop a running sandbox
         (Method::POST, ["sandboxes", name, "stop"]) => handle_stop_sandbox(req, name, state).await,
 
+        // Pause a running Firecracker sandbox with full guest state preserved
+        (Method::POST, ["sandboxes", name, "pause"]) => {
+            handle_pause_sandbox(req, name, state).await
+        }
+
+        // Resume a full-state paused Firecracker sandbox
+        (Method::POST, ["sandboxes", name, "resume"]) => {
+            handle_resume_sandbox(req, name, state).await
+        }
+
+        // Fork a paused Firecracker sandbox into a new running sandbox
+        (Method::POST, ["sandboxes", name, "fork"]) => handle_fork_sandbox(req, name, state).await,
+
         // Extend sandbox TTL
         (Method::POST, ["sandboxes", name, "extend"]) => handle_extend_ttl(req, name, state).await,
 
@@ -1999,7 +2439,7 @@ async fn handle_request(
         (Method::DELETE, ["llm", "keys", provider]) => handle_llm_keys_remove(provider).await,
 
         // Garbage collection
-        (Method::POST, ["gc"]) => handle_gc(state).await,
+        (Method::POST, ["gc"]) => handle_gc(req, state).await,
 
         // Lifecycle policy reconciliation
         (Method::POST, ["lifecycle", "reconcile"]) => handle_reconcile_lifecycle(req, state).await,
@@ -3684,8 +4124,6 @@ async fn handle_cancel_task(task_id: &str, state: Arc<AppState>) -> Response<Box
 async fn handle_list_sandboxes(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
     #[cfg(feature = "enterprise")]
     let identity = extract_identity(&req, &state).await;
-    #[cfg(not(feature = "enterprise"))]
-    let _ = &req;
 
     // Parse label filters from query string: ?label=key:value&label=env:prod
     let label_filters: Vec<(String, String)> = req
@@ -4369,7 +4807,7 @@ async fn handle_get_sandbox(
         );
     }
 
-    let manager = match state.get_manager().await {
+    let mut manager = match state.get_manager().await {
         Ok(m) => m,
         Err(e) => {
             return json_response(
@@ -4378,6 +4816,10 @@ async fn handle_get_sandbox(
             );
         }
     };
+
+    if let Err(response) = refresh_sandbox_state(&mut manager, name) {
+        return response;
+    }
 
     let sandboxes = manager.list();
     for (sandbox_name, running, backend) in &sandboxes {
@@ -5447,12 +5889,10 @@ async fn handle_delete_sandbox(
     #[cfg(not(feature = "enterprise"))]
     let _ = &req;
     #[cfg(feature = "enterprise")]
+    if let Err(response) =
+        enforce_policy(&state, &identity, crate::policy::Action::Create, name).await
     {
-        if let Err(resp) =
-            enforce_policy(&state, &identity, crate::policy::Action::Create, name).await
-        {
-            return resp;
-        }
+        return response;
     }
 
     // Validate sandbox name (security: prevents command injection)
@@ -5476,6 +5916,16 @@ async fn handle_delete_sandbox(
         }
     };
 
+    if let Err(response) = refresh_sandbox_state(&mut manager, name) {
+        return response;
+    }
+    if !manager.exists(name) {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Sandbox not found"),
+        );
+    }
+
     #[cfg(feature = "enterprise")]
     if let Some(sandbox) = manager.get_state(name)
         && let Err(response) = require_sandbox_access(&state, &identity, sandbox)
@@ -5488,26 +5938,67 @@ async fn handle_delete_sandbox(
         .get_state(name)
         .map(|s| s.labels.clone())
         .unwrap_or_default();
-
-    match manager.remove(name).await {
-        Ok(_) => {
-            crate::events::emit(
-                state.event_bus.as_ref(),
-                crate::events::SandboxEvent {
-                    event: "sandbox.deleted".to_string(),
-                    timestamp: chrono::Utc::now(),
-                    sandbox: name.to_string(),
-                    labels: event_labels,
-                    metadata: serde_json::json!({}),
-                },
+    let expected_binding = manager
+        .get_state(name)
+        .map(PersistedStartBinding::from_state);
+    let manager_handle = match state.manager_handle() {
+        Ok(manager) => manager,
+        Err(error) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(error.to_string()),
             );
-            json_response(StatusCode::OK, &ApiResponse::success("Sandbox removed"))
         }
-        Err(e) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &ApiResponse::<()>::error(e.to_string()),
-        ),
-    }
+    };
+    drop(manager);
+    #[cfg(feature = "enterprise")]
+    drop(_quota_guard);
+    let name = name.to_string();
+    let task_state = Arc::clone(&state);
+    let task = tokio::spawn(async move {
+        #[cfg(feature = "enterprise")]
+        let _quota_guard = task_state.quota_controller.lock().await;
+        let mut manager = manager_handle.write().await;
+        if manager
+            .get_state(&name)
+            .map(PersistedStartBinding::from_state)
+            != expected_binding
+        {
+            return json_response(
+                StatusCode::CONFLICT,
+                &ApiResponse::<()>::error(
+                    "Sandbox identity or ownership changed before the server-owned removal began",
+                ),
+            );
+        }
+        match manager.remove(&name).await {
+            Ok(_) => {
+                if let Err(error) =
+                    remove_persisted_start_configurations_for_sandbox(manager.get_data_dir(), &name)
+                {
+                    return json_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &ApiResponse::<()>::error(format!(
+                            "Sandbox was removed, but its pending start configuration could not be scrubbed: {error}"
+                        )),
+                    );
+                }
+                crate::events::emit(
+                    task_state.event_bus.as_ref(),
+                    crate::events::SandboxEvent {
+                        event: "sandbox.deleted".to_string(),
+                        timestamp: chrono::Utc::now(),
+                        sandbox: name,
+                        labels: event_labels,
+                        metadata: serde_json::json!({}),
+                    },
+                );
+                json_response(StatusCode::OK, &ApiResponse::success("Sandbox removed"))
+            }
+            Err(error) => sandbox_lifecycle_error("remove", error),
+        }
+    });
+    await_server_owned_lifecycle("remove", task).await
 }
 
 async fn handle_start_sandbox(
@@ -5518,16 +6009,11 @@ async fn handle_start_sandbox(
     // Enterprise policy enforcement
     #[cfg(feature = "enterprise")]
     let identity = extract_identity(&req, &state).await;
+    // Bind the private handoff to the exact bearer presented by the local CLI.
+    // This works for both API keys and JWTs without persisting either secret.
+    let request_owner_id = start_request_owner_id(&req);
     #[cfg(not(feature = "enterprise"))]
-    let _ = &req;
-    #[cfg(feature = "enterprise")]
-    {
-        if let Err(resp) =
-            enforce_policy(&state, &identity, crate::policy::Action::Create, name).await
-        {
-            return resp;
-        }
-    }
+    let trusted_start_owner = trusted_owner_identity(&req, &state);
 
     // Validate sandbox name (security: prevents command injection)
     if let Err(e) = validation::validate_sandbox_name(name) {
@@ -5537,6 +6023,33 @@ async fn handle_start_sandbox(
         );
     }
 
+    let body = match read_body_bytes(req).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let start_request = match parse_start_sandbox_request(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(format!("{error:#}")),
+            );
+        }
+    };
+    #[cfg(feature = "enterprise")]
+    {
+        if let Err(response) =
+            enforce_policy(&state, &identity, crate::policy::Action::Run, name).await
+        {
+            return response;
+        }
+        if start_request.configuration.is_some()
+            && let Err(response) =
+                enforce_policy(&state, &identity, crate::policy::Action::Create, name).await
+        {
+            return response;
+        }
+    }
     #[cfg(feature = "enterprise")]
     let quota_guard = state.quota_controller.lock().await;
 
@@ -5549,6 +6062,85 @@ async fn handle_start_sandbox(
             );
         }
     };
+
+    if let Err(response) = refresh_sandbox_state(&mut manager, name) {
+        return response;
+    }
+    let start_binding = match manager.get_state(name) {
+        Some(sandbox) => PersistedStartBinding::from_state(sandbox),
+        None => {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error("Sandbox not found"),
+            );
+        }
+    };
+    let token_authorizes_first_claim = start_request.configuration.is_some();
+    let (permissions, files, expected_state_sha256) =
+        match start_request.into_runtime(manager.get_data_dir(), &start_binding, &request_owner_id)
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    &ApiResponse::<()>::error(error.to_string()),
+                );
+            }
+        };
+
+    if let Some(expected_state_sha256) = expected_state_sha256 {
+        if let Err(error) = manager.refresh_stopped_sandbox_from_disk(name) {
+            return json_response(
+                StatusCode::CONFLICT,
+                &ApiResponse::<()>::error(format!(
+                    "Failed to adopt the final persisted sandbox configuration: {error}"
+                )),
+            );
+        }
+        let actual_state_sha256 = match manager.get_state(name).map(sandbox_state_sha256) {
+            Some(Ok(hash)) => hash,
+            Some(Err(error)) => {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &ApiResponse::<()>::error(error.to_string()),
+                );
+            }
+            None => {
+                return json_response(
+                    StatusCode::NOT_FOUND,
+                    &ApiResponse::<()>::error("Sandbox not found"),
+                );
+            }
+        };
+        if actual_state_sha256 != expected_state_sha256 {
+            return json_response(
+                StatusCode::CONFLICT,
+                &ApiResponse::<()>::error(
+                    "Persisted sandbox configuration changed after the start handoff was created",
+                ),
+            );
+        }
+    }
+
+    #[cfg(feature = "enterprise")]
+    if let Err(response) = claim_unowned_start_sandbox(
+        &mut manager,
+        name,
+        token_authorizes_first_claim,
+        &identity,
+        &state,
+    ) {
+        return response;
+    }
+    #[cfg(not(feature = "enterprise"))]
+    if let Err(response) = claim_unowned_local_start_sandbox(
+        &mut manager,
+        name,
+        token_authorizes_first_claim,
+        trusted_start_owner.as_ref(),
+    ) {
+        return response;
+    }
 
     #[cfg(feature = "enterprise")]
     if let Some(sandbox) = manager.get_state(name)
@@ -5578,13 +6170,72 @@ async fn handle_start_sandbox(
         return quota_denial(name, &subject, "start", error);
     }
 
-    match manager.start(name).await {
-        Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox started")),
-        Err(e) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &ApiResponse::<()>::error(e.to_string()),
-        ),
-    }
+    let expected_binding = manager
+        .get_state(name)
+        .map(PersistedStartBinding::from_state)
+        .expect("sandbox presence was validated before server-owned start");
+    let manager_handle = match state.manager_handle() {
+        Ok(manager) => manager,
+        Err(error) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(error.to_string()),
+            );
+        }
+    };
+    drop(manager);
+    #[cfg(feature = "enterprise")]
+    drop(quota_guard);
+    let name = name.to_string();
+    #[cfg(feature = "enterprise")]
+    let task_state = Arc::clone(&state);
+    let task = tokio::spawn(async move {
+        #[cfg(feature = "enterprise")]
+        let quota_guard = task_state.quota_controller.lock().await;
+        let mut manager = manager_handle.write().await;
+        let Some(current) = manager.get_state(&name) else {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error("Sandbox not found"),
+            );
+        };
+        if PersistedStartBinding::from_state(current) != expected_binding {
+            return json_response(
+                StatusCode::CONFLICT,
+                &ApiResponse::<()>::error(
+                    "Sandbox identity or ownership changed before the server-owned start began",
+                ),
+            );
+        }
+        #[cfg(feature = "enterprise")]
+        if let Err(error) = quota_guard.check_start(&manager, &name) {
+            let subject = manager
+                .get_state(&name)
+                .map(|sandbox| crate::quota::QuotaSubject {
+                    user_id: sandbox
+                        .owner_user_id
+                        .clone()
+                        .unwrap_or_else(|| "anonymous".to_string()),
+                    org_id: sandbox
+                        .owner_org_id
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string()),
+                })
+                .unwrap_or(crate::quota::QuotaSubject {
+                    user_id: "anonymous".to_string(),
+                    org_id: "default".to_string(),
+                });
+            return quota_denial(&name, &subject, "start", error);
+        }
+        match manager
+            .start_with_permissions_and_files_authorized(&name, &permissions, &files)
+            .await
+        {
+            Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox started")),
+            Err(error) => sandbox_lifecycle_error("start", error),
+        }
+    });
+    await_server_owned_lifecycle("start", task).await
 }
 
 async fn handle_stop_sandbox(
@@ -5598,8 +6249,7 @@ async fn handle_stop_sandbox(
     let _ = &req;
     #[cfg(feature = "enterprise")]
     {
-        if let Err(resp) =
-            enforce_policy(&state, &identity, crate::policy::Action::Create, name).await
+        if let Err(resp) = enforce_policy(&state, &identity, crate::policy::Action::Run, name).await
         {
             return resp;
         }
@@ -5615,7 +6265,7 @@ async fn handle_stop_sandbox(
     #[cfg(feature = "enterprise")]
     let _quota_guard = state.quota_controller.lock().await;
 
-    let mut manager = match state.get_manager().await {
+    let manager = match state.get_manager().await {
         Ok(m) => m,
         Err(e) => {
             return json_response(
@@ -5632,13 +6282,576 @@ async fn handle_stop_sandbox(
         return response;
     }
 
-    match manager.stop(name).await {
-        Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox stopped")),
-        Err(e) => json_response(
+    let expected_binding = manager
+        .get_state(name)
+        .map(PersistedStartBinding::from_state);
+    let manager_handle = match state.manager_handle() {
+        Ok(manager) => manager,
+        Err(error) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(error.to_string()),
+            );
+        }
+    };
+    drop(manager);
+    #[cfg(feature = "enterprise")]
+    drop(_quota_guard);
+    let name = name.to_string();
+    #[cfg(feature = "enterprise")]
+    let task_state = Arc::clone(&state);
+    let task = tokio::spawn(async move {
+        #[cfg(feature = "enterprise")]
+        let _quota_guard = task_state.quota_controller.lock().await;
+        let mut manager = manager_handle.write().await;
+        if manager
+            .get_state(&name)
+            .map(PersistedStartBinding::from_state)
+            != expected_binding
+        {
+            return json_response(
+                StatusCode::CONFLICT,
+                &ApiResponse::<()>::error(
+                    "Sandbox identity or ownership changed before the server-owned stop began",
+                ),
+            );
+        }
+        match manager.stop(&name).await {
+            Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox stopped")),
+            Err(error) => sandbox_lifecycle_error("stop", error),
+        }
+    });
+    await_server_owned_lifecycle("stop", task).await
+}
+
+#[allow(clippy::result_large_err)]
+fn require_full_state_firecracker(
+    manager: &VmManager,
+    name: &str,
+) -> Result<(), Response<BoxBody>> {
+    let Some(sandbox) = manager.get_state(name) else {
+        return Err(json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Sandbox not found"),
+        ));
+    };
+    let backend = recorded_backend(sandbox.backend, manager.backend());
+    if backend != BackendType::Firecracker {
+        return Err(json_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &ApiResponse::<()>::error(format!(
+                "Backend '{}' does not support full-state pause, resume, or fork; use the Firecracker backend",
+                backend
+            )),
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::result_large_err)]
+fn refresh_sandbox_state(manager: &mut VmManager, name: &str) -> Result<bool, Response<BoxBody>> {
+    manager.refresh_sandbox_if_missing(name).map_err(|error| {
+        json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            &ApiResponse::<()>::error(e.to_string()),
+            &ApiResponse::<()>::error(format!(
+                "Failed to refresh sandbox state for '{name}': {error}"
+            )),
+        )
+    })
+}
+
+#[cfg(feature = "enterprise")]
+#[allow(clippy::result_large_err)]
+fn claim_unowned_start_sandbox(
+    manager: &mut VmManager,
+    name: &str,
+    token_authorizes_first_claim: bool,
+    identity: &crate::identity::AgentIdentity,
+    state: &AppState,
+) -> Result<(), Response<BoxBody>> {
+    // A refresh is not an authorization event: the server may have loaded the
+    // same unowned state during startup or a prior GET. Only a valid, consumed
+    // local start token bound to this UUID/generation may authorize first claim.
+    let Some(sandbox) = manager.get_state(name) else {
+        return Ok(());
+    };
+    if sandbox.owner_user_id.is_some() || sandbox.owner_org_id.is_some() {
+        return Ok(());
+    }
+    if !token_authorizes_first_claim {
+        return Err(sandbox_access_denied());
+    }
+
+    let trusted_identity = trusted_owner_identity(identity, state).is_some()
+        || (!identity.is_authenticated() && state.api_keys.is_empty());
+    if !trusted_identity {
+        return Err(json_response(
+            StatusCode::FORBIDDEN,
+            &ApiResponse::<()>::error(
+                "A trusted identity is required to claim a CLI-created sandbox",
+            ),
+        ));
+    }
+
+    let subject = quota_subject(state, identity);
+    manager
+        .set_trusted_ownership(
+            name,
+            trusted_tenant_for_sandbox(identity, state),
+            Some(&subject.user_id),
+            Some(&subject.org_id),
+        )
+        .map_err(|error| {
+            json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!(
+                    "Failed to atomically persist refreshed sandbox ownership: {error}"
+                )),
+            )
+        })
+}
+
+#[cfg(not(feature = "enterprise"))]
+#[allow(clippy::result_large_err)]
+fn claim_unowned_local_start_sandbox(
+    manager: &mut VmManager,
+    name: &str,
+    token_authorizes_first_claim: bool,
+    trusted_owner: Option<&(String, String)>,
+) -> Result<(), Response<BoxBody>> {
+    if !token_authorizes_first_claim {
+        return Ok(());
+    }
+    let Some(sandbox) = manager.get_state(name) else {
+        return Ok(());
+    };
+    if sandbox.owner_user_id.is_some() || sandbox.owner_org_id.is_some() {
+        return Ok(());
+    }
+    let Some((tenant, user)) = trusted_owner else {
+        // With no configured API authentication there is no durable identity
+        // to stamp; the unowned local-only behavior remains unchanged.
+        return Ok(());
+    };
+    manager
+        .set_owner_identity(name, tenant, user)
+        .map_err(|error| {
+            json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!(
+                    "Failed to persist refreshed sandbox ownership: {error}"
+                )),
+            )
+        })
+}
+
+fn sandbox_lifecycle_error(operation: &str, error: anyhow::Error) -> Response<BoxBody> {
+    // Full-state operations reject proxy-backed secret workloads before they
+    // reach the backend. Their remaining error chains contain lifecycle and
+    // checkpoint diagnostics (including actionable recovery paths), not secret
+    // values, so preserve the complete anyhow context for operators.
+    let message = format!("{error:#}");
+    let normalized = message.to_ascii_lowercase();
+    let status = if normalized.contains("not found") {
+        StatusCode::NOT_FOUND
+    } else if normalized.contains("not support")
+        || normalized.contains("unsupported")
+        || normalized.contains("requires firecracker")
+        || normalized.contains("requires linux x86_64")
+        || normalized.contains("firecracker backend")
+    {
+        StatusCode::UNPROCESSABLE_ENTITY
+    } else if normalized.contains("already")
+        || normalized.contains("must be")
+        || normalized.contains("not running")
+        || normalized.contains("not paused")
+        || normalized.contains("is paused")
+        || normalized.contains("cold start")
+        || normalized.contains("refusing to stop")
+        || normalized.contains("cannot pause")
+        || normalized.contains("cannot resume")
+        || normalized.contains("cannot fork")
+    {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    json_response(
+        status,
+        &ApiResponse::<()>::error(format!("Failed to {operation} sandbox: {message}")),
+    )
+}
+
+async fn await_server_owned_lifecycle(
+    operation: &'static str,
+    task: tokio::task::JoinHandle<Response<BoxBody>>,
+) -> Response<BoxBody> {
+    match task.await {
+        Ok(response) => response,
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!(
+                "Server-owned {operation} task failed unexpectedly: {error}"
+            )),
         ),
     }
+}
+
+#[cfg(feature = "enterprise")]
+const FULL_STATE_RUNTIME_POLICY_ACTION: crate::policy::Action = crate::policy::Action::Run;
+
+#[cfg(feature = "enterprise")]
+const FORK_SOURCE_POLICY_ACTION: crate::policy::Action = FULL_STATE_RUNTIME_POLICY_ACTION;
+
+#[cfg(feature = "enterprise")]
+const FORK_CHILD_POLICY_ACTIONS: [crate::policy::Action; 2] =
+    [crate::policy::Action::Create, crate::policy::Action::Run];
+
+fn fork_identity_matches_source(
+    source: &crate::vmm::SandboxState,
+    tenant_id: Option<&str>,
+    owner_user_id: Option<&str>,
+    owner_org_id: Option<&str>,
+) -> bool {
+    source.tenant_id.as_deref() == tenant_id
+        && source.owner_user_id.as_deref() == owner_user_id
+        && source.owner_org_id.as_deref() == owner_org_id
+}
+
+#[allow(clippy::result_large_err)]
+fn sandbox_info_from_manager(
+    manager: &VmManager,
+    name: &str,
+) -> Result<SandboxInfo, Response<BoxBody>> {
+    let Some(state_info) = manager.get_state(name) else {
+        return Err(json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Sandbox not found"),
+        ));
+    };
+    let running = manager.is_running(name);
+    let ip = running.then(|| manager.get_container_ip(name)).flatten();
+    Ok(SandboxInfo {
+        name: name.to_string(),
+        uuid: state_info.uuid.clone(),
+        status: state_info.status(running).to_string(),
+        backend: recorded_backend(state_info.backend, manager.backend()).to_string(),
+        ip,
+        image: Some(state_info.image.clone()),
+        vcpus: Some(state_info.vcpus),
+        memory_mb: Some(state_info.memory_mb),
+        created_at: Some(state_info.created_at.clone()),
+        created_from_template: state_info.created_from_template.clone(),
+        template_help_text: state_info.template_help_text.clone(),
+        ports: state_info
+            .ports
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect(),
+        endpoints: state_info.endpoints.clone(),
+        secret_files: state_info.secret_files.clone(),
+        placeholder_secrets: state_info.placeholder_secrets,
+        proxy_port: state_info.proxy_port,
+        secret_mappings: build_secret_mappings(state_info),
+        labels: state_info.labels.clone(),
+        description: state_info.description.clone(),
+        last_activity_at: state_info.last_activity_at.clone(),
+        workspace_revision: state_info.workspace_revision.clone(),
+        archived_at: state_info.archived_at.clone(),
+        archived_reason: state_info.archived_reason.clone(),
+        lifecycle: state_info.lifecycle_policy.clone(),
+    })
+}
+
+async fn handle_pause_sandbox(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(not(feature = "enterprise"))]
+    let _ = &req;
+
+    if let Err(error) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(error.to_string()),
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    if let Err(response) =
+        enforce_policy(&state, &identity, FULL_STATE_RUNTIME_POLICY_ACTION, name).await
+    {
+        return response;
+    }
+
+    let manager = match state.manager_handle() {
+        Ok(manager) => manager,
+        Err(error) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(error.to_string()),
+            );
+        }
+    };
+    let name = name.to_string();
+    #[cfg(feature = "enterprise")]
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
+        // Pause changes running quota usage. Keep serialization in the task so
+        // it remains held even if the HTTP waiter disconnects.
+        #[cfg(feature = "enterprise")]
+        let _quota_guard = task_state.quota_controller.lock().await;
+        let mut manager = manager.write().await;
+        if let Err(response) = refresh_sandbox_state(&mut manager, &name) {
+            return response;
+        }
+        if let Err(response) = require_full_state_firecracker(&manager, &name) {
+            return response;
+        }
+        #[cfg(feature = "enterprise")]
+        if let Some(sandbox) = manager.get_state(&name)
+            && let Err(response) = require_sandbox_access(&task_state, &identity, sandbox)
+        {
+            return response;
+        }
+        match manager.pause_authorized(&name).await {
+            Ok(_) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox paused")),
+            Err(error) => sandbox_lifecycle_error("pause", error),
+        }
+    });
+    await_server_owned_lifecycle("pause", task).await
+}
+
+async fn handle_resume_sandbox(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(not(feature = "enterprise"))]
+    let _ = &req;
+
+    if let Err(error) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(error.to_string()),
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    if let Err(response) =
+        enforce_policy(&state, &identity, FULL_STATE_RUNTIME_POLICY_ACTION, name).await
+    {
+        return response;
+    }
+
+    let manager = match state.manager_handle() {
+        Ok(manager) => manager,
+        Err(error) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(error.to_string()),
+            );
+        }
+    };
+    let name = name.to_string();
+    #[cfg(feature = "enterprise")]
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
+        #[cfg(feature = "enterprise")]
+        let quota_guard = task_state.quota_controller.lock().await;
+        let mut manager = manager.write().await;
+        if let Err(response) = refresh_sandbox_state(&mut manager, &name) {
+            return response;
+        }
+        if let Err(response) = require_full_state_firecracker(&manager, &name) {
+            return response;
+        }
+        #[cfg(feature = "enterprise")]
+        if let Some(sandbox) = manager.get_state(&name)
+            && let Err(response) = require_sandbox_access(&task_state, &identity, sandbox)
+        {
+            return response;
+        }
+        #[cfg(feature = "enterprise")]
+        if let Err(error) = quota_guard.check_start(&manager, &name) {
+            let subject = manager
+                .get_state(&name)
+                .map(|sandbox| crate::quota::QuotaSubject {
+                    user_id: sandbox
+                        .owner_user_id
+                        .clone()
+                        .unwrap_or_else(|| "anonymous".to_string()),
+                    org_id: sandbox
+                        .owner_org_id
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string()),
+                })
+                .unwrap_or(crate::quota::QuotaSubject {
+                    user_id: "anonymous".to_string(),
+                    org_id: "default".to_string(),
+                });
+            return quota_denial(&name, &subject, "resume", error);
+        }
+        match manager.resume_authorized(&name).await {
+            Ok(()) => json_response(StatusCode::OK, &ApiResponse::success("Sandbox resumed")),
+            Err(error) => sandbox_lifecycle_error("resume", error),
+        }
+    });
+    await_server_owned_lifecycle("resume", task).await
+}
+
+async fn handle_fork_sandbox(
+    req: Request<Incoming>,
+    source: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(not(feature = "enterprise"))]
+    let trusted_owner = trusted_owner_identity(&req, &state);
+    #[cfg(feature = "enterprise")]
+    let trusted_tenant = trusted_tenant_for_sandbox(&identity, &state);
+
+    if let Err(error) = validation::validate_sandbox_name(source) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(error.to_string()),
+        );
+    }
+
+    let body: ForkSandboxRequest = match read_json_body(req).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    if let Err(error) = validation::validate_sandbox_name(&body.as_name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(format!("Invalid fork name: {error}")),
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    {
+        if let Err(response) =
+            enforce_policy(&state, &identity, FORK_SOURCE_POLICY_ACTION, source).await
+        {
+            return response;
+        }
+        for action in FORK_CHILD_POLICY_ACTIONS {
+            if let Err(response) = enforce_policy(&state, &identity, action, &body.as_name).await {
+                return response;
+            }
+        }
+    }
+
+    #[cfg(feature = "enterprise")]
+    let quota_subject = quota_subject(&state, &identity);
+    let manager = match state.manager_handle() {
+        Ok(manager) => manager,
+        Err(error) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(error.to_string()),
+            );
+        }
+    };
+    let source = source.to_string();
+    let child = body.as_name;
+    #[cfg(feature = "enterprise")]
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
+        #[cfg(feature = "enterprise")]
+        let quota_guard = task_state.quota_controller.lock().await;
+        let mut manager = manager.write().await;
+        if let Err(response) = refresh_sandbox_state(&mut manager, &source) {
+            return response;
+        }
+        if let Err(response) = refresh_sandbox_state(&mut manager, &child) {
+            return response;
+        }
+        if let Err(response) = require_full_state_firecracker(&manager, &source) {
+            return response;
+        }
+        if manager.exists(&child) {
+            return json_response(
+                StatusCode::CONFLICT,
+                &ApiResponse::<()>::error(format!("Sandbox '{child}' already exists")),
+            );
+        }
+        #[cfg(feature = "enterprise")]
+        if let Some(sandbox) = manager.get_state(&source)
+            && let Err(response) = require_sandbox_access(&task_state, &identity, sandbox)
+        {
+            return response;
+        }
+        #[cfg(feature = "enterprise")]
+        if let Some(source_state) = manager.get_state(&source)
+            && let Err(error) = quota_guard.check_create(
+                &manager,
+                &quota_subject,
+                source_state.vcpus,
+                source_state.memory_mb,
+            )
+        {
+            return quota_denial(&child, &quota_subject, "fork", error);
+        }
+
+        let source_state = match manager.get_state(&source) {
+            Some(source_state) => source_state,
+            None => {
+                return json_response(
+                    StatusCode::NOT_FOUND,
+                    &ApiResponse::<()>::error("Sandbox not found"),
+                );
+            }
+        };
+        #[cfg(feature = "enterprise")]
+        let requested_identity = (
+            trusted_tenant.as_deref(),
+            Some(quota_subject.user_id.as_str()),
+            Some(quota_subject.org_id.as_str()),
+        );
+        #[cfg(not(feature = "enterprise"))]
+        let requested_identity = (
+            source_state.tenant_id.as_deref(),
+            trusted_owner.as_ref().map(|(_, user)| user.as_str()),
+            trusted_owner.as_ref().map(|(tenant, _)| tenant.as_str()),
+        );
+        if !fork_identity_matches_source(
+            source_state,
+            requested_identity.0,
+            requested_identity.1,
+            requested_identity.2,
+        ) {
+            return json_response(
+                StatusCode::FORBIDDEN,
+                &ApiResponse::<()>::error(
+                    "Forking across sandbox owner or tenant boundaries is not supported",
+                ),
+            );
+        }
+
+        if let Err(error) = manager.fork_sandbox_authorized(&source, &child).await {
+            return sandbox_lifecycle_error("fork", error);
+        }
+        let sandbox = match sandbox_info_from_manager(&manager, &child) {
+            Ok(sandbox) => sandbox,
+            Err(response) => return response,
+        };
+        json_response(
+            StatusCode::CREATED,
+            &ApiResponse::success(ForkSandboxResult {
+                sandbox,
+                security_warning: crate::full_state::FORK_SECURITY_WARNING.to_string(),
+            }),
+        )
+    });
+    await_server_owned_lifecycle("fork", task).await
 }
 
 /// Request body for extending TTL
@@ -5664,6 +6877,15 @@ async fn handle_extend_ttl(
     name: &str,
     state: Arc<AppState>,
 ) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(feature = "enterprise")]
+    if let Err(response) =
+        enforce_policy(&state, &identity, crate::policy::Action::Create, name).await
+    {
+        return response;
+    }
+
     // Validate sandbox name
     if let Err(e) = validation::validate_sandbox_name(name) {
         return json_response(
@@ -5701,12 +6923,23 @@ async fn handle_extend_ttl(
         }
     };
 
+    if let Err(response) = refresh_sandbox_state(&mut manager, name) {
+        return response;
+    }
+
     // Check if sandbox exists
     if !manager.exists(name) {
         return json_response(
             StatusCode::NOT_FOUND,
             &ApiResponse::<()>::error(format!("Sandbox '{}' not found", name)),
         );
+    }
+
+    #[cfg(feature = "enterprise")]
+    if let Some(sandbox) = manager.get_state(name)
+        && let Err(response) = require_sandbox_access(&state, &identity, sandbox)
+    {
+        return response;
     }
 
     // Extend the TTL
@@ -6205,6 +7438,18 @@ async fn handle_reconcile_lifecycle(
     req: Request<Incoming>,
     state: Arc<AppState>,
 ) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = extract_identity(&req, &state).await;
+        if !identity.has_role("admin") {
+            return json_response(
+                StatusCode::FORBIDDEN,
+                &ApiResponse::<()>::error(
+                    "Lifecycle reconciliation requires an administrator identity",
+                ),
+            );
+        }
+    }
     let body_bytes = match read_body_bytes(req).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -7068,6 +8313,15 @@ fn sandbox_access_allowed(
     identity: &crate::identity::AgentIdentity,
     sandbox: &crate::vmm::SandboxState,
 ) -> bool {
+    if sandbox.owner_user_id.is_none() && sandbox.owner_org_id.is_none() {
+        // CLI-created --no-start state has not been claimed yet. A principal
+        // accepted by the server (or anonymous access when auth is disabled)
+        // may inspect/manage it, while partial or owned metadata remains
+        // tenant-scoped below. Start still requires its one-shot token before
+        // this state is assigned to an owner.
+        return trusted_owner_identity(identity, state).is_some()
+            || (!state.authentication_required() && !identity.is_authenticated());
+    }
     owner_access_allowed(
         state,
         identity,
@@ -7088,9 +8342,9 @@ fn owner_access_allowed(
     }
 
     let (Some(owner_user), Some(owner_org)) = (owner_user_id, owner_org_id) else {
-        // Legacy state without ownership metadata is deliberately not
-        // addressable through the authenticated HTTP surface. It remains
-        // available to local CLI/admin recovery paths.
+        // Partial ownership metadata is never trusted. The sandbox-specific
+        // caller handles the intentional fully-unowned CLI handoff case before
+        // reaching this generic owner comparison.
         return false;
     };
     let subject = quota_subject(state, identity);
@@ -8468,7 +9722,20 @@ async fn handle_audit_log(req: Request<Incoming>) -> Response<BoxBody> {
     }
 }
 
-async fn handle_gc(state: Arc<AppState>) -> Response<BoxBody> {
+async fn handle_gc(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
+    #[cfg(feature = "enterprise")]
+    {
+        let identity = extract_identity(&req, &state).await;
+        if !identity.has_role("admin") {
+            return json_response(
+                StatusCode::FORBIDDEN,
+                &ApiResponse::<()>::error("Garbage collection requires an administrator identity"),
+            );
+        }
+    }
+    #[cfg(not(feature = "enterprise"))]
+    let _ = &req;
+
     let mut manager = match state.get_manager().await {
         Ok(m) => m,
         Err(e) => {
@@ -10723,6 +11990,22 @@ mod tests {
     use crate::durable_storage::DurableStorage;
     use std::sync::Arc;
 
+    fn start_test_sandbox(name: &str, uuid: &str) -> crate::vmm::SandboxState {
+        serde_json::from_value(serde_json::json!({
+            "name": name,
+            "uuid": uuid,
+            "image": "alpine:3.24",
+            "vcpus": 1,
+            "memory_mb": 512,
+            "vsock_cid": 3,
+            "created_at": "2026-01-01T00:00:00Z",
+            "backend": "Firecracker",
+            "owner_user_id": "persisted-owner",
+            "owner_org_id": "persisted-org"
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn explicit_governance_config_parse_failure_is_not_silently_disabled() {
         let dir = tempfile::tempdir().unwrap();
@@ -10787,6 +12070,768 @@ mod tests {
         assert!(json.contains("\"success\":false"));
         assert!(!json.contains("\"data\"")); // data is skipped when None
         assert!(json.contains("\"error\":\"failed\""));
+    }
+
+    #[test]
+    fn persisted_start_configuration_preserves_permissions_and_binary_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let sandbox = start_test_sandbox("configured", "019d0000-0000-7000-8000-000000000001");
+        let permissions = Permissions {
+            network: false,
+            mount_cwd: true,
+            mount_home: true,
+            pass_env: true,
+            allow_privileged: false,
+            read_only_root: true,
+            max_memory_mb: Some(2048),
+            max_cpu_percent: Some(75),
+            seccomp: Some("restrictive".to_string()),
+        };
+        let files = vec![FileInjection {
+            content: vec![0, 1, 2, 0xff],
+            dest: "/workspace/config.bin".to_string(),
+        }];
+
+        let request =
+            persist_start_configuration(temp.path(), &sandbox, &permissions, &files).unwrap();
+        let encoded = serde_json::to_vec(&request).unwrap();
+        let encoded_json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(encoded_json["configuration"]["source"], "persisted");
+        assert_eq!(
+            encoded_json["configuration"]["token"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let token = encoded_json["configuration"]["token"].as_str().unwrap();
+            let mode =
+                std::fs::metadata(persisted_start_configuration_path(temp.path(), token).unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        assert!(!String::from_utf8_lossy(&encoded).contains("mount_home"));
+        assert!(!String::from_utf8_lossy(&encoded).contains("content_base64"));
+
+        let (decoded_permissions, decoded_files, state_sha256) =
+            parse_start_sandbox_request(&encoded)
+                .unwrap()
+                .into_runtime(
+                    temp.path(),
+                    &PersistedStartBinding::from_state(&sandbox),
+                    &local_start_request_owner_id(),
+                )
+                .unwrap();
+        assert!(decoded_permissions.mount_cwd);
+        assert!(decoded_permissions.mount_home);
+        assert!(!decoded_permissions.network);
+        assert_eq!(decoded_permissions.max_memory_mb, Some(2048));
+        assert_eq!(decoded_permissions.max_cpu_percent, Some(75));
+        assert_eq!(decoded_files.len(), 1);
+        assert_eq!(decoded_files[0].dest, "/workspace/config.bin");
+        assert_eq!(decoded_files[0].content, vec![0, 1, 2, 0xff]);
+        assert_eq!(state_sha256, Some(sandbox_state_sha256(&sandbox).unwrap()));
+
+        let replay = parse_start_sandbox_request(&encoded)
+            .unwrap()
+            .into_runtime(
+                temp.path(),
+                &PersistedStartBinding::from_state(&sandbox),
+                &local_start_request_owner_id(),
+            )
+            .unwrap_err();
+        assert!(format!("{replay:#}").contains("already consumed"));
+    }
+
+    #[test]
+    fn persisted_start_state_hash_is_stable_across_map_insertion_order() {
+        let mut first = start_test_sandbox("canonical-a", "canonical-uuid");
+        first.labels.clear();
+        first.labels.insert("alpha".to_string(), "1".to_string());
+        first.labels.insert("beta".to_string(), "2".to_string());
+
+        let mut second = first.clone();
+        second.labels.clear();
+        second.labels.insert("beta".to_string(), "2".to_string());
+        second.labels.insert("alpha".to_string(), "1".to_string());
+
+        assert_eq!(
+            sandbox_state_sha256(&first).unwrap(),
+            sandbox_state_sha256(&second).unwrap()
+        );
+    }
+
+    #[test]
+    fn empty_start_request_keeps_legacy_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        let sandbox = start_test_sandbox("legacy", "019d0000-0000-7000-8000-000000000002");
+        let (permissions, files, state_sha256) = parse_start_sandbox_request(&[])
+            .unwrap()
+            .into_runtime(
+                temp.path(),
+                &PersistedStartBinding::from_state(&sandbox),
+                "anonymous",
+            )
+            .unwrap();
+        let defaults = Permissions::default();
+
+        assert_eq!(permissions.network, defaults.network);
+        assert_eq!(permissions.mount_cwd, defaults.mount_cwd);
+        assert_eq!(permissions.mount_home, defaults.mount_home);
+        assert_eq!(permissions.read_only_root, defaults.read_only_root);
+        assert!(files.is_empty());
+        assert!(state_sha256.is_none());
+    }
+
+    #[test]
+    fn persisted_start_configuration_rejects_recreated_sandbox_and_is_consumed() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = start_test_sandbox("reused", "019d0000-0000-7000-8000-000000000003");
+        let recreated = start_test_sandbox("reused", "019d0000-0000-7000-8000-000000000004");
+        let request =
+            persist_start_configuration(temp.path(), &original, &Permissions::default(), &[])
+                .unwrap();
+        let encoded = serde_json::to_vec(&request).unwrap();
+
+        let error = parse_start_sandbox_request(&encoded)
+            .unwrap()
+            .into_runtime(
+                temp.path(),
+                &PersistedStartBinding::from_state(&recreated),
+                &local_start_request_owner_id(),
+            )
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("sandbox generation and owner"));
+
+        let replay = parse_start_sandbox_request(&encoded)
+            .unwrap()
+            .into_runtime(
+                temp.path(),
+                &PersistedStartBinding::from_state(&original),
+                &local_start_request_owner_id(),
+            )
+            .unwrap_err();
+        assert!(format!("{replay:#}").contains("already consumed"));
+    }
+
+    #[test]
+    fn persisted_start_configuration_is_bound_to_owner_and_request_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let sandbox = start_test_sandbox("owned", "019d0000-0000-7000-8000-000000000007");
+        let mut wrong_owner = sandbox.clone();
+        wrong_owner.owner_user_id = Some("other-owner".to_string());
+        let request =
+            persist_start_configuration(temp.path(), &sandbox, &Permissions::default(), &[])
+                .unwrap();
+
+        let error = request
+            .into_runtime(
+                temp.path(),
+                &PersistedStartBinding::from_state(&wrong_owner),
+                "different-request-owner",
+            )
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("sandbox generation and owner"));
+    }
+
+    #[test]
+    fn newer_start_configuration_invalidates_stale_capabilities() {
+        let temp = tempfile::tempdir().unwrap();
+        let sandbox = start_test_sandbox("tightened", "019d0000-0000-7000-8000-000000000008");
+        let permissive = Permissions {
+            mount_home: true,
+            allow_privileged: true,
+            ..Permissions::default()
+        };
+        let stale = persist_start_configuration(temp.path(), &sandbox, &permissive, &[]).unwrap();
+
+        let restrictive = Permissions::default();
+        let current =
+            persist_start_configuration(temp.path(), &sandbox, &restrictive, &[]).unwrap();
+        let stale_error = stale
+            .into_runtime(
+                temp.path(),
+                &PersistedStartBinding::from_state(&sandbox),
+                &local_start_request_owner_id(),
+            )
+            .unwrap_err();
+        assert!(format!("{stale_error:#}").contains("already consumed"));
+
+        let (permissions, _, _) = current
+            .into_runtime(
+                temp.path(),
+                &PersistedStartBinding::from_state(&sandbox),
+                &local_start_request_owner_id(),
+            )
+            .unwrap();
+        assert!(!permissions.mount_home);
+        assert!(!permissions.allow_privileged);
+    }
+
+    #[test]
+    fn pending_start_configuration_is_scrubbed_on_remove() {
+        let temp = tempfile::tempdir().unwrap();
+        let sandbox = start_test_sandbox("remove-me", "019d0000-0000-7000-8000-000000000005");
+        let request =
+            persist_start_configuration(temp.path(), &sandbox, &Permissions::default(), &[])
+                .unwrap();
+        remove_persisted_start_configurations_for_sandbox(temp.path(), "remove-me").unwrap();
+
+        let error = request
+            .into_runtime(
+                temp.path(),
+                &PersistedStartBinding::from_state(&sandbox),
+                &local_start_request_owner_id(),
+            )
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("already consumed"));
+    }
+
+    #[test]
+    fn public_start_request_rejects_caller_supplied_capabilities() {
+        let request = br#"{"permissions":{"allow_privileged":true,"mount_home":true}}"#;
+        let error = parse_start_sandbox_request(request).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("unknown field `permissions`"));
+    }
+
+    #[tokio::test]
+    async fn authenticated_start_caller_cannot_expand_host_capabilities() {
+        let state = Arc::new(AppState::with_api_keys(vec!["owner".to_string()]));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |request| {
+                let state = server_state.clone();
+                handle_request(request, state)
+            });
+            http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/sandboxes/demo/start"))
+            .bearer_auth("owner")
+            .json(&serde_json::json!({
+                "permissions": {
+                    "allow_privileged": true,
+                    "mount_home": true,
+                    "mount_cwd": true,
+                    "pass_env": true
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("unknown field `permissions`"), "{body}");
+        task.await.unwrap();
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn router_allows_only_valid_token_to_claim_unowned_first_start() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut sandbox = start_test_sandbox("first-start", "first-start-uuid");
+        sandbox.tenant_id = None;
+        sandbox.owner_user_id = None;
+        sandbox.owner_org_id = None;
+        let token = "a".repeat(64);
+        let manifest = PersistedStartConfiguration::from_runtime(
+            &sandbox,
+            api_key_owner_id("owner"),
+            &Permissions::default(),
+            &[],
+        )
+        .unwrap();
+        crate::secure_fs::write_private_json(
+            &persisted_start_configuration_path(temp.path(), &token).unwrap(),
+            &manifest,
+        )
+        .unwrap();
+
+        let mut manager = VmManager::for_tests(temp.path()).unwrap();
+        manager.insert_state_for_tests(sandbox);
+        let manager = Arc::new(tokio::sync::RwLock::new(manager));
+        let state = AppState::with_api_keys(vec!["owner".to_string()]);
+        assert!(state.vm_manager.set(manager.clone()).is_ok());
+        *state.quota_controller.lock().await =
+            crate::quota::QuotaController::new(crate::config::ResourceQuotaConfig {
+                enabled: true,
+                default_limits: crate::config::ResourceQuotaLimits {
+                    max_running_sandboxes: Some(0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        let state = Arc::new(state);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let io = TokioIo::new(stream);
+                let state = server_state.clone();
+                let service = service_fn(move |request| {
+                    let state = state.clone();
+                    handle_request(request, state)
+                });
+                http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let without_token = reqwest::Client::new()
+            .post(format!("http://{address}/sandboxes/first-start/start"))
+            .bearer_auth("owner")
+            .header("connection", "close")
+            .body("")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(without_token.status(), StatusCode::NOT_FOUND);
+
+        let with_token = reqwest::Client::new()
+            .post(format!("http://{address}/sandboxes/first-start/start"))
+            .bearer_auth("owner")
+            .header("connection", "close")
+            .json(&StartSandboxRequest {
+                configuration: Some(PersistedStartReference {
+                    source: StartConfigurationSource::Persisted,
+                    token,
+                }),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(with_token.status(), StatusCode::TOO_MANY_REQUESTS);
+        task.await.unwrap();
+
+        let manager = manager.read().await;
+        let claimed = manager.get_state("first-start").unwrap();
+        let expected_owner = api_key_owner_id("owner");
+        assert_eq!(
+            claimed.owner_user_id.as_deref(),
+            Some(expected_owner.as_str())
+        );
+        assert_eq!(claimed.owner_org_id.as_deref(), Some("default"));
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn delegated_start_refreshes_idle_state_and_enforces_manifest_hash() {
+        let temp = tempfile::tempdir().unwrap();
+        let owner_id = api_key_owner_id("owner");
+
+        let mut stale = start_test_sandbox("handoff-refresh", "handoff-refresh-uuid");
+        stale.owner_user_id = Some(owner_id.clone());
+        stale.owner_org_id = Some("default".to_string());
+        let mut final_state = stale.clone();
+        final_state.memory_mb = 2048;
+        final_state.work_dir = Some("/workspace/final".to_string());
+        let expected_hash = sandbox_state_sha256(&final_state).unwrap();
+        let valid_token = "b".repeat(64);
+        let valid_manifest = PersistedStartConfiguration::from_runtime(
+            &final_state,
+            owner_id.clone(),
+            &Permissions::default(),
+            &[],
+        )
+        .unwrap();
+        crate::secure_fs::write_private_json(
+            &persisted_start_configuration_path(temp.path(), &valid_token).unwrap(),
+            &valid_manifest,
+        )
+        .unwrap();
+
+        let mut stale_mismatch = start_test_sandbox("handoff-mismatch", "handoff-mismatch-uuid");
+        stale_mismatch.owner_user_id = Some(owner_id.clone());
+        stale_mismatch.owner_org_id = Some("default".to_string());
+        let expected_mismatch = stale_mismatch.clone();
+        let mismatch_token = "c".repeat(64);
+        let mismatch_manifest = PersistedStartConfiguration::from_runtime(
+            &expected_mismatch,
+            owner_id,
+            &Permissions::default(),
+            &[],
+        )
+        .unwrap();
+        crate::secure_fs::write_private_json(
+            &persisted_start_configuration_path(temp.path(), &mismatch_token).unwrap(),
+            &mismatch_manifest,
+        )
+        .unwrap();
+        let mut tampered_mismatch = expected_mismatch;
+        tampered_mismatch.memory_mb = 4096;
+
+        let mut manager = VmManager::for_tests(temp.path()).unwrap();
+        manager.insert_state_for_tests(stale);
+        manager.insert_state_for_tests(stale_mismatch);
+        std::fs::write(
+            temp.path().join("sandboxes/handoff-refresh.json"),
+            serde_json::to_vec_pretty(&final_state).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path().join("sandboxes/handoff-mismatch.json"),
+            serde_json::to_vec_pretty(&tampered_mismatch).unwrap(),
+        )
+        .unwrap();
+        let manager = Arc::new(tokio::sync::RwLock::new(manager));
+        let state = AppState::with_api_keys(vec!["owner".to_string()]);
+        assert!(state.vm_manager.set(manager.clone()).is_ok());
+        *state.quota_controller.lock().await =
+            crate::quota::QuotaController::new(crate::config::ResourceQuotaConfig {
+                enabled: true,
+                default_limits: crate::config::ResourceQuotaLimits {
+                    max_running_sandboxes: Some(0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        let state = Arc::new(state);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let io = TokioIo::new(stream);
+                let state = server_state.clone();
+                let service = service_fn(move |request| {
+                    let state = state.clone();
+                    handle_request(request, state)
+                });
+                http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let valid = reqwest::Client::new()
+            .post(format!("http://{address}/sandboxes/handoff-refresh/start"))
+            .bearer_auth("owner")
+            .header("connection", "close")
+            .json(&StartSandboxRequest {
+                configuration: Some(PersistedStartReference {
+                    source: StartConfigurationSource::Persisted,
+                    token: valid_token,
+                }),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(valid.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let mismatch = reqwest::Client::new()
+            .post(format!("http://{address}/sandboxes/handoff-mismatch/start"))
+            .bearer_auth("owner")
+            .header("connection", "close")
+            .json(&StartSandboxRequest {
+                configuration: Some(PersistedStartReference {
+                    source: StartConfigurationSource::Persisted,
+                    token: mismatch_token,
+                }),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(mismatch.status(), StatusCode::CONFLICT);
+        assert!(
+            mismatch
+                .text()
+                .await
+                .unwrap()
+                .contains("changed after the start handoff")
+        );
+        task.await.unwrap();
+
+        let manager = manager.read().await;
+        let adopted = manager.get_state("handoff-refresh").unwrap();
+        assert_eq!(adopted.memory_mb, 2048);
+        assert_eq!(adopted.work_dir.as_deref(), Some("/workspace/final"));
+        assert_eq!(sandbox_state_sha256(adopted).unwrap(), expected_hash);
+    }
+
+    #[tokio::test]
+    async fn get_refreshes_cli_created_firecracker_state_for_authoritative_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut sandbox =
+            start_test_sandbox("cli-no-start", "019d0000-0000-7000-8000-000000000006");
+        sandbox.owner_user_id = Some("anonymous".to_string());
+        sandbox.owner_org_id = Some("default".to_string());
+        let manager = VmManager::for_tests(temp.path()).unwrap();
+        std::fs::write(
+            temp.path().join("sandboxes/cli-no-start.json"),
+            serde_json::to_vec_pretty(&sandbox).unwrap(),
+        )
+        .unwrap();
+        let state = AppState::with_api_keys(vec![]);
+        assert!(
+            state
+                .vm_manager
+                .set(Arc::new(tokio::sync::RwLock::new(manager)))
+                .is_ok()
+        );
+        let state = Arc::new(state);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |request| {
+                let state = server_state.clone();
+                handle_request(request, state)
+            });
+            http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}/sandboxes/cli-no-start"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["data"]["status"], "stopped");
+        assert_eq!(body["data"]["backend"], "firecracker");
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn extend_ttl_route_updates_authoritative_manager_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut sandbox = start_test_sandbox("ttl-owner", "ttl-owner-uuid");
+        sandbox.owner_user_id = Some("anonymous".to_string());
+        sandbox.owner_org_id = Some("default".to_string());
+        let mut manager = VmManager::for_tests(temp.path()).unwrap();
+        manager.insert_state_for_tests(sandbox);
+        let manager = Arc::new(tokio::sync::RwLock::new(manager));
+        let state = AppState::with_api_keys(vec![]);
+        assert!(state.vm_manager.set(manager.clone()).is_ok());
+        let state = Arc::new(state);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |request| {
+                let state = server_state.clone();
+                handle_request(request, state)
+            });
+            http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/sandboxes/ttl-owner/extend"))
+            .json(&serde_json::json!({"by": "30m"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        let response_expiry = body["data"]["expires_at"].as_str().unwrap().to_string();
+        task.await.unwrap();
+
+        let manager = manager.read().await;
+        assert_eq!(
+            manager
+                .get_state("ttl-owner")
+                .and_then(|sandbox| sandbox.expires_at.as_deref()),
+            Some(response_expiry.as_str())
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn disk_only_owned_delete_and_extend_deny_cross_tenant_mutation_after_refresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let owner_id = api_key_owner_id("owner");
+        let mut delete_state = start_test_sandbox("disk-delete", "disk-delete-uuid");
+        delete_state.owner_user_id = Some(owner_id.clone());
+        delete_state.owner_org_id = Some("default".to_string());
+        let mut extend_state = start_test_sandbox("disk-extend", "disk-extend-uuid");
+        extend_state.owner_user_id = Some(owner_id);
+        extend_state.owner_org_id = Some("default".to_string());
+        extend_state.ttl_seconds = Some(600);
+        extend_state.expires_at = Some("2026-09-01T00:00:00Z".to_string());
+
+        let manager = VmManager::for_tests(temp.path()).unwrap();
+        let delete_path = temp.path().join("sandboxes/disk-delete.json");
+        let extend_path = temp.path().join("sandboxes/disk-extend.json");
+        std::fs::write(
+            &delete_path,
+            serde_json::to_vec_pretty(&delete_state).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            &extend_path,
+            serde_json::to_vec_pretty(&extend_state).unwrap(),
+        )
+        .unwrap();
+        let manager = Arc::new(tokio::sync::RwLock::new(manager));
+        let state = AppState::with_api_keys(vec!["owner".to_string(), "intruder".to_string()]);
+        assert!(state.vm_manager.set(manager.clone()).is_ok());
+        let state = Arc::new(state);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let io = TokioIo::new(stream);
+                let state = server_state.clone();
+                let service = service_fn(move |request| {
+                    let state = state.clone();
+                    handle_request(request, state)
+                });
+                http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let delete = reqwest::Client::new()
+            .delete(format!("http://{address}/sandboxes/disk-delete"))
+            .bearer_auth("intruder")
+            .header("connection", "close")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::NOT_FOUND);
+
+        let extend = reqwest::Client::new()
+            .post(format!("http://{address}/sandboxes/disk-extend/extend"))
+            .bearer_auth("intruder")
+            .header("connection", "close")
+            .json(&serde_json::json!({"by": "30m"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(extend.status(), StatusCode::NOT_FOUND);
+        task.await.unwrap();
+
+        assert!(delete_path.exists());
+        let persisted: crate::vmm::SandboxState =
+            serde_json::from_slice(&std::fs::read(extend_path).unwrap()).unwrap();
+        assert_eq!(persisted.expires_at, extend_state.expires_at);
+        let manager = manager.read().await;
+        assert!(manager.exists("disk-delete"));
+        assert_eq!(
+            manager
+                .get_state("disk-extend")
+                .and_then(|sandbox| sandbox.expires_at.as_deref()),
+            extend_state.expires_at.as_deref()
+        );
+    }
+
+    #[tokio::test]
+    async fn sandbox_lifecycle_error_preserves_context_and_recovery_path() {
+        let error = anyhow::anyhow!("Sandbox 'demo' is not paused").context(
+            "checkpoint restore failed; recovery artifacts retained at /tmp/agentkernel-recovery",
+        );
+        let response = sandbox_lifecycle_error("resume", error);
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let message = body["error"].as_str().unwrap();
+        assert!(message.contains("checkpoint restore failed"));
+        assert!(message.contains("/tmp/agentkernel-recovery"));
+        assert!(message.contains("Sandbox 'demo' is not paused"));
+    }
+
+    #[tokio::test]
+    async fn server_owned_lifecycle_task_survives_http_waiter_cancellation() {
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let (completed_tx, completed_rx) = tokio::sync::oneshot::channel::<()>();
+        let lifecycle_task = tokio::spawn(async move {
+            let _ = release_rx.await;
+            let _ = completed_tx.send(());
+            json_response(StatusCode::OK, &ApiResponse::success("completed"))
+        });
+        let waiter = tokio::spawn(await_server_owned_lifecycle("pause", lifecycle_task));
+        tokio::task::yield_now().await;
+        waiter.abort();
+
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), completed_rx)
+            .await
+            .expect("detached lifecycle task should keep running")
+            .unwrap();
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn full_state_http_policy_requires_run_for_runtime_transitions() {
+        assert_eq!(FULL_STATE_RUNTIME_POLICY_ACTION, crate::policy::Action::Run);
+        assert_eq!(FORK_SOURCE_POLICY_ACTION, crate::policy::Action::Run);
+        assert_eq!(
+            FORK_CHILD_POLICY_ACTIONS,
+            [crate::policy::Action::Create, crate::policy::Action::Run]
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn non_admin_cannot_trigger_fleet_gc_or_lifecycle_reconcile() {
+        let state = Arc::new(AppState::with_api_keys(vec!["owner".to_string()]));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let io = TokioIo::new(stream);
+                let state = server_state.clone();
+                let service = service_fn(move |request| {
+                    let state = state.clone();
+                    handle_request(request, state)
+                });
+                http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        for path in ["gc", "lifecycle/reconcile"] {
+            let response = reqwest::Client::new()
+                .post(format!("http://{address}/{path}"))
+                .bearer_auth("owner")
+                .header("connection", "close")
+                .json(&serde_json::json!({"dry_run": true}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+        }
+        task.await.unwrap();
     }
 
     #[test]
@@ -10912,6 +12957,17 @@ init_script = "echo ready"
         assert_eq!(req.name, "my-sandbox");
         assert!(req.image.is_none());
         assert!(req.volumes.is_empty());
+    }
+
+    #[test]
+    fn test_fork_sandbox_request_contract() {
+        let request: ForkSandboxRequest =
+            serde_json::from_str(r#"{"as_name":"experiment-b"}"#).unwrap();
+        assert_eq!(request.as_name, "experiment-b");
+
+        let unknown_field =
+            serde_json::from_str::<ForkSandboxRequest>(r#"{"as_name":"child","start":true}"#);
+        assert!(unknown_field.is_err());
     }
 
     #[test]
@@ -11116,6 +13172,99 @@ init_script = "echo ready"
         assert!(json.contains("\"status\":\"running\""));
     }
 
+    #[test]
+    fn test_fork_sandbox_result_includes_clone_security_warning() {
+        let result = ForkSandboxResult {
+            sandbox: SandboxInfo {
+                name: "experiment-b".to_string(),
+                uuid: uuid::Uuid::now_v7().to_string(),
+                status: "running".to_string(),
+                backend: "firecracker".to_string(),
+                ip: None,
+                image: Some("alpine:3.24".to_string()),
+                vcpus: Some(1),
+                memory_mb: Some(512),
+                created_at: None,
+                created_from_template: None,
+                template_help_text: None,
+                ports: vec![],
+                endpoints: vec![],
+                secret_files: vec![],
+                placeholder_secrets: false,
+                proxy_port: None,
+                secret_mappings: std::collections::HashMap::new(),
+                labels: std::collections::HashMap::new(),
+                description: None,
+                last_activity_at: None,
+                workspace_revision: None,
+                archived_at: None,
+                archived_reason: None,
+                lifecycle: None,
+            },
+            security_warning: crate::full_state::FORK_SECURITY_WARNING.to_string(),
+        };
+
+        let json = serde_json::to_value(result).unwrap();
+        assert_eq!(json["sandbox"]["status"], "running");
+        assert!(
+            json["security_warning"]
+                .as_str()
+                .unwrap()
+                .contains("cryptographic tokens")
+        );
+    }
+
+    #[tokio::test]
+    async fn pause_route_rejects_non_firecracker_backend() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut manager = VmManager::for_tests(temp.path()).unwrap();
+        let sandbox: crate::vmm::SandboxState = serde_json::from_value(serde_json::json!({
+            "name": "docker-source",
+            "uuid": uuid::Uuid::now_v7().to_string(),
+            "image": "alpine:3.24",
+            "vcpus": 1,
+            "memory_mb": 512,
+            "vsock_cid": 3,
+            "created_at": "2026-01-01T00:00:00Z",
+            "backend": "Docker",
+            "owner_user_id": "anonymous",
+            "owner_org_id": "default"
+        }))
+        .unwrap();
+        manager.insert_state_for_tests(sandbox);
+
+        let state = Arc::new(AppState::with_api_keys(vec![]));
+        let manager = Arc::new(tokio::sync::RwLock::new(manager));
+        assert!(state.vm_manager.set(manager.clone()).is_ok());
+        assert!(manager.read().await.exists("docker-source"));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |request| {
+                let state = server_state.clone();
+                handle_request(request, state)
+            });
+            http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/sandboxes/docker-source/pause"))
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.text().await.unwrap();
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(body.contains("Firecracker"));
+        task.await.unwrap();
+    }
+
     // === RunResponse tests ===
 
     #[test]
@@ -11139,6 +13288,41 @@ init_script = "echo ready"
     fn test_app_state_without_api_key() {
         let state = AppState::with_api_keys(vec![]);
         assert!(state.api_keys.is_empty());
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn jwks_only_configuration_is_enforced_by_global_auth_gate() {
+        let mut state = AppState::with_api_keys(vec![]);
+        state.enterprise_config = Some(crate::config::EnterpriseConfig {
+            jwks_url: Some("http://127.0.0.1:9/.well-known/jwks.json".to_string()),
+            ..Default::default()
+        });
+        let state = Arc::new(state);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |request| {
+                let state = server_state.clone();
+                handle_request(request, state)
+            });
+            http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}/sandboxes"))
+            .header("connection", "close")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        task.await.unwrap();
     }
 
     #[cfg(feature = "enterprise")]
@@ -11352,6 +13536,192 @@ max_total_sandboxes = 0
             iat: None,
         });
         assert!(sandbox_access_allowed(&state, &admin, &sandbox));
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn trusted_local_principal_can_manage_unowned_no_start_state() {
+        let mut sandbox = start_test_sandbox("unowned", "unowned-uuid");
+        sandbox.owner_user_id = None;
+        sandbox.owner_org_id = None;
+
+        let open_state = AppState::with_api_keys(vec![]);
+        assert!(sandbox_access_allowed(
+            &open_state,
+            &crate::identity::AgentIdentity::anonymous(),
+            &sandbox
+        ));
+
+        let authenticated_state = AppState::with_api_keys(vec!["owner".to_string()]);
+        assert!(sandbox_access_allowed(
+            &authenticated_state,
+            &crate::identity::AgentIdentity::from_api_key("owner".to_string()),
+            &sandbox
+        ));
+        assert!(!sandbox_access_allowed(
+            &authenticated_state,
+            &crate::identity::AgentIdentity::anonymous(),
+            &sandbox
+        ));
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn valid_start_token_claims_unowned_sandbox_after_prior_refresh_without_overwrite() {
+        fn sandbox(name: &str) -> crate::vmm::SandboxState {
+            serde_json::from_value(serde_json::json!({
+                "name": name,
+                "uuid": format!("{name}-uuid"),
+                "image": "alpine:3.24",
+                "vcpus": 1,
+                "memory_mb": 512,
+                "vsock_cid": 3,
+                "created_at": "2026-01-01T00:00:00Z",
+                "backend": "Firecracker"
+            }))
+            .unwrap()
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let cli_state = sandbox("cli-created");
+        let request =
+            persist_start_configuration(dir.path(), &cli_state, &Permissions::default(), &[])
+                .unwrap();
+        let mut manager = VmManager::for_tests(dir.path()).unwrap();
+        manager.insert_state_for_tests(cli_state);
+        let state = AppState::with_api_keys(vec![]);
+        let anonymous = crate::identity::AgentIdentity::anonymous();
+
+        // A prior GET may already have refreshed this state, so claim cannot
+        // depend on the refresh result of the later start request.
+        assert!(!manager.refresh_sandbox_if_missing("cli-created").unwrap());
+        let binding = PersistedStartBinding::from_state(manager.get_state("cli-created").unwrap());
+        let token_authorizes_first_claim = request.configuration.is_some();
+        request
+            .into_runtime(dir.path(), &binding, &local_start_request_owner_id())
+            .unwrap();
+        claim_unowned_start_sandbox(
+            &mut manager,
+            "cli-created",
+            token_authorizes_first_claim,
+            &anonymous,
+            &state,
+        )
+        .unwrap();
+        let claimed = manager.get_state("cli-created").unwrap();
+        assert_eq!(claimed.owner_user_id.as_deref(), Some("anonymous"));
+        assert_eq!(claimed.owner_org_id.as_deref(), Some("default"));
+
+        manager
+            .set_owner_metadata("cli-created", Some("existing-user"), Some("existing-org"))
+            .unwrap();
+        claim_unowned_start_sandbox(&mut manager, "cli-created", true, &anonymous, &state).unwrap();
+        let preserved = manager.get_state("cli-created").unwrap();
+        assert_eq!(preserved.owner_user_id.as_deref(), Some("existing-user"));
+        assert_eq!(preserved.owner_org_id.as_deref(), Some("existing-org"));
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn unowned_sandbox_cannot_be_claimed_without_valid_start_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sandbox = start_test_sandbox("unclaimed", "unclaimed-uuid");
+        sandbox.owner_user_id = None;
+        sandbox.owner_org_id = None;
+        let mut manager = VmManager::for_tests(dir.path()).unwrap();
+        manager.insert_state_for_tests(sandbox);
+        let state = AppState::with_api_keys(vec![]);
+        let anonymous = crate::identity::AgentIdentity::anonymous();
+
+        let response =
+            claim_unowned_start_sandbox(&mut manager, "unclaimed", false, &anonymous, &state)
+                .unwrap_err();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let unclaimed = manager.get_state("unclaimed").unwrap();
+        assert_eq!(unclaimed.owner_user_id, None);
+        assert_eq!(unclaimed.owner_org_id, None);
+    }
+
+    #[test]
+    fn fork_identity_must_match_atomically_cloned_source_owner() {
+        let mut source = start_test_sandbox("source", "source-uuid");
+        source.tenant_id = Some("tenant-a".to_string());
+
+        assert!(fork_identity_matches_source(
+            &source,
+            Some("tenant-a"),
+            Some("persisted-owner"),
+            Some("persisted-org"),
+        ));
+        assert!(!fork_identity_matches_source(
+            &source,
+            Some("tenant-b"),
+            Some("persisted-owner"),
+            Some("persisted-org"),
+        ));
+        assert!(!fork_identity_matches_source(
+            &source,
+            Some("tenant-a"),
+            Some("other-owner"),
+            Some("persisted-org"),
+        ));
+    }
+
+    #[cfg(not(feature = "enterprise"))]
+    #[test]
+    fn configured_api_key_start_claim_allows_cli_origin_fork() {
+        let mut source = start_test_sandbox("api-key-source", "api-key-source-uuid");
+        source.tenant_id = None;
+        source.owner_user_id = None;
+        source.owner_org_id = None;
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = VmManager::for_tests(dir.path()).unwrap();
+        manager.insert_state_for_tests(source);
+        let trusted_owner = ("local".to_string(), api_key_owner_id("owner"));
+
+        claim_unowned_local_start_sandbox(
+            &mut manager,
+            "api-key-source",
+            true,
+            Some(&trusted_owner),
+        )
+        .unwrap();
+        let source = manager.get_state("api-key-source").unwrap();
+        assert!(fork_identity_matches_source(
+            source,
+            None,
+            Some(trusted_owner.1.as_str()),
+            Some(trusted_owner.0.as_str()),
+        ));
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn configured_org_start_claim_allows_cli_origin_fork() {
+        let mut source = start_test_sandbox("org-source", "org-source-uuid");
+        source.tenant_id = None;
+        source.owner_user_id = None;
+        source.owner_org_id = None;
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = VmManager::for_tests(dir.path()).unwrap();
+        manager.insert_state_for_tests(source);
+        let mut state = AppState::with_api_keys(vec!["owner".to_string()]);
+        state.enterprise_config = Some(crate::config::EnterpriseConfig {
+            enabled: true,
+            org_id: Some("acme".to_string()),
+            ..Default::default()
+        });
+        let identity = crate::identity::AgentIdentity::from_api_key("owner".to_string());
+
+        claim_unowned_start_sandbox(&mut manager, "org-source", true, &identity, &state).unwrap();
+        let subject = quota_subject(&state, &identity);
+        let source = manager.get_state("org-source").unwrap();
+        assert!(fork_identity_matches_source(
+            source,
+            Some("acme"),
+            Some(subject.user_id.as_str()),
+            Some(subject.org_id.as_str()),
+        ));
     }
 
     #[cfg(feature = "enterprise")]
