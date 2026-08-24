@@ -38,6 +38,8 @@ use std::process::Command;
 
 use crate::ssh::SshConfig;
 
+pub use crate::container_network::{ManagedNetworkConfig, ManagedNetworkLease, NetworkAllocator};
+
 #[cfg(target_os = "macos")]
 pub use apple::AppleSandbox;
 pub use docker::{ContainerRuntime, DockerSandbox};
@@ -358,6 +360,8 @@ pub struct SandboxConfig {
     pub ssh: Option<SshConfig>,
     /// Volume mounts (slug:/path or slug:/path:ro)
     pub volumes: Vec<String>,
+    /// Optional AgentKernel-managed bridge network (Docker/Podman only).
+    pub managed_network: Option<ManagedNetworkConfig>,
 }
 
 impl Default for SandboxConfig {
@@ -377,6 +381,7 @@ impl Default for SandboxConfig {
             ports: Vec::new(),
             ssh: None,
             volumes: Vec::new(),
+            managed_network: None,
         }
     }
 }
@@ -669,6 +674,12 @@ pub trait Sandbox: Send + Sync {
     /// Runtime metadata for provider-backed sandboxes.
     fn runtime_metadata(&self) -> Option<SandboxRuntimeMetadata> {
         None
+    }
+
+    /// Restore a durable managed-network lease when reconnecting to a
+    /// container that survived an AgentKernel process restart.
+    fn restore_managed_network(&mut self, _config: &ManagedNetworkConfig) -> Result<()> {
+        Ok(())
     }
 }
 

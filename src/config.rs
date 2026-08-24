@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
-use crate::backend::FileInjection;
+use crate::backend::{FileInjection, ManagedNetworkConfig};
 use crate::permissions::SecurityProfile;
 use sha2::{Digest, Sha256};
 
@@ -1061,11 +1061,22 @@ pub struct SandboxConfigExportAgent {
 #[derive(Debug, Clone, Serialize)]
 pub struct SandboxConfigExportNetwork {
     pub ports: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subnet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub dns: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub static_ip: Option<String>,
 }
 
 impl SandboxConfigExport {
     /// Build an export from persisted sandbox settings without including
     /// runtime identity or secret material.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         name: &str,
         image: &str,
@@ -1074,6 +1085,7 @@ impl SandboxConfigExport {
         memory_mb: u64,
         agent: Option<&str>,
         ports: Vec<String>,
+        managed_network: Option<&ManagedNetworkConfig>,
     ) -> Self {
         Self {
             sandbox: SandboxConfigExportSection {
@@ -1085,7 +1097,20 @@ impl SandboxConfigExport {
             agent: agent.map(|preferred| SandboxConfigExportAgent {
                 preferred: preferred.to_string(),
             }),
-            network: (!ports.is_empty()).then_some(SandboxConfigExportNetwork { ports }),
+            network: (if !ports.is_empty() || managed_network.is_some() {
+                Some(SandboxConfigExportNetwork {
+                    ports,
+                    name: managed_network.map(|network| network.name.clone()),
+                    subnet: managed_network.map(|network| network.subnet.clone()),
+                    gateway: managed_network.and_then(|network| network.gateway.clone()),
+                    dns: managed_network
+                        .map(|network| network.dns.clone())
+                        .unwrap_or_default(),
+                    static_ip: managed_network.and_then(|network| network.static_ip.clone()),
+                })
+            } else {
+                None
+            }),
         }
     }
 }
@@ -1114,6 +1139,21 @@ pub struct NetworkConfig {
     /// Port mappings (Docker-style: "host:container", "container", "host:container/udp")
     #[serde(default)]
     pub ports: Vec<String>,
+    /// Optional Docker/Podman managed bridge name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Optional managed bridge CIDR (defaults to 172.30.0.0/24).
+    #[serde(default)]
+    pub subnet: Option<String>,
+    /// Optional managed bridge gateway.
+    #[serde(default)]
+    pub gateway: Option<String>,
+    /// Optional managed bridge DNS server addresses.
+    #[serde(default)]
+    pub dns: Vec<String>,
+    /// Optional static sandbox IP on the managed bridge.
+    #[serde(default)]
+    pub static_ip: Option<String>,
 }
 
 impl NetworkConfig {
@@ -1123,6 +1163,17 @@ impl NetworkConfig {
             .iter()
             .map(|s| crate::backend::PortMapping::parse(s))
             .collect()
+    }
+
+    /// Resolve the optional managed bridge configuration from [network].
+    pub fn managed_bridge(&self) -> anyhow::Result<Option<ManagedNetworkConfig>> {
+        ManagedNetworkConfig::with_overrides(
+            self.name.clone(),
+            self.subnet.clone(),
+            self.gateway.clone(),
+            self.dns.clone(),
+            self.static_ip.clone(),
+        )
     }
 }
 
@@ -1569,7 +1620,35 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_managed_bridge_config() {
+        let config = Config::from_str(
+            r#"
+            [sandbox]
+            name = "bridge-app"
+            [network]
+            name = "agentkernel-dev"
+            subnet = "10.20.0.0/24"
+            gateway = "10.20.0.1"
+            dns = ["1.1.1.1"]
+            static_ip = "10.20.0.9"
+            "#,
+        )
+        .unwrap();
+        let network = config.network.managed_bridge().unwrap().unwrap();
+        assert_eq!(network.name, "agentkernel-dev");
+        assert_eq!(network.subnet, "10.20.0.0/24");
+        assert_eq!(network.static_ip.as_deref(), Some("10.20.0.9"));
+    }
+
+    #[test]
     fn test_sandbox_config_export_is_importable_and_portable() {
+        let managed_network = ManagedNetworkConfig {
+            name: "agentkernel-dev".to_string(),
+            subnet: "10.20.0.0/24".to_string(),
+            gateway: Some("10.20.0.1".to_string()),
+            dns: vec!["1.1.1.1".to_string()],
+            static_ip: Some("10.20.0.9".to_string()),
+        };
         let export = SandboxConfigExport::from_parts(
             "shared-sandbox",
             "python:3.12-alpine",
@@ -1578,6 +1657,7 @@ mod tests {
             1024,
             Some("codex"),
             vec!["8080:80".to_string()],
+            Some(&managed_network),
         );
         let content = toml::to_string_pretty(&export).unwrap();
         let parsed = Config::from_str(&content).unwrap();
@@ -1588,6 +1668,9 @@ mod tests {
         assert_eq!(parsed.resources.memory_mb, 1024);
         assert_eq!(parsed.agent.preferred, "codex");
         assert_eq!(parsed.network.ports, vec!["8080:80"]);
+        assert_eq!(parsed.network.name.as_deref(), Some("agentkernel-dev"));
+        assert_eq!(parsed.network.subnet.as_deref(), Some("10.20.0.0/24"));
+        assert_eq!(parsed.network.static_ip.as_deref(), Some("10.20.0.9"));
         assert_eq!(
             parsed.sandbox.init_script.as_deref(),
             Some("echo ready > /workspace/ready")

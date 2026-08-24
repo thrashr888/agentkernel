@@ -10,6 +10,7 @@ mod benchmark;
 mod browser_scripts;
 mod build;
 mod config;
+mod container_network;
 #[allow(dead_code)]
 mod cow;
 mod daemon;
@@ -228,7 +229,7 @@ enum Commands {
     #[command(visible_alias = "sb")]
     Sandbox {
         #[command(subcommand)]
-        action: SandboxAction,
+        action: Box<SandboxAction>,
     },
     /// SSH access (connect, config, proxy)
     Ssh {
@@ -516,6 +517,21 @@ enum SandboxAction {
         /// Publish a port (host:container, container, or host:container/udp). Can be repeated.
         #[arg(short = 'p', long = "publish")]
         publish: Vec<String>,
+        /// Name of a Docker/Podman-managed bridge network.
+        #[arg(long)]
+        network_name: Option<String>,
+        /// IPv4 CIDR for the managed bridge (default: 172.30.0.0/24).
+        #[arg(long)]
+        network_subnet: Option<String>,
+        /// Gateway IPv4 address for the managed bridge.
+        #[arg(long)]
+        network_gateway: Option<String>,
+        /// DNS IPv4 address for the managed bridge (can be repeated).
+        #[arg(long)]
+        network_dns: Vec<String>,
+        /// Static IPv4 address for this sandbox on the managed bridge.
+        #[arg(long)]
+        network_ip: Option<String>,
         /// Enable SSH access to the sandbox
         #[arg(long)]
         ssh: bool,
@@ -1083,7 +1099,7 @@ memory_mb = 512
             println!("  agentkernel start {}", sandbox_name);
             println!("  agentkernel attach {}", sandbox_name);
         }
-        Commands::Sandbox { action } => match action {
+        Commands::Sandbox { action } => match *action {
             SandboxAction::Create {
                 name,
                 agent,
@@ -1098,6 +1114,11 @@ memory_mb = 512
                 ttl,
                 branch,
                 publish,
+                network_name,
+                network_subnet,
+                network_gateway,
+                network_dns,
+                network_ip,
                 ssh: ssh_flag,
                 source,
                 git_ref,
@@ -1221,6 +1242,37 @@ memory_mb = 512
                     workspace_root = dc.project_root.clone();
                 }
 
+                let mut managed_network = cfg.network.managed_bridge()?;
+                if network_name.is_some()
+                    || network_subnet.is_some()
+                    || network_gateway.is_some()
+                    || !network_dns.is_empty()
+                    || network_ip.is_some()
+                {
+                    let mut override_config = managed_network.unwrap_or_else(|| {
+                        crate::backend::ManagedNetworkConfig::new(
+                            network_name.clone().unwrap_or_default(),
+                        )
+                    });
+                    if let Some(network_name) = network_name {
+                        override_config.name = network_name;
+                    }
+                    if let Some(network_subnet) = network_subnet {
+                        override_config.subnet = network_subnet;
+                    }
+                    if network_gateway.is_some() {
+                        override_config.gateway = network_gateway;
+                    }
+                    if !network_dns.is_empty() {
+                        override_config.dns = network_dns;
+                    }
+                    if network_ip.is_some() {
+                        override_config.static_ip = network_ip;
+                    }
+                    override_config.validate()?;
+                    managed_network = Some(override_config);
+                }
+
                 // Validate config and print warnings
                 for warning in cfg.validate() {
                     eprintln!("Warning: {}", warning);
@@ -1264,6 +1316,17 @@ memory_mb = 512
                 };
 
                 let mut manager = VmManager::with_backend(backend_type)?;
+
+                if managed_network.is_some()
+                    && !matches!(
+                        backend_type.unwrap_or(manager.backend()),
+                        crate::backend::BackendType::Docker | crate::backend::BackendType::Podman
+                    )
+                {
+                    bail!(
+                        "AgentKernel-managed bridge networking is supported only by Docker and Podman"
+                    );
+                }
 
                 // Build from Dockerfile if configured, otherwise use base image
                 let docker_image = if let Some(ref base_dir) = config_base_dir {
@@ -1381,6 +1444,7 @@ memory_mb = 512
                         .map(|dc| dc.path.to_string_lossy().into_owned())
                 });
                 manager.set_config_path(&name, stored_config_path)?;
+                manager.set_managed_network(&name, managed_network)?;
                 if let Some(tenant_id) = governance_tenant {
                     manager.set_tenant_id(&name, Some(tenant_id))?;
                 }
@@ -2013,6 +2077,7 @@ memory_mb = 512
                     state.memory_mb,
                     state.agent.as_deref(),
                     state.ports.iter().map(ToString::to_string).collect(),
+                    state.managed_network.as_ref(),
                 );
 
                 print!("{}", toml::to_string_pretty(&config)?);
@@ -2039,6 +2104,17 @@ memory_mb = 512
                     None
                 };
                 let mut manager = VmManager::with_backend(backend_type)?;
+                let managed_network = cfg.network.managed_bridge()?;
+                if managed_network.is_some()
+                    && !matches!(
+                        manager.backend(),
+                        crate::backend::BackendType::Docker | crate::backend::BackendType::Podman
+                    )
+                {
+                    bail!(
+                        "Managed bridge networking is supported only by Docker and Podman backends"
+                    );
+                }
 
                 let docker_image = cfg.docker_image();
                 println!(
@@ -2053,6 +2129,7 @@ memory_mb = 512
                         cfg.resources.memory_mb,
                     )
                     .await?;
+                manager.set_managed_network(&name, managed_network)?;
 
                 println!("Sandbox '{}' created from config.", name);
                 println!("\nNext steps:");
@@ -5498,13 +5575,14 @@ mod tests {
         ])
         .unwrap();
         match cli.command {
-            Commands::Sandbox {
-                action: SandboxAction::Create { devcontainer, .. },
-            } => assert_eq!(
-                devcontainer.as_deref(),
-                Some(std::path::Path::new(".devcontainer/devcontainer.json"))
-            ),
-            _ => panic!("expected sandbox create"),
+            Commands::Sandbox { action } => match *action {
+                SandboxAction::Create { devcontainer, .. } => assert_eq!(
+                    devcontainer.as_deref(),
+                    Some(std::path::Path::new(".devcontainer/devcontainer.json"))
+                ),
+                _ => panic!("expected sandbox create"),
+            },
+            _ => panic!("expected sandbox command"),
         }
     }
 
