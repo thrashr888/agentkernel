@@ -3184,12 +3184,17 @@ impl VmManager {
         if let Some(handle) = PROXY_HANDLES.write().await.remove(name) {
             let _ = handle.shutdown_tx.send(());
         }
+        #[cfg(test)]
+        let bypass_backend_runtime = self.bypass_backend_runtime;
+        #[cfg(not(test))]
+        let bypass_backend_runtime = false;
+
         if let Some(mut sandbox) = self.running.remove(name) {
             if let Err(error) = sandbox.remove().await {
                 self.running.insert(name.to_string(), sandbox);
                 return Err(error).with_context(|| format!("failed to remove sandbox '{name}'"));
             }
-        } else if let Some(state) = self.sandboxes.get(name).cloned() {
+        } else if !bypass_backend_runtime && let Some(state) = self.sandboxes.get(name).cloned() {
             let mut sandbox = create_sandbox_with_state(
                 backend,
                 name,
