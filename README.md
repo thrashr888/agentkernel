@@ -418,6 +418,32 @@ agentkernel serve --api-key "sk-my-secret-key"
 agentkernel serve --api-key-file /etc/agentkernel/api-keys
 ```
 
+### Secure local Firecracker control
+
+CLI and MCP Firecracker lifecycle/file/exec delegation uses the server's local
+control endpoint. TCP loopback remains the default. For a private Unix-domain
+socket, configure the server and clients explicitly:
+
+```bash
+agentkernel serve --control-socket "$HOME/.agentkernel/control.sock" \
+  --api-key-file "$HOME/.agentkernel/api-keys"
+export AGENTKERNEL_CONTROL_SOCKET="$HOME/.agentkernel/control.sock"
+agentkernel sandbox start my-sandbox
+```
+
+`--control-socket` may also be set as `api.control_socket` in
+`agentkernel.toml`; `AGENTKERNEL_CONTROL_SOCKET` is accepted by both server and
+clients when a process-wide explicit setting is more convenient. The socket is
+created with mode `0600`, stale sockets are removed only when they are confirmed
+Unix sockets, and regular files or symlinks are never replaced. An explicit
+socket selection fails closed if it is unavailable; it never falls back to TCP.
+The TCP API remains available for other callers (and may use `--tls`), while
+Unix-socket clients use the private local endpoint. Delegated requests carry
+`AGENTKERNEL_API_KEY` when configured. Health and read-only delegation have
+bounded deadlines; stateful lifecycle and exec requests remain unbounded so a
+client never reports an ambiguous timeout while the server-owned operation is
+still running.
+
 ### Authentication
 
 When `--api-key` or `--api-key-file` is set, requests must include an `Authorization: Bearer <key>` header except for the public operational endpoints `GET /health`, `GET /status`, `GET /metrics`, and `GET /stats`. Multiple keys can be provided via repeated `--api-key` flags or a key file. Keys can also be set via the `AGENTKERNEL_API_KEY` env var or in `agentkernel.toml`.

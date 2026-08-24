@@ -9673,6 +9673,7 @@ pub async fn run_server_with_tls(
         otel_endpoint,
         webhook_urls,
         config_path,
+        None,
     )
     .await
 }
@@ -9685,6 +9686,7 @@ pub async fn run_server_with_tls_config(
     otel_endpoint: Option<String>,
     webhook_urls: Vec<String>,
     config_path: Option<std::path::PathBuf>,
+    control_socket: Option<std::path::PathBuf>,
 ) -> Result<()> {
     // Resolve the path once at process start. The policy engine, API status,
     // and scheduler must all refer to the same file even when the process is
@@ -9716,6 +9718,26 @@ pub async fn run_server_with_tls_config(
     ) {
         tokio::spawn(crate::object_runtime::hibernation_daemon(store, manager));
     }
+
+    #[cfg(not(unix))]
+    if control_socket.is_some() {
+        anyhow::bail!(
+            "--control-socket is not supported on this platform; use the default loopback TCP control endpoint"
+        );
+    }
+
+    #[cfg(unix)]
+    let unix_listener = if let Some(socket_path) = control_socket {
+        let (listener, cleanup) = crate::local_control::bind_secure_socket(&socket_path)?;
+        eprintln!(
+            "agentkernel local control API listening on Unix socket {} (0600); TCP API remains available on the configured listener",
+            socket_path.display(),
+        );
+        Some((listener, cleanup))
+    } else {
+        None
+    };
+
     let listener = TcpListener::bind(addr).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
             anyhow::anyhow!(
@@ -9732,6 +9754,38 @@ pub async fn run_server_with_tls_config(
         eprintln!("agentkernel HTTP API server listening on https://{}", addr);
     } else {
         eprintln!("agentkernel HTTP API server listening on http://{}", addr);
+    }
+
+    #[cfg(unix)]
+    if let Some((listener, cleanup)) = unix_listener {
+        let unix_state = state.clone();
+        tokio::spawn(async move {
+            let _cleanup = cleanup;
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(connection) => connection,
+                    Err(err) => {
+                        eprintln!("Error accepting Unix socket connection: {:?}", err);
+                        break;
+                    }
+                };
+                let state = unix_state.clone();
+                tokio::task::spawn(async move {
+                    let service = service_fn(move |req| {
+                        let state = state.clone();
+                        handle_request(req, state)
+                    });
+                    let io = TokioIo::new(stream);
+                    if let Err(err) = http1::Builder::new()
+                        .keep_alive(false)
+                        .serve_connection(io, service)
+                        .await
+                    {
+                        eprintln!("Error serving Unix socket connection: {:?}", err);
+                    }
+                });
+            }
+        });
     }
 
     loop {

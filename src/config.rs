@@ -314,6 +314,11 @@ pub struct ApiConfig {
     /// Disabled by default for least privilege.
     #[serde(default)]
     pub allow_sudo_exec: bool,
+    /// Secure local control-plane Unix socket used by Firecracker CLI/MCP
+    /// delegation. Clients should set `AGENTKERNEL_CONTROL_SOCKET` to the
+    /// same absolute path when invoking commands in another process.
+    #[serde(default)]
+    pub control_socket: Option<PathBuf>,
 }
 
 /// Workspace lifecycle scheduling configuration.
