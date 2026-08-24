@@ -6994,7 +6994,7 @@ mod tests {
     #[tokio::test]
     async fn test_reconcile_lifecycle_deletes_archived_sandbox() {
         let temp_dir = TempDir::new().unwrap();
-        let mut manager = new_test_manager(&temp_dir);
+        let mut manager = VmManager::for_tests(temp_dir.path()).unwrap();
         let mut state = lifecycle_state("delete-now");
         state.archived_at = Some((chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339());
         state.archived_reason = Some("stale".to_string());
