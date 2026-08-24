@@ -31,6 +31,7 @@ mod job_scheduler;
 mod languages;
 mod llm_intercept;
 mod llm_spend;
+mod local_control;
 mod mcp;
 mod metrics;
 mod model_governance;
@@ -308,6 +309,10 @@ enum Commands {
         /// Require TLS (reject plain HTTP)
         #[arg(long)]
         require_tls: bool,
+        /// Use a private Unix-domain socket for local Firecracker control.
+        /// Clients must set AGENTKERNEL_CONTROL_SOCKET to this absolute path.
+        #[arg(long, value_name = "PATH")]
+        control_socket: Option<PathBuf>,
         /// OpenTelemetry OTLP endpoint for trace export (e.g. http://localhost:4318)
         #[arg(long)]
         otel_endpoint: Option<String>,
@@ -3283,6 +3288,7 @@ memory_mb = 512
             tls_cert,
             tls_key,
             require_tls,
+            control_socket,
             otel_endpoint,
             webhook_url,
         } => {
@@ -3328,6 +3334,25 @@ memory_mb = 512
                 None
             };
 
+            let config_control_socket = config
+                .as_deref()
+                .or_else(|| {
+                    std::path::Path::new("agentkernel.toml")
+                        .exists()
+                        .then_some(std::path::Path::new("agentkernel.toml"))
+                })
+                .and_then(|path| {
+                    Config::from_file(path)
+                        .ok()
+                        .and_then(|config| config.api.control_socket)
+                });
+            // The same explicit environment setting is honored by both the
+            // server and its CLI/MCP clients. Invalid configuration is
+            // surfaced rather than falling back to plaintext TCP.
+            let configured_control_socket = control_socket
+                .or(local_control::configured_socket_path()?)
+                .or(config_control_socket);
+
             http_api::run_server_with_tls_config(
                 addr,
                 tls_config,
@@ -3335,6 +3360,7 @@ memory_mb = 512
                 otel_endpoint,
                 webhook_url,
                 config,
+                configured_control_socket,
             )
             .await?;
         }
@@ -6014,29 +6040,19 @@ fn sandbox_connection_command(name: &str, firecracker: bool, ssh_enabled: bool) 
     }
 }
 
-/// Check that the plaintext loopback control endpoint is actually serving the
-/// AgentKernel health route. A raw TCP probe would incorrectly accept a TLS-
-/// only listener and make every delegated lifecycle request fail later.
+/// Check that the selected local control endpoint is actually serving the
+/// AgentKernel health route. Health and every delegated lifecycle/file request
+/// use the same transport selection, with no secure-to-plaintext fallback.
 async fn try_server_health(host: &str, port: u16) -> bool {
-    use http_body_util::Full;
-    use hyper::Request;
-    use hyper_util::client::legacy::Client;
-    use hyper_util::rt::TokioExecutor;
-
-    let Ok(uri) = format!("http://{host}:{port}/health").parse::<hyper::Uri>() else {
+    let Ok(transport) = local_control::Transport::select(host, port) else {
         return false;
     };
-    let Ok(request) = Request::builder()
-        .method(hyper::Method::GET)
-        .uri(uri)
-        .body(Full::new(bytes::Bytes::new()))
-    else {
+    let Ok(uri) = local_control::uri_for_path(&transport, "/health") else {
         return false;
     };
-    let client = Client::builder(TokioExecutor::new()).build_http::<Full<bytes::Bytes>>();
-    tokio::time::timeout(std::time::Duration::from_secs(1), client.request(request))
+    delegate_request_uri_to_server(uri, hyper::Method::GET, None, "health")
         .await
-        .is_ok_and(|result| result.is_ok_and(|response| response.status().is_success()))
+        .is_ok()
 }
 
 fn local_api_port() -> u16 {
@@ -6047,9 +6063,17 @@ fn local_api_port() -> u16 {
 }
 
 fn firecracker_server_required(operation: &str, port: u16) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Firecracker sandbox {operation} requires a plaintext loopback control endpoint owned by the long-running API server. Start it with 'agentkernel serve --host 127.0.0.1 --port {port}' without --require-tls, then retry."
-    )
+    match local_control::Transport::select("127.0.0.1", port) {
+        Ok(local_control::Transport::Unix { path }) => anyhow::anyhow!(
+            "Firecracker sandbox {operation} requires the configured private local control socket {} owned by the long-running API server. Start it with 'agentkernel serve --control-socket {}' and set {} for this client, then retry.",
+            path.display(),
+            path.display(),
+            local_control::CONTROL_SOCKET_ENV,
+        ),
+        _ => anyhow::anyhow!(
+            "Firecracker sandbox {operation} requires a plaintext loopback control endpoint owned by the long-running API server. Start it with 'agentkernel serve --host 127.0.0.1 --port {port}' without --require-tls, then retry."
+        ),
+    }
 }
 
 fn resolve_requested_backend(
@@ -6110,9 +6134,8 @@ fn delegated_sandbox_uri(
     let path = suffix
         .map(|suffix| format!("/sandboxes/{name}/{suffix}"))
         .unwrap_or_else(|| format!("/sandboxes/{name}"));
-    format!("http://{host}:{port}{path}")
-        .parse()
-        .map_err(|error| anyhow::anyhow!("invalid URI: {error}"))
+    let transport = local_control::Transport::select(host, port)?;
+    local_control::uri_for_path(&transport, &path)
 }
 
 fn delegated_file_uri(host: &str, port: u16, name: &str, path: &str) -> Result<hyper::Uri> {
@@ -6161,29 +6184,57 @@ async fn delegate_request_uri_to_server_with_authorization(
         .transpose()?
         .unwrap_or_default();
 
-    let client = Client::builder(TokioExecutor::new()).build_http::<Full<bytes::Bytes>>();
+    let build_request = || {
+        let mut request = Request::builder()
+            .method(method.clone())
+            .uri(uri.clone())
+            .header("content-type", "application/json");
+        if let Some(header) = authorization.as_deref() {
+            request = request.header(hyper::header::AUTHORIZATION, header);
+        }
+        request
+            .body(Full::new(bytes::Bytes::from(body.clone())))
+            .map_err(|e| anyhow::anyhow!("failed to build request: {e}"))
+    };
 
-    let mut request = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("content-type", "application/json");
-    if let Some(header) = authorization {
-        request = request.header(hyper::header::AUTHORIZATION, header);
-    }
-    let req = request
-        .body(Full::new(bytes::Bytes::from(body)))
-        .map_err(|e| anyhow::anyhow!("failed to build request: {e}"))?;
-
-    let resp = if let Some(timeout) = delegated_request_timeout(operation) {
-        tokio::time::timeout(timeout, client.request(req))
-            .await
-            .map_err(|_| anyhow::anyhow!("timeout waiting for server to {operation} sandbox"))?
-            .map_err(|e| anyhow::anyhow!("HTTP request failed: {e}"))?
+    let resp = if uri.scheme_str() == Some("unix") {
+        #[cfg(unix)]
+        {
+            use hyperlocal::UnixClientExt;
+            let client = Client::unix();
+            let req = build_request()?;
+            if let Some(timeout) = delegated_request_timeout(operation) {
+                tokio::time::timeout(timeout, client.request(req))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("timeout waiting for server to {operation}"))?
+                    .map_err(|e| anyhow::anyhow!("Unix socket request failed: {e}"))?
+            } else {
+                client
+                    .request(req)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Unix socket request failed: {e}"))?
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            return Err(anyhow::anyhow!(
+                "Unix-domain local control transport is not supported on this platform"
+            ));
+        }
     } else {
-        client
-            .request(req)
-            .await
-            .map_err(|e| anyhow::anyhow!("HTTP request failed: {e}"))?
+        let client = Client::builder(TokioExecutor::new()).build_http::<Full<bytes::Bytes>>();
+        let req = build_request()?;
+        if let Some(timeout) = delegated_request_timeout(operation) {
+            tokio::time::timeout(timeout, client.request(req))
+                .await
+                .map_err(|_| anyhow::anyhow!("timeout waiting for server to {operation}"))?
+                .map_err(|e| anyhow::anyhow!("HTTP request failed: {e}"))?
+        } else {
+            client
+                .request(req)
+                .await
+                .map_err(|e| anyhow::anyhow!("HTTP request failed: {e}"))?
+        }
     };
 
     let status = resp.status();
@@ -6378,6 +6429,9 @@ fn delegated_exec_failure(error: &anyhow::Error) -> Option<crate::vmm::CommandFa
 }
 
 fn delegated_request_timeout(operation: &str) -> Option<std::time::Duration> {
+    if operation == "health" {
+        return Some(std::time::Duration::from_secs(1));
+    }
     (!matches!(
         operation,
         "start" | "stop" | "pause" | "resume" | "fork" | "remove" | "exec"
@@ -6733,6 +6787,24 @@ mod tests {
     }
 
     #[test]
+    fn cli_accepts_secure_local_control_socket() {
+        let cli = Cli::try_parse_from([
+            "agentkernel",
+            "serve",
+            "--control-socket",
+            "/tmp/agentkernel-control.sock",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Serve {
+                control_socket: Some(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn delegated_sandbox_uri_covers_lifecycle_and_remove() {
         let stop = delegated_sandbox_uri("127.0.0.1", 18888, "demo", Some("stop")).unwrap();
         assert_eq!(
@@ -6845,6 +6917,53 @@ mod tests {
         server.await.unwrap();
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delegated_unix_request_preserves_routing_and_auth() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::UnixListener;
+
+        let temp = TempDir::new().unwrap();
+        let socket = temp.path().join("control.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let bytes_read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..bytes_read]);
+            assert!(request.contains("GET /sandboxes/demo/files/tmp/a%20file.txt HTTP/1.1"));
+            assert!(request.contains("authorization: Bearer secret"));
+            let body = r#"{"success":true,"data":{"content":"hello","encoding":"utf8","size":5}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let transport = crate::local_control::Transport::Unix { path: socket };
+        let uri = crate::local_control::uri_for_path(
+            &transport,
+            "/sandboxes/demo/files/tmp/a%20file.txt",
+        )
+        .unwrap();
+        let response = delegate_request_uri_to_server_with_authorization(
+            uri,
+            hyper::Method::GET,
+            None,
+            "file read",
+            Some("Bearer secret".to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            parse_delegated_file_read(&response).unwrap().content,
+            b"hello"
+        );
+        server.await.unwrap();
+    }
+
     #[test]
     fn delegated_exec_response_contract_and_server_error_are_actionable() {
         let output = delegated_exec_output(r#"{"success":true,"data":{"output":"ok\n"}}"#).unwrap();
@@ -6874,6 +6993,10 @@ mod tests {
         assert_eq!(
             delegated_request_timeout("inspect"),
             Some(std::time::Duration::from_secs(120))
+        );
+        assert_eq!(
+            delegated_request_timeout("health"),
+            Some(std::time::Duration::from_secs(1))
         );
     }
 
