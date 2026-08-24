@@ -27,6 +27,7 @@ mod pool;
 pub mod proxy;
 pub mod proxy_hooks;
 pub mod rootfs;
+pub mod runtime_supervisor;
 pub mod sandbox_pool;
 #[allow(dead_code)]
 mod secrets;

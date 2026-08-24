@@ -52,6 +52,7 @@ mod quota;
 mod receipt;
 mod rootfs;
 mod runtime;
+mod runtime_supervisor;
 mod sandbox_pool;
 mod scim;
 mod seatbelt;

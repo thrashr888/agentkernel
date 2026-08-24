@@ -7,8 +7,8 @@ use crate::audit::{AuditEvent, log_event};
 use crate::backend::{
     BackendType, FileInjection, FullStatePauseError, FullStateSnapshot, FullStateTerminationError,
     PortMapping, RemoteSandboxContext, ResolvedEndpoint, Sandbox, SandboxConfig,
-    SandboxRuntimeMetadata, backend_capabilities, create_sandbox, create_sandbox_with_state,
-    detect_best_backend,
+    SandboxRuntimeMetadata, attach_sandbox_runtime_with_rootfs, backend_capabilities,
+    create_sandbox, create_sandbox_with_state, detect_best_backend,
 };
 use crate::config::Config;
 use crate::cow::RootfsCowStore;
@@ -18,6 +18,7 @@ use crate::languages::docker_image_to_firecracker_runtime;
 use crate::permissions::Permissions;
 use crate::pool::ContainerPool;
 use crate::proxy::{ProxyConfig, ProxyHandle, SecretBinding};
+use crate::runtime_supervisor::{RuntimeJournal, RuntimePhase, RuntimeSupervisor};
 use crate::secrets::{SecretBackend, SecretVault};
 use crate::validation;
 use crate::volume::{VolumeManager, VolumeMount};
@@ -327,6 +328,12 @@ pub struct SandboxState {
     /// so reference-aware GC cannot delete state still needed by the child.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_state_source_checkpoint: Option<String>,
+    /// Durable Firecracker process/socket ownership record. A present record
+    /// is authoritative during startup reconciliation; if its identity cannot
+    /// be verified, lifecycle operations fail closed instead of cold-starting
+    /// a second VM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firecracker_runtime: Option<crate::runtime_supervisor::RuntimeJournal>,
 }
 
 impl SandboxState {
@@ -525,6 +532,40 @@ fn add_checkpoint_reference(references: &mut HashSet<String>, id: Option<&str>) 
     }
 }
 
+fn runtime_dir_from_journal(runtime: &RuntimeJournal) -> Result<PathBuf> {
+    let runtime_dir = crate::backend::firecracker::firecracker_runtime_dir(&runtime.runtime_id)?;
+    if Path::new(&runtime.api_socket.path).parent() != Some(runtime_dir.as_path())
+        || Path::new(&runtime.api_socket.path).file_name() != Some(std::ffi::OsStr::new("api.sock"))
+        || Path::new(&runtime.vsock_socket.path).parent() != Some(runtime_dir.as_path())
+        || Path::new(&runtime.vsock_socket.path).file_name()
+            != Some(std::ffi::OsStr::new("vsock.sock"))
+    {
+        bail!("Firecracker runtime journal paths are outside the private runtime root");
+    }
+    Ok(runtime_dir)
+}
+
+/// Return whether a journal's trusted runtime record is absent. This is only
+/// used with the recorded process identity: a missing directory/journal alone
+/// is ambiguous and must never clear persisted ownership.
+fn firecracker_runtime_record_missing(runtime: &RuntimeJournal) -> Result<bool> {
+    let runtime_dir = runtime_dir_from_journal(runtime)?;
+    match std::fs::symlink_metadata(&runtime_dir) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Ok(false);
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(error.into()),
+    }
+    match std::fs::symlink_metadata(runtime_dir.join("runtime.json")) {
+        Ok(metadata) => Ok(metadata.file_type().is_symlink()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Escape a string for use inside a single-quoted shell command.
 fn shell_escape(s: &str) -> String {
     // Replace ' with '\'' (end quote, escaped quote, start quote)
@@ -687,6 +728,10 @@ impl VmManager {
             policy_engine,
         };
 
+        // Reclaim durable Firecracker handles before ordinary backend
+        // discovery. This is the only path allowed to attach a local VMM.
+        manager.reconcile_firecracker_runtimes();
+
         // Detect already-running sandboxes
         manager.detect_running_sandboxes();
         manager.reconcile_full_state_cleanup();
@@ -810,6 +855,252 @@ impl VmManager {
                     continue;
                 }
                 self.running.insert(name, sandbox);
+            }
+        }
+    }
+
+    /// Reconcile durable Firecracker runtime journals before ordinary backend
+    /// discovery. A journal identity mismatch is retained as an orphan and
+    /// never converted into a fresh VM start, which avoids PID/socket reuse
+    /// and duplicate guest execution after a service crash.
+    fn reconcile_firecracker_runtimes(&mut self) {
+        // Scan the trusted runtime root as well as persisted state. A crash
+        // after spawn/journal publication but before SandboxState publication
+        // must not make a live VM invisible and cold-startable.
+        let runtime_root = crate::backend::firecracker::firecracker_runtime_root();
+        #[cfg(unix)]
+        let runtime_root_is_private =
+            std::fs::symlink_metadata(&runtime_root)
+                .ok()
+                .is_some_and(|metadata| {
+                    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                    !metadata.file_type().is_symlink()
+                        && metadata.is_dir()
+                        && metadata.uid() == unsafe { libc::geteuid() }
+                        && metadata.permissions().mode() & 0o777 == 0o700
+                });
+        #[cfg(not(unix))]
+        let runtime_root_is_private = false;
+        if !runtime_root_is_private && std::fs::symlink_metadata(&runtime_root).is_ok() {
+            eprintln!(
+                "Warning: refusing to scan Firecracker runtime root {}; it is not a current-user-owned 0700 directory",
+                runtime_root.display()
+            );
+        }
+        if runtime_root_is_private && let Ok(entries) = std::fs::read_dir(&runtime_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                    continue;
+                };
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    continue;
+                }
+                let supervisor = match RuntimeSupervisor::open(&path) {
+                    Ok(supervisor) => supervisor,
+                    Err(error) => {
+                        eprintln!(
+                            "Warning: refusing to reconcile malformed or inaccessible Firecracker runtime directory {}; operator cleanup may be required: {error:#}",
+                            path.display()
+                        );
+                        continue;
+                    }
+                };
+                let Some(runtime) = supervisor.journal().cloned() else {
+                    continue;
+                };
+                let Some(state) = self.sandboxes.get(&runtime.sandbox).cloned() else {
+                    eprintln!(
+                        "Warning: orphaned Firecracker runtime journal for unknown sandbox '{}' retained at {}",
+                        runtime.sandbox,
+                        path.display()
+                    );
+                    continue;
+                };
+                if state.backend.unwrap_or(self.backend) != BackendType::Firecracker {
+                    eprintln!(
+                        "Warning: Firecracker runtime journal for '{}' conflicts with persisted non-Firecracker backend; retaining it without adoption at {}",
+                        runtime.sandbox,
+                        path.display()
+                    );
+                    continue;
+                }
+                match state.firecracker_runtime.as_ref() {
+                    None => {
+                        // Journal publication can precede SandboxState
+                        // publication. Adopt that one-way crash window, but
+                        // never overwrite an existing persisted identity.
+                        let mut updated = state;
+                        updated.firecracker_runtime = Some(runtime);
+                        if let Err(error) = self.save_sandbox(&updated) {
+                            eprintln!(
+                                "Warning: Firecracker runtime for '{}' was found on disk but could not be recorded safely: {error:#}",
+                                updated.name
+                            );
+                        } else {
+                            self.sandboxes.insert(updated.name.clone(), updated);
+                        }
+                    }
+                    Some(persisted)
+                        if persisted.runtime_id == runtime.runtime_id
+                            && persisted.process == runtime.process
+                            && persisted.api_socket == runtime.api_socket
+                            && persisted.vsock_socket == runtime.vsock_socket => {}
+                    Some(_) => {
+                        eprintln!(
+                            "Warning: persisted Firecracker runtime for '{}' disagrees with its on-disk journal; retaining both identities orphaned and refusing adoption",
+                            state.name
+                        );
+                        if let Ok(mut supervisor) = RuntimeSupervisor::open(&path) {
+                            let _ = supervisor.mark_orphaned();
+                        }
+                    }
+                }
+            }
+        }
+
+        let candidates: Vec<(String, SandboxState, RuntimeJournal)> = self
+            .sandboxes
+            .values()
+            .filter(|state| state.backend.unwrap_or(self.backend) == BackendType::Firecracker)
+            .filter_map(|state| {
+                state
+                    .firecracker_runtime
+                    .clone()
+                    .map(|runtime| (state.name.clone(), state.clone(), runtime))
+            })
+            .collect();
+
+        for (name, state, runtime) in candidates {
+            if firecracker_runtime_record_missing(&runtime).unwrap_or(false) {
+                match runtime.process.is_alive() {
+                    Ok(false) => {
+                        // A normal stop can publish the stopped state after
+                        // removing the runtime directory. Once the recorded
+                        // PID is independently proven gone, clear only the
+                        // stale runtime ownership record so a retained rootfs
+                        // can be restarted normally.
+                        let mut updated = state.clone();
+                        updated.firecracker_runtime = None;
+                        if let Err(error) = self.save_sandbox(&updated) {
+                            eprintln!(
+                                "Warning: stale Firecracker runtime for '{}' is gone but its state could not be reconciled: {error:#}",
+                                name
+                            );
+                        } else {
+                            self.sandboxes.insert(name.clone(), updated);
+                        }
+                    }
+                    Ok(true) => eprintln!(
+                        "Warning: Firecracker runtime record for '{}' is missing while PID {} is still live; retaining persisted ownership",
+                        name, runtime.process.pid
+                    ),
+                    Err(error) => eprintln!(
+                        "Warning: Firecracker runtime record for '{}' is missing but PID {} identity could not be proven gone; retaining persisted ownership: {error:#}",
+                        name, runtime.process.pid
+                    ),
+                }
+                continue;
+            }
+            let attach = attach_sandbox_runtime_with_rootfs(
+                BackendType::Firecracker,
+                &name,
+                &runtime,
+                state.firecracker_rootfs.as_deref(),
+            );
+            let sandbox = match attach {
+                Ok(sandbox) => sandbox,
+                Err(error) => {
+                    // A process that exited during Starting can be safely
+                    // converted to an explicit orphan cleanup handle. Retry
+                    // once against the journal after that durable phase
+                    // update; identity mismatches still fail closed.
+                    let retried = if let Ok(runtime_dir) = runtime_dir_from_journal(&runtime) {
+                        if let Ok(mut supervisor) = RuntimeSupervisor::open(runtime_dir) {
+                            let marked = supervisor.mark_orphaned().is_ok();
+                            drop(supervisor);
+                            marked.then(|| {
+                                attach_sandbox_runtime_with_rootfs(
+                                    BackendType::Firecracker,
+                                    &name,
+                                    &runtime,
+                                    state.firecracker_rootfs.as_deref(),
+                                )
+                            })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    match retried {
+                        Some(Ok(sandbox)) => sandbox,
+                        Some(Err(retry_error)) => {
+                            eprintln!(
+                                "Warning: Firecracker runtime for '{}' remained orphaned after cleanup reattach retry ({retry_error:#}); lifecycle operations will fail closed",
+                                name
+                            );
+                            continue;
+                        }
+                        None => {
+                            eprintln!(
+                                "Warning: Firecracker runtime for '{}' could not be safely reattached ({error:#}); it remains orphaned and lifecycle operations will fail closed",
+                                name
+                            );
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            let verified_runtime = sandbox
+                .firecracker_runtime_journal()
+                .unwrap_or_else(|| runtime.clone());
+            let phase = verified_runtime.phase;
+            if state.paused_at.is_some() && phase != RuntimePhase::Paused {
+                let checkpoint_id = state
+                    .full_state_checkpoint
+                    .clone()
+                    .unwrap_or_else(|| runtime.runtime_id.clone());
+                let staging_path = FullStateCheckpointStore::new(&self.data_dir)
+                    .and_then(|store| store.staging_path(&checkpoint_id))
+                    .unwrap_or_else(|_| PathBuf::from(&runtime.api_socket.path));
+                self.pause_recovery.insert(
+                    name,
+                    PendingFullStateRecovery {
+                        sandbox: Some(sandbox),
+                        staging_path,
+                        completed_snapshot: None,
+                    },
+                );
+            } else if state.paused_at.is_none()
+                && matches!(
+                    phase,
+                    RuntimePhase::Starting
+                        | RuntimePhase::Running
+                        | RuntimePhase::Resuming
+                        | RuntimePhase::Pausing
+                )
+            {
+                self.running.insert(name, sandbox);
+            } else if matches!(phase, RuntimePhase::Stopping | RuntimePhase::Orphaned) {
+                eprintln!(
+                    "Warning: Firecracker runtime journal for '{}' is in {:?}; retaining its handle for explicit remove/cleanup",
+                    name, phase
+                );
+                self.pause_recovery.insert(
+                    name,
+                    PendingFullStateRecovery {
+                        sandbox: Some(sandbox),
+                        staging_path: PathBuf::from(&verified_runtime.api_socket.path),
+                        completed_snapshot: None,
+                    },
+                );
+            } else {
+                eprintln!(
+                    "Warning: Firecracker runtime journal for '{}' has incompatible phase {:?}; retaining orphaned ownership",
+                    name, phase
+                );
             }
         }
     }
@@ -1537,6 +1828,7 @@ impl VmManager {
             forked_from: None,
             firecracker_rootfs: None,
             full_state_source_checkpoint: None,
+            firecracker_runtime: None,
         };
 
         self.save_sandbox(&state)?;
@@ -2489,6 +2781,12 @@ impl VmManager {
         if self.running.contains_key(name) {
             bail!("Sandbox '{}' is already running", name);
         }
+        if backend == BackendType::Firecracker && state.firecracker_runtime.is_some() {
+            bail!(
+                "Sandbox '{}' has a persisted Firecracker runtime that was not safely reattached; remove it after identity reconciliation before starting another VM",
+                name
+            );
+        }
 
         // Enterprise policy check for start
         #[cfg(feature = "enterprise")]
@@ -2966,6 +3264,7 @@ impl VmManager {
             persisted.work_dir = config.work_dir.clone();
             if backend == BackendType::Firecracker {
                 persisted.firecracker_rootfs = sandbox.persistent_disk_reference();
+                persisted.firecracker_runtime = sandbox.firecracker_runtime_journal();
             }
             if let Some(metadata) = sandbox.runtime_metadata() {
                 Self::apply_runtime_metadata(persisted, &metadata);
@@ -3887,6 +4186,11 @@ impl VmManager {
                                 Some(&tenant_id),
                             ) {
                                 Ok(checkpoint) => {
+                                    let mut finalized_state = paused_state.clone();
+                                    finalized_state.firecracker_runtime = None;
+                                    finalized_state.full_state_source_checkpoint = None;
+                                    self.save_sandbox(&finalized_state)?;
+                                    self.sandboxes.insert(name.to_string(), finalized_state);
                                     crate::metrics::record_sandbox_lifecycle(
                                         "paused",
                                         "firecracker",
@@ -3922,6 +4226,11 @@ impl VmManager {
                             Some(&tenant_id),
                         ) {
                             Ok(checkpoint) => {
+                                let mut finalized_state = paused_state.clone();
+                                finalized_state.firecracker_runtime = None;
+                                finalized_state.full_state_source_checkpoint = None;
+                                self.save_sandbox(&finalized_state)?;
+                                self.sandboxes.insert(name.to_string(), finalized_state);
                                 crate::metrics::record_sandbox_lifecycle(
                                     "paused",
                                     "firecracker",
@@ -3944,8 +4253,10 @@ impl VmManager {
                     // the retry is still ambiguous or unsuccessful.
                     match sandbox.retry_full_state_resume().await {
                         Ok(()) => {
-                            let running_state =
+                            let mut running_state =
                                 with_full_state_cleanup_intent(state.clone(), staging.id());
+                            running_state.firecracker_runtime =
+                                sandbox.firecracker_runtime_journal();
                             if let Err(rollback_error) = self.save_sandbox(&running_state) {
                                 let recovery_path = staging.preserve();
                                 self.running.insert(name.to_string(), sandbox);
@@ -3983,7 +4294,8 @@ impl VmManager {
 
                 // Ordinary backend errors guarantee a confirmed running
                 // source. Restore both in-memory and persisted state.
-                let running_state = with_full_state_cleanup_intent(state.clone(), staging.id());
+                let mut running_state = with_full_state_cleanup_intent(state.clone(), staging.id());
+                running_state.firecracker_runtime = sandbox.firecracker_runtime_journal();
                 if let Err(rollback_error) = self.save_sandbox(&running_state) {
                     let recovery_path = staging.preserve();
                     self.running.insert(name.to_string(), sandbox);
@@ -4044,8 +4356,9 @@ impl VmManager {
                     .await
                 {
                     Ok(()) => {
-                        let running_state =
+                        let mut running_state =
                             with_full_state_cleanup_intent(state.clone(), staging.id());
+                        running_state.firecracker_runtime = sandbox.firecracker_runtime_journal();
                         if let Err(rollback_error) = self.save_sandbox(&running_state) {
                             let recovery_path = staging.preserve();
                             self.running.insert(name.to_string(), sandbox);
@@ -4088,8 +4401,9 @@ impl VmManager {
             paused_state.full_state_checkpoint.as_deref(),
             Some(checkpoint.id.as_str())
         );
-        if paused_state.full_state_source_checkpoint.is_some() {
+        {
             let mut finalized_state = paused_state.clone();
+            finalized_state.firecracker_runtime = None;
             finalized_state.full_state_source_checkpoint = None;
             match self.save_sandbox(&finalized_state) {
                 Ok(()) => {
@@ -4277,6 +4591,7 @@ impl VmManager {
                 }
 
                 let mut running_state = state.clone();
+                running_state.firecracker_runtime = sandbox.firecracker_runtime_journal();
                 running_state.full_state_checkpoint = None;
                 if !running_state
                     .full_state_cleanup_pending
@@ -4378,6 +4693,7 @@ impl VmManager {
         }
 
         let mut running_state = state.clone();
+        running_state.firecracker_runtime = sandbox.firecracker_runtime_journal();
         running_state.full_state_checkpoint = None;
         running_state.firecracker_rootfs = None;
         if !running_state
@@ -4648,6 +4964,7 @@ impl VmManager {
         // Publish a normal child only after its runtime has restored. If the
         // atomic state write fails, stop the unadvertised runtime so callers
         // never observe a persisted fork that did not actually start.
+        child_state.firecracker_runtime = sandbox.firecracker_runtime_journal();
         if let Err(error) = self.save_sandbox(&child_state) {
             if let Err(stop_error) = sandbox.stop().await {
                 if runtime_may_survive_failed_stop(&stop_error, sandbox.is_running()) {
@@ -4745,6 +5062,7 @@ impl VmManager {
                 && let Some(state) = self.sandboxes.get_mut(name)
             {
                 state.firecracker_rootfs = sandbox.persistent_disk_reference();
+                state.firecracker_runtime = sandbox.firecracker_runtime_journal();
                 let snapshot = state.clone();
                 self.save_sandbox(&snapshot)?;
             }
@@ -5653,6 +5971,7 @@ mod tests {
             forked_from: None,
             firecracker_rootfs: None,
             full_state_source_checkpoint: None,
+            firecracker_runtime: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -5797,6 +6116,7 @@ mod tests {
             forked_from: None,
             firecracker_rootfs: None,
             full_state_source_checkpoint: None,
+            firecracker_runtime: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -5891,6 +6211,7 @@ mod tests {
             forked_from: None,
             firecracker_rootfs: None,
             full_state_source_checkpoint: None,
+            firecracker_runtime: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -6001,6 +6322,7 @@ mod tests {
                 forked_from: None,
                 firecracker_rootfs: None,
                 full_state_source_checkpoint: None,
+                firecracker_runtime: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();
@@ -6098,6 +6420,7 @@ mod tests {
             forked_from: None,
             firecracker_rootfs: None,
             full_state_source_checkpoint: None,
+            firecracker_runtime: None,
         };
         std::fs::create_dir_all(temp_dir.path().join("sandboxes")).unwrap();
         manager.sandboxes.insert("label-test".to_string(), state);
@@ -6195,6 +6518,7 @@ mod tests {
                 forked_from: None,
                 firecracker_rootfs: None,
                 full_state_source_checkpoint: None,
+                firecracker_runtime: None,
             };
             manager.sandboxes.insert(name.to_string(), state);
         }
@@ -6293,6 +6617,7 @@ mod tests {
             forked_from: None,
             firecracker_rootfs: None,
             full_state_source_checkpoint: None,
+            firecracker_runtime: None,
         };
         manager.sandboxes.insert("desc-test".to_string(), state);
 
@@ -6381,6 +6706,7 @@ mod tests {
             forked_from: None,
             firecracker_rootfs: None,
             full_state_source_checkpoint: None,
+            firecracker_runtime: None,
         };
 
         // Save to disk
@@ -6670,6 +6996,7 @@ mod tests {
             forked_from: None,
             firecracker_rootfs: None,
             full_state_source_checkpoint: None,
+            firecracker_runtime: None,
         }
     }
 

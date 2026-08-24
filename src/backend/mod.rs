@@ -36,6 +36,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::runtime_supervisor::RuntimeJournal;
 use crate::ssh::SshConfig;
 
 pub use crate::container_network::{ManagedNetworkConfig, ManagedNetworkLease, NetworkAllocator};
@@ -662,6 +663,12 @@ pub trait Sandbox: Send + Sync {
     /// caller and ordinary stop may then discard its transient disk.
     fn rollback_persistent_disk_reference(&mut self) -> Result<()> {
         Ok(())
+    }
+
+    /// Durable local runtime identity used to reconnect Firecracker after a
+    /// manager restart. Backends without a host process return None.
+    fn firecracker_runtime_journal(&self) -> Option<RuntimeJournal> {
+        None
     }
 
     /// Pause a running sandbox into a durable, full-state checkpoint.
@@ -1351,6 +1358,56 @@ pub fn create_sandbox(backend: BackendType, name: &str) -> Result<Box<dyn Sandbo
         &crate::config::OrchestratorConfig::default(),
         None,
     )
+}
+
+/// Reopen a local Firecracker runtime recorded by the durable supervisor.
+/// Other backends intentionally reject this path rather than guessing how to
+/// reconnect a provider-owned process.
+pub fn attach_sandbox_runtime(
+    backend: BackendType,
+    name: &str,
+    runtime: &RuntimeJournal,
+) -> Result<Box<dyn Sandbox>> {
+    attach_sandbox_runtime_with_rootfs(backend, name, runtime, None)
+}
+
+/// Attach only enough of a local runtime to perform explicit, identity-checked
+/// termination. Firecracker uses this when its separately-owned writable
+/// rootfs artifact cannot be reopened; callers must report rootfs cleanup on
+/// its own after the live process has been stopped.
+pub fn attach_sandbox_runtime_only(
+    backend: BackendType,
+    name: &str,
+    runtime: &RuntimeJournal,
+) -> Result<Box<dyn Sandbox>> {
+    match backend {
+        BackendType::Firecracker => Ok(Box::new(FirecrackerSandbox::attach_runtime_only(
+            name, runtime,
+        )?)),
+        _ => anyhow::bail!(
+            "backend '{}' does not support local runtime attachment",
+            backend
+        ),
+    }
+}
+
+pub fn attach_sandbox_runtime_with_rootfs(
+    backend: BackendType,
+    name: &str,
+    runtime: &RuntimeJournal,
+    rootfs_reference: Option<&str>,
+) -> Result<Box<dyn Sandbox>> {
+    match backend {
+        BackendType::Firecracker => Ok(Box::new(FirecrackerSandbox::attach_with_rootfs(
+            name,
+            runtime,
+            rootfs_reference,
+        )?)),
+        _ => anyhow::bail!(
+            "backend '{}' does not support local runtime attachment",
+            backend
+        ),
+    }
 }
 
 /// Create a sandbox with orchestrator configuration

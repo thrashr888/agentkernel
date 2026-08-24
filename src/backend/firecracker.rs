@@ -20,6 +20,10 @@ use crate::firecracker_client::{
 };
 use crate::full_state::{MEMORY_FILE, ROOTFS_FILE, VMSTATE_FILE};
 use crate::languages::docker_image_to_firecracker_runtime;
+use crate::runtime_supervisor::{
+    ProcessIdentity, RuntimeHandleState, RuntimeJournal, RuntimePhase, RuntimeSupervisor,
+    SocketMetadata,
+};
 use crate::vsock::VsockClient;
 
 const SUPPORTED_FIRECRACKER_VERSION: &str = "1.16.1";
@@ -301,7 +305,7 @@ fn transition_cleanup_error(
 
 #[cfg(unix)]
 fn ensure_private_owned_directory(path: &Path) -> Result<()> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    use std::os::unix::fs::DirBuilderExt;
 
     match fs::DirBuilder::new().mode(0o700).create(path) {
         Ok(()) => {}
@@ -311,6 +315,13 @@ fn ensure_private_owned_directory(path: &Path) -> Result<()> {
                 .with_context(|| format!("failed to create runtime directory {}", path.display()));
         }
     }
+    verify_private_owned_directory(path)
+}
+
+#[cfg(unix)]
+fn verify_private_owned_directory(path: &Path) -> Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink()
         || !metadata.is_dir()
@@ -325,14 +336,42 @@ fn ensure_private_owned_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn firecracker_runtime_root() -> PathBuf {
+    #[cfg(unix)]
+    {
+        PathBuf::from("/tmp").join(format!("agentkernel-fc-{}", unsafe { libc::geteuid() }))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from("/tmp/agentkernel-fc-current-user")
+    }
+}
+
+pub fn verify_firecracker_runtime_root() -> Result<()> {
+    verify_private_owned_directory(&firecracker_runtime_root())
+}
+
+fn valid_runtime_id(runtime_id: &str) -> bool {
+    runtime_id.len() == 32
+        && runtime_id
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+}
+
+pub fn firecracker_runtime_dir(runtime_id: &str) -> Result<PathBuf> {
+    if !valid_runtime_id(runtime_id) {
+        bail!("Firecracker runtime journal has an invalid runtime ID");
+    }
+    Ok(firecracker_runtime_root().join(runtime_id))
+}
+
 #[cfg(unix)]
 fn create_private_runtime_directory(runtime_id: &str) -> Result<PathBuf> {
     // Keep the rendered path below macOS/Linux `sockaddr_un.sun_path` limits;
     // the current-user-owned 0700 parent is the security boundary.
-    let user_root =
-        PathBuf::from("/tmp").join(format!("agentkernel-fc-{}", unsafe { libc::geteuid() }));
+    let user_root = firecracker_runtime_root();
     ensure_private_owned_directory(&user_root)?;
-    let runtime = user_root.join(runtime_id);
+    let runtime = firecracker_runtime_dir(runtime_id)?;
     ensure_private_owned_directory(&runtime)?;
     Ok(runtime)
 }
@@ -340,6 +379,11 @@ fn create_private_runtime_directory(runtime_id: &str) -> Result<PathBuf> {
 #[cfg(not(unix))]
 fn create_private_runtime_directory(_runtime_id: &str) -> Result<PathBuf> {
     bail!("Firecracker runtime sockets require a Unix host")
+}
+
+#[cfg(not(unix))]
+fn verify_private_owned_directory(_path: &Path) -> Result<()> {
+    bail!("Firecracker runtime directories require a Unix host")
 }
 
 #[cfg(unix)]
@@ -400,6 +444,12 @@ pub struct FirecrackerSandbox {
     socket_path: PathBuf,
     vsock_path: PathBuf,
     process: Option<Child>,
+    /// PID retained when the manager reattached after a service restart. An
+    /// attached process has no Child handle to wait on, so termination is
+    /// performed through the durable supervisor after identity verification.
+    attached_process: Option<ProcessIdentity>,
+    runtime_supervisor: Option<RuntimeSupervisor>,
+    runtime_id: String,
     vsock_cid: u32,
     kernel_path: Option<PathBuf>,
     rootfs_path: Option<PathBuf>,
@@ -450,10 +500,13 @@ impl FirecrackerSandbox {
 
         Ok(Self {
             name: name.to_string(),
-            runtime_dir,
+            runtime_dir: runtime_dir.clone(),
             socket_path,
             vsock_path,
             process: None,
+            attached_process: None,
+            runtime_supervisor: Some(RuntimeSupervisor::create(&runtime_dir)?),
+            runtime_id,
             vsock_cid,
             // The dedicated native gate supplies these paths explicitly via
             // environment variables. Production installations continue to
@@ -465,6 +518,124 @@ impl FirecrackerSandbox {
             durable_rootfs_published: false,
             running: false,
         })
+    }
+
+    /// Reattach to a runtime left behind by a manager restart. The supervisor
+    /// lock and both process/socket identities are checked before this handle
+    /// is returned; mismatches stay orphaned and cannot be guessed at.
+    pub fn attach(name: &str, runtime: &RuntimeJournal) -> Result<Self> {
+        Self::attach_with_rootfs(name, runtime, None)
+    }
+
+    /// Reattach only the runtime supervisor for explicit termination. This is
+    /// the safe fallback when the persisted writable rootfs cannot be adopted:
+    /// process identity and endpoint ownership are still verified, but rootfs
+    /// cleanup is deliberately left to the caller as a separate operation.
+    pub fn attach_runtime_only(name: &str, runtime: &RuntimeJournal) -> Result<Self> {
+        Self::attach_internal(name, runtime, None)
+    }
+
+    pub fn attach_with_rootfs(
+        name: &str,
+        runtime: &RuntimeJournal,
+        rootfs_reference: Option<&str>,
+    ) -> Result<Self> {
+        Self::attach_internal(name, runtime, rootfs_reference)
+    }
+
+    fn attach_internal(
+        name: &str,
+        runtime: &RuntimeJournal,
+        rootfs_reference: Option<&str>,
+    ) -> Result<Self> {
+        verify_firecracker_runtime_root()?;
+        let expected_runtime_dir = firecracker_runtime_dir(&runtime.runtime_id)?;
+        let runtime_dir = PathBuf::from(
+            Path::new(&runtime.api_socket.path)
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("runtime API socket has no parent directory"))?,
+        );
+        if runtime_dir != expected_runtime_dir
+            || Path::new(&runtime.api_socket.path).file_name()
+                != Some(std::ffi::OsStr::new("api.sock"))
+            || Path::new(&runtime.api_socket.path).parent() != Some(runtime_dir.as_path())
+            || Path::new(&runtime.vsock_socket.path).file_name()
+                != Some(std::ffi::OsStr::new("vsock.sock"))
+            || Path::new(&runtime.vsock_socket.path).parent() != Some(runtime_dir.as_path())
+        {
+            bail!("Firecracker runtime journal paths are outside the private runtime root");
+        }
+        let mut supervisor = RuntimeSupervisor::open(&runtime_dir)?;
+        let verified = match supervisor.verify_attachable() {
+            Ok(journal) => journal.clone(),
+            Err(error) => {
+                let mut supervisor = supervisor;
+                supervisor.mark_orphaned().ok();
+                return Err(error).context("refusing to attach Firecracker runtime");
+            }
+        };
+        if verified.sandbox != name || verified.runtime_id != runtime.runtime_id {
+            bail!("Firecracker runtime journal identity does not match sandbox '{name}'");
+        }
+        if verified.process != runtime.process
+            || verified.api_socket != runtime.api_socket
+            || verified.vsock_socket != runtime.vsock_socket
+        {
+            bail!("persisted Firecracker runtime journal disagrees with the on-disk journal");
+        }
+        #[cfg(not(target_os = "linux"))]
+        if verified.process.pid_start_time.is_none() {
+            bail!(
+                "refusing to attach Firecracker runtime without a PID start-time identity on this host"
+            );
+        }
+        let sandbox_rootfs = rootfs_reference
+            .map(|reference| {
+                RootfsCowStore::open_default_without_reap()?
+                    .adopt_or_publish(reference)
+                    .with_context(|| {
+                        format!("failed to reopen durable writable rootfs lineage '{reference}'")
+                    })
+            })
+            .transpose()?;
+        let rootfs_path = sandbox_rootfs
+            .as_ref()
+            .map(|rootfs| rootfs.path().to_path_buf());
+        supervisor.update_handle_state(RuntimeHandleState::Attached)?;
+        Ok(Self {
+            name: name.to_string(),
+            runtime_dir,
+            socket_path: PathBuf::from(&verified.api_socket.path),
+            vsock_path: PathBuf::from(&verified.vsock_socket.path),
+            process: None,
+            attached_process: Some(verified.process.clone()),
+            runtime_supervisor: Some(supervisor),
+            runtime_id: verified.runtime_id,
+            vsock_cid: 0,
+            kernel_path: None,
+            rootfs_path,
+            sandbox_rootfs,
+            rootfs_reference: rootfs_reference.map(str::to_owned),
+            durable_rootfs_published: rootfs_reference.is_some(),
+            running: matches!(
+                verified.phase,
+                RuntimePhase::Starting
+                    | RuntimePhase::Running
+                    | RuntimePhase::Pausing
+                    | RuntimePhase::Resuming
+            ),
+        })
+    }
+
+    fn process_is_tracked(&self) -> bool {
+        self.process.is_some() || self.attached_process.is_some()
+    }
+
+    fn journal_phase(&mut self, phase: RuntimePhase) -> Result<()> {
+        self.runtime_supervisor
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Firecracker runtime supervisor is missing"))?
+            .update_phase(phase)
     }
 
     /// Set kernel path
@@ -633,6 +804,46 @@ impl FirecrackerSandbox {
             format!("Failed to start firecracker: {}", firecracker_bin.display())
         })?;
         self.process = Some(process);
+        let process_identity = match ProcessIdentity::capture(
+            self.process
+                .as_ref()
+                .expect("spawned process is retained before identity capture")
+                .id(),
+        ) {
+            Ok(identity) => identity,
+            Err(error) => {
+                return match self.abort_start() {
+                    Ok(()) => Err(error).context("failed to capture Firecracker process identity"),
+                    Err(cleanup_error) => Err(transition_cleanup_error(
+                        "startup identity capture",
+                        &error,
+                        cleanup_error,
+                    )),
+                };
+            }
+        };
+        if let Err(error) = self
+            .runtime_supervisor
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Firecracker runtime supervisor is missing"))?
+            .record_process(
+                &self.name,
+                &self.runtime_id,
+                process_identity,
+                SocketMetadata::expected(&self.socket_path),
+                SocketMetadata::expected(&self.vsock_path),
+                RuntimePhase::Starting,
+            )
+        {
+            return match self.abort_start() {
+                Ok(()) => Err(error).context("failed to persist Firecracker runtime journal"),
+                Err(cleanup_error) => Err(transition_cleanup_error(
+                    "startup journal publication",
+                    &error,
+                    cleanup_error,
+                )),
+            };
+        }
         Ok(())
     }
 
@@ -756,11 +967,17 @@ impl FirecrackerSandbox {
     /// the lifecycle layer may safely publish a complete checkpoint after a
     /// subsequent idempotent stop confirms no process remains.
     fn terminate_runtime(&mut self, preserve_rootfs: bool) -> Result<()> {
+        if self.process_is_tracked()
+            && let Some(supervisor) = self.runtime_supervisor.as_mut()
+        {
+            let _ = supervisor.update_phase(RuntimePhase::Stopping);
+        }
+        let process_is_tracked = self.process_is_tracked();
         if preserve_rootfs && let Some(rootfs) = self.sandbox_rootfs.as_mut() {
             rootfs
                 .preserve_for_lifecycle()
                 .map_err(|error| FullStateTerminationError {
-                    process_may_be_running: self.process.is_some(),
+                    process_may_be_running: process_is_tracked,
                     detail: format!(
                         "failed to publish durable Firecracker rootfs lineage: {error:#}"
                     ),
@@ -782,6 +999,18 @@ impl FirecrackerSandbox {
             match status {
                 Some(_) => {}
                 None => {
+                    if let Some(supervisor) = self.runtime_supervisor.as_ref()
+                        && let Err(error) = supervisor.verify_process_identity()
+                    {
+                        self.process = Some(process);
+                        return Err(FullStateTerminationError {
+                            process_may_be_running: true,
+                            detail: format!(
+                                "refusing to stop Firecracker after identity mismatch: {error:#}"
+                            ),
+                        }
+                        .into());
+                    }
                     if let Err(error) = process.kill() {
                         self.process = Some(process);
                         return Err(FullStateTerminationError {
@@ -802,11 +1031,28 @@ impl FirecrackerSandbox {
                     }
                 }
             }
+        } else if self.attached_process.is_some() {
+            let supervisor = self
+                .runtime_supervisor
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("Firecracker runtime supervisor is missing"))?;
+            if let Err(error) = supervisor.terminate(Duration::from_secs(5)) {
+                self.attached_process = self
+                    .runtime_supervisor
+                    .as_ref()
+                    .and_then(|supervisor| supervisor.journal())
+                    .map(|journal| journal.process.clone());
+                return Err(FullStateTerminationError {
+                    process_may_be_running: true,
+                    detail: format!("failed to terminate attached Firecracker: {error:#}"),
+                }
+                .into());
+            }
+            self.attached_process = None;
         }
 
         let _ = fs::remove_file(&self.socket_path);
         let _ = fs::remove_file(&self.vsock_path);
-        let _ = fs::remove_dir(&self.runtime_dir);
         let cleanup_result = self.sandbox_rootfs.take().map_or(Ok(()), |rootfs| {
             if preserve_rootfs {
                 // The durability marker makes Drop a no-op. Leave the image
@@ -818,6 +1064,16 @@ impl FirecrackerSandbox {
             }
         });
         self.running = false;
+        if let Some(supervisor) = self.runtime_supervisor.take() {
+            supervisor
+                .release_and_remove()
+                .map_err(|error| FullStateTerminationError {
+                    process_may_be_running: false,
+                    detail: format!(
+                        "Firecracker process exited, but runtime journal cleanup failed: {error:#}"
+                    ),
+                })?;
+        }
         cleanup_result.map_err(|error| {
             FullStateTerminationError {
                 process_may_be_running: false,
@@ -892,7 +1148,7 @@ impl FirecrackerSandbox {
 #[async_trait]
 impl Sandbox for FirecrackerSandbox {
     async fn start(&mut self, config: &SandboxConfig) -> Result<()> {
-        if self.running || self.process.is_some() || self.sandbox_rootfs.is_some() {
+        if self.running || self.process_is_tracked() || self.sandbox_rootfs.is_some() {
             bail!(
                 "Firecracker sandbox '{}' already has an active runtime",
                 self.name
@@ -942,6 +1198,10 @@ impl Sandbox for FirecrackerSandbox {
             self.configure(config).await?;
             self.start_instance().await?;
             self.wait_for_agent().await?;
+            self.runtime_supervisor
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("Firecracker runtime supervisor is missing"))?
+                .refresh_sockets()?;
             Ok::<(), anyhow::Error>(())
         }
         .await;
@@ -966,6 +1226,7 @@ impl Sandbox for FirecrackerSandbox {
                 match lineage {
                     Ok(()) => {
                         self.running = true;
+                        self.journal_phase(RuntimePhase::Running)?;
                         Ok(())
                     }
                     Err(error) => match self.abort_start() {
@@ -1006,6 +1267,9 @@ impl Sandbox for FirecrackerSandbox {
     }
 
     async fn stop(&mut self) -> Result<()> {
+        if self.process_is_tracked() {
+            self.journal_phase(RuntimePhase::Stopping)?;
+        }
         // Send shutdown signal via API
         let client = FirecrackerClient::new(&self.socket_path);
         let _ = client.send_ctrl_alt_del().await;
@@ -1020,7 +1284,7 @@ impl Sandbox for FirecrackerSandbox {
     }
 
     fn set_persistent_disk_reference(&mut self, reference: Option<&str>) -> Result<()> {
-        if self.running || self.process.is_some() || self.sandbox_rootfs.is_some() {
+        if self.running || self.process_is_tracked() || self.sandbox_rootfs.is_some() {
             bail!("cannot change Firecracker disk lineage while a runtime is active");
         }
         self.rootfs_reference = reference.map(str::to_owned);
@@ -1057,7 +1321,7 @@ impl Sandbox for FirecrackerSandbox {
         if self.rootfs_reference.is_some() {
             return Ok(());
         }
-        if !self.running && self.process.is_none() {
+        if !self.running && !self.process_is_tracked() {
             bail!("cannot roll back Firecracker disk lineage without an active runtime");
         }
         self.durable_rootfs_published = false;
@@ -1066,9 +1330,10 @@ impl Sandbox for FirecrackerSandbox {
 
     async fn pause_to(&mut self, checkpoint_dir: &Path) -> Result<FullStateSnapshot> {
         ensure_full_state_host_supported()?;
-        if !self.running || self.process.is_none() {
+        if !self.running || !self.process_is_tracked() {
             bail!("Firecracker sandbox '{}' is not running", self.name);
         }
+        self.journal_phase(RuntimePhase::Pausing)?;
         let checkpoint_dir = validate_checkpoint_output_dir(checkpoint_dir)?;
         if self.sandbox_rootfs.is_none() {
             bail!("sandbox rootfs has not been prepared");
@@ -1205,12 +1470,13 @@ impl Sandbox for FirecrackerSandbox {
 
     async fn retry_full_state_resume(&mut self) -> Result<()> {
         ensure_full_state_host_supported()?;
-        if self.process.is_none() {
+        if !self.process_is_tracked() {
             bail!(
                 "Firecracker sandbox '{}' has no live source process to resume",
                 self.name
             );
         }
+        self.journal_phase(RuntimePhase::Resuming)?;
         let client = FirecrackerClient::new(&self.socket_path);
         match client.get_instance_info().await {
             Ok(instance) if instance.state == "Running" => {}
@@ -1248,6 +1514,7 @@ impl Sandbox for FirecrackerSandbox {
         }
 
         self.running = true;
+        self.journal_phase(RuntimePhase::Running)?;
         self.wait_for_agent()
             .await
             .context("source VM resumed but guest agent did not reconnect")?;
@@ -1260,7 +1527,7 @@ impl Sandbox for FirecrackerSandbox {
         snapshot: &FullStateSnapshot,
     ) -> Result<()> {
         ensure_full_state_host_supported()?;
-        if self.running || self.process.is_some() || self.sandbox_rootfs.is_some() {
+        if self.running || self.process_is_tracked() || self.sandbox_rootfs.is_some() {
             bail!(
                 "Firecracker sandbox '{}' already has an active runtime",
                 self.name
@@ -1372,6 +1639,10 @@ impl Sandbox for FirecrackerSandbox {
                 .await
                 .context("failed to resume restored Firecracker VM")?;
             self.wait_for_agent().await?;
+            self.runtime_supervisor
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("Firecracker runtime supervisor is missing"))?
+                .refresh_sockets()?;
             Ok::<(), anyhow::Error>(())
         }
         .await;
@@ -1379,6 +1650,7 @@ impl Sandbox for FirecrackerSandbox {
         match restore {
             Ok(()) => {
                 self.running = true;
+                self.journal_phase(RuntimePhase::Running)?;
                 Ok(())
             }
             Err(error) => match self.abort_start() {
@@ -1398,7 +1670,7 @@ impl Sandbox for FirecrackerSandbox {
         if self.sandbox_rootfs.is_none()
             && let Some(reference) = self.rootfs_reference.as_deref()
         {
-            if self.process.is_some() || self.running {
+            if self.process_is_tracked() || self.running {
                 bail!(
                     "refusing to discard Firecracker rootfs lineage while runtime ownership is inconsistent"
                 );
@@ -1417,21 +1689,28 @@ impl Sandbox for FirecrackerSandbox {
         BackendType::Firecracker
     }
 
+    fn firecracker_runtime_journal(&self) -> Option<RuntimeJournal> {
+        self.runtime_supervisor
+            .as_ref()
+            .and_then(|supervisor| supervisor.journal().cloned())
+    }
+
     fn is_running(&self) -> bool {
         if !self.running {
             return false;
         }
 
         if let Some(ref process) = self.process {
-            Command::new("ps")
-                .arg("-p")
-                .arg(process.id().to_string())
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        } else {
-            false
+            if let Some(supervisor) = self.runtime_supervisor.as_ref() {
+                return supervisor.verify_process_identity().is_ok();
+            }
+            return ProcessIdentity::capture(process.id())
+                .is_ok_and(|identity| identity.pid == process.id());
         }
+        self.attached_process
+            .as_ref()
+            .and_then(|identity| identity.is_alive().ok())
+            .unwrap_or(false)
     }
 
     async fn write_file_unchecked(&mut self, path: &str, content: &[u8]) -> anyhow::Result<()> {
@@ -1457,12 +1736,33 @@ impl Sandbox for FirecrackerSandbox {
 
 impl Drop for FirecrackerSandbox {
     fn drop(&mut self) {
-        if let Some(ref mut process) = self.process {
+        // A durable journal means the runtime is no longer coupled to this
+        // request or manager object's lifetime. Leave it available for a
+        // future manager to reattach, while marking ownership explicitly.
+        if self
+            .runtime_supervisor
+            .as_ref()
+            .is_some_and(|supervisor| supervisor.journal().is_some())
+        {
+            if let Some(supervisor) = self.runtime_supervisor.as_mut() {
+                let _ = supervisor.mark_orphaned();
+            }
+            self.sandbox_rootfs.take();
+            return;
+        }
+        // No durable process record exists only for a pre-spawn failure. It is
+        // safe to remove those private sockets and the empty runtime dir.
+        if let Some(process) = self.process.as_mut() {
             let _ = process.kill();
+            let _ = process.wait();
         }
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = std::fs::remove_file(&self.vsock_path);
-        let _ = std::fs::remove_dir(&self.runtime_dir);
+        if let Some(supervisor) = self.runtime_supervisor.take() {
+            let _ = supervisor.release_and_remove();
+        } else {
+            let _ = std::fs::remove_dir(&self.runtime_dir);
+        }
         self.sandbox_rootfs.take();
     }
 }
@@ -1495,6 +1795,38 @@ mod tests {
                 & 0o777,
             0o700
         );
+    }
+
+    #[test]
+    fn durable_journal_survives_manager_drop_for_reattachment() {
+        let mut sandbox = FirecrackerSandbox::new("drop-keeps-runtime").unwrap();
+        let runtime_dir = sandbox.runtime_dir.clone();
+        let api_socket = sandbox.api_socket_path().to_path_buf();
+        let vsock_socket = sandbox.vsock_socket_path().to_path_buf();
+        sandbox
+            .runtime_supervisor
+            .as_mut()
+            .unwrap()
+            .record_process(
+                &sandbox.name,
+                &sandbox.runtime_id,
+                ProcessIdentity::capture(std::process::id()).unwrap(),
+                SocketMetadata::expected(api_socket),
+                SocketMetadata::expected(vsock_socket),
+                RuntimePhase::Running,
+            )
+            .unwrap();
+        drop(sandbox);
+
+        let reopened = RuntimeSupervisor::open(&runtime_dir).unwrap();
+        assert_eq!(
+            reopened.journal().map(|journal| journal.phase),
+            Some(RuntimePhase::Orphaned)
+        );
+        drop(reopened);
+        let _ = fs::remove_file(runtime_dir.join("runtime.json"));
+        let _ = fs::remove_file(runtime_dir.join(".runtime.lock"));
+        let _ = fs::remove_dir(runtime_dir);
     }
 
     #[cfg(unix)]
