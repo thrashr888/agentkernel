@@ -438,6 +438,7 @@ mod tests {
             full_state_lineage: false,
             paused_at: None,
             forked_from: None,
+            firecracker_rootfs: None,
             owner_user_id: Some(user.to_string()),
             owner_org_id: Some(org.to_string()),
         }

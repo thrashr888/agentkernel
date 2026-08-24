@@ -195,9 +195,11 @@ supervisor with PID identity, ownership locks, and startup reconciliation is
 required before calling this lifecycle crash-resilient.
 
 After a source is resumed or a child is forked, use `pause` rather than
-ordinary `stop` when its writable filesystem must survive. AgentKernel rejects
-ordinary stop for these full-state lineages until durable Firecracker disk
-lineage is implemented; `remove` remains the explicit discard operation.
+ordinary `stop`: full-state lineages remain fail-closed because their memory
+and device checkpoint is the source of truth, not because the writable disk
+cannot be persisted. Ordinary sandboxes retain a separate opaque writable
+rootfs lineage across stop/start; `remove` remains the explicit discard
+operation for both kinds of lineage.
 
 ## Resume side effects and clone safety
 
