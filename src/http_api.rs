@@ -298,6 +298,9 @@ struct CreateRequest {
     /// Port mappings (e.g., ["8080:80", "3000", "5353:53/udp"])
     #[serde(default)]
     ports: Vec<String>,
+    /// Optional Docker/Podman-managed bridge configuration.
+    #[serde(default)]
+    network: Option<crate::backend::ManagedNetworkConfig>,
     /// Persistent volume mounts (e.g., ["my-data:/data", "cache:/cache:ro"])
     #[serde(default)]
     volumes: Vec<String>,
@@ -3907,6 +3910,15 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
     let vcpus = body.vcpus.unwrap_or(1);
     let memory_mb = body.memory_mb.unwrap_or(512);
 
+    if let Some(network) = body.network.as_ref()
+        && let Err(error) = network.validate()
+    {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(format!("Invalid managed network: {error}")),
+        );
+    }
+
     #[cfg(feature = "enterprise")]
     let quota_subject = quota_subject(&state, &identity);
 
@@ -3970,6 +3982,20 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         }
     };
 
+    if body.network.is_some()
+        && !matches!(
+            requested_backend.unwrap_or_else(|| manager.backend()),
+            crate::backend::BackendType::Docker | crate::backend::BackendType::Podman
+        )
+    {
+        return json_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &ApiResponse::<()>::error(
+                "Managed bridge networking is supported only by Docker and Podman backends",
+            ),
+        );
+    }
+
     if !body.volumes.is_empty() {
         let volume_backend = requested_backend.unwrap_or_else(|| manager.backend());
         if let Err(e) = validate_backend_volume_support(volume_backend, &body.volumes) {
@@ -4028,6 +4054,16 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(format!("Failed to set volume mounts: {}", e)),
+        );
+    }
+
+    if let Some(network) = body.network.clone()
+        && let Err(error) = manager.set_managed_network(&body.name, Some(network))
+    {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to set managed network: {error}")),
         );
     }
 
@@ -10261,6 +10297,7 @@ async fn handle_export_sandbox_config(name: &str, state: Arc<AppState>) -> Respo
             .iter()
             .map(ToString::to_string)
             .collect(),
+        sandbox_state.managed_network.as_ref(),
     );
 
     match toml::to_string_pretty(&config) {
@@ -10284,6 +10321,8 @@ struct LegacySandboxConfig {
     agent: Option<String>,
     #[serde(default)]
     init_script: Option<String>,
+    #[serde(default)]
+    managed_network: Option<crate::backend::ManagedNetworkConfig>,
 }
 
 #[derive(Debug)]
@@ -10295,6 +10334,7 @@ struct ImportedSandboxConfig {
     ports: Vec<crate::backend::PortMapping>,
     agent: Option<String>,
     init_script: Option<String>,
+    managed_network: Option<crate::backend::ManagedNetworkConfig>,
     permissions: crate::permissions::Permissions,
 }
 
@@ -10304,6 +10344,7 @@ fn parse_imported_sandbox_config(content: &str) -> anyhow::Result<ImportedSandbo
     match crate::config::Config::from_str(content) {
         Ok(config) => {
             let ports = config.network.port_mappings()?;
+            let managed_network = config.network.managed_bridge()?;
             let agent = toml::from_str::<toml::Value>(content)
                 .ok()
                 .and_then(|value| {
@@ -10322,6 +10363,7 @@ fn parse_imported_sandbox_config(content: &str) -> anyhow::Result<ImportedSandbo
                 ports,
                 agent,
                 init_script: config.sandbox.init_script.clone(),
+                managed_network,
                 permissions: config.get_permissions(),
             })
         }
@@ -10334,6 +10376,7 @@ fn parse_imported_sandbox_config(content: &str) -> anyhow::Result<ImportedSandbo
                 ports: legacy.ports,
                 agent: legacy.agent,
                 init_script: legacy.init_script,
+                managed_network: legacy.managed_network,
                 permissions: crate::permissions::Permissions::default(),
             }),
             Err(legacy_error) => Err(anyhow::anyhow!(
@@ -10419,6 +10462,20 @@ async fn handle_import_sandbox_config(
         return quota_denial(&name, &quota_subject, "import", error);
     }
 
+    if parsed.managed_network.is_some()
+        && !matches!(
+            manager.backend(),
+            crate::backend::BackendType::Docker | crate::backend::BackendType::Podman
+        )
+    {
+        return json_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &ApiResponse::<()>::error(
+                "Managed bridge networking is supported only by Docker and Podman backends",
+            ),
+        );
+    }
+
     if let Err(e) = manager
         .create_with_agent(
             &name,
@@ -10457,6 +10514,16 @@ async fn handle_import_sandbox_config(
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(format!("Failed to set init script: {e}")),
+        );
+    }
+
+    if let Some(network) = parsed.managed_network.clone()
+        && let Err(e) = manager.set_managed_network(&name, Some(network))
+    {
+        let _ = manager.remove(&name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to set managed network: {e}")),
         );
     }
 

@@ -214,6 +214,9 @@ pub struct SandboxState {
     /// Port mappings (host:container)
     #[serde(default)]
     pub ports: Vec<PortMapping>,
+    /// Optional AgentKernel-managed Docker/Podman bridge configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_network: Option<crate::backend::ManagedNetworkConfig>,
     /// Whether SSH access is enabled
     #[serde(default)]
     pub ssh_enabled: bool,
@@ -649,12 +652,21 @@ impl VmManager {
                 continue;
             };
             let backend = state.backend.unwrap_or(self.backend);
-            if let Ok(sandbox) = create_sandbox_with_state(
+            if let Ok(mut sandbox) = create_sandbox_with_state(
                 backend,
                 &name,
                 &crate::config::OrchestratorConfig::default(),
                 backend.is_remote().then(|| state.remote_context()),
             ) {
+                if let Some(network) = state.managed_network.as_ref()
+                    && let Err(error) = sandbox.restore_managed_network(network)
+                {
+                    eprintln!(
+                        "[vmm] warning: failed to restore network lease for '{}': {}",
+                        name, error
+                    );
+                    continue;
+                }
                 self.running.insert(name, sandbox);
             }
         }
@@ -1058,6 +1070,7 @@ impl VmManager {
             ttl_seconds,
             expires_at,
             ports,
+            managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
             volumes: Vec::new(),
@@ -1133,6 +1146,30 @@ impl VmManager {
                 .get_mut(name)
                 .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
             state.work_dir = work_dir;
+        }
+        let state = self
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        self.save_sandbox(state)?;
+        Ok(())
+    }
+
+    /// Persist an optional Docker/Podman-managed bridge configuration.
+    pub fn set_managed_network(
+        &mut self,
+        name: &str,
+        managed_network: Option<crate::backend::ManagedNetworkConfig>,
+    ) -> Result<()> {
+        if let Some(config) = managed_network.as_ref() {
+            config.validate()?;
+        }
+        {
+            let state = self
+                .sandboxes
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+            state.managed_network = managed_network;
         }
         let state = self
             .sandboxes
@@ -1946,6 +1983,14 @@ impl VmManager {
         if !state.volumes.is_empty() && !capabilities.host_volumes {
             bail!("Backend '{}' does not support host volume mounts", backend);
         }
+        if state.managed_network.is_some()
+            && !matches!(backend, BackendType::Docker | BackendType::Podman)
+        {
+            bail!(
+                "Backend '{}' does not support AgentKernel-managed bridge networking; use docker or podman",
+                backend
+            );
+        }
         if !state.secret_bindings.is_empty() && !capabilities.proxy_secret_bindings {
             bail!(
                 "Backend '{}' does not support proxy-based secret bindings; use secret env vars or secret files instead",
@@ -2353,6 +2398,7 @@ impl VmManager {
             mount_home: effective_perms.mount_home,
             files: files.to_vec(),
             ports: state.ports.clone(),
+            managed_network: state.managed_network.clone(),
             ssh: ssh_config.clone(),
             volumes: volume_args,
         };
@@ -3166,6 +3212,12 @@ impl VmManager {
                 .with_context(|| format!("failed to clean up Git worktree for sandbox '{name}'"));
         }
 
+        if let Some(state) = self.sandboxes.get(name)
+            && let Some(network) = state.managed_network.as_ref()
+        {
+            crate::backend::NetworkAllocator::new(self.data_dir.clone()).release(name, network)?;
+        }
+
         self.delete_sandbox(name)?;
         self.sandboxes.remove(name);
 
@@ -3531,6 +3583,7 @@ impl VmManager {
             mount_home: perms.mount_home,
             files: files.to_vec(),
             ports: Vec::new(),
+            managed_network: None,
             ssh: None,
             volumes: Vec::new(),
         };
@@ -3669,6 +3722,10 @@ impl VmManager {
         match backend {
             #[cfg(target_os = "macos")]
             Some(BackendType::Apple) => crate::backend::apple::get_container_ip(&container_name),
+            Some(BackendType::Podman) => crate::backend::docker::get_container_ip_with_runtime(
+                crate::backend::ContainerRuntime::Podman,
+                &container_name,
+            ),
             _ => crate::backend::docker::get_container_ip(&container_name),
         }
     }
@@ -3773,6 +3830,7 @@ mod tests {
             tenant_id: None,
             expires_at: None,
             ports: Vec::new(),
+            managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
             volumes: Vec::new(),
@@ -3898,6 +3956,7 @@ mod tests {
             tenant_id: None,
             expires_at: None,
             ports: Vec::new(),
+            managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
             volumes: Vec::new(),
@@ -3984,6 +4043,7 @@ mod tests {
             tenant_id: None,
             expires_at: None,
             ports: Vec::new(),
+            managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
             volumes: Vec::new(),
@@ -4086,6 +4146,7 @@ mod tests {
                 tenant_id: None,
                 expires_at: None,
                 ports: Vec::new(),
+                managed_network: None,
                 ssh_enabled: false,
                 ssh_host_port: None,
                 volumes: Vec::new(),
@@ -4171,6 +4232,7 @@ mod tests {
             tenant_id: None,
             expires_at: None,
             ports: Vec::new(),
+            managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
             volumes: Vec::new(),
@@ -4256,6 +4318,7 @@ mod tests {
                 tenant_id: None,
                 expires_at: None,
                 ports: Vec::new(),
+                managed_network: None,
                 ssh_enabled: false,
                 ssh_host_port: None,
                 volumes: Vec::new(),
@@ -4342,6 +4405,7 @@ mod tests {
             tenant_id: None,
             expires_at: None,
             ports: Vec::new(),
+            managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
             volumes: Vec::new(),
@@ -4422,6 +4486,7 @@ mod tests {
             tenant_id: None,
             expires_at: None,
             ports: Vec::new(),
+            managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
             volumes: Vec::new(),
@@ -4500,6 +4565,7 @@ mod tests {
             tenant_id: None,
             expires_at: Some("2026-01-01T01:00:00Z".to_string()),
             ports: Vec::new(),
+            managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
             volumes: Vec::new(),

@@ -396,6 +396,7 @@ mod tests {
             ttl_seconds: None,
             expires_at: None,
             ports: Vec::new(),
+            managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
             volumes: Vec::new(),

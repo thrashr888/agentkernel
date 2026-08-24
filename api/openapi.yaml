@@ -474,6 +474,16 @@ paths:
                     model: "sonnet"
                     eval_run: "pr-123"
                   description: "Drift scenario evaluation"
+              managed_network:
+                summary: Docker/Podman managed bridge
+                value:
+                  name: "dev-sandbox"
+                  backend: "docker"
+                  network:
+                    name: "agentkernel-dev"
+                    subnet: "172.30.0.0/24"
+                    gateway: "172.30.0.1"
+                    dns: ["1.1.1.1"]
       responses:
         '201':
           description: Sandbox created
@@ -2307,6 +2317,8 @@ components:
             type: string
           description: Persistent volume mounts in `slug:/container/path` or `slug:/container/path:ro` format. Volumes must already exist. Named mounts are supported by Docker and Podman backends.
           example: ["my-data:/data", "cache:/cache:ro"]
+        network:
+          $ref: '#/components/schemas/ManagedNetworkConfig'
         labels:
           type: object
           additionalProperties:
@@ -2320,6 +2332,45 @@ components:
           description: User-defined description
         lifecycle:
           $ref: '#/components/schemas/LifecyclePolicy'
+
+    ManagedNetworkConfig:
+      type: object
+      additionalProperties: false
+      required: [name]
+      description: |
+        AgentKernel-managed bridge networking for Docker and Podman. The
+        network is persisted with the sandbox and address leases are stored
+        durably. Existing networks must carry AgentKernel ownership labels;
+        externally owned networks are never adopted or removed.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]*$'
+          description: Runtime network name.
+        subnet:
+          type: string
+          default: "172.30.0.0/24"
+          description: IPv4 network CIDR; the address must be the network address.
+          example: "172.30.0.0/24"
+        gateway:
+          type: string
+          format: ipv4
+          description: IPv4 gateway inside the subnet. Defaults to the first host address.
+          example: "172.30.0.1"
+        dns:
+          type: array
+          items:
+            type: string
+            format: ipv4
+          description: IPv4 DNS servers passed to each managed container at runtime.
+          example: ["1.1.1.1", "8.8.8.8"]
+        static_ip:
+          type: string
+          format: ipv4
+          description: Optional fixed IPv4 address for this sandbox. It cannot be changed after allocation.
+          example: "172.30.0.10"
 
     ResizeSandboxRequest:
       type: object

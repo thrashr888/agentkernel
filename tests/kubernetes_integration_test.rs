@@ -29,6 +29,7 @@ fn test_sandbox_config() -> agentkernel::backend::SandboxConfig {
         mount_home: false,
         files: Vec::new(),
         ports: Vec::new(),
+        managed_network: None,
         ssh: None,
         volumes: Vec::new(),
     }

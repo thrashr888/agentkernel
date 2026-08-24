@@ -31,6 +31,11 @@ agentkernel sandbox create [OPTIONS] [NAME]
 | `--branch` | Auto-name from git project and branch |
 | `--ttl <DURATION>` | Auto-expire after duration (e.g. `1h`, `30m`, `3d`) |
 | `-p, --publish <PORT>` | Port mapping (e.g. `8080:80`, `3000`, `5353:53/udp`). Repeatable. |
+| `--network-name <NAME>` | Use an AgentKernel-managed Docker/Podman bridge. |
+| `--network-subnet <CIDR>` | Managed bridge subnet (default `172.30.0.0/24`). |
+| `--network-gateway <IP>` | Managed bridge gateway IPv4 address. |
+| `--network-dns <IP>` | Managed bridge DNS IPv4 address. Repeatable. |
+| `--network-ip <IP>` | Fixed sandbox IPv4 address on the managed bridge. |
 | `--ssh` | Enable SSH access to the sandbox |
 | `-S, --secret <BINDING>` | Bind a secret to a host via proxy. Repeatable. See [Secrets](../features/secrets.md). |
 | `--secret-file <KEY>` | Inject a vault secret as a file. Repeatable. See [Secrets](../features/secrets.md). |
@@ -136,7 +141,29 @@ Ports are also configurable in `agentkernel.toml`:
 ```toml
 [network]
 ports = ["8080:80", "3000"]
+# Managed bridge settings are Docker/Podman-only. Omit these fields to keep
+# the existing default runtime network behavior.
+name = "agentkernel-dev"
+subnet = "172.30.0.0/24"
+gateway = "172.30.0.1"
+dns = ["1.1.1.1"]
 ```
+
+The same settings can be sent to `POST /sandboxes` as a typed `network`
+object, for example:
+
+```json
+{"name":"web","backend":"docker","network":{"name":"agentkernel-dev","subnet":"172.30.0.0/24","gateway":"172.30.0.1","dns":["1.1.1.1"]}}
+```
+
+AgentKernel validates the network name, CIDR, gateway, DNS addresses, and
+static address before creating the sandbox. Bridge IP leases are persisted
+under `~/.local/share/agentkernel/container-network-allocations.json` and
+locked during allocation, so restarts reuse an existing sandbox address and
+parallel creates cannot claim the same address. A pre-existing bridge without
+AgentKernel's ownership label is treated as external and is never removed.
+Managed bridge networking is explicitly limited to Docker and Podman; all
+other backends reject it.
 
 Git worktree isolation can also be enabled in the project config:
 

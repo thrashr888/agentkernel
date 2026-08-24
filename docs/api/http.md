@@ -377,9 +377,43 @@ curl -X POST http://localhost:18888/sandboxes \
 | `memory_mb` | integer | No | Memory in MB (default: 512) |
 | `profile` | string | No | Security profile: `permissive`, `moderate`, `restrictive` |
 | `volumes` | string[] | No | Persistent mounts in `slug:/container/path` or `slug:/container/path:ro` format; volumes must already exist (Docker/Podman backends) |
+| `network` | object | No | AgentKernel-managed Docker/Podman bridge; see fields below |
 | `labels` | object | No | Key-value labels for fleet management and filtering |
 | `description` | string | No | Human-readable description |
 | `lifecycle` | object | No | Lifecycle policy (`auto_stop_after_seconds`, `auto_archive_after_seconds`, `auto_delete_after_seconds`) |
+
+The optional `network` object is only supported with Docker and Podman:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Runtime bridge name (1-63 letters, digits, `.`, `_`, or `-`) |
+| `subnet` | string | No | IPv4 CIDR, default `172.30.0.0/24` |
+| `gateway` | string | No | IPv4 gateway inside the subnet; defaults to the first host address |
+| `dns` | string[] | No | IPv4 DNS servers passed to the container at run time |
+| `static_ip` | string | No | Fixed IPv4 address for this sandbox; it cannot be changed after allocation |
+
+```bash
+curl -X POST http://localhost:18888/sandboxes \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "networked-sandbox",
+    "backend": "docker",
+    "network": {
+      "name": "agentkernel-dev",
+      "subnet": "172.30.0.0/24",
+      "gateway": "172.30.0.1",
+      "dns": ["1.1.1.1"],
+      "static_ip": "172.30.0.10"
+    }
+  }'
+```
+
+AgentKernel validates the network values, persists address ownership with a
+lock, and restores leases across restart. Existing networks must have
+AgentKernel ownership labels and compatible bridge settings; external
+networks are never adopted or removed. Managed bridge networking is not
+available for Firecracker, Apple Container, Kubernetes, Nomad, or remote
+backends.
 
 **With labels and description:**
 

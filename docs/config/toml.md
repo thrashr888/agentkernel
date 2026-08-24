@@ -129,14 +129,28 @@ Advanced network settings.
 [network]
 vsock_cid = 3                 # Vsock CID (Firecracker only)
 ports = ["8080:80", "3000"]   # Port mappings (host:container or container-only)
+# Optional managed bridge (Docker/Podman only)
+name = "agentkernel-dev"
+subnet = "172.30.0.0/24"
+gateway = "172.30.0.1"
+dns = ["1.1.1.1"]
+static_ip = "172.30.0.9"
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `vsock_cid` | int | auto | Vsock CID (Firecracker only) |
 | `ports` | array | `[]` | Port mappings. Format: `"host:container"`, `"container"`, or `"host:container/udp"` |
+| `name` | string | unset | AgentKernel-managed bridge name (Docker/Podman only) |
+| `subnet` | string | `172.30.0.0/24` | Managed bridge IPv4 CIDR |
+| `gateway` | string | runtime-selected | Managed bridge gateway IPv4 address |
+| `dns` | array | `[]` | Managed bridge DNS IPv4 addresses |
+| `static_ip` | string | runtime-assigned | Fixed sandbox IPv4 address on the managed bridge |
 
 Port mappings have no effect when network access is disabled (`[security] network = false` or `--no-network`).
+Managed bridge values are validated before creation. Address ownership is
+persisted and locked across processes; bridges that existed without
+AgentKernel's ownership label are treated as external and are never removed.
 
 ## [api]
 
