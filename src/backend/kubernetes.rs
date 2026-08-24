@@ -14,11 +14,181 @@ use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, DeleteParams, PostParams};
 use kube::config::{KubeConfigOptions, Kubeconfig};
 use kube::{Client, Config as KubeConfig};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use tokio::io::AsyncReadExt;
 
 use super::{BackendType, ExecResult, Sandbox, SandboxConfig};
 use crate::config::OrchestratorConfig;
+
+const KUBERNETES_NAME_MAX_LEN: usize = 63;
+const KUBERNETES_HASH_LEN: usize = 12;
+
+/// Names and labels used to identify all resources belonging to one sandbox.
+///
+/// Sandbox names are validated by the public API, but the validator permits
+/// underscores and uppercase characters that Kubernetes resource names do not.
+/// A hash is therefore added only when the old normalized name would be
+/// ambiguous or too long. This keeps common resource names stable while making
+/// names such as a_b and a-b distinct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KubernetesResourceIdentity {
+    sandbox_label: String,
+    pod_name: String,
+    legacy_pod_name: String,
+    service_name: String,
+    legacy_service_name: String,
+    network_policy_name: String,
+    legacy_network_policy_name: String,
+}
+
+impl KubernetesResourceIdentity {
+    fn for_sandbox(sandbox_name: &str) -> Self {
+        let legacy_pod_name = legacy_pod_name_for(sandbox_name);
+        let legacy_service_name = legacy_service_name_for(sandbox_name);
+        let legacy_network_policy_name = format!("{legacy_pod_name}-deny-all");
+
+        Self {
+            sandbox_label: sandbox_label_for(sandbox_name),
+            pod_name: canonical_dns_name(sandbox_name, "agentkernel-", ""),
+            legacy_pod_name,
+            service_name: canonical_dns_name(sandbox_name, "agentkernel-", "-svc"),
+            legacy_service_name,
+            network_policy_name: canonical_dns_name(sandbox_name, "agentkernel-", "-deny-all"),
+            legacy_network_policy_name,
+        }
+    }
+
+    fn pod_names(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.pod_name.as_str()).chain(
+            std::iter::once(self.legacy_pod_name.as_str()).filter(|name| *name != self.pod_name),
+        )
+    }
+
+    fn service_names(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.service_name.as_str()).chain(
+            std::iter::once(self.legacy_service_name.as_str())
+                .filter(|name| *name != self.service_name),
+        )
+    }
+
+    fn network_policy_names(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.network_policy_name.as_str()).chain(
+            std::iter::once(self.legacy_network_policy_name.as_str())
+                .filter(|name| *name != self.network_policy_name),
+        )
+    }
+}
+
+fn short_hash(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    digest[..(KUBERNETES_HASH_LEN / 2)]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn is_dns_label(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= KUBERNETES_NAME_MAX_LEN
+        && value.starts_with(|ch: char| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        && value.ends_with(|ch: char| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+}
+
+fn is_label_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= KUBERNETES_NAME_MAX_LEN
+        && value.starts_with(|ch: char| ch.is_ascii_alphanumeric())
+        && value.ends_with(|ch: char| ch.is_ascii_alphanumeric())
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
+fn sandbox_label_for(sandbox_name: &str) -> String {
+    if is_label_value(sandbox_name) {
+        sandbox_name.to_string()
+    } else {
+        format!("agentkernel-{}", short_hash(sandbox_name))
+    }
+}
+
+fn canonical_dns_name(sandbox_name: &str, prefix: &str, suffix: &str) -> String {
+    let normalized: String = sandbox_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else if ch == '-' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let normalized = normalized.trim_matches('-');
+    let common = format!("{prefix}{normalized}{suffix}");
+    if normalized == sandbox_name.to_ascii_lowercase() && is_dns_label(&common) {
+        return common;
+    }
+
+    let hash = short_hash(sandbox_name);
+    let available = KUBERNETES_NAME_MAX_LEN
+        .saturating_sub(prefix.len())
+        .saturating_sub(suffix.len())
+        .saturating_sub(hash.len() + 1);
+    let base: String = normalized
+        .chars()
+        .take(available)
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let base = if base.is_empty() { "sandbox" } else { &base };
+    let name = format!("{prefix}{base}-{hash}{suffix}");
+    debug_assert!(is_dns_label(&name));
+    name
+}
+
+fn legacy_pod_name_for(sandbox_name: &str) -> String {
+    let sanitized: String = sandbox_name
+        .to_lowercase()
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch == '-' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("agentkernel-{sanitized}")
+}
+
+fn legacy_service_name_for(sandbox_name: &str) -> String {
+    let sanitized: String = sandbox_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let sanitized = sanitized.trim_matches('-');
+    let base = if sanitized.is_empty() {
+        "sandbox"
+    } else {
+        sanitized
+    };
+    let suffix = "-svc";
+    let max_base_len = KUBERNETES_NAME_MAX_LEN - "agentkernel-".len() - suffix.len();
+    let base: String = base.chars().take(max_base_len).collect();
+    format!("agentkernel-{}{}", base.trim_matches('-'), suffix)
+}
 
 /// Kubernetes Pod-based sandbox
 pub struct KubernetesSandbox {
@@ -107,25 +277,16 @@ impl KubernetesSandbox {
 
     /// Generate the pod name for this sandbox
     fn pod_name_for(sandbox_name: &str) -> String {
-        // K8s names must be DNS-compatible: lowercase, alphanumeric, hyphens
-        let sanitized: String = sandbox_name
-            .to_lowercase()
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '-' {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect();
-        format!("agentkernel-{}", sanitized)
+        KubernetesResourceIdentity::for_sandbox(sandbox_name).pod_name
     }
 
     /// Standard labels for all agentkernel-managed pods
     fn pod_labels(sandbox_name: &str) -> BTreeMap<String, String> {
         let mut labels = BTreeMap::new();
-        labels.insert("agentkernel/sandbox".to_string(), sandbox_name.to_string());
+        labels.insert(
+            "agentkernel/sandbox".to_string(),
+            KubernetesResourceIdentity::for_sandbox(sandbox_name).sandbox_label,
+        );
         labels.insert(
             "agentkernel/managed-by".to_string(),
             "agentkernel".to_string(),
@@ -136,28 +297,75 @@ impl KubernetesSandbox {
 
     /// Generate a deterministic DNS-safe Service name for this sandbox.
     fn service_name_for(sandbox_name: &str) -> String {
-        // Kubernetes Service names are DNS labels: ASCII lowercase, at most 63
-        // bytes, and may not start or end with a hyphen.
-        let sanitized: String = sandbox_name
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() {
-                    c.to_ascii_lowercase()
-                } else {
-                    '-'
-                }
-            })
-            .collect();
-        let sanitized = sanitized.trim_matches('-');
-        let base = if sanitized.is_empty() {
-            "sandbox"
-        } else {
-            sanitized
+        KubernetesResourceIdentity::for_sandbox(sandbox_name).service_name
+    }
+
+    fn identity(&self) -> KubernetesResourceIdentity {
+        KubernetesResourceIdentity::for_sandbox(&self.name)
+    }
+
+    fn owned_labels(
+        labels: Option<&BTreeMap<String, String>>,
+        sandbox_name: &str,
+        allow_legacy: bool,
+    ) -> bool {
+        let Some(labels) = labels else {
+            return false;
         };
-        let suffix = "-svc";
-        let max_base_len = 63 - "agentkernel-".len() - suffix.len();
-        let base: String = base.chars().take(max_base_len).collect();
-        format!("agentkernel-{}{}", base.trim_matches('-'), suffix)
+        if labels.get("agentkernel/managed-by").map(String::as_str) != Some("agentkernel") {
+            return false;
+        }
+
+        let identity = KubernetesResourceIdentity::for_sandbox(sandbox_name);
+        labels.get("agentkernel/sandbox").is_some_and(|value| {
+            value == &identity.sandbox_label || (allow_legacy && value == sandbox_name)
+        })
+    }
+
+    fn network_policy_owned(policy: &NetworkPolicy, sandbox_name: &str) -> bool {
+        let Some(selector) = policy
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.pod_selector.as_ref())
+            .and_then(|selector| selector.match_labels.as_ref())
+            .and_then(|labels| labels.get("agentkernel/sandbox"))
+        else {
+            return false;
+        };
+        let identity = KubernetesResourceIdentity::for_sandbox(sandbox_name);
+        let labels = policy.metadata.labels.as_ref();
+        let canonical_owned =
+            Self::owned_labels(labels, sandbox_name, false) && selector == &identity.sandbox_label;
+        let legacy_owned = labels.is_none_or(BTreeMap::is_empty) && selector == sandbox_name;
+        canonical_owned || legacy_owned
+    }
+
+    async fn resolve_pod_name(&self, client: &Client) -> Result<String> {
+        let pods: Api<Pod> = Api::namespaced(client.clone(), &self.namespace);
+        let identity = self.identity();
+        for candidate in identity.pod_names() {
+            if let Ok(pod) = pods.get(candidate).await
+                && Self::owned_labels(pod.metadata.labels.as_ref(), &self.name, true)
+            {
+                return Ok(candidate.to_string());
+            }
+        }
+        bail!(
+            "No AgentKernel-owned Kubernetes pod found for sandbox '{}'",
+            self.name
+        )
+    }
+
+    async fn delete_owned_pods(&self, client: &Client) {
+        let pods: Api<Pod> = Api::namespaced(client.clone(), &self.namespace);
+        let identity = self.identity();
+        for name in identity.pod_names() {
+            if let Ok(pod) = pods.get(name).await
+                && Self::owned_labels(pod.metadata.labels.as_ref(), &self.name, true)
+            {
+                let _ = pods.delete(name, &DeleteParams::default()).await;
+            }
+        }
     }
 
     /// Build the internal ClusterIP Service for the sandbox's declared ports.
@@ -191,7 +399,11 @@ impl KubernetesSandbox {
             "agentkernel/managed-by".to_string(),
             "agentkernel".to_string(),
         );
-        labels.insert("agentkernel/sandbox".to_string(), self.name.clone());
+        let identity = self.identity();
+        labels.insert(
+            "agentkernel/sandbox".to_string(),
+            identity.sandbox_label.clone(),
+        );
 
         Service {
             metadata: ObjectMeta {
@@ -205,7 +417,7 @@ impl KubernetesSandbox {
                 ports: Some(ports),
                 selector: Some({
                     let mut selector = BTreeMap::new();
-                    selector.insert("agentkernel/sandbox".to_string(), self.name.clone());
+                    selector.insert("agentkernel/sandbox".to_string(), identity.sandbox_label);
                     selector
                 }),
                 ..Default::default()
@@ -227,20 +439,15 @@ impl KubernetesSandbox {
     /// Delete the internal Service for this sandbox.
     async fn delete_service(&self, client: &Client) -> Result<()> {
         let services: Api<Service> = Api::namespaced(client.clone(), &self.namespace);
-        let name = Self::service_name_for(&self.name);
-        // Reconnects do not retain service_created. Only delete a resource
-        // carrying both AgentKernel ownership labels, never a colliding
-        // user-owned Service with the same deterministic name.
-        if let Ok(service) = services.get(&name).await {
-            let labels = service.metadata.labels.as_ref();
-            let owned = labels
-                .and_then(|labels| labels.get("agentkernel/managed-by"))
-                .is_some_and(|value| value == "agentkernel")
-                && labels
-                    .and_then(|labels| labels.get("agentkernel/sandbox"))
-                    .is_some_and(|value| value == &self.name);
-            if owned {
-                let _ = services.delete(&name, &DeleteParams::default()).await;
+        let identity = self.identity();
+        for name in identity.service_names() {
+            // Reconnects do not retain service_created. Only delete resources
+            // carrying AgentKernel ownership labels, never a colliding
+            // user-owned Service with the same deterministic name.
+            if let Ok(service) = services.get(name).await
+                && Self::owned_labels(service.metadata.labels.as_ref(), &self.name, true)
+            {
+                let _ = services.delete(name, &DeleteParams::default()).await;
             }
         }
         Ok(())
@@ -375,16 +582,25 @@ impl KubernetesSandbox {
 
     /// Build a NetworkPolicy that denies all ingress/egress for this pod.
     fn build_network_policy(&self) -> NetworkPolicy {
-        let pod_name = Self::pod_name_for(&self.name);
-        let np_name = format!("{}-deny-all", pod_name);
+        let identity = self.identity();
 
         let mut match_labels = BTreeMap::new();
-        match_labels.insert("agentkernel/sandbox".to_string(), self.name.clone());
+        match_labels.insert(
+            "agentkernel/sandbox".to_string(),
+            identity.sandbox_label.clone(),
+        );
+        let mut labels = BTreeMap::new();
+        labels.insert(
+            "agentkernel/managed-by".to_string(),
+            "agentkernel".to_string(),
+        );
+        labels.insert("agentkernel/sandbox".to_string(), identity.sandbox_label);
 
         NetworkPolicy {
             metadata: ObjectMeta {
-                name: Some(np_name),
+                name: Some(identity.network_policy_name),
                 namespace: Some(self.namespace.clone()),
+                labels: Some(labels),
                 ..Default::default()
             },
             spec: Some(NetworkPolicySpec {
@@ -416,10 +632,14 @@ impl KubernetesSandbox {
     /// Delete the NetworkPolicy for this sandbox
     async fn delete_network_policy(&self, client: &Client) -> Result<()> {
         let np_api: Api<NetworkPolicy> = Api::namespaced(client.clone(), &self.namespace);
-        let pod_name = Self::pod_name_for(&self.name);
-        let np_name = format!("{}-deny-all", pod_name);
-
-        let _ = np_api.delete(&np_name, &DeleteParams::default()).await;
+        let identity = self.identity();
+        for name in identity.network_policy_names() {
+            if let Ok(policy) = np_api.get(name).await
+                && Self::network_policy_owned(&policy, &self.name)
+            {
+                let _ = np_api.delete(name, &DeleteParams::default()).await;
+            }
+        }
         Ok(())
     }
 
@@ -548,7 +768,8 @@ impl Sandbox for KubernetesSandbox {
     }
 
     async fn exec_with_env(&mut self, cmd: &[&str], env: &[String]) -> Result<ExecResult> {
-        // Lazily initialize client and pod_name if needed (e.g., reconnecting to a running pod)
+        // Lazily initialize the client and resolve the canonical or legacy pod
+        // (e.g., reconnecting to a running pod after an upgrade).
         if self.client.is_none() {
             let orch_config = OrchestratorConfig {
                 namespace: self.namespace.clone(),
@@ -557,14 +778,16 @@ impl Sandbox for KubernetesSandbox {
             let client = Self::build_client(&orch_config).await?;
             self.client = Some(client);
         }
-        if self.pod_name.is_none() {
-            self.pod_name = Some(Self::pod_name_for(&self.name));
-        }
+        let client = self.client.clone().unwrap();
+        let pod_name = if let Some(pod_name) = self.pod_name.clone() {
+            pod_name
+        } else {
+            let pod_name = self.resolve_pod_name(&client).await?;
+            self.pod_name = Some(pod_name.clone());
+            pod_name
+        };
 
-        let client = self.client.as_ref().unwrap();
-        let pod_name = self.pod_name.as_ref().unwrap();
-
-        let pods: Api<Pod> = Api::namespaced(client.clone(), &self.namespace);
+        let pods: Api<Pod> = Api::namespaced(client, &self.namespace);
 
         // Wrap command with env if provided
         let full_cmd: Vec<String> = if env.is_empty() {
@@ -580,7 +803,7 @@ impl Sandbox for KubernetesSandbox {
         // Use the kube API for pod exec via WebSocket
         let mut attached = pods
             .exec(
-                pod_name,
+                &pod_name,
                 full_cmd,
                 &kube::api::AttachParams::default()
                     .container("sandbox")
@@ -624,7 +847,8 @@ impl Sandbox for KubernetesSandbox {
     }
 
     async fn stop(&mut self) -> Result<()> {
-        // Lazily initialize client and pod_name if needed
+        // Lazily initialize the client. Resource lookup below verifies
+        // ownership before acting on either canonical or legacy names.
         if self.client.is_none() {
             let orch_config = OrchestratorConfig {
                 namespace: self.namespace.clone(),
@@ -634,28 +858,20 @@ impl Sandbox for KubernetesSandbox {
                 self.client = Some(client);
             }
         }
-        if self.pod_name.is_none() {
-            self.pod_name = Some(Self::pod_name_for(&self.name));
-        }
 
-        if let (Some(client), Some(pod_name)) = (&self.client, &self.pod_name) {
-            let pods: Api<Pod> = Api::namespaced(client.clone(), &self.namespace);
+        if let Some(client) = self.client.clone() {
+            // Delete every matching AgentKernel-owned pod. This also cleans
+            // up both names if a migration left canonical and legacy pods.
+            self.delete_owned_pods(&client).await;
 
-            // Delete the pod
-            let _ = pods
-                .delete(pod_name, &DeleteParams::default())
-                .await
-                .context("Failed to delete K8s pod");
-
-            // Clean up NetworkPolicy if we created one
-            if self.network_policy_created {
-                let _ = self.delete_network_policy(client).await;
-                self.network_policy_created = false;
-            }
+            // Clean up the NetworkPolicy, including after reconnecting in a
+            // new process where the in-memory creation flag is unavailable.
+            let _ = self.delete_network_policy(&client).await;
+            self.network_policy_created = false;
 
             // Clean up the internal Service, including after reconnecting in a
             // new process where the in-memory creation flag is unavailable.
-            let _ = self.delete_service(client).await;
+            let _ = self.delete_service(&client).await;
             self.service_created = false;
         }
 
@@ -732,19 +948,22 @@ impl Sandbox for KubernetesSandbox {
     async fn attach(&mut self, shell: Option<&str>) -> Result<i32> {
         let client = self
             .client
-            .as_ref()
+            .clone()
             .ok_or_else(|| anyhow::anyhow!("K8s client not initialized"))?;
-        let pod_name = self
-            .pod_name
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Pod not started"))?;
+        let pod_name = if let Some(pod_name) = self.pod_name.clone() {
+            pod_name
+        } else {
+            let pod_name = self.resolve_pod_name(&client).await?;
+            self.pod_name = Some(pod_name.clone());
+            pod_name
+        };
 
         let shell = shell.unwrap_or("/bin/sh");
         let pods: Api<Pod> = Api::namespaced(client.clone(), &self.namespace);
 
         let mut attached = pods
             .exec(
-                pod_name,
+                &pod_name,
                 vec![shell.to_string()],
                 &kube::api::AttachParams::default()
                     .container("sandbox")
@@ -815,7 +1034,7 @@ mod tests {
 
     #[test]
     fn deny_all_policy_targets_only_the_sandbox() {
-        let sandbox = KubernetesSandbox::new("Test Sandbox", &OrchestratorConfig::default());
+        let sandbox = KubernetesSandbox::new("test-sandbox", &OrchestratorConfig::default());
         let policy = sandbox.build_network_policy();
 
         assert_eq!(
@@ -830,7 +1049,16 @@ mod tests {
                 .expect("selector labels")
                 .get("agentkernel/sandbox")
                 .map(String::as_str),
-            Some("Test Sandbox")
+            Some("test-sandbox")
+        );
+        assert_eq!(
+            policy
+                .metadata
+                .labels
+                .as_ref()
+                .and_then(|labels| labels.get("agentkernel/sandbox"))
+                .map(String::as_str),
+            Some("test-sandbox")
         );
         assert_eq!(spec.ingress, Some(vec![]));
         assert_eq!(spec.egress, Some(vec![]));
@@ -843,7 +1071,7 @@ mod tests {
     #[test]
     fn internal_service_has_stable_dns_name_and_pod_selector() {
         let sandbox =
-            KubernetesSandbox::new("My Sandbox/Production", &OrchestratorConfig::default());
+            KubernetesSandbox::new("my-sandbox-production", &OrchestratorConfig::default());
         let service = sandbox.build_service(&SandboxConfig {
             ports: vec![super::super::PortMapping {
                 host_port: Some(18080),
@@ -864,7 +1092,7 @@ mod tests {
                 .expect("service selector")
                 .get("agentkernel/sandbox")
                 .map(String::as_str),
-            Some("My Sandbox/Production")
+            Some("my-sandbox-production")
         );
         let port = &spec.ports.expect("service ports")[0];
         assert_eq!(port.name.as_deref(), Some("port-0-tcp"));
@@ -902,12 +1130,127 @@ mod tests {
 
     #[test]
     fn service_name_is_bounded_and_never_empty() {
-        let long_name = "---".to_string() + &"a".repeat(200);
-        let service_name = KubernetesSandbox::service_name_for(&long_name);
+        let identity = KubernetesResourceIdentity::for_sandbox(&"a".repeat(63));
 
-        assert!(service_name.len() <= 63);
-        assert!(service_name.starts_with("agentkernel-a"));
-        assert!(!service_name.ends_with('-'));
+        for name in [
+            identity.pod_name,
+            identity.service_name,
+            identity.network_policy_name,
+        ] {
+            assert!(is_dns_label(&name), "not a DNS label: {name}");
+            assert!(name.is_ascii());
+            assert!(name.len() <= 63);
+        }
+    }
+
+    #[test]
+    fn normalized_names_are_collision_resistant() {
+        let underscored = KubernetesResourceIdentity::for_sandbox("a_b");
+        let hyphenated = KubernetesResourceIdentity::for_sandbox("a-b");
+
+        assert_ne!(underscored.pod_name, hyphenated.pod_name);
+        assert_ne!(underscored.service_name, hyphenated.service_name);
+        assert_ne!(
+            underscored.network_policy_name,
+            hyphenated.network_policy_name
+        );
+        assert_eq!(hyphenated.pod_name, "agentkernel-a-b");
+        assert_eq!(hyphenated.service_name, "agentkernel-a-b-svc");
+        assert_eq!(hyphenated.network_policy_name, "agentkernel-a-b-deny-all");
+    }
+
+    #[test]
+    fn common_names_remain_stable_and_labels_preserve_valid_input() {
+        let identity = KubernetesResourceIdentity::for_sandbox("my-sandbox-1");
+
+        assert_eq!(identity.pod_name, "agentkernel-my-sandbox-1");
+        assert_eq!(identity.service_name, "agentkernel-my-sandbox-1-svc");
+        assert_eq!(
+            identity.network_policy_name,
+            "agentkernel-my-sandbox-1-deny-all"
+        );
+        assert_eq!(identity.sandbox_label, "my-sandbox-1");
+        assert!(is_label_value(&identity.sandbox_label));
+    }
+
+    #[test]
+    fn uppercase_names_keep_legacy_lowercase_resource_names() {
+        let identity = KubernetesResourceIdentity::for_sandbox("MySandbox");
+
+        assert_eq!(identity.pod_name, "agentkernel-mysandbox");
+        assert_eq!(identity.service_name, "agentkernel-mysandbox-svc");
+        assert_eq!(
+            identity.network_policy_name,
+            "agentkernel-mysandbox-deny-all"
+        );
+    }
+
+    #[test]
+    fn legacy_candidates_and_ownership_checks_are_deterministic() {
+        let identity = KubernetesResourceIdentity::for_sandbox("a_b");
+        assert_eq!(
+            identity.pod_names().collect::<Vec<_>>(),
+            vec![
+                identity.pod_name.as_str(),
+                identity.legacy_pod_name.as_str()
+            ]
+        );
+        assert!(KubernetesSandbox::owned_labels(
+            Some(&BTreeMap::from([
+                (
+                    "agentkernel/managed-by".to_string(),
+                    "agentkernel".to_string()
+                ),
+                ("agentkernel/sandbox".to_string(), "a_b".to_string()),
+            ])),
+            "a_b",
+            true
+        ));
+        assert!(!KubernetesSandbox::owned_labels(
+            Some(&BTreeMap::from([
+                (
+                    "agentkernel/managed-by".to_string(),
+                    "agentkernel".to_string()
+                ),
+                ("agentkernel/sandbox".to_string(), "a-b".to_string()),
+            ])),
+            "a_b",
+            true
+        ));
+    }
+
+    #[test]
+    fn network_policy_legacy_ownership_requires_exact_selector() {
+        let sandbox = KubernetesSandbox::new("a_b", &OrchestratorConfig::default());
+        let mut legacy = sandbox.build_network_policy();
+        legacy.metadata.name =
+            Some(KubernetesResourceIdentity::for_sandbox("a_b").legacy_network_policy_name);
+        legacy.metadata.labels = None;
+        legacy
+            .spec
+            .as_mut()
+            .expect("policy spec")
+            .pod_selector
+            .as_mut()
+            .expect("pod selector")
+            .match_labels
+            .as_mut()
+            .expect("match labels")
+            .insert("agentkernel/sandbox".to_string(), "a_b".to_string());
+
+        assert!(KubernetesSandbox::network_policy_owned(&legacy, "a_b"));
+        legacy
+            .spec
+            .as_mut()
+            .expect("policy spec")
+            .pod_selector
+            .as_mut()
+            .expect("pod selector")
+            .match_labels
+            .as_mut()
+            .expect("match labels")
+            .insert("agentkernel/sandbox".to_string(), "a-b".to_string());
+        assert!(!KubernetesSandbox::network_policy_owned(&legacy, "a_b"));
     }
 
     #[test]
