@@ -28,8 +28,9 @@ use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::net::TcpListener;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, interval, sleep};
 
 use crate::asciicast::{self, AsciicastEvent, AsciicastHeader, EventType};
 use crate::backend::{
@@ -560,6 +561,187 @@ fn persisted_start_configuration_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("delegated-start")
 }
 
+const DELEGATED_START_CLEANUP_BATCH: usize = 128;
+const DELEGATED_START_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
+const DELEGATED_START_STALE_ARTIFACT_AGE: Duration = Duration::from_secs(60 * 60);
+
+/// Return whether the delegated-start directory is a real directory.
+///
+/// Cleanup must never follow a directory symlink: the directory is private
+/// state owned by agentkernel, and following one could make a stale sweep
+/// delete files outside the data directory. A missing directory is a normal
+/// state before the first configured start.
+fn persisted_start_directory_is_safe(directory: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(directory) {
+        Ok(metadata) => Ok(metadata.file_type().is_dir()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to inspect persisted start configuration directory {}",
+                directory.display()
+            )
+        }),
+    }
+}
+
+fn sync_persisted_start_directory(directory: &Path) -> Result<()> {
+    // Unix supports opening a directory and syncing its rename/unlink
+    // journal entry. Windows does not generally allow directory handles to be
+    // opened this way, so the file itself is still synced by secure_fs there.
+    #[cfg(unix)]
+    {
+        std::fs::File::open(directory)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| {
+                format!(
+                    "failed to sync persisted start configuration directory {}",
+                    directory.display()
+                )
+            })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = directory;
+        Ok(())
+    }
+}
+
+fn remove_persisted_start_artifact(directory: &Path, path: &Path) -> Result<bool> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            sync_persisted_start_directory(directory)?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to remove persisted start configuration artifact {}",
+                path.display()
+            )
+        }),
+    }
+}
+
+fn persisted_start_manifest_file_name(file_name: &str) -> bool {
+    let Some(token) = file_name.strip_suffix(".json") else {
+        return false;
+    };
+    validate_persisted_start_token(token).is_ok()
+}
+
+fn artifact_is_stale(metadata: &std::fs::Metadata, now: SystemTime) -> bool {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| now.duration_since(modified).ok())
+        .is_some_and(|age| age >= DELEGATED_START_STALE_ARTIFACT_AGE)
+}
+
+/// Remove expired or malformed delegated-start artifacts without scanning an
+/// unbounded directory. Valid, unexpired manifests are always retained even
+/// when their mtime is old because their capability token may still be live.
+#[cfg(test)]
+fn cleanup_persisted_start_configurations(data_dir: &Path) -> Result<usize> {
+    let mut entries = None;
+    cleanup_persisted_start_configurations_batch(
+        data_dir,
+        chrono::Utc::now(),
+        SystemTime::now(),
+        &mut entries,
+        DELEGATED_START_CLEANUP_BATCH,
+    )
+    .map(|(removed, _)| removed)
+}
+
+/// Process one bounded batch from a retained directory iterator. Retaining
+/// the iterator across periodic ticks gives every entry a turn without
+/// requiring an unbounded directory read or an in-memory sorted index.
+fn cleanup_persisted_start_configurations_batch(
+    data_dir: &Path,
+    now: chrono::DateTime<chrono::Utc>,
+    system_now: SystemTime,
+    entries: &mut Option<std::fs::ReadDir>,
+    max_entries: usize,
+) -> Result<(usize, bool)> {
+    let directory = persisted_start_configuration_dir(data_dir);
+    if !persisted_start_directory_is_safe(&directory)? {
+        *entries = None;
+        return Ok((0, true));
+    }
+
+    if entries.is_none() {
+        *entries = Some(std::fs::read_dir(&directory).with_context(|| {
+            format!(
+                "failed to inspect persisted start configurations in {}",
+                directory.display()
+            )
+        })?);
+    }
+    let mut inspected = 0;
+    let mut exhausted = false;
+    let mut removed = 0;
+    let iterator = entries.as_mut().expect("directory iterator initialized");
+    while inspected < max_entries {
+        let Some(entry) = iterator.next() else {
+            exhausted = true;
+            break;
+        };
+        inspected += 1;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                eprintln!(
+                    "[delegated-start] unable to inspect cleanup entry in {}: {error}",
+                    directory.display()
+                );
+                continue;
+            }
+        };
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if !persisted_start_manifest_file_name(&file_name) && !file_name.starts_with(".consuming-")
+        {
+            continue;
+        }
+        // Never read or remove symlinks. In particular, a symlink named like
+        // a manifest must not cause us to inspect or unlink its target.
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                let eligible = if file_name.starts_with(".consuming-") {
+                    artifact_is_stale(&metadata, system_now)
+                } else {
+                    match std::fs::read(&path).ok().and_then(|bytes| {
+                        serde_json::from_slice::<PersistedStartConfiguration>(&bytes).ok()
+                    }) {
+                        Some(configuration) => {
+                            chrono::DateTime::parse_from_rfc3339(&configuration.expires_at)
+                                .map(|expires_at| now >= expires_at.with_timezone(&chrono::Utc))
+                                .unwrap_or_else(|_| artifact_is_stale(&metadata, system_now))
+                        }
+                        None => artifact_is_stale(&metadata, system_now),
+                    }
+                };
+                if eligible && remove_persisted_start_artifact(&directory, &path)? {
+                    removed += 1;
+                }
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                eprintln!(
+                    "[delegated-start] unable to inspect {} during cleanup: {error}",
+                    path.display()
+                );
+            }
+        }
+    }
+    if exhausted {
+        *entries = None;
+    }
+    Ok((removed, exhausted))
+}
+
 fn validate_persisted_start_token(token: &str) -> Result<()> {
     if token.len() != 64
         || !token
@@ -583,6 +765,15 @@ pub(crate) fn persist_start_configuration(
     files: &[FileInjection],
 ) -> Result<StartSandboxRequest> {
     validation::validate_sandbox_name(&sandbox.name)?;
+    let directory = persisted_start_configuration_dir(data_dir);
+    if let Ok(metadata) = std::fs::symlink_metadata(&directory)
+        && !metadata.file_type().is_dir()
+    {
+        anyhow::bail!(
+            "persisted start configuration directory is not a real directory: {}",
+            directory.display()
+        );
+    }
     // A newer resolved configuration supersedes every unused token for this
     // sandbox, so tightened settings cannot be bypassed with a stale request.
     remove_persisted_start_configurations_for_sandbox(data_dir, &sandbox.name)?;
@@ -603,6 +794,7 @@ pub(crate) fn persist_start_configuration(
             sandbox.name
         )
     })?;
+    sync_persisted_start_directory(&directory)?;
     Ok(StartSandboxRequest {
         configuration: Some(PersistedStartReference {
             source: StartConfigurationSource::Persisted,
@@ -618,12 +810,14 @@ pub(crate) fn discard_persisted_start_configuration(
     let Some(reference) = request.configuration.as_ref() else {
         return Ok(());
     };
-    let path = persisted_start_configuration_path(data_dir, &reference.token)?;
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).context("failed to discard persisted start configuration"),
+    let directory = persisted_start_configuration_dir(data_dir);
+    if !persisted_start_directory_is_safe(&directory)? {
+        return Ok(());
     }
+    let path = persisted_start_configuration_path(data_dir, &reference.token)?;
+    remove_persisted_start_artifact(&directory, &path)
+        .map(|_| ())
+        .context("failed to discard persisted start configuration")
 }
 
 fn take_persisted_start_configuration(
@@ -631,14 +825,23 @@ fn take_persisted_start_configuration(
     reference: &PersistedStartReference,
 ) -> Result<PersistedStartConfiguration> {
     let StartConfigurationSource::Persisted = reference.source;
+    let directory = persisted_start_configuration_dir(data_dir);
+    if !persisted_start_directory_is_safe(&directory)? {
+        anyhow::bail!("persisted start configuration is unavailable or already consumed");
+    }
     let path = persisted_start_configuration_path(data_dir, &reference.token)?;
-    let consuming = persisted_start_configuration_dir(data_dir)
-        .join(format!(".consuming-{}", uuid::Uuid::now_v7()));
+    let source_metadata = std::fs::symlink_metadata(&path)
+        .context("persisted start configuration is unavailable or already consumed")?;
+    if !source_metadata.file_type().is_file() {
+        anyhow::bail!("persisted start configuration is unavailable or already consumed");
+    }
+    let consuming = directory.join(format!(".consuming-{}", uuid::Uuid::now_v7()));
     std::fs::rename(&path, &consuming)
         .context("persisted start configuration is unavailable or already consumed")?;
+    sync_persisted_start_directory(&directory)?;
     let bytes = std::fs::read(&consuming)
         .context("failed to read persisted start configuration after claiming it");
-    let removed = std::fs::remove_file(&consuming)
+    let removed = remove_persisted_start_artifact(&directory, &consuming)
         .context("failed to delete consumed persisted start configuration");
     let bytes = bytes?;
     removed?;
@@ -647,23 +850,27 @@ fn take_persisted_start_configuration(
 
 fn remove_persisted_start_configurations_for_sandbox(data_dir: &Path, name: &str) -> Result<()> {
     let directory = persisted_start_configuration_dir(data_dir);
-    let entries = match std::fs::read_dir(&directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(error).context("failed to inspect persisted start configurations");
-        }
-    };
+    if !persisted_start_directory_is_safe(&directory)? {
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(&directory)
+        .context("failed to inspect persisted start configurations")?;
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).context("failed to inspect persisted start configuration");
+            }
+        };
         let file_name = path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json")
-            && !file_name.starts_with(".consuming-")
-        {
+        if !persisted_start_manifest_file_name(file_name) && !file_name.starts_with(".consuming-") {
             continue;
         }
         let matches = std::fs::read(&path)
@@ -671,14 +878,8 @@ fn remove_persisted_start_configurations_for_sandbox(data_dir: &Path, name: &str
             .and_then(|bytes| serde_json::from_slice::<PersistedStartConfiguration>(&bytes).ok())
             .is_some_and(|configuration| configuration.sandbox_name == name);
         if matches {
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(error)
-                        .context("failed to remove persisted start configuration for sandbox");
-                }
-            }
+            let _ = remove_persisted_start_artifact(&directory, &path)
+                .context("failed to remove persisted start configuration for sandbox")?;
         }
     }
     Ok(())
@@ -9314,6 +9515,55 @@ fn spawn_workspace_scheduler(state: Arc<AppState>, config_path: Option<&std::pat
     let _ = crate::workspace_scheduler::spawn_enforcement_loop(manager, scheduling);
 }
 
+fn spawn_delegated_start_cleanup() {
+    let data_dir = crate::setup::default_data_dir();
+    let mut entries = None;
+    match cleanup_persisted_start_configurations_batch(
+        &data_dir,
+        chrono::Utc::now(),
+        SystemTime::now(),
+        &mut entries,
+        DELEGATED_START_CLEANUP_BATCH,
+    ) {
+        Ok((removed, _exhausted)) => {
+            if removed > 0 {
+                eprintln!("[delegated-start] removed {removed} stale artifact(s) at startup");
+            }
+        }
+        Err(error) => {
+            eprintln!("[delegated-start] startup cleanup failed: {error:#}");
+            entries = None;
+        }
+    }
+
+    tokio::spawn(async move {
+        let mut ticker = interval(DELEGATED_START_CLEANUP_INTERVAL);
+        // The first tick is immediate; startup cleanup above already covered
+        // it, so wait for the first complete interval before sweeping again.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            match cleanup_persisted_start_configurations_batch(
+                &data_dir,
+                chrono::Utc::now(),
+                SystemTime::now(),
+                &mut entries,
+                DELEGATED_START_CLEANUP_BATCH,
+            ) {
+                Ok((removed, _exhausted)) => {
+                    if removed > 0 {
+                        eprintln!("[delegated-start] removed {removed} stale artifact(s)");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("[delegated-start] periodic cleanup failed: {error:#}");
+                    entries = None;
+                }
+            }
+        }
+    });
+}
+
 /// Run the HTTP API server (plain HTTP)
 #[allow(dead_code)]
 pub async fn run_server(addr: SocketAddr, api_keys: Vec<String>) -> Result<()> {
@@ -9324,6 +9574,7 @@ pub async fn run_server(addr: SocketAddr, api_keys: Vec<String>) -> Result<()> {
     spawn_orchestration_worker(state.clone());
     spawn_task_worker(state.clone());
     spawn_workspace_scheduler(state.clone(), None);
+    spawn_delegated_start_cleanup();
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) = (
         state.orchestration_store.clone(),
@@ -9421,6 +9672,7 @@ pub async fn run_server_with_tls_config(
     spawn_orchestration_worker(state.clone());
     spawn_task_worker(state.clone());
     spawn_workspace_scheduler(state.clone(), config_path.as_deref());
+    spawn_delegated_start_cleanup();
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) = (
         state.orchestration_store.clone(),
@@ -12147,6 +12399,166 @@ mod tests {
             )
             .unwrap_err();
         assert!(format!("{replay:#}").contains("already consumed"));
+    }
+
+    #[test]
+    fn delegated_start_cleanup_reclaims_crash_leftovers_but_keeps_live_artifacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = persisted_start_configuration_dir(temp.path());
+        std::fs::create_dir_all(&directory).unwrap();
+        let sandbox = start_test_sandbox("cleanup", "cleanup-uuid");
+        let now = chrono::Utc::now();
+
+        let mut expired = PersistedStartConfiguration::from_runtime(
+            &sandbox,
+            "anonymous".to_string(),
+            &Permissions::default(),
+            &[FileInjection {
+                dest: "/workspace/secret.txt".to_string(),
+                content: b"crash-leftover".to_vec(),
+            }],
+        )
+        .unwrap();
+        expired.expires_at = (now - chrono::Duration::minutes(1)).to_rfc3339();
+        let expired_path = directory.join(format!("{}.json", "a".repeat(64)));
+        crate::secure_fs::write_private_json(&expired_path, &expired).unwrap();
+
+        let invalid_path = directory.join(format!("{}.json", "b".repeat(64)));
+        std::fs::write(&invalid_path, b"not-json").unwrap();
+        let stale_mtime =
+            SystemTime::now() - DELEGATED_START_STALE_ARTIFACT_AGE - Duration::from_secs(1);
+        std::fs::File::open(&invalid_path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(stale_mtime))
+            .unwrap();
+        let stale_consuming = directory.join(".consuming-stale");
+        std::fs::write(&stale_consuming, b"claimed-before-crash").unwrap();
+        std::fs::File::open(&stale_consuming)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(stale_mtime))
+            .unwrap();
+
+        let mut live = expired.clone();
+        live.expires_at = (now + chrono::Duration::minutes(5)).to_rfc3339();
+        let live_path = directory.join(format!("{}.json", "c".repeat(64)));
+        crate::secure_fs::write_private_json(&live_path, &live).unwrap();
+        // An old mtime must not override the capability's explicit expiry.
+        std::fs::File::open(&live_path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(stale_mtime))
+            .unwrap();
+        let fresh_consuming = directory.join(".consuming-fresh");
+        std::fs::write(&fresh_consuming, b"still-being-consumed").unwrap();
+
+        let stale_now = SystemTime::now();
+        let mut entries = None;
+        let (removed, _) = cleanup_persisted_start_configurations_batch(
+            temp.path(),
+            now,
+            stale_now,
+            &mut entries,
+            DELEGATED_START_CLEANUP_BATCH,
+        )
+        .unwrap();
+        assert_eq!(removed, 3);
+        assert!(!expired_path.exists());
+        assert!(!invalid_path.exists());
+        assert!(!stale_consuming.exists());
+        assert!(
+            live_path.exists(),
+            "a fresh live token must never be deleted"
+        );
+        assert!(fresh_consuming.exists());
+
+        // A second sweep is harmless and does not consume the live token.
+        let mut entries = None;
+        let (removed, _) = cleanup_persisted_start_configurations_batch(
+            temp.path(),
+            now,
+            stale_now,
+            &mut entries,
+            DELEGATED_START_CLEANUP_BATCH,
+        )
+        .unwrap();
+        assert_eq!(removed, 0);
+        assert!(live_path.exists());
+        assert!(fresh_consuming.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delegated_start_cleanup_does_not_follow_manifest_or_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let directory = persisted_start_configuration_dir(temp.path());
+        std::fs::create_dir_all(&directory).unwrap();
+        let outside = temp.path().join("outside.json");
+        std::fs::write(&outside, b"outside-secret").unwrap();
+        let linked_manifest = directory.join(format!("{}.json", "d".repeat(64)));
+        symlink(&outside, &linked_manifest).unwrap();
+
+        assert_eq!(
+            cleanup_persisted_start_configurations(temp.path()).unwrap(),
+            0
+        );
+        assert!(outside.exists());
+        assert!(
+            std::fs::symlink_metadata(&linked_manifest)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        let directory_link_root = tempfile::tempdir().unwrap();
+        let external_directory = directory_link_root.path().join("external");
+        std::fs::create_dir_all(&external_directory).unwrap();
+        let external_artifact = external_directory.join(format!("{}.json", "e".repeat(64)));
+        std::fs::write(&external_artifact, b"external-secret").unwrap();
+        symlink(
+            &external_directory,
+            persisted_start_configuration_dir(directory_link_root.path()),
+        )
+        .unwrap();
+        assert_eq!(
+            cleanup_persisted_start_configurations(directory_link_root.path()).unwrap(),
+            0
+        );
+        assert!(external_artifact.exists());
+    }
+
+    #[test]
+    fn delegated_start_cleanup_batch_makes_bounded_progress() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = persisted_start_configuration_dir(temp.path());
+        std::fs::create_dir_all(&directory).unwrap();
+        let stale_mtime =
+            SystemTime::now() - DELEGATED_START_STALE_ARTIFACT_AGE - Duration::from_secs(1);
+        for (index, token) in ["f", "1", "e"].iter().enumerate() {
+            let path = directory.join(format!("{}{}.json", token.repeat(63), index));
+            std::fs::write(&path, b"invalid").unwrap();
+            std::fs::File::open(path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(stale_mtime))
+                .unwrap();
+        }
+
+        let mut entries = None;
+        let mut removed = 0;
+        for _ in 0..3 {
+            let (count, _) = cleanup_persisted_start_configurations_batch(
+                temp.path(),
+                chrono::Utc::now(),
+                SystemTime::now(),
+                &mut entries,
+                1,
+            )
+            .unwrap();
+            assert!(count <= 1, "one batch must inspect at most one entry");
+            removed += count;
+        }
+        assert_eq!(removed, 3);
+        assert!(std::fs::read_dir(directory).unwrap().next().is_none());
     }
 
     #[test]
