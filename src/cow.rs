@@ -8,11 +8,10 @@
 //! semantics as the old implementation.
 
 use anyhow::{Context, Result, bail};
+use std::collections::HashSet;
 #[cfg(unix)]
 use std::ffi::{CStr, CString, OsString};
-#[cfg(not(unix))]
-use std::fs::OpenOptions;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 #[cfg(unix)]
 use std::io::Read;
 use std::io::Write;
@@ -22,6 +21,8 @@ use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 #[cfg(unix)]
@@ -36,6 +37,7 @@ const OWNER_MARKER_CONTENT: &str = "agentkernel-rootfs-cow-v2";
 const ROOTFS_FILE: &str = "rootfs.ext4";
 const PARTIAL_ROOTFS_FILE: &str = "rootfs.ext4.partial";
 const LEASE_FILE: &str = ".agentkernel-lease";
+const CAPACITY_LOCK_FILE: &str = ".agentkernel-capacity.lock";
 const PRESERVE_MARKER: &str = ".agentkernel-preserve";
 const PRESERVE_MARKER_CONTENT: &str = "agentkernel-rootfs-cow-preserve-v1";
 const ARTIFACT_PREFIX: &str = "sandbox-";
@@ -58,12 +60,6 @@ pub struct RootfsCowReapReport {
     pub error_artifacts: usize,
 }
 
-impl RootfsCowReapReport {
-    fn is_meaningful(self) -> bool {
-        self.reclaimed_artifacts > 0 || self.error_artifacts > 0
-    }
-}
-
 /// How a sandbox rootfs was materialized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootfsCowStrategy {
@@ -71,6 +67,9 @@ pub enum RootfsCowStrategy {
     Reflink,
     /// A regular byte-for-byte copy was required.
     FullCopy,
+    /// An existing durable AgentKernel rootfs was reopened for another VM
+    /// lifetime. No new image copy was made.
+    Existing,
 }
 
 /// Host capabilities relevant to local rootfs COW setup.
@@ -153,6 +152,23 @@ impl RootfsCowStore {
         self.capabilities
     }
 
+    fn acquire_capacity_lease(&self) -> Result<File> {
+        let lease = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.root.join(CAPACITY_LOCK_FILE))?;
+        #[cfg(unix)]
+        {
+            let result = unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX) };
+            if result < 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+        Ok(lease)
+    }
+
     /// Prepare a unique writable rootfs for `base`.
     ///
     /// Under an exclusive lease, a versioned ownership marker is published
@@ -161,12 +177,40 @@ impl RootfsCowStore {
     /// marker, lease, private directory, contents, and containment checks all
     /// prove that AgentKernel created it and no process is using it.
     pub fn prepare(&self, base: &Path) -> Result<RootfsCow> {
+        let storage_limit = std::env::var("AGENTKERNEL_ROOTFS_COW_MAX_BYTES")
+            .ok()
+            .map(|value| {
+                value.parse::<u64>().with_context(|| {
+                    format!("AGENTKERNEL_ROOTFS_COW_MAX_BYTES is not a valid byte limit: {value}")
+                })
+            })
+            .transpose()?;
+        self.prepare_with_limit(base, storage_limit)
+    }
+
+    /// Prepare a writable rootfs after checking explicit store headroom.
+    /// Production callers normally use [`Self::prepare`], which reads the
+    /// process-wide `AGENTKERNEL_ROOTFS_COW_MAX_BYTES` cap.
+    pub fn prepare_with_limit(&self, base: &Path, storage_limit: Option<u64>) -> Result<RootfsCow> {
+        let capacity_lease = Some(self.acquire_capacity_lease()?);
         let base = fs::canonicalize(base)
             .with_context(|| format!("failed to resolve rootfs {}", base.display()))?;
         let metadata = fs::metadata(&base)
             .with_context(|| format!("failed to inspect rootfs {}", base.display()))?;
         if !metadata.is_file() {
             bail!("rootfs is not a regular file: {}", base.display());
+        }
+        if let Some(limit) = storage_limit {
+            let used = self.usage_bytes()?;
+            let requested = metadata.len();
+            if used.saturating_add(requested) > limit {
+                bail!(
+                    "Firecracker writable rootfs storage headroom exhausted: used={} requested={} limit={}",
+                    used,
+                    requested,
+                    limit
+                );
+            }
         }
 
         let temporary_dir = tempfile::Builder::new()
@@ -277,6 +321,10 @@ impl RootfsCowStore {
             marker.sync_all()?;
         }
 
+        // The published image is now visible to other preparers and counted
+        // by usage_bytes; release the store-wide reservation before returning
+        // the handle so later starts do not serialize on VM lifetime.
+        drop(capacity_lease);
         let artifact_dir = temporary_dir.keep();
         Ok(RootfsCow {
             #[cfg(not(unix))]
@@ -298,15 +346,263 @@ impl RootfsCowStore {
         })
     }
 
+    /// Reopen a durable per-sandbox rootfs lineage.
+    ///
+    /// The persisted value is an opaque artifact identifier, never a caller
+    /// supplied path. The artifact must carry AgentKernel's ownership marker,
+    /// durable-preservation marker, and an available lease before it can be
+    /// attached to a new Firecracker process.
+    pub fn adopt(&self, reference: &str) -> Result<RootfsCow> {
+        self.adopt_internal(reference, true)
+    }
+
+    /// Reopen a state-owned lineage and finish publishing its durability
+    /// marker. This closes the crash window between the atomic state rename
+    /// and marker publication: a valid owned artifact referenced by state is
+    /// recoverable even when the prior process died before the marker write.
+    pub fn adopt_or_publish(&self, reference: &str) -> Result<RootfsCow> {
+        let mut rootfs = self.adopt_internal(reference, false)?;
+        if !rootfs.preserved {
+            rootfs.preserve_for_lifecycle()?;
+        }
+        Ok(rootfs)
+    }
+
+    fn adopt_internal(&self, reference: &str, require_preserved: bool) -> Result<RootfsCow> {
+        #[cfg(unix)]
+        {
+            let artifact_name = std::ffi::OsStr::new(reference);
+            if !is_artifact_name(artifact_name) {
+                bail!("invalid rootfs lineage reference '{reference}'");
+            }
+            let artifact = open_directory_at(self.root_handle.as_raw_fd(), artifact_name)
+                .with_context(|| format!("rootfs lineage artifact '{reference}' is missing"))?;
+            make_directory_private(&artifact)?;
+            let artifact_identity = file_identity(&artifact)?;
+            let lease = open_file_at_read_write(artifact.as_raw_fd(), LEASE_FILE)
+                .with_context(|| format!("rootfs lineage '{reference}' has no lease"))?;
+            if !is_regular_file(&lease) {
+                bail!("rootfs lineage '{reference}' lease is not a regular file");
+            }
+            lock_exclusive_with_retry(&lease)
+                .with_context(|| format!("rootfs lineage '{reference}' is already in use"))?;
+            let owner_marker = open_file_at(artifact.as_raw_fd(), OWNER_MARKER)
+                .with_context(|| format!("rootfs lineage '{reference}' has no ownership marker"))?;
+            let Some(owner_token) = read_versioned_token(&owner_marker, OWNER_MARKER_CONTENT)
+            else {
+                bail!("rootfs lineage '{reference}' has an invalid ownership marker");
+            };
+            verify_marker_at(artifact.as_raw_fd(), &owner_token)?;
+            let has_preserve = match open_file_at(artifact.as_raw_fd(), PRESERVE_MARKER) {
+                Ok(preserve) => {
+                    if !is_regular_file(&preserve) {
+                        bail!("rootfs lineage '{reference}' has an invalid durability marker");
+                    }
+                    read_versioned_token(&preserve, PRESERVE_MARKER_CONTENT).as_deref()
+                        == Some(owner_token.as_str())
+                }
+                Err(error) if error.raw_os_error() == Some(libc::ENOENT) => false,
+                Err(error) => return Err(error.into()),
+            };
+            if require_preserved && !has_preserve {
+                bail!("rootfs lineage '{reference}' has an invalid durability marker");
+            }
+            let rootfs_name = std::ffi::OsStr::new(ROOTFS_FILE);
+            let rootfs = open_file_at(artifact.as_raw_fd(), ROOTFS_FILE)
+                .with_context(|| format!("rootfs lineage '{reference}' has no rootfs image"))?;
+            if !is_regular_file(&rootfs) || rootfs.metadata()?.len() == 0 {
+                bail!("rootfs lineage '{reference}' image is not a non-empty regular file");
+            }
+            let artifact_dir = self.root.join(reference);
+            Ok(RootfsCow {
+                artifact_dir,
+                rootfs_path: self.root.join(reference).join(rootfs_name),
+                marker_path: self.root.join(reference).join(OWNER_MARKER),
+                owner_token,
+                strategy: RootfsCowStrategy::Existing,
+                store_root_handle: Arc::clone(&self.root_handle),
+                artifact_name: artifact_name.to_os_string(),
+                artifact_identity,
+                _lease_handle: lease,
+                preserved: has_preserve,
+            })
+        }
+
+        #[cfg(not(unix))]
+        {
+            if !is_artifact_name(std::ffi::OsStr::new(reference)) {
+                bail!("invalid rootfs lineage reference '{reference}'");
+            }
+            let artifact_dir = self.root.join(reference);
+            let artifact_metadata = fs::symlink_metadata(&artifact_dir)?;
+            if artifact_metadata.file_type().is_symlink() || !artifact_metadata.is_dir() {
+                bail!("rootfs lineage '{reference}' is not a regular artifact directory");
+            }
+            let rootfs_path = artifact_dir.join(ROOTFS_FILE);
+            let marker_path = artifact_dir.join(OWNER_MARKER);
+            let owner_metadata = fs::symlink_metadata(&marker_path)?;
+            if owner_metadata.file_type().is_symlink() || !owner_metadata.is_file() {
+                bail!("rootfs lineage '{reference}' has an invalid ownership marker");
+            }
+            let owner_token = fs::read_to_string(&marker_path)
+                .ok()
+                .and_then(|contents| contents.strip_prefix(OWNER_MARKER_CONTENT))
+                .and_then(|contents| contents.strip_prefix('\n'))
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("rootfs lineage '{reference}' has an invalid ownership marker")
+                })?;
+            let preserve_path = artifact_dir.join(PRESERVE_MARKER);
+            let preserve_metadata = fs::symlink_metadata(&preserve_path).ok();
+            if preserve_metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.file_type().is_symlink() || !metadata.is_file())
+            {
+                bail!("rootfs lineage '{reference}' has an invalid durability marker");
+            }
+            let has_preserve = is_owned_marker(&preserve_path, &owner_token);
+            if !is_owned_marker(&marker_path, &owner_token)
+                || (require_preserved && !has_preserve)
+                || !rootfs_path.is_file()
+            {
+                bail!("rootfs lineage '{reference}' is not a durable owned image");
+            }
+            Ok(RootfsCow {
+                store_root: self.root.clone(),
+                artifact_dir,
+                rootfs_path,
+                marker_path,
+                owner_token,
+                strategy: RootfsCowStrategy::Existing,
+                preserved: has_preserve,
+            })
+        }
+    }
+
+    /// Remove a durable rootfs lineage after validating its opaque reference.
+    pub fn discard(&self, reference: &str) -> Result<()> {
+        let rootfs = self.adopt_or_publish(reference)?;
+        rootfs.discard_persisted()
+    }
+
+    /// Idempotently remove a durable lineage during sandbox removal.
+    ///
+    /// A prior remove attempt may have deleted the owned artifact before a
+    /// later sandbox-state deletion failed. An absent artifact is therefore
+    /// already clean, while malformed, symlinked, or leased artifacts still
+    /// fail closed.
+    pub fn discard_if_present(&self, reference: &str) -> Result<()> {
+        if !is_artifact_name(std::ffi::OsStr::new(reference)) {
+            bail!("invalid rootfs lineage reference '{reference}'");
+        }
+        #[cfg(unix)]
+        match open_directory_at(
+            self.root_handle.as_raw_fd(),
+            std::ffi::OsStr::new(reference),
+        ) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        #[cfg(not(unix))]
+        match fs::symlink_metadata(self.root.join(reference)) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => bail!("rootfs lineage '{reference}' is not a regular artifact directory"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        match self.adopt_or_publish(reference) {
+            Ok(rootfs) => rootfs.discard_persisted(),
+            Err(error)
+                if error
+                    .chain()
+                    .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+                    .any(|cause| cause.kind() == std::io::ErrorKind::NotFound)
+                    && !self.root.join(reference).exists() =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Return bytes currently consumed by all owned rootfs artifacts.
+    ///
+    /// This is intentionally an accounting helper rather than a cleanup
+    /// decision. Unknown names are ignored, but malformed owned-looking
+    /// artifacts return an error so a capacity check never undercounts usage.
+    pub fn usage_bytes(&self) -> Result<u64> {
+        let mut total = 0_u64;
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                continue;
+            }
+            let file_name = entry.file_name();
+            let Some(reference) = file_name.to_str() else {
+                continue;
+            };
+            if !is_artifact_name(std::ffi::OsStr::new(reference)) {
+                continue;
+            }
+            let image = entry.path().join(ROOTFS_FILE);
+            let image_metadata = fs::symlink_metadata(&image).with_context(|| {
+                format!(
+                    "failed to inspect rootfs image for owned artifact {}",
+                    entry.path().display()
+                )
+            })?;
+            if image_metadata.file_type().is_symlink() || !image_metadata.is_file() {
+                bail!(
+                    "owned rootfs artifact has a non-regular image: {}",
+                    image.display()
+                );
+            }
+            total = total.saturating_add(image_metadata.len());
+        }
+        Ok(total)
+    }
+
+    /// Return the size of one validated durable rootfs artifact for quota
+    /// accounting. This does not acquire the artifact lease, so a running VM
+    /// can be accounted for while it owns the image.
+    pub fn bytes_for_reference(&self, reference: &str) -> Result<u64> {
+        if !is_artifact_name(std::ffi::OsStr::new(reference)) {
+            bail!("invalid rootfs lineage reference '{reference}'");
+        }
+        let artifact = self.root.join(reference);
+        let artifact_metadata = fs::symlink_metadata(&artifact)?;
+        if !artifact_metadata.is_dir() || artifact_metadata.file_type().is_symlink() {
+            bail!("rootfs lineage '{reference}' is not an owned artifact directory");
+        }
+        let rootfs = artifact.join(ROOTFS_FILE);
+        let rootfs_metadata = fs::symlink_metadata(&rootfs)?;
+        if !rootfs_metadata.is_file() || rootfs_metadata.file_type().is_symlink() {
+            bail!("rootfs lineage '{reference}' is not a regular rootfs image");
+        }
+        Ok(rootfs_metadata.len())
+    }
+
     /// Reclaim abandoned, AgentKernel-owned artifacts in this store.
     ///
     /// On Unix this uses directory-relative, no-follow operations and a
     /// cross-process advisory lease. Other platforms conservatively report no
     /// reclamation rather than guessing whether an artifact is live.
     pub fn reap_stale(&self) -> Result<RootfsCowReapReport> {
+        self.reap_stale_except(&HashSet::new())
+    }
+
+    /// Reclaim stale artifacts while retaining opaque references loaded from
+    /// persisted sandbox state. A state-owned artifact may be between the
+    /// atomic state rename and durability-marker publication after a crash.
+    pub fn reap_stale_except(
+        &self,
+        retained_references: &HashSet<String>,
+    ) -> Result<RootfsCowReapReport> {
         #[cfg(unix)]
         {
-            self.reap_stale_unix()
+            self.reap_stale_unix(retained_references)
         }
 
         #[cfg(not(unix))]
@@ -316,11 +612,24 @@ impl RootfsCowStore {
     }
 
     #[cfg(unix)]
-    fn reap_stale_unix(&self) -> Result<RootfsCowReapReport> {
+    fn reap_stale_unix(
+        &self,
+        retained_references: &HashSet<String>,
+    ) -> Result<RootfsCowReapReport> {
         let mut report = RootfsCowReapReport::default();
         for name in list_directory_at(self.root_handle.as_raw_fd())? {
+            if name == std::ffi::OsStr::new(CAPACITY_LOCK_FILE) {
+                continue;
+            }
             if !is_artifact_name(&name) {
                 report.skipped_artifacts += 1;
+                continue;
+            }
+            if name
+                .to_str()
+                .is_some_and(|reference| retained_references.contains(reference))
+            {
+                report.preserved_artifacts += 1;
                 continue;
             }
 
@@ -600,26 +909,23 @@ fn ensure_private_store_root(root: &Path) -> Result<()> {
 }
 
 impl RootfsCowStore {
+    fn default_root() -> PathBuf {
+        std::env::var_os("AGENTKERNEL_ROOTFS_COW_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("agentkernel-rootfs"))
+    }
+
     /// Open the default per-user temporary rootfs store.
     pub fn open_default() -> Result<Self> {
-        let root = std::env::var_os("AGENTKERNEL_ROOTFS_COW_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::temp_dir().join("agentkernel-rootfs"));
-        let store = Self::new(root)?;
-        match store.reap_stale() {
-            Ok(report) if report.is_meaningful() => eprintln!(
-                "[firecracker] rootfs COW cleanup reclaimed={} bytes={} active={} preserved={} skipped={} errors={}",
-                report.reclaimed_artifacts,
-                report.reclaimed_bytes,
-                report.active_artifacts,
-                report.preserved_artifacts,
-                report.skipped_artifacts,
-                report.error_artifacts
-            ),
-            Ok(_) => {}
-            Err(error) => eprintln!("[firecracker] rootfs COW cleanup scan failed: {error:#}"),
-        }
-        Ok(store)
+        let root = Self::default_root();
+        Self::new(root)
+    }
+
+    /// Open the default store without reaping. A persisted state reference is
+    /// authoritative during startup, including the crash window after its
+    /// atomic rename but before the preservation marker was written.
+    pub fn open_default_without_reap() -> Result<Self> {
+        Self::new(Self::default_root())
     }
 }
 
@@ -647,6 +953,45 @@ pub struct RootfsCow {
 impl RootfsCow {
     pub fn path(&self) -> &Path {
         &self.rootfs_path
+    }
+
+    /// Arrange for exactly this child to inherit the lineage lease.
+    ///
+    /// The parent keeps `FD_CLOEXEC` set at all times. Clearing it in the
+    /// post-fork child avoids a process-wide race where an unrelated spawn on
+    /// another thread could otherwise inherit the lease.
+    pub fn inherit_lease_in_child(&self, command: &mut Command) {
+        #[cfg(unix)]
+        {
+            let lease_fd = self._lease_handle.as_raw_fd();
+            // SAFETY: this closure runs after fork and before exec. `fcntl`
+            // operates only on the inherited descriptor and is async-signal
+            // safe on the supported Unix hosts.
+            unsafe {
+                command.pre_exec(move || {
+                    let flags = libc::fcntl(lease_fd, libc::F_GETFD);
+                    if flags < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::fcntl(lease_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = command;
+    }
+
+    /// Stable opaque identifier persisted in sandbox state. It is deliberately
+    /// not an absolute path and is validated by [`RootfsCowStore::adopt`].
+    pub fn reference(&self) -> String {
+        self.artifact_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string()
     }
 
     /// Directory that must be used as Firecracker's working directory.
@@ -770,28 +1115,45 @@ impl RootfsCow {
                 );
             }
             verify_marker_at(artifact.as_raw_fd(), &self.owner_token)?;
-            let mut marker = create_file_at(artifact.as_raw_fd(), PRESERVE_MARKER)?;
-            // Once the preservation direntry exists, all failure paths must
-            // fail closed and retain the artifact.
-            self.preserved = true;
-            marker
-                .write_all(format!("{PRESERVE_MARKER_CONTENT}\n{}", self.owner_token).as_bytes())?;
-            marker.sync_all()?;
+            ensure_preserve_marker_at(artifact.as_raw_fd(), &self.owner_token)?;
             artifact.sync_all()?;
         }
 
         #[cfg(not(unix))]
-        {
-            let mut marker = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(self.artifact_dir.join(PRESERVE_MARKER))?;
-            self.preserved = true;
-            marker
-                .write_all(format!("{PRESERVE_MARKER_CONTENT}\n{}", self.owner_token).as_bytes())?;
-            marker.sync_all()?;
-        }
+        ensure_preserve_marker(&self.artifact_dir.join(PRESERVE_MARKER), &self.owner_token)?;
+        self.preserved = true;
         Ok(())
+    }
+
+    /// Mark this rootfs durable across ordinary Firecracker stop/start.
+    pub fn preserve_for_lifecycle(&mut self) -> Result<()> {
+        self.preserve_for_snapshot()
+    }
+
+    /// Remove a durable lineage, including its preservation marker.
+    pub fn discard_persisted(mut self) -> Result<()> {
+        if self.preserved {
+            #[cfg(unix)]
+            {
+                let artifact =
+                    open_directory_at(self.store_root_handle.as_raw_fd(), &self.artifact_name)?;
+                if file_identity(&artifact)? != self.artifact_identity {
+                    bail!("refusing to discard replaced rootfs COW directory");
+                }
+                verify_marker_at(artifact.as_raw_fd(), &self.owner_token)?;
+                unlink_at(artifact.as_raw_fd(), PRESERVE_MARKER, 0).or_else(ignore_not_found)?;
+                artifact.sync_all()?;
+            }
+            #[cfg(not(unix))]
+            {
+                let marker = self.artifact_dir.join(PRESERVE_MARKER);
+                if marker.exists() {
+                    fs::remove_file(marker)?;
+                }
+            }
+            self.preserved = false;
+        }
+        self.cleanup_inner()
     }
 
     /// Remove the rootfs and its private directory if ownership is proven.
@@ -1154,6 +1516,39 @@ fn write_new_file_at(parent: RawFd, name: &str, contents: &[u8]) -> std::io::Res
 }
 
 #[cfg(unix)]
+fn ensure_preserve_marker_at(parent: RawFd, owner_token: &str) -> Result<()> {
+    let desired = format!("{PRESERVE_MARKER_CONTENT}\n{owner_token}");
+    match open_file_at(parent, PRESERVE_MARKER) {
+        Ok(marker) => {
+            if !is_regular_file(&marker) {
+                bail!("Firecracker preservation marker is not a regular file");
+            }
+            let mut contents = String::new();
+            marker.try_clone()?.read_to_string(&mut contents)?;
+            if contents == desired {
+                return Ok(());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let temporary = format!("{PRESERVE_MARKER}.tmp-{}", Uuid::new_v4().simple());
+    write_new_file_at(parent, &temporary, desired.as_bytes())?;
+    let temporary_c = CString::new(temporary.as_bytes())?;
+    let marker_c = CString::new(PRESERVE_MARKER)?;
+    let result = unsafe { libc::renameat(parent, temporary_c.as_ptr(), parent, marker_c.as_ptr()) };
+    if result < 0 {
+        let error = std::io::Error::last_os_error();
+        unsafe {
+            libc::unlinkat(parent, temporary_c.as_ptr(), 0);
+        }
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
 fn is_regular_file(file: &File) -> bool {
     file_stat(file)
         .map(|(_, mode)| mode & STAT_TYPE_MASK == STAT_TYPE_REGULAR)
@@ -1170,6 +1565,24 @@ fn lock_exclusive_nonblocking(file: &File) -> std::io::Result<()> {
             "rootfs COW lease is already held",
         ))
     }
+}
+
+#[cfg(unix)]
+fn lock_exclusive_with_retry(file: &File) -> std::io::Result<()> {
+    const ATTEMPTS: usize = 10;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
+    for attempt in 0..ATTEMPTS {
+        match lock_exclusive_nonblocking(file) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && attempt + 1 < ATTEMPTS =>
+            {
+                std::thread::sleep(RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("bounded rootfs lease retry always returns")
 }
 
 #[cfg(unix)]
@@ -1194,6 +1607,18 @@ fn is_artifact_name(name: &std::ffi::OsStr) -> bool {
         && bytes[ARTIFACT_PREFIX.len()..]
             .iter()
             .all(u8::is_ascii_alphanumeric)
+}
+
+#[cfg(not(unix))]
+fn is_artifact_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    name.len() == ARTIFACT_PREFIX.len() + ARTIFACT_RANDOM_LEN
+        && name.starts_with(ARTIFACT_PREFIX)
+        && name[ARTIFACT_PREFIX.len()..]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric())
 }
 
 #[cfg(unix)]
@@ -1325,6 +1750,47 @@ fn ignore_not_found(error: std::io::Error) -> std::io::Result<()> {
     }
 }
 
+#[cfg(not(unix))]
+fn ensure_preserve_marker(path: &Path, owner_token: &str) -> Result<()> {
+    let desired = format!("{PRESERVE_MARKER_CONTENT}\n{owner_token}");
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                bail!(
+                    "refusing non-regular Firecracker preservation marker {}",
+                    path.display()
+                );
+            }
+            if fs::read_to_string(path).ok().as_deref() == Some(desired.as_str()) {
+                return Ok(());
+            }
+            let temporary =
+                path.with_file_name(format!("{PRESERVE_MARKER}.tmp-{}", Uuid::new_v4()));
+            let mut marker = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            marker.write_all(desired.as_bytes())?;
+            marker.sync_all()?;
+            fs::rename(&temporary, path)?;
+            if let Some(parent) = path.parent() {
+                File::open(parent)?.sync_all()?;
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut marker = OpenOptions::new().write(true).create_new(true).open(path)?;
+            marker.write_all(desired.as_bytes())?;
+            marker.sync_all()?;
+            if let Some(parent) = path.parent() {
+                File::open(parent)?.sync_all()?;
+            }
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn full_copy(base: &Path, destination: &Path) -> std::io::Result<u64> {
     fs::copy(base, destination)
 }
@@ -1433,6 +1899,28 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn inherited_rootfs_lease_blocks_adoption_until_child_exit() {
+        let (tmp, store) = store();
+        let base = tmp.path().join("base.ext4");
+        fs::write(&base, b"inherited lease filesystem").unwrap();
+        let mut rootfs = store.prepare(&base).unwrap();
+        rootfs.preserve_for_lifecycle().unwrap();
+        let reference = rootfs.reference();
+
+        let mut command = std::process::Command::new("sleep");
+        command.arg("1");
+        rootfs.inherit_lease_in_child(&mut command);
+        let mut child = command.spawn().unwrap();
+        drop(rootfs);
+
+        assert!(store.adopt(&reference).is_err());
+        child.wait().unwrap();
+        let adopted = store.adopt(&reference).unwrap();
+        adopted.discard_persisted().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn restart_reaps_sigkill_orphan_but_not_cross_process_active_lease() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("cow");
@@ -1525,6 +2013,142 @@ mod tests {
             }
         );
         assert_eq!(fs::read(path).unwrap(), b"snapshot rootfs");
+    }
+
+    #[test]
+    fn durable_lineage_can_be_reopened_after_owner_drop_and_discarded() {
+        let (tmp, store) = store();
+        let base = tmp.path().join("base.ext4");
+        fs::write(&base, b"durable guest filesystem").unwrap();
+        let mut rootfs = store.prepare(&base).unwrap();
+        let reference = rootfs.reference();
+        rootfs.preserve_for_lifecycle().unwrap();
+        let path = rootfs.path().to_path_buf();
+        drop(rootfs);
+
+        let adopted = store.adopt(&reference).unwrap();
+        assert_eq!(adopted.strategy(), RootfsCowStrategy::Existing);
+        assert_eq!(adopted.reference(), reference);
+        assert_eq!(
+            fs::read(adopted.path()).unwrap(),
+            b"durable guest filesystem"
+        );
+        drop(adopted);
+        assert!(path.exists());
+
+        store.discard(&reference).unwrap();
+        assert!(!path.exists());
+        assert!(store.adopt(&reference).is_err());
+        store.discard_if_present(&reference).unwrap();
+    }
+
+    #[test]
+    fn idempotent_discard_does_not_accept_malformed_existing_artifact() {
+        let (tmp, store) = store();
+        let base = tmp.path().join("base.ext4");
+        fs::write(&base, b"malformed cleanup").unwrap();
+        let mut rootfs = store.prepare(&base).unwrap();
+        let reference = rootfs.reference();
+        rootfs.preserve_for_lifecycle().unwrap();
+        fs::remove_file(rootfs.artifact_dir().join(OWNER_MARKER)).unwrap();
+        drop(rootfs);
+
+        assert!(store.discard_if_present(&reference).is_err());
+    }
+
+    #[test]
+    fn state_owned_lineage_finishes_missing_marker_after_crash_window() {
+        let (tmp, store) = store();
+        let base = tmp.path().join("base.ext4");
+        fs::write(&base, b"state-authoritative filesystem").unwrap();
+        let mut rootfs = store.prepare(&base).unwrap();
+        let reference = rootfs.reference();
+        rootfs.preserve_for_lifecycle().unwrap();
+        fs::remove_file(rootfs.artifact_dir().join(PRESERVE_MARKER)).unwrap();
+        drop(rootfs);
+
+        // Startup reconciliation must treat the state reference as
+        // authoritative even before the preservation marker is repaired.
+        let report = store
+            .reap_stale_except(&std::collections::HashSet::from([reference.clone()]))
+            .unwrap();
+        assert_eq!(report.reclaimed_artifacts, 0);
+
+        let adopted = store.adopt_or_publish(&reference).unwrap();
+        assert_eq!(
+            fs::read(adopted.path()).unwrap(),
+            b"state-authoritative filesystem"
+        );
+        drop(adopted);
+        store.discard(&reference).unwrap();
+        assert!(store.adopt(&reference).is_err());
+    }
+
+    #[test]
+    fn state_owned_lineage_repairs_partial_marker_after_crash_window() {
+        let (tmp, store) = store();
+        let base = tmp.path().join("base.ext4");
+        fs::write(&base, b"partial-marker filesystem").unwrap();
+        let mut rootfs = store.prepare(&base).unwrap();
+        let reference = rootfs.reference();
+        rootfs.preserve_for_lifecycle().unwrap();
+        fs::write(rootfs.artifact_dir().join(PRESERVE_MARKER), b"partial").unwrap();
+        drop(rootfs);
+
+        let adopted = store.adopt_or_publish(&reference).unwrap();
+        assert_eq!(
+            fs::read_to_string(adopted.artifact_dir().join(PRESERVE_MARKER)).unwrap(),
+            format!("{PRESERVE_MARKER_CONTENT}\n{}", adopted.owner_token)
+        );
+        adopted.discard_persisted().unwrap();
+    }
+
+    #[test]
+    fn writable_rootfs_storage_cap_rejects_insufficient_headroom() {
+        let (tmp, store) = store();
+        let base = tmp.path().join("base.ext4");
+        fs::write(&base, b"rootfs headroom").unwrap();
+        let requested = fs::metadata(&base).unwrap().len();
+        let error = store
+            .prepare_with_limit(&base, Some(requested - 1))
+            .unwrap_err();
+        assert!(error.to_string().contains("storage headroom exhausted"));
+
+        let rootfs = store.prepare_with_limit(&base, Some(requested)).unwrap();
+        let reference = rootfs.reference();
+        rootfs.discard_persisted().unwrap();
+        assert!(store.adopt(&reference).is_err());
+    }
+
+    #[test]
+    fn concurrent_rootfs_preparation_serializes_capacity_reservation() {
+        let (tmp, store) = store();
+        let base = tmp.path().join("base.ext4");
+        fs::write(&base, b"concurrent headroom").unwrap();
+        let requested = fs::metadata(&base).unwrap().len();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let first_store = store.clone();
+        let first_base = base.clone();
+        let first = std::thread::spawn(move || {
+            let rootfs = first_store
+                .prepare_with_limit(&first_base, Some(requested))
+                .unwrap();
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            rootfs.discard_persisted().unwrap();
+        });
+        started_rx.recv().unwrap();
+
+        let second_store = store.clone();
+        let second_base = base.clone();
+        let second = std::thread::spawn(move || {
+            second_store.prepare_with_limit(&second_base, Some(requested))
+        });
+        let error = second.join().unwrap().unwrap_err();
+        assert!(error.to_string().contains("storage headroom exhausted"));
+        release_tx.send(()).unwrap();
+        first.join().unwrap();
     }
 
     #[test]
@@ -1656,7 +2280,14 @@ mod tests {
         let source_dir = store.root().join("source-dir");
         fs::create_dir(&source_dir).unwrap();
         assert!(store.prepare(&source_dir).is_err());
-        assert_eq!(fs::read_dir(store.root()).unwrap().count(), 1);
+        assert_eq!(
+            fs::read_dir(store.root())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| is_artifact_name(&entry.file_name()))
+                .count(),
+            0
+        );
     }
 
     #[test]

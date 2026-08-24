@@ -403,9 +403,15 @@ pub struct FirecrackerSandbox {
     vsock_cid: u32,
     kernel_path: Option<PathBuf>,
     rootfs_path: Option<PathBuf>,
-    /// Per-sandbox CoW rootfs, cleaned up on stop/drop only when ownership is
-    /// proven by the storage helper.
+    /// Per-sandbox CoW rootfs, cleaned up on remove/drop only when ownership is
+    /// proven by the storage helper. Ordinary stop preserves it for restart.
     sandbox_rootfs: Option<RootfsCow>,
+    /// Opaque durable rootfs artifact identifier persisted by VmManager.
+    rootfs_reference: Option<String>,
+    /// Becomes true only after VmManager has atomically persisted the state
+    /// reference. This prevents a failed first-start state write from leaving
+    /// an unreferenced preserved artifact behind.
+    durable_rootfs_published: bool,
     running: bool,
 }
 
@@ -455,6 +461,8 @@ impl FirecrackerSandbox {
             kernel_path,
             rootfs_path,
             sandbox_rootfs: None,
+            rootfs_reference: None,
+            durable_rootfs_published: false,
             running: false,
         })
     }
@@ -498,6 +506,17 @@ impl FirecrackerSandbox {
             .ok_or_else(|| anyhow::anyhow!("sandbox rootfs has not been prepared"))?;
         rootfs.preserve_for_snapshot()?;
         Ok(rootfs.path())
+    }
+
+    /// Set the opaque rootfs lineage that should be reopened on ordinary
+    /// start. Absolute paths are intentionally not accepted here.
+    pub fn set_rootfs_reference(&mut self, reference: Option<&str>) {
+        self.rootfs_reference = reference.map(str::to_owned);
+        self.durable_rootfs_published = reference.is_some();
+    }
+
+    pub fn rootfs_reference(&self) -> Option<String> {
+        self.rootfs_reference.clone()
     }
 
     /// Find kernel path
@@ -599,17 +618,20 @@ impl FirecrackerSandbox {
             .as_ref()
             .map(RootfsCow::artifact_dir)
             .ok_or_else(|| anyhow::anyhow!("sandbox rootfs has not been prepared"))?;
-        let process = Command::new(firecracker_bin)
+        let mut command = Command::new(firecracker_bin);
+        command
             .arg("--api-sock")
             .arg(&self.socket_path)
             .current_dir(working_directory)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!("Failed to start firecracker: {}", firecracker_bin.display())
-            })?;
+            .stderr(Stdio::piped());
+        if let Some(rootfs) = self.sandbox_rootfs.as_ref() {
+            rootfs.inherit_lease_in_child(&mut command);
+        }
+        let process = command.spawn().with_context(|| {
+            format!("Failed to start firecracker: {}", firecracker_bin.display())
+        })?;
         self.process = Some(process);
         Ok(())
     }
@@ -721,7 +743,10 @@ impl FirecrackerSandbox {
         // Failed start/restore cleanup is a lifecycle proof boundary too. Do
         // not hide kill/reap uncertainty behind best-effort cleanup: callers
         // must retain this backend whenever the process may still exist.
-        self.terminate_paused_runtime()
+        // A failed cold start of an already-published lineage must not erase
+        // the only durable writable disk. Newly prepared, unpublished disks
+        // remain transient and are discarded as before.
+        self.terminate_runtime(self.durable_rootfs_published)
     }
 
     /// Terminate a VM after all checkpoint artifacts have been durably
@@ -730,7 +755,18 @@ impl FirecrackerSandbox {
     /// are still returned so normal stop callers can report leaked artifacts;
     /// the lifecycle layer may safely publish a complete checkpoint after a
     /// subsequent idempotent stop confirms no process remains.
-    fn terminate_paused_runtime(&mut self) -> Result<()> {
+    fn terminate_runtime(&mut self, preserve_rootfs: bool) -> Result<()> {
+        if preserve_rootfs && let Some(rootfs) = self.sandbox_rootfs.as_mut() {
+            rootfs
+                .preserve_for_lifecycle()
+                .map_err(|error| FullStateTerminationError {
+                    process_may_be_running: self.process.is_some(),
+                    detail: format!(
+                        "failed to publish durable Firecracker rootfs lineage: {error:#}"
+                    ),
+                })?;
+            self.rootfs_reference = Some(rootfs.reference());
+        }
         if let Some(mut process) = self.process.take() {
             let status = match process.try_wait() {
                 Ok(status) => status,
@@ -771,10 +807,16 @@ impl FirecrackerSandbox {
         let _ = fs::remove_file(&self.socket_path);
         let _ = fs::remove_file(&self.vsock_path);
         let _ = fs::remove_dir(&self.runtime_dir);
-        let cleanup_result = self
-            .sandbox_rootfs
-            .take()
-            .map_or(Ok(()), |rootfs| rootfs.cleanup());
+        let cleanup_result = self.sandbox_rootfs.take().map_or(Ok(()), |rootfs| {
+            if preserve_rootfs {
+                // The durability marker makes Drop a no-op. Leave the image
+                // available for the next ordinary start.
+                drop(rootfs);
+                Ok(())
+            } else {
+                rootfs.discard_persisted()
+            }
+        });
         self.running = false;
         cleanup_result.map_err(|error| {
             FullStateTerminationError {
@@ -862,14 +904,27 @@ impl Sandbox for FirecrackerSandbox {
         // helper explicitly detects reflink support and falls back to the
         // previous full-copy behavior.  Overlayfs is reported as a host
         // capability but is not suitable for Firecracker's ext4 drive file.
-        let base_rootfs = match self.rootfs_path.clone() {
-            Some(path) => path,
-            None => Self::find_rootfs(&config.image)?,
+        let store = if self.rootfs_reference.is_some() {
+            RootfsCowStore::open_default_without_reap()?
+        } else {
+            RootfsCowStore::open_default()?
         };
-        let store = RootfsCowStore::open_default()?;
-        let rootfs = store
-            .prepare(&base_rootfs)
-            .with_context(|| format!("failed to prepare writable rootfs for {}", self.name))?;
+        let rootfs = if let Some(reference) = self.rootfs_reference.as_deref() {
+            store.adopt_or_publish(reference).with_context(|| {
+                format!(
+                    "failed to reopen durable writable rootfs lineage '{}' for {}",
+                    reference, self.name
+                )
+            })?
+        } else {
+            let base_rootfs = match self.rootfs_path.clone() {
+                Some(path) => path,
+                None => Self::find_rootfs(&config.image)?,
+            };
+            store
+                .prepare(&base_rootfs)
+                .with_context(|| format!("failed to prepare writable rootfs for {}", self.name))?
+        };
         eprintln!(
             "[firecracker] rootfs COW strategy={:?} path={}",
             rootfs.strategy(),
@@ -893,8 +948,33 @@ impl Sandbox for FirecrackerSandbox {
 
         match startup {
             Ok(()) => {
-                self.running = true;
-                Ok(())
+                let lineage = (|| -> Result<()> {
+                    let rootfs = self
+                        .sandbox_rootfs
+                        .as_mut()
+                        .expect("rootfs remains attached after successful startup");
+                    if self.durable_rootfs_published {
+                        rootfs.preserve_for_lifecycle().with_context(|| {
+                            format!(
+                                "failed to validate writable rootfs lineage for {}",
+                                self.name
+                            )
+                        })?;
+                    }
+                    Ok(())
+                })();
+                match lineage {
+                    Ok(()) => {
+                        self.running = true;
+                        Ok(())
+                    }
+                    Err(error) => match self.abort_start() {
+                        Ok(()) => Err(error),
+                        Err(cleanup_error) => {
+                            Err(transition_cleanup_error("startup", &error, cleanup_error))
+                        }
+                    },
+                }
             }
             Err(error) => {
                 // Do not leave a partially started VM or its rootfs behind if
@@ -936,7 +1016,52 @@ impl Sandbox for FirecrackerSandbox {
         // The lifecycle layer relies on a successful stop as proof that a
         // checkpoint cannot coexist with an untracked original VM. Preserve
         // the child handle and return an error if kill/reap is ambiguous.
-        self.terminate_paused_runtime()
+        self.terminate_runtime(self.durable_rootfs_published)
+    }
+
+    fn set_persistent_disk_reference(&mut self, reference: Option<&str>) -> Result<()> {
+        if self.running || self.process.is_some() || self.sandbox_rootfs.is_some() {
+            bail!("cannot change Firecracker disk lineage while a runtime is active");
+        }
+        self.rootfs_reference = reference.map(str::to_owned);
+        self.durable_rootfs_published = reference.is_some();
+        Ok(())
+    }
+
+    fn persistent_disk_reference(&self) -> Option<String> {
+        self.rootfs_reference
+            .clone()
+            .or_else(|| self.sandbox_rootfs.as_ref().map(RootfsCow::reference))
+    }
+
+    fn publish_persistent_disk_reference(&mut self) -> Result<()> {
+        // Once state points at this artifact, cleanup must fail closed toward
+        // retention if marker publication itself reports an error. A later
+        // stop can retry the marker while the manager still owns the runtime.
+        self.durable_rootfs_published = true;
+        let rootfs = self
+            .sandbox_rootfs
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("sandbox rootfs has not been prepared"))?;
+        rootfs.preserve_for_lifecycle()?;
+        self.rootfs_reference = Some(rootfs.reference());
+        self.durable_rootfs_published = true;
+        Ok(())
+    }
+
+    fn rollback_persistent_disk_reference(&mut self) -> Result<()> {
+        // A reopened lineage is already durable; only a newly-prepared image
+        // may be returned to ordinary transient cleanup after publication
+        // failed. This keeps rollback from ever weakening an existing state
+        // reference's retention guarantee.
+        if self.rootfs_reference.is_some() {
+            return Ok(());
+        }
+        if !self.running && self.process.is_none() {
+            bail!("cannot roll back Firecracker disk lineage without an active runtime");
+        }
+        self.durable_rootfs_published = false;
+        Ok(())
     }
 
     async fn pause_to(&mut self, checkpoint_dir: &Path) -> Result<FullStateSnapshot> {
@@ -1054,7 +1179,7 @@ impl Sandbox for FirecrackerSandbox {
                 .await;
         }
 
-        if let Err(error) = self.terminate_paused_runtime() {
+        if let Err(error) = self.terminate_runtime(false) {
             return self
                 .resume_after_snapshot_failure(&client, &checkpoint_dir, &snapshot, true, error)
                 .await;
@@ -1263,6 +1388,25 @@ impl Sandbox for FirecrackerSandbox {
                 }
             },
         }
+    }
+
+    async fn remove(&mut self) -> Result<()> {
+        // Unlike ordinary stop, remove is the explicit destructive operation:
+        // discard any durable writable lineage after process termination is
+        // confirmed. When the manager was restarted, reopen the state-owned
+        // artifact so this path also cleans stopped sandboxes.
+        if self.sandbox_rootfs.is_none()
+            && let Some(reference) = self.rootfs_reference.as_deref()
+        {
+            if self.process.is_some() || self.running {
+                bail!(
+                    "refusing to discard Firecracker rootfs lineage while runtime ownership is inconsistent"
+                );
+            }
+            RootfsCowStore::open_default_without_reap()?.discard_if_present(reference)?;
+            self.rootfs_reference = None;
+        }
+        self.terminate_runtime(false)
     }
 
     fn name(&self) -> &str {
@@ -1560,6 +1704,36 @@ mod tests {
             .expect("restore cleanup uncertainty remains downcastable");
         assert!(termination.process_may_be_running);
         assert!(error.to_string().contains("cleanup could not prove"));
+    }
+
+    #[test]
+    fn failed_restart_does_not_discard_published_rootfs_lineage() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = RootfsCowStore::with_capabilities(
+            temp.path().join("cow"),
+            crate::cow::RootfsCowCapabilities {
+                reflink_copy: false,
+                overlayfs_available: false,
+            },
+        )
+        .unwrap();
+        let base = temp.path().join("base.ext4");
+        std::fs::write(&base, b"published guest filesystem").unwrap();
+        let mut rootfs = store.prepare(&base).unwrap();
+        rootfs.preserve_for_lifecycle().unwrap();
+        let reference = rootfs.reference();
+        let rootfs_path = rootfs.path().to_path_buf();
+
+        let mut sandbox = FirecrackerSandbox::new("failed-durable-restart").unwrap();
+        sandbox.sandbox_rootfs = Some(rootfs);
+        sandbox.rootfs_reference = Some(reference.clone());
+        sandbox.durable_rootfs_published = true;
+
+        sandbox.abort_start().unwrap();
+
+        assert!(rootfs_path.is_file());
+        assert!(store.adopt(&reference).is_ok());
+        store.discard(&reference).unwrap();
     }
 
     #[tokio::test]

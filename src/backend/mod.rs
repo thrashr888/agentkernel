@@ -639,6 +639,31 @@ pub trait Sandbox: Send + Sync {
     /// Stop the sandbox and clean up resources
     async fn stop(&mut self) -> Result<()>;
 
+    /// Supply an opaque durable Firecracker disk lineage to use on start.
+    /// Backends that do not have a host-side writable disk ignore this hook.
+    fn set_persistent_disk_reference(&mut self, _reference: Option<&str>) -> Result<()> {
+        Ok(())
+    }
+
+    /// Return the opaque durable disk lineage currently owned by this backend.
+    fn persistent_disk_reference(&self) -> Option<String> {
+        None
+    }
+
+    /// Atomically publish a newly-created durable disk reference after the
+    /// owning sandbox state has been written. Backends without such a disk do
+    /// nothing.
+    fn publish_persistent_disk_reference(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Abort an unpublished durable disk reference after the corresponding
+    /// state write has been rolled back. The runtime remains owned by the
+    /// caller and ordinary stop may then discard its transient disk.
+    fn rollback_persistent_disk_reference(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     /// Pause a running sandbox into a durable, full-state checkpoint.
     ///
     /// Backends must attempt to leave the sandbox running if checkpoint

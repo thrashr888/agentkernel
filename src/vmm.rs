@@ -11,6 +11,7 @@ use crate::backend::{
     detect_best_backend,
 };
 use crate::config::Config;
+use crate::cow::RootfsCowStore;
 use crate::docker_backend::detect_container_runtime;
 use crate::full_state::{FullStateCheckpoint, FullStateCheckpointStore};
 use crate::languages::docker_image_to_firecracker_runtime;
@@ -315,6 +316,12 @@ pub struct SandboxState {
     /// Source sandbox name when this sandbox was created by a full-state fork.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forked_from: Option<String>,
+    /// Opaque AgentKernel-owned writable Firecracker rootfs lineage. This is
+    /// persisted separately from full-state checkpoint IDs so ordinary stop
+    /// and start can retain guest filesystem changes without making a VM
+    /// memory checkpoint cold-startable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firecracker_rootfs: Option<String>,
 }
 
 impl SandboxState {
@@ -451,6 +458,14 @@ pub struct VmManager {
     /// host container runtime.
     #[cfg(test)]
     bypass_backend_runtime: bool,
+    /// Test-only backend injection for exercising lifecycle persistence
+    /// without requiring a host Firecracker/KVM installation.
+    #[cfg(test)]
+    test_backend_factory:
+        Option<Arc<dyn Fn(&str, BackendType) -> Result<Box<dyn Sandbox>> + Send + Sync>>,
+    /// Test-only one-shot failure injection for the atomic state boundary.
+    #[cfg(test)]
+    fail_next_state_save: std::sync::atomic::AtomicBool,
     /// Rootfs directory for Firecracker
     rootfs_dir: Option<PathBuf>,
     /// Next vsock CID
@@ -520,6 +535,8 @@ impl VmManager {
             data_dir: data_dir.to_path_buf(),
             volume_base_dir: None,
             bypass_backend_runtime: true,
+            test_backend_factory: None,
+            fail_next_state_save: std::sync::atomic::AtomicBool::new(false),
             rootfs_dir: None,
             next_cid: 3,
             detached: HashMap::new(),
@@ -536,6 +553,21 @@ impl VmManager {
     #[cfg(test)]
     pub fn set_volume_base_dir_for_tests(&mut self, volume_base_dir: PathBuf) {
         self.volume_base_dir = Some(volume_base_dir);
+    }
+
+    #[cfg(test)]
+    pub fn set_backend_factory_for_tests(
+        &mut self,
+        factory: Arc<dyn Fn(&str, BackendType) -> Result<Box<dyn Sandbox>> + Send + Sync>,
+    ) {
+        self.test_backend_factory = Some(factory);
+        self.bypass_backend_runtime = false;
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_state_save_for_tests(&self) {
+        self.fail_next_state_save
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Create a new VM manager (auto-selects backend based on availability)
@@ -555,6 +587,19 @@ impl VmManager {
         // Load existing sandboxes first so remote-only environments still have
         // a backend anchor when no local runtime is installed.
         let sandboxes = Self::load_sandboxes(&sandboxes_dir)?;
+
+        // Reap only artifacts that no persisted sandbox can own. This keeps
+        // the crash window between state publication and the rootfs marker
+        // publication recoverable on the next manager start.
+        if let Ok(store) = RootfsCowStore::open_default_without_reap() {
+            let retained: std::collections::HashSet<String> = sandboxes
+                .values()
+                .filter_map(|state| state.firecracker_rootfs.clone())
+                .collect();
+            if let Err(error) = store.reap_stale_except(&retained) {
+                eprintln!("[firecracker] rootfs COW cleanup scan failed: {error:#}");
+            }
+        }
 
         // Use explicit backend or auto-detect
         let backend = if let Some(b) = explicit_backend {
@@ -608,6 +653,10 @@ impl VmManager {
             volume_base_dir: None,
             #[cfg(test)]
             bypass_backend_runtime: false,
+            #[cfg(test)]
+            test_backend_factory: None,
+            #[cfg(test)]
+            fail_next_state_save: std::sync::atomic::AtomicBool::new(false),
             rootfs_dir,
             next_cid: max_cid + 1,
             detached: HashMap::new(),
@@ -892,6 +941,13 @@ impl VmManager {
 
     /// Save a sandbox state to disk
     fn save_sandbox(&self, state: &SandboxState) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .fail_next_state_save
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            bail!("simulated sandbox state publication failure");
+        }
         let directory = self.data_dir.join("sandboxes");
         std::fs::create_dir_all(&directory)?;
         let path = directory.join(format!("{}.json", state.name));
@@ -1301,6 +1357,7 @@ impl VmManager {
             full_state_lineage: false,
             paused_at: None,
             forked_from: None,
+            firecracker_rootfs: None,
         };
 
         self.save_sandbox(&state)?;
@@ -2066,6 +2123,27 @@ impl VmManager {
             .await
     }
 
+    fn ensure_unique_firecracker_rootfs_reference(
+        &self,
+        name: &str,
+        reference: Option<&str>,
+    ) -> Result<()> {
+        let Some(reference) = reference else {
+            return Ok(());
+        };
+        if let Some((other_name, _)) = self.sandboxes.iter().find(|(other_name, state)| {
+            other_name.as_str() != name && state.firecracker_rootfs.as_deref() == Some(reference)
+        }) {
+            bail!(
+                "Firecracker writable rootfs lineage '{}' is referenced by both '{}' and '{}'; refusing destructive or mutable access",
+                reference,
+                name,
+                other_name
+            );
+        }
+        Ok(())
+    }
+
     /// Resolve model governance from trusted server configuration and the
     /// sandbox's persisted ownership. Request payloads cannot select a tenant.
     fn model_governance_for_state(
@@ -2170,6 +2248,12 @@ impl VmManager {
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?
             .clone();
         let backend = state.backend.unwrap_or(self.backend);
+        if backend == BackendType::Firecracker {
+            self.ensure_unique_firecracker_rootfs_reference(
+                name,
+                state.firecracker_rootfs.as_deref(),
+            )?;
+        }
         if self.pause_recovery.contains_key(name) || self.resume_state_recovery.contains_key(name) {
             bail!(
                 "Sandbox '{}' has a pending full-state recovery; retry the recovery operation or remove it before starting another runtime",
@@ -2265,18 +2349,37 @@ impl VmManager {
         }
 
         #[cfg(test)]
-        if self.bypass_backend_runtime {
+        if self.bypass_backend_runtime && self.test_backend_factory.is_none() {
             self.resolve_volume_args(&state)?;
             return Ok(());
         }
 
         // Create sandbox using unified factory
-        let mut sandbox = create_sandbox_with_state(
-            backend,
-            name,
-            &crate::config::OrchestratorConfig::default(),
-            backend.is_remote().then(|| state.remote_context()),
-        )?;
+        let mut sandbox = {
+            #[cfg(test)]
+            if let Some(factory) = &self.test_backend_factory {
+                factory(name, backend)?
+            } else {
+                create_sandbox_with_state(
+                    backend,
+                    name,
+                    &crate::config::OrchestratorConfig::default(),
+                    backend.is_remote().then(|| state.remote_context()),
+                )?
+            }
+            #[cfg(not(test))]
+            {
+                create_sandbox_with_state(
+                    backend,
+                    name,
+                    &crate::config::OrchestratorConfig::default(),
+                    backend.is_remote().then(|| state.remote_context()),
+                )?
+            }
+        };
+        if backend == BackendType::Firecracker {
+            sandbox.set_persistent_disk_reference(state.firecracker_rootfs.as_deref())?;
+        }
 
         // Convert permissions to SandboxConfig
         let work_dir = if effective_perms.mount_cwd {
@@ -2678,14 +2781,57 @@ impl VmManager {
             }
             return Err(error);
         }
+        let previous_firecracker_rootfs = state.firecracker_rootfs.clone();
         let setup_result = async {
         if let Some(persisted) = self.sandboxes.get_mut(name) {
             persisted.work_dir = config.work_dir.clone();
+            if backend == BackendType::Firecracker {
+                persisted.firecracker_rootfs = sandbox.persistent_disk_reference();
+            }
             if let Some(metadata) = sandbox.runtime_metadata() {
                 Self::apply_runtime_metadata(persisted, &metadata);
             }
             let snapshot = persisted.clone();
-            self.save_sandbox(&snapshot)?;
+            if let Err(error) = self.save_sandbox(&snapshot) {
+                if backend == BackendType::Firecracker
+                    && let Some(persisted) = self.sandboxes.get_mut(name)
+                {
+                    persisted.firecracker_rootfs = previous_firecracker_rootfs.clone();
+                }
+                return Err(error);
+            }
+        }
+        if backend == BackendType::Firecracker
+            && let Err(publication_error) = sandbox.publish_persistent_disk_reference()
+        {
+                // State and the rootfs durability marker form a small
+                // two-phase publication. If marker publication fails, first
+                // restore the prior opaque state reference; only then permit
+                // the ordinary setup cleanup to discard a newly-prepared
+                // image. If rollback cannot be written, retain the newly
+                // published state reference and let the backend fail closed
+                // toward retention instead of creating a dangling reference.
+                let new_reference = sandbox.persistent_disk_reference();
+                let rollback = if let Some(persisted) = self.sandboxes.get_mut(name) {
+                    persisted.firecracker_rootfs = previous_firecracker_rootfs.clone();
+                    let snapshot = persisted.clone();
+                    self.save_sandbox(&snapshot)
+                } else {
+                    bail!("sandbox '{}' disappeared during disk lineage publication", name);
+                };
+                if rollback.is_ok() {
+                    sandbox
+                        .rollback_persistent_disk_reference()
+                        .context("failed to roll back unpublished Firecracker disk lineage")?;
+                    return Err(publication_error)
+                        .context("failed to publish Firecracker disk lineage");
+                }
+                if let Some(persisted) = self.sandboxes.get_mut(name) {
+                    persisted.firecracker_rootfs = new_reference;
+                }
+                return Err(publication_error).context(
+                    "failed to publish Firecracker disk lineage and could not roll back its state reference; lineage retained for retry",
+                );
         }
 
         // Inject non-SSH files first
@@ -3485,6 +3631,10 @@ impl VmManager {
         // a cold-startable state with an orphaned memory image.
         let mut paused_state = state.clone();
         paused_state.full_state_checkpoint = Some(staging.id().to_string());
+        // The checkpoint now owns the immutable disk copy. Do not leave the
+        // ordinary-stop lineage reference pointing at the runtime image that
+        // pause will destroy after publication.
+        paused_state.firecracker_rootfs = None;
         paused_state.full_state_lineage = true;
         paused_state.paused_at = Some(chrono::Utc::now().to_rfc3339());
         paused_state.last_activity_at = Some(chrono::Utc::now().to_rfc3339());
@@ -4022,6 +4172,7 @@ impl VmManager {
 
         let mut running_state = state.clone();
         running_state.full_state_checkpoint = None;
+        running_state.firecracker_rootfs = None;
         if !running_state
             .full_state_cleanup_pending
             .iter()
@@ -4229,6 +4380,7 @@ impl VmManager {
         child_state.volumes.clear();
         child_state.proxy_port = None;
         child_state.full_state_checkpoint = None;
+        child_state.firecracker_rootfs = None;
         child_state.paused_at = None;
         child_state.forked_from = Some(source.to_string());
         child_state.archived_at = None;
@@ -4377,6 +4529,13 @@ impl VmManager {
                 let snapshot = state.clone();
                 self.save_sandbox(&snapshot)?;
             }
+            if backend == BackendType::Firecracker
+                && let Some(state) = self.sandboxes.get_mut(name)
+            {
+                state.firecracker_rootfs = sandbox.persistent_disk_reference();
+                let snapshot = state.clone();
+                self.save_sandbox(&snapshot)?;
+            }
             log_event(AuditEvent::SandboxStopped {
                 name: name.to_string(),
             });
@@ -4397,6 +4556,14 @@ impl VmManager {
             .get(name)
             .and_then(|state| state.backend)
             .unwrap_or(self.backend);
+        if backend == BackendType::Firecracker {
+            self.ensure_unique_firecracker_rootfs_reference(
+                name,
+                self.sandboxes
+                    .get(name)
+                    .and_then(|state| state.firecracker_rootfs.as_deref()),
+            )?;
+        }
         // Preflight before stopping/removing the backend. A dirty managed
         // checkout must leave the running sandbox and its persisted state
         // untouched so the agent's work remains accessible for cleanup.
@@ -4430,13 +4597,31 @@ impl VmManager {
                 return Err(error).with_context(|| format!("failed to remove sandbox '{name}'"));
             }
         } else if !bypass_backend_runtime && let Some(state) = self.sandboxes.get(name).cloned() {
-            let mut sandbox = create_sandbox_with_state(
-                backend,
-                name,
-                &crate::config::OrchestratorConfig::default(),
-                backend.is_remote().then(|| state.remote_context()),
-            )
-            .with_context(|| format!("failed to initialize sandbox '{name}' for removal"))?;
+            let mut sandbox = {
+                #[cfg(test)]
+                if let Some(factory) = &self.test_backend_factory {
+                    factory(name, backend)?
+                } else {
+                    create_sandbox_with_state(
+                        backend,
+                        name,
+                        &crate::config::OrchestratorConfig::default(),
+                        backend.is_remote().then(|| state.remote_context()),
+                    )?
+                }
+                #[cfg(not(test))]
+                {
+                    create_sandbox_with_state(
+                        backend,
+                        name,
+                        &crate::config::OrchestratorConfig::default(),
+                        backend.is_remote().then(|| state.remote_context()),
+                    )?
+                }
+            };
+            if backend == BackendType::Firecracker {
+                sandbox.set_persistent_disk_reference(state.firecracker_rootfs.as_deref())?;
+            }
             sandbox
                 .remove()
                 .await
@@ -5162,6 +5347,7 @@ impl VmManager {
 mod tests {
     use super::*;
     use crate::backend::ExecResult;
+    use crate::cow::{RootfsCow, RootfsCowStore};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
@@ -5221,6 +5407,7 @@ mod tests {
             full_state_lineage: false,
             paused_at: None,
             forked_from: None,
+            firecracker_rootfs: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -5363,6 +5550,7 @@ mod tests {
             full_state_lineage: false,
             paused_at: None,
             forked_from: None,
+            firecracker_rootfs: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -5455,6 +5643,7 @@ mod tests {
             full_state_lineage: false,
             paused_at: None,
             forked_from: None,
+            firecracker_rootfs: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -5563,6 +5752,7 @@ mod tests {
                 full_state_lineage: false,
                 paused_at: None,
                 forked_from: None,
+                firecracker_rootfs: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();
@@ -5591,6 +5781,8 @@ mod tests {
             data_dir: temp_dir.path().to_path_buf(),
             volume_base_dir: None,
             bypass_backend_runtime: false,
+            test_backend_factory: None,
+            fail_next_state_save: std::sync::atomic::AtomicBool::new(false),
             backend: BackendType::Docker,
             running: HashMap::new(),
             pause_recovery: HashMap::new(),
@@ -5656,6 +5848,7 @@ mod tests {
             full_state_lineage: false,
             paused_at: None,
             forked_from: None,
+            firecracker_rootfs: None,
         };
         std::fs::create_dir_all(temp_dir.path().join("sandboxes")).unwrap();
         manager.sandboxes.insert("label-test".to_string(), state);
@@ -5680,6 +5873,8 @@ mod tests {
             data_dir: temp_dir.path().to_path_buf(),
             volume_base_dir: None,
             bypass_backend_runtime: false,
+            test_backend_factory: None,
+            fail_next_state_save: std::sync::atomic::AtomicBool::new(false),
             backend: BackendType::Docker,
             running: HashMap::new(),
             pause_recovery: HashMap::new(),
@@ -5749,6 +5944,7 @@ mod tests {
                 full_state_lineage: false,
                 paused_at: None,
                 forked_from: None,
+                firecracker_rootfs: None,
             };
             manager.sandboxes.insert(name.to_string(), state);
         }
@@ -5778,6 +5974,8 @@ mod tests {
             data_dir: temp_dir.path().to_path_buf(),
             volume_base_dir: None,
             bypass_backend_runtime: false,
+            test_backend_factory: None,
+            fail_next_state_save: std::sync::atomic::AtomicBool::new(false),
             backend: BackendType::Docker,
             running: HashMap::new(),
             pause_recovery: HashMap::new(),
@@ -5843,6 +6041,7 @@ mod tests {
             full_state_lineage: false,
             paused_at: None,
             forked_from: None,
+            firecracker_rootfs: None,
         };
         manager.sandboxes.insert("desc-test".to_string(), state);
 
@@ -5929,6 +6128,7 @@ mod tests {
             full_state_lineage: false,
             paused_at: None,
             forked_from: None,
+            firecracker_rootfs: None,
         };
 
         // Save to disk
@@ -5944,6 +6144,222 @@ mod tests {
 
     fn new_test_manager(temp_dir: &TempDir) -> VmManager {
         VmManager::for_tests(temp_dir.path()).unwrap()
+    }
+
+    fn durable_backend_factory(
+        store_root: &Path,
+        fail_publication: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Arc<dyn Fn(&str, BackendType) -> Result<Box<dyn Sandbox>> + Send + Sync> {
+        let store_root = store_root.to_path_buf();
+        Arc::new(move |name, backend| {
+            if backend != BackendType::Firecracker {
+                bail!("durable test factory only supports Firecracker");
+            }
+            Ok(Box::new(DurableTestSandbox::new(
+                name,
+                store_root.clone(),
+                Arc::clone(&fail_publication),
+            )?))
+        })
+    }
+
+    fn durable_state(name: &str) -> SandboxState {
+        let mut state = lifecycle_state(name);
+        state.backend = Some(BackendType::Firecracker);
+        state
+    }
+
+    #[test]
+    fn duplicated_firecracker_rootfs_reference_fails_closed() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let mut first = durable_state("first");
+        first.firecracker_rootfs = Some("sandbox-shared123456".to_string());
+        let mut second = durable_state("second");
+        second.firecracker_rootfs = first.firecracker_rootfs.clone();
+        manager.sandboxes.insert(first.name.clone(), first);
+        manager.sandboxes.insert(second.name.clone(), second);
+
+        let error = manager
+            .ensure_unique_firecracker_rootfs_reference("first", Some("sandbox-shared123456"))
+            .unwrap_err();
+        assert!(error.to_string().contains("referenced by both"));
+    }
+
+    fn configure_durable_manager(
+        manager: &mut VmManager,
+        store_root: &Path,
+        fail_publication: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        manager
+            .set_backend_factory_for_tests(durable_backend_factory(store_root, fail_publication));
+    }
+
+    #[tokio::test]
+    async fn ordinary_start_stop_start_reopens_persisted_rootfs_lineage() {
+        let temp_dir = TempDir::new().unwrap();
+        let store_dir = TempDir::new().unwrap();
+        let store_root = store_dir.path().join("cow");
+        let fail_publication = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut manager = new_test_manager(&temp_dir);
+        configure_durable_manager(&mut manager, &store_root, Arc::clone(&fail_publication));
+        manager.sandboxes.insert(
+            "durable-lifecycle".to_string(),
+            durable_state("durable-lifecycle"),
+        );
+        manager
+            .save_sandbox(manager.get_state("durable-lifecycle").unwrap())
+            .unwrap();
+
+        manager.start("durable-lifecycle").await.unwrap();
+        let reference = manager
+            .get_state("durable-lifecycle")
+            .unwrap()
+            .firecracker_rootfs
+            .clone()
+            .unwrap();
+        manager.stop("durable-lifecycle").await.unwrap();
+        assert!(
+            RootfsCowStore::new(&store_root)
+                .unwrap()
+                .adopt(&reference)
+                .is_ok()
+        );
+
+        let mut restarted = new_test_manager(&temp_dir);
+        restarted.sandboxes =
+            VmManager::load_sandboxes(&temp_dir.path().join("sandboxes")).unwrap();
+        configure_durable_manager(&mut restarted, &store_root, fail_publication);
+        restarted.start("durable-lifecycle").await.unwrap();
+        restarted.stop("durable-lifecycle").await.unwrap();
+        assert_eq!(
+            restarted
+                .get_state("durable-lifecycle")
+                .unwrap()
+                .firecracker_rootfs
+                .as_deref(),
+            Some(reference.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_after_manager_restart_discards_persisted_rootfs_lineage() {
+        let temp_dir = TempDir::new().unwrap();
+        let store_dir = TempDir::new().unwrap();
+        let store_root = store_dir.path().join("cow");
+        let fail_publication = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut manager = new_test_manager(&temp_dir);
+        configure_durable_manager(&mut manager, &store_root, Arc::clone(&fail_publication));
+        manager.sandboxes.insert(
+            "durable-remove".to_string(),
+            durable_state("durable-remove"),
+        );
+        manager
+            .save_sandbox(manager.get_state("durable-remove").unwrap())
+            .unwrap();
+        manager.start("durable-remove").await.unwrap();
+        let reference = manager
+            .get_state("durable-remove")
+            .unwrap()
+            .firecracker_rootfs
+            .clone()
+            .unwrap();
+        manager.stop("durable-remove").await.unwrap();
+
+        let mut restarted = new_test_manager(&temp_dir);
+        restarted.sandboxes =
+            VmManager::load_sandboxes(&temp_dir.path().join("sandboxes")).unwrap();
+        configure_durable_manager(&mut restarted, &store_root, fail_publication);
+        restarted.remove("durable-remove").await.unwrap();
+        assert!(!store_root.join(&reference).exists());
+        assert!(restarted.get_state("durable-remove").is_none());
+    }
+
+    #[tokio::test]
+    async fn rootfs_publication_failure_rolls_back_state_and_artifact() {
+        let temp_dir = TempDir::new().unwrap();
+        let store_dir = TempDir::new().unwrap();
+        let store_root = store_dir.path().join("cow");
+        let fail_publication = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mut manager = new_test_manager(&temp_dir);
+        configure_durable_manager(&mut manager, &store_root, Arc::clone(&fail_publication));
+        manager.sandboxes.insert(
+            "durable-publish-failure".to_string(),
+            durable_state("durable-publish-failure"),
+        );
+        manager
+            .save_sandbox(manager.get_state("durable-publish-failure").unwrap())
+            .unwrap();
+
+        let error = manager.start("durable-publish-failure").await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("publish Firecracker disk lineage")
+        );
+        assert!(
+            manager
+                .get_state("durable-publish-failure")
+                .unwrap()
+                .firecracker_rootfs
+                .is_none()
+        );
+        assert_eq!(
+            RootfsCowStore::new(&store_root)
+                .unwrap()
+                .usage_bytes()
+                .unwrap(),
+            0
+        );
+        let persisted: SandboxState = serde_json::from_slice(
+            &std::fs::read(
+                temp_dir
+                    .path()
+                    .join("sandboxes/durable-publish-failure.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(persisted.firecracker_rootfs.is_none());
+    }
+
+    #[tokio::test]
+    async fn rootfs_state_save_failure_discards_unpublished_artifact() {
+        let temp_dir = TempDir::new().unwrap();
+        let store_dir = TempDir::new().unwrap();
+        let store_root = store_dir.path().join("cow");
+        let fail_publication = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut manager = new_test_manager(&temp_dir);
+        configure_durable_manager(&mut manager, &store_root, fail_publication);
+        manager.sandboxes.insert(
+            "durable-save-failure".to_string(),
+            durable_state("durable-save-failure"),
+        );
+        manager
+            .save_sandbox(manager.get_state("durable-save-failure").unwrap())
+            .unwrap();
+        manager.fail_next_state_save_for_tests();
+
+        let error = manager.start("durable-save-failure").await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("simulated sandbox state publication failure")
+        );
+        assert!(
+            manager
+                .get_state("durable-save-failure")
+                .unwrap()
+                .firecracker_rootfs
+                .is_none()
+        );
+        assert_eq!(
+            RootfsCowStore::new(&store_root)
+                .unwrap()
+                .usage_bytes()
+                .unwrap(),
+            0
+        );
     }
 
     fn lifecycle_state(name: &str) -> SandboxState {
@@ -6000,6 +6416,7 @@ mod tests {
             full_state_lineage: false,
             paused_at: None,
             forked_from: None,
+            firecracker_rootfs: None,
         }
     }
 
@@ -6049,6 +6466,161 @@ mod tests {
         running: bool,
         stop_attempts: Option<Arc<AtomicUsize>>,
         stop_failures_before_success: usize,
+    }
+
+    /// A filesystem-only Firecracker double used to exercise VmManager's
+    /// state publication boundary without requiring KVM or a VMM binary.
+    struct DurableTestSandbox {
+        name: String,
+        store_root: PathBuf,
+        base_rootfs: PathBuf,
+        rootfs: Option<RootfsCow>,
+        reference: Option<String>,
+        published: bool,
+        running: bool,
+        fail_publication: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl DurableTestSandbox {
+        fn new(
+            name: &str,
+            store_root: PathBuf,
+            fail_publication: Arc<std::sync::atomic::AtomicBool>,
+        ) -> Result<Self> {
+            std::fs::create_dir_all(&store_root)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&store_root, std::fs::Permissions::from_mode(0o700))?;
+            }
+            let base_rootfs = store_root.join("test-base.ext4");
+            if !base_rootfs.exists() {
+                std::fs::write(&base_rootfs, b"durable test rootfs")?;
+            }
+            Ok(Self {
+                name: name.to_string(),
+                store_root,
+                base_rootfs,
+                rootfs: None,
+                reference: None,
+                published: false,
+                running: false,
+                fail_publication,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Sandbox for DurableTestSandbox {
+        async fn start(&mut self, _config: &SandboxConfig) -> Result<()> {
+            let store = RootfsCowStore::new(&self.store_root)?;
+            let rootfs = if let Some(reference) = self.reference.as_deref() {
+                store.adopt(reference)?
+            } else {
+                store.prepare(&self.base_rootfs)?
+            };
+            self.rootfs = Some(rootfs);
+            self.running = true;
+            Ok(())
+        }
+
+        async fn exec(&mut self, _cmd: &[&str]) -> Result<ExecResult> {
+            Ok(ExecResult::success(String::new()))
+        }
+
+        async fn stop(&mut self) -> Result<()> {
+            if let Some(mut rootfs) = self.rootfs.take() {
+                if self.published {
+                    rootfs.preserve_for_lifecycle()?;
+                    self.reference = Some(rootfs.reference());
+                    drop(rootfs);
+                } else {
+                    rootfs.discard_persisted()?;
+                    self.reference = None;
+                }
+            }
+            self.running = false;
+            Ok(())
+        }
+
+        async fn remove(&mut self) -> Result<()> {
+            if self.rootfs.is_none()
+                && let Some(reference) = self.reference.as_deref()
+            {
+                self.rootfs = Some(RootfsCowStore::new(&self.store_root)?.adopt(reference)?);
+            }
+            if let Some(rootfs) = self.rootfs.take() {
+                rootfs.discard_persisted()?;
+            }
+            self.reference = None;
+            self.published = false;
+            self.running = false;
+            Ok(())
+        }
+
+        fn set_persistent_disk_reference(&mut self, reference: Option<&str>) -> Result<()> {
+            if self.running || self.rootfs.is_some() {
+                bail!("test Firecracker runtime is active");
+            }
+            self.reference = reference.map(str::to_owned);
+            self.published = reference.is_some();
+            Ok(())
+        }
+
+        fn persistent_disk_reference(&self) -> Option<String> {
+            self.reference
+                .clone()
+                .or_else(|| self.rootfs.as_ref().map(RootfsCow::reference))
+        }
+
+        fn publish_persistent_disk_reference(&mut self) -> Result<()> {
+            if self.fail_publication.swap(false, Ordering::SeqCst) {
+                bail!("simulated rootfs marker publication failure");
+            }
+            let rootfs = self
+                .rootfs
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("test rootfs is not prepared"))?;
+            rootfs.preserve_for_lifecycle()?;
+            self.reference = Some(rootfs.reference());
+            self.published = true;
+            Ok(())
+        }
+
+        fn rollback_persistent_disk_reference(&mut self) -> Result<()> {
+            if self.reference.is_none() {
+                self.published = false;
+            }
+            Ok(())
+        }
+
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn backend_type(&self) -> BackendType {
+            BackendType::Firecracker
+        }
+
+        fn is_running(&self) -> bool {
+            self.running
+        }
+
+        async fn write_file_unchecked(&mut self, _path: &str, _content: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn read_file_unchecked(&mut self, _path: &str) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+
+        async fn remove_file_unchecked(&mut self, _path: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn mkdir_unchecked(&mut self, _path: &str, _recursive: bool) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[cfg(unix)]

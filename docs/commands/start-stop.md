@@ -16,6 +16,16 @@ the VM process survives after the CLI exits. Run `agentkernel serve` first;
 `AGENTKERNEL_PORT` selects a non-default local port. If the server requires an
 API key, set `AGENTKERNEL_API_KEY` for delegated CLI requests.
 
+Each ordinary Firecracker start owns an AgentKernel-managed writable rootfs
+lineage. The opaque lineage reference is stored with the sandbox state and is
+reopened after stop, so guest filesystem changes survive a cold start.
+
+Set `AGENTKERNEL_ROOTFS_COW_MAX_BYTES` to a host-wide logical-byte cap for
+durable Firecracker writable images. A new start fails before copying its base
+image when existing COW images plus that image would exceed the cap. This is a
+storage headroom guard, not a tenant quota; it applies to every local
+Firecracker sandbox and counts stopped lineages as well as running ones.
+
 Before delegating, the CLI resolves the saved `agentkernel.toml` permissions
 and startup file injections. It stores that resolved configuration in a private
 host manifest and sends only an unguessable one-shot reference in the local
@@ -69,11 +79,10 @@ Stop a running sandbox. Container/provider backends preserve their normal
 backend state and can be started again.
 
 For Firecracker, the CLI delegates stop to the local API server that owns the
-VM process. A Firecracker VM restored or forked from a full-state checkpoint
-rejects ordinary `stop`, because its writable disk is currently tied to that
-runtime and a cold `start` would reset it. Use `pause` to preserve it or
-`remove` to discard it. Ordinary stop on a disposable Firecracker sandbox does
-not preserve writable disk changes.
+VM process. Ordinary stop preserves the writable rootfs lineage for the next
+cold start. A Firecracker VM restored or forked from a full-state checkpoint
+still rejects ordinary `stop`: its memory/device checkpoint remains the source
+of truth. Use `pause` to create a new checkpoint or `remove` to discard it.
 
 ### Usage
 
@@ -97,7 +106,8 @@ agentkernel sandbox list
 
 1. Sends stop signal to the container/VM
 2. Waits for graceful shutdown
-3. Sandbox configuration is preserved on disk; backend persistence rules apply
+3. Sandbox configuration and Firecracker writable-disk lineage are preserved
+   on disk; backend persistence rules apply
 4. Can be started again when the backend's persistence contract allows it;
    full-state Firecracker lineages use `pause` and `resume` instead
 
