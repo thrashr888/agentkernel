@@ -6474,9 +6474,10 @@ mod tests {
             let cli =
                 Cli::try_parse_from(["agentkernel", "sandbox", command, "paused-sandbox"]).unwrap();
             match cli.command {
-                Commands::Sandbox {
-                    action: SandboxAction::Pause { name },
-                } => assert_eq!(name, "paused-sandbox"),
+                Commands::Sandbox { action } => match *action {
+                    SandboxAction::Pause { name } => assert_eq!(name, "paused-sandbox"),
+                    _ => panic!("expected sandbox pause for {command}"),
+                },
                 _ => panic!("expected sandbox pause for {command}"),
             }
         }
@@ -6487,9 +6488,10 @@ mod tests {
         let resume =
             Cli::try_parse_from(["agentkernel", "sandbox", "resume", "paused-sandbox"]).unwrap();
         match resume.command {
-            Commands::Sandbox {
-                action: SandboxAction::Resume { name },
-            } => assert_eq!(name, "paused-sandbox"),
+            Commands::Sandbox { action } => match *action {
+                SandboxAction::Resume { name } => assert_eq!(name, "paused-sandbox"),
+                _ => panic!("expected sandbox resume"),
+            },
             _ => panic!("expected sandbox resume"),
         }
 
@@ -6503,16 +6505,16 @@ mod tests {
         ])
         .unwrap();
         match fork.command {
-            Commands::Sandbox {
-                action:
-                    SandboxAction::Fork {
-                        source,
-                        r#as: child,
-                    },
-            } => {
-                assert_eq!(source, "paused-sandbox");
-                assert_eq!(child, "candidate-a");
-            }
+            Commands::Sandbox { action } => match *action {
+                SandboxAction::Fork {
+                    source,
+                    r#as: child,
+                } => {
+                    assert_eq!(source, "paused-sandbox");
+                    assert_eq!(child, "candidate-a");
+                }
+                _ => panic!("expected sandbox fork"),
+            },
             _ => panic!("expected sandbox fork"),
         }
     }
