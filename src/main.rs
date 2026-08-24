@@ -5480,6 +5480,13 @@ mod tests {
     }
 
     #[test]
+    fn scim_store_opens_after_legacy_schema_repair() {
+        let (_temp, db_path) = crate::durable_storage::legacy_scim_database_for_test();
+        let storage = crate::durable_storage::DurableStorage::new(db_path).unwrap();
+        crate::scim::ScimStore::new_with_mappings(storage.clone(), Vec::new()).unwrap();
+    }
+
+    #[test]
     fn cli_accepts_explicit_devcontainer_path() {
         let cli = Cli::try_parse_from([
             "agentkernel",
