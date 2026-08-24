@@ -278,9 +278,18 @@ continuity, or concurrent forks.
 
 ### Opt-in native KVM gate
 
-The existing native test is ignored by default. On the access-controlled runner
-labelled `self-hosted,Linux,X64,agentkernel-kvm-safe`, provision the pinned
-binary and guest assets, then run:
+The native gate is ignored by default and requires an explicit
+`AGENTKERNEL_KVM_SMOKE=1` opt-in. It first keeps the backend-level
+Firecracker/vsock/snapshot signal, then runs the full persisted `VmManager`
+pause/resume/fork transaction with two independent children, checkpoint
+manifest/digest validation, corrupt-artifact fail-closed recovery, cleanup
+tombstones, process continuity, and guest `/dev/urandom` divergence. A second
+daemon-owned pass drives the same manager through the CLI, direct HTTP, and MCP
+routes so no surface can silently create a short-lived Firecracker owner.
+
+On the access-controlled runner labelled
+`self-hosted,Linux,X64,agentkernel-kvm-safe`, provision the pinned binary and
+guest assets, then run:
 
 ```bash
 AGENTKERNEL_KVM_SMOKE=1 \
@@ -290,10 +299,14 @@ AGENTKERNEL_KVM_ROOTFS=/opt/agentkernel/images/rootfs/base.ext4 \
 cargo test --locked --test firecracker_kvm_smoke -- --ignored --nocapture
 ```
 
-The runner must have readable and writable `/dev/kvm`. The test must verify
-Firecracker reports `v1.16.1`, and its cleanup path must execute even when an
-assertion fails. Dispatching the repository workflow requires explicit runner
-confirmation:
+The runner must have readable and writable `/dev/kvm`, and the kernel/rootfs
+variables must name regular files. The gate verifies Firecracker reports
+`v1.16.1`; `AGENTKERNEL_KVM_KERNEL` and `AGENTKERNEL_KVM_ROOTFS` are honored by
+the normal Firecracker constructor only under the Linux/x86_64 opt-in, so the
+manager and daemon bind the exact prepared fixtures without changing ordinary
+production image discovery. The gate uses a temporary HOME for persisted state
+and kills its API server guard on assertion failure. Dispatching the repository
+workflow requires explicit runner confirmation:
 
 ```bash
 gh workflow run firecracker-kvm-smoke.yml -f confirm_safe_runner=true

@@ -39,5 +39,5 @@ jobs:
           test -f "$AGENTKERNEL_KVM_KERNEL"
           test -f "$AGENTKERNEL_KVM_ROOTFS"
           "$FIRECRACKER_BIN" --version | grep -F 'v1.16.1'
-      - name: Lifecycle, exec, networking, vsock, snapshot, and recovery
+      - name: Backend plus VmManager lifecycle, routes, recovery, and clone safety
         run: cargo test --locked --test firecracker_kvm_smoke -- --ignored --nocapture
