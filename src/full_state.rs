@@ -667,7 +667,11 @@ fn available_space_bytes(path: &Path) -> Result<u64> {
     }
     // SAFETY: statvfs returned success and initialized the structure.
     let stats = unsafe { stats.assume_init() };
-    Ok((stats.f_bavail as u64).saturating_mul(stats.f_frsize))
+    // `fsblkcnt_t` is u32 on Apple targets and u64 on Linux targets. Keep the
+    // widening cast for the former even though it is a no-op on the latter.
+    #[allow(clippy::unnecessary_cast)]
+    let available_blocks = stats.f_bavail as u64;
+    Ok(available_blocks.saturating_mul(stats.f_frsize))
 }
 
 #[cfg(not(unix))]
