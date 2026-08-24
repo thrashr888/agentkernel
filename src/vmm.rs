@@ -13,7 +13,7 @@ use crate::backend::{
 use crate::config::Config;
 use crate::cow::RootfsCowStore;
 use crate::docker_backend::detect_container_runtime;
-use crate::full_state::{FullStateCheckpoint, FullStateCheckpointStore};
+use crate::full_state::{CheckpointGcResult, FullStateCheckpoint, FullStateCheckpointStore};
 use crate::languages::docker_image_to_firecracker_runtime;
 use crate::permissions::Permissions;
 use crate::pool::ContainerPool;
@@ -33,7 +33,7 @@ pub struct CommandFailed {
     pub output: String,
 }
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(feature = "enterprise")]
@@ -322,6 +322,11 @@ pub struct SandboxState {
     /// memory checkpoint cold-startable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firecracker_rootfs: Option<String>,
+    /// Checkpoint retained as the immutable source for a running full-state
+    /// fork. This remains durable even if the paused source sandbox is removed
+    /// so reference-aware GC cannot delete state still needed by the child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_state_source_checkpoint: Option<String>,
 }
 
 impl SandboxState {
@@ -500,6 +505,24 @@ fn with_full_state_cleanup_intent(mut state: SandboxState, checkpoint_id: &str) 
             .push(checkpoint_id.to_string());
     }
     state
+}
+
+fn full_state_tenant_id(state: &SandboxState) -> String {
+    state
+        .owner_org_id
+        .as_deref()
+        .or(state.tenant_id.as_deref())
+        .or(state.owner_user_id.as_deref())
+        .unwrap_or("local")
+        .to_string()
+}
+
+fn add_checkpoint_reference(references: &mut HashSet<String>, id: Option<&str>) {
+    if let Some(id) = id
+        && let Ok(id) = uuid::Uuid::parse_str(id)
+    {
+        references.insert(id.to_string());
+    }
 }
 
 /// Escape a string for use inside a single-quoted shell command.
@@ -842,13 +865,147 @@ impl VmManager {
         }
     }
 
-    fn delete_full_state_artifacts(
+    /// Build the complete durable reference set used by checkpoint GC. A
+    /// running fork retains its immutable source checkpoint even after its
+    /// paused source is removed, so the child carries an explicit reference.
+    fn full_state_checkpoint_references(&self) -> HashSet<String> {
+        let mut references = self.full_state_live_checkpoint_references();
+        for state in self.sandboxes.values() {
+            for id in &state.full_state_cleanup_pending {
+                add_checkpoint_reference(&mut references, Some(id));
+            }
+        }
+        for state in self.resume_state_recovery.values() {
+            for id in &state.full_state_cleanup_pending {
+                add_checkpoint_reference(&mut references, Some(id));
+            }
+        }
+        references
+    }
+
+    /// References that make a checkpoint currently non-consumable. Cleanup
+    /// intents are deliberately excluded: they request deletion once no
+    /// paused source, recovery transition, or running fork still needs it.
+    fn full_state_live_checkpoint_references(&self) -> HashSet<String> {
+        self.full_state_live_checkpoint_references_except(None)
+    }
+
+    fn full_state_live_checkpoint_references_except(
+        &self,
+        excluded_sandbox: Option<&str>,
+    ) -> HashSet<String> {
+        let mut references = HashSet::new();
+        for state in self.sandboxes.values() {
+            if excluded_sandbox == Some(state.name.as_str()) {
+                continue;
+            }
+            add_checkpoint_reference(&mut references, state.full_state_checkpoint.as_deref());
+            add_checkpoint_reference(
+                &mut references,
+                state.full_state_source_checkpoint.as_deref(),
+            );
+        }
+        for (name, state) in &self.resume_state_recovery {
+            if excluded_sandbox == Some(name.as_str()) {
+                continue;
+            }
+            add_checkpoint_reference(&mut references, state.full_state_checkpoint.as_deref());
+            add_checkpoint_reference(
+                &mut references,
+                state.full_state_source_checkpoint.as_deref(),
+            );
+        }
+        for (name, recovery) in &self.pause_recovery {
+            if excluded_sandbox == Some(name.as_str()) {
+                continue;
+            }
+            add_checkpoint_reference(
+                &mut references,
+                recovery
+                    .staging_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.strip_prefix(".staging-"))
+                    .or_else(|| {
+                        recovery
+                            .staging_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                    }),
+            );
+        }
+        references
+    }
+
+    /// Strictly reload durable references while holding the checkpoint-store
+    /// lease. Malformed or symlinked state fails closed so maintenance cannot
+    /// infer that a potentially referenced checkpoint is orphaned.
+    fn persisted_full_state_checkpoint_references(
+        &self,
+        include_cleanup_intents: bool,
+        excluded_sandbox: Option<&str>,
+    ) -> Result<HashSet<String>> {
+        let directory = self.data_dir.join("sandboxes");
+        let mut references = HashSet::new();
+        if !directory.exists() {
+            return Ok(references);
+        }
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                bail!(
+                    "sandbox state is not a regular file while collecting checkpoint references: {}",
+                    path.display()
+                );
+            }
+            let state: SandboxState =
+                serde_json::from_slice(&std::fs::read(&path)?).with_context(|| {
+                    format!(
+                        "invalid sandbox state while collecting checkpoint references: {}",
+                        path.display()
+                    )
+                })?;
+            if excluded_sandbox == Some(state.name.as_str()) {
+                continue;
+            }
+            add_checkpoint_reference(&mut references, state.full_state_checkpoint.as_deref());
+            add_checkpoint_reference(
+                &mut references,
+                state.full_state_source_checkpoint.as_deref(),
+            );
+            if include_cleanup_intents {
+                for id in &state.full_state_cleanup_pending {
+                    add_checkpoint_reference(&mut references, Some(id));
+                }
+            }
+        }
+        Ok(references)
+    }
+
+    /// Explicitly garbage-collect unreferenced full-state artifacts. The
+    /// operation is exposed for an administrator/maintenance caller rather
+    /// than run implicitly during startup.
+    pub fn garbage_collect_full_state_checkpoints(&self) -> Result<CheckpointGcResult> {
+        let store = FullStateCheckpointStore::new(&self.data_dir)?;
+        let lease = store.acquire_store_lease()?;
+        let mut references = self.full_state_checkpoint_references();
+        references.extend(self.persisted_full_state_checkpoint_references(true, None)?);
+        store.gc_with_default_grace_and_lease(&references, &lease)
+    }
+
+    fn delete_full_state_artifacts_with_lease(
         store: &FullStateCheckpointStore,
         checkpoint_id: &str,
+        lease: &crate::full_state::CheckpointStoreLease,
     ) -> Result<()> {
-        store.delete(checkpoint_id)?;
+        store.delete_with_lease(checkpoint_id, lease)?;
         let staging_path = store.staging_path(checkpoint_id)?;
-        store.discard_staging(&staging_path)
+        store.discard_staging_with_lease(&staging_path, lease)
     }
 
     /// Retry durable deletion intents left after a checkpoint was consumed.
@@ -858,6 +1015,15 @@ impl VmManager {
         let Ok(store) = FullStateCheckpointStore::new(&self.data_dir) else {
             return;
         };
+        let Ok(lease) = store.acquire_store_lease() else {
+            return;
+        };
+        let mut live_references = self.full_state_live_checkpoint_references();
+        let Ok(persisted_references) = self.persisted_full_state_checkpoint_references(false, None)
+        else {
+            return;
+        };
+        live_references.extend(persisted_references);
         let names: Vec<String> = self.sandboxes.keys().cloned().collect();
         for name in names {
             let Some(current) = self.sandboxes.get(&name).cloned() else {
@@ -868,7 +1034,19 @@ impl VmManager {
             }
             let mut remaining = Vec::new();
             for checkpoint_id in &current.full_state_cleanup_pending {
-                if let Err(error) = Self::delete_full_state_artifacts(&store, checkpoint_id) {
+                let canonical = uuid::Uuid::parse_str(checkpoint_id)
+                    .ok()
+                    .map(|id| id.to_string());
+                if canonical
+                    .as_ref()
+                    .is_some_and(|id| live_references.contains(id))
+                {
+                    remaining.push(checkpoint_id.clone());
+                    continue;
+                }
+                if let Err(error) =
+                    Self::delete_full_state_artifacts_with_lease(&store, checkpoint_id, &lease)
+                {
                     eprintln!(
                         "Warning: failed to finish checkpoint cleanup '{}' for sandbox '{}': {error:#}",
                         checkpoint_id, name
@@ -1358,6 +1536,7 @@ impl VmManager {
             paused_at: None,
             forked_from: None,
             firecracker_rootfs: None,
+            full_state_source_checkpoint: None,
         };
 
         self.save_sandbox(&state)?;
@@ -3589,6 +3768,7 @@ impl VmManager {
             .get(name)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        let tenant_id = full_state_tenant_id(&state);
         let backend = state.backend.unwrap_or(self.backend);
         if backend != BackendType::Firecracker {
             bail!(
@@ -3621,10 +3801,9 @@ impl VmManager {
             .get(name)
             .expect("running presence was validated before capacity reservation")
             .full_state_reservation_bytes(state.memory_mb)?;
-        store
-            .ensure_capacity(reservation_bytes)
+        let staging = store
+            .reserve_for_tenant(Some(&tenant_id), reservation_bytes)
             .with_context(|| format!("cannot pause sandbox '{name}'"))?;
-        let staging = store.begin()?;
         // Persist the checkpoint identity before changing the VM. If the
         // service exits after Firecracker stops but before publication, the
         // sandbox remains conservatively paused instead of silently becoming
@@ -3639,7 +3818,8 @@ impl VmManager {
         paused_state.paused_at = Some(chrono::Utc::now().to_rfc3339());
         paused_state.last_activity_at = Some(chrono::Utc::now().to_rfc3339());
         if let Err(error) = self.save_sandbox(&paused_state) {
-            if let Err(cleanup_error) = store.discard_staging(staging.path()) {
+            let staging_path = staging.preserve();
+            if let Err(cleanup_error) = store.discard_staging(&staging_path) {
                 return Err(error).context(format!(
                     "failed to persist pause transition and failed to discard staging: {cleanup_error:#}"
                 ));
@@ -3688,21 +3868,23 @@ impl VmManager {
                             );
                         }
 
-                        if let Err(marker_error) = store.mark_recovery_ready(
+                        if let Err(marker_error) = store.mark_recovery_ready_for_tenant(
                             &staging,
                             name,
                             &state.uuid,
                             state.vcpus,
                             state.memory_mb,
                             snapshot.clone(),
+                            Some(&tenant_id),
                         ) {
-                            match store.commit(
+                            match store.commit_for_tenant(
                                 &staging,
                                 name,
                                 &state.uuid,
                                 state.vcpus,
                                 state.memory_mb,
                                 snapshot.clone(),
+                                Some(&tenant_id),
                             ) {
                                 Ok(checkpoint) => {
                                     crate::metrics::record_sandbox_lifecycle(
@@ -3730,13 +3912,14 @@ impl VmManager {
                             }
                         }
 
-                        match store.commit(
+                        match store.commit_for_tenant(
                             &staging,
                             name,
                             &state.uuid,
                             state.vcpus,
                             state.memory_mb,
                             snapshot,
+                            Some(&tenant_id),
                         ) {
                             Ok(checkpoint) => {
                                 crate::metrics::record_sandbox_lifecycle(
@@ -3823,24 +4006,26 @@ impl VmManager {
         // crash in the narrow commit window can be recovered without risking
         // a duplicate of a still-live VM.
         let marker_failure = store
-            .mark_recovery_ready(
+            .mark_recovery_ready_for_tenant(
                 &staging,
                 name,
                 &state.uuid,
                 state.vcpus,
                 state.memory_mb,
                 backend_snapshot.clone(),
+                Some(&tenant_id),
             )
             .err()
             .map(|error| format!("{error:#}"));
 
-        let checkpoint = match store.commit(
+        let checkpoint = match store.commit_for_tenant(
             &staging,
             name,
             &state.uuid,
             state.vcpus,
             state.memory_mb,
             backend_snapshot.clone(),
+            Some(&tenant_id),
         ) {
             Ok(checkpoint) => checkpoint,
             Err(error) => {
@@ -3903,6 +4088,24 @@ impl VmManager {
             paused_state.full_state_checkpoint.as_deref(),
             Some(checkpoint.id.as_str())
         );
+        if paused_state.full_state_source_checkpoint.is_some() {
+            let mut finalized_state = paused_state.clone();
+            finalized_state.full_state_source_checkpoint = None;
+            match self.save_sandbox(&finalized_state) {
+                Ok(()) => {
+                    self.sandboxes.insert(name.to_string(), finalized_state);
+                }
+                Err(error) => {
+                    // Retaining the older source reference is a safe leak and
+                    // lets a later GC retry. Never risk dropping it before the
+                    // replacement checkpoint is both published and durable.
+                    eprintln!(
+                        "Warning: failed to release superseded full-state source checkpoint reference for '{}': {error:#}",
+                        name
+                    );
+                }
+            }
+        }
         crate::metrics::record_sandbox_lifecycle(
             "paused",
             "firecracker",
@@ -3928,6 +4131,7 @@ impl VmManager {
             .get(name)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        let tenant_id = full_state_tenant_id(&state);
         let backend = state.backend.unwrap_or(self.backend);
         if backend != BackendType::Firecracker {
             bail!(
@@ -4028,22 +4232,24 @@ impl VmManager {
                     }
                 };
                 let marker_error = store
-                    .mark_recovery_ready(
+                    .mark_recovery_ready_for_tenant(
                         &staging,
                         name,
                         &state.uuid,
                         state.vcpus,
                         state.memory_mb,
                         snapshot.clone(),
+                        Some(&tenant_id),
                     )
                     .err();
-                if let Err(error) = store.commit(
+                if let Err(error) = store.commit_for_tenant(
                     &staging,
                     name,
                     &state.uuid,
                     state.vcpus,
                     state.memory_mb,
                     snapshot,
+                    Some(&tenant_id),
                 ) {
                     let marker_context = marker_error.as_ref().map_or(String::new(), |marker| {
                         format!("; recovery-ready marker also failed: {marker:#}")
@@ -4115,12 +4321,13 @@ impl VmManager {
             if staging_path.is_dir() {
                 if store.recovery_is_ready(checkpoint_id)? {
                     store
-                        .recover_ready(
+                        .recover_ready_for_tenant(
                             checkpoint_id,
                             name,
                             &state.uuid,
                             state.vcpus,
                             state.memory_mb,
+                            Some(&tenant_id),
                         )
                         .with_context(|| {
                             format!(
@@ -4323,31 +4530,35 @@ impl VmManager {
         }
 
         let store = FullStateCheckpointStore::new(&self.data_dir)?;
-        let (checkpoint, checkpoint_path) = if store.contains(checkpoint_id)? {
-            store.load(checkpoint_id)?
-        } else {
+        if !store.contains(checkpoint_id)? {
             let staging_path = store.staging_path(checkpoint_id)?;
             if staging_path.is_dir() && store.recovery_is_ready(checkpoint_id)? {
                 store
-                    .recover_ready(
+                    .recover_ready_for_tenant(
                         checkpoint_id,
                         source,
                         &source_state.uuid,
                         source_state.vcpus,
                         source_state.memory_mb,
+                        Some(&full_state_tenant_id(&source_state)),
                     )
                     .with_context(|| {
                         format!(
                             "failed to publish recovery-ready checkpoint for sandbox '{source}'"
                         )
-                    })?
+                    })?;
             } else {
                 bail!(
                     "Sandbox '{}' has no published, recovery-ready full-state checkpoint",
                     source
                 );
             }
-        };
+        }
+        // Fence GC and removal until the child reference is durably written.
+        // A separate process may operate on the same checkpoint store, so the
+        // in-memory VMM write lock alone is insufficient.
+        let _checkpoint_lease = store.acquire_store_lease()?;
+        let (checkpoint, checkpoint_path) = store.load(checkpoint_id)?;
         checkpoint.validate_source(source, &source_state.uuid)?;
         if checkpoint.vcpus != source_state.vcpus || checkpoint.memory_mb != source_state.memory_mb
         {
@@ -4381,6 +4592,7 @@ impl VmManager {
         child_state.proxy_port = None;
         child_state.full_state_checkpoint = None;
         child_state.firecracker_rootfs = None;
+        child_state.full_state_source_checkpoint = Some(checkpoint_id.to_string());
         child_state.paused_at = None;
         child_state.forked_from = Some(source.to_string());
         child_state.archived_at = None;
@@ -4651,8 +4863,31 @@ impl VmManager {
             checkpoint_ids.dedup();
             if !checkpoint_ids.is_empty() {
                 let store = FullStateCheckpointStore::new(&self.data_dir)?;
+                let lease = store.acquire_store_lease()?;
+                let mut live_references =
+                    self.full_state_live_checkpoint_references_except(Some(name));
+                live_references
+                    .extend(self.persisted_full_state_checkpoint_references(false, Some(name))?);
                 for checkpoint_id in checkpoint_ids {
-                    Self::delete_full_state_artifacts(&store, &checkpoint_id).with_context(|| {
+                    let canonical = uuid::Uuid::parse_str(&checkpoint_id)
+                        .ok()
+                        .map(|id| id.to_string());
+                    if canonical
+                        .as_ref()
+                        .is_some_and(|id| live_references.contains(id))
+                    {
+                        eprintln!(
+                            "Warning: retaining full-state checkpoint '{}' while another sandbox still references it",
+                            checkpoint_id
+                        );
+                        continue;
+                    }
+                    Self::delete_full_state_artifacts_with_lease(
+                        &store,
+                        &checkpoint_id,
+                        &lease,
+                    )
+                    .with_context(|| {
                         format!(
                             "failed to delete full-state artifacts '{}' for sandbox '{}' after its runtime was removed; retry removal to finish cleanup",
                             checkpoint_id, name
@@ -4858,6 +5093,15 @@ impl VmManager {
         for name in expired {
             self.remove(&name).await?;
             removed.push(name);
+        }
+        let checkpoint_gc = self.garbage_collect_full_state_checkpoints()?;
+        if checkpoint_gc.removed_published > 0 || checkpoint_gc.removed_staging > 0 {
+            eprintln!(
+                "[full-state] garbage collection removed {} published checkpoints and {} staging directories ({} bytes)",
+                checkpoint_gc.removed_published,
+                checkpoint_gc.removed_staging,
+                checkpoint_gc.freed_bytes
+            );
         }
         Ok(removed)
     }
@@ -5408,6 +5652,7 @@ mod tests {
             paused_at: None,
             forked_from: None,
             firecracker_rootfs: None,
+            full_state_source_checkpoint: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -5551,6 +5796,7 @@ mod tests {
             paused_at: None,
             forked_from: None,
             firecracker_rootfs: None,
+            full_state_source_checkpoint: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -5644,6 +5890,7 @@ mod tests {
             paused_at: None,
             forked_from: None,
             firecracker_rootfs: None,
+            full_state_source_checkpoint: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -5753,6 +6000,7 @@ mod tests {
                 paused_at: None,
                 forked_from: None,
                 firecracker_rootfs: None,
+                full_state_source_checkpoint: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();
@@ -5849,6 +6097,7 @@ mod tests {
             paused_at: None,
             forked_from: None,
             firecracker_rootfs: None,
+            full_state_source_checkpoint: None,
         };
         std::fs::create_dir_all(temp_dir.path().join("sandboxes")).unwrap();
         manager.sandboxes.insert("label-test".to_string(), state);
@@ -5945,6 +6194,7 @@ mod tests {
                 paused_at: None,
                 forked_from: None,
                 firecracker_rootfs: None,
+                full_state_source_checkpoint: None,
             };
             manager.sandboxes.insert(name.to_string(), state);
         }
@@ -6042,6 +6292,7 @@ mod tests {
             paused_at: None,
             forked_from: None,
             firecracker_rootfs: None,
+            full_state_source_checkpoint: None,
         };
         manager.sandboxes.insert("desc-test".to_string(), state);
 
@@ -6129,6 +6380,7 @@ mod tests {
             paused_at: None,
             forked_from: None,
             firecracker_rootfs: None,
+            full_state_source_checkpoint: None,
         };
 
         // Save to disk
@@ -6417,7 +6669,70 @@ mod tests {
             paused_at: None,
             forked_from: None,
             firecracker_rootfs: None,
+            full_state_source_checkpoint: None,
         }
+    }
+
+    #[tokio::test]
+    async fn gc_keeps_checkpoint_referenced_by_running_fork_after_source_removal() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FullStateCheckpointStore::new(temp_dir.path()).unwrap();
+        let source = lifecycle_state("fork-source");
+        let staging = store.begin().unwrap();
+        std::fs::write(
+            staging.path().join(crate::full_state::MEMORY_FILE),
+            b"memory",
+        )
+        .unwrap();
+        std::fs::write(
+            staging.path().join(crate::full_state::VMSTATE_FILE),
+            b"state",
+        )
+        .unwrap();
+        std::fs::write(
+            staging.path().join(crate::full_state::ROOTFS_FILE),
+            b"rootfs",
+        )
+        .unwrap();
+        let checkpoint = store
+            .commit(
+                &staging,
+                &source.name,
+                &source.uuid,
+                source.vcpus,
+                source.memory_mb,
+                PauseRollbackSandbox::snapshot(),
+            )
+            .unwrap();
+
+        let mut manager = new_test_manager(&temp_dir);
+        let mut paused_source = source.clone();
+        paused_source.backend = Some(BackendType::Firecracker);
+        paused_source.paused_at = Some(chrono::Utc::now().to_rfc3339());
+        paused_source.full_state_checkpoint = Some(checkpoint.id.clone());
+        paused_source.full_state_lineage = true;
+        manager.insert_state_for_tests(paused_source);
+        let mut fork = lifecycle_state("fork-child");
+        fork.backend = Some(BackendType::Firecracker);
+        fork.full_state_lineage = true;
+        fork.forked_from = Some(source.name);
+        fork.full_state_source_checkpoint = Some(checkpoint.id.clone());
+        manager.insert_state_for_tests(fork);
+
+        manager.remove("fork-source").await.unwrap();
+        assert!(manager.get_state("fork-source").is_none());
+        assert!(store.contains(&checkpoint.id).unwrap());
+        let gc = manager.garbage_collect_full_state_checkpoints().unwrap();
+        assert_eq!(gc.removed_published, 0);
+        assert!(store.contains(&checkpoint.id).unwrap());
+    }
+
+    #[test]
+    fn gc_canonicalizes_persisted_checkpoint_references() {
+        let canonical = uuid::Uuid::new_v4().to_string();
+        let mut references = HashSet::new();
+        add_checkpoint_reference(&mut references, Some(&canonical.to_uppercase()));
+        assert_eq!(references, HashSet::from([canonical]));
     }
 
     #[test]
@@ -7239,6 +7554,81 @@ mod tests {
             reloaded["cleanup-retry"]
                 .full_state_cleanup_pending
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn pending_cleanup_retains_checkpoint_referenced_by_running_fork_across_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FullStateCheckpointStore::new(temp_dir.path()).unwrap();
+        let source = lifecycle_state("resumed-source");
+        let staging = store.begin().unwrap();
+        std::fs::write(
+            staging.path().join(crate::full_state::MEMORY_FILE),
+            b"memory",
+        )
+        .unwrap();
+        std::fs::write(
+            staging.path().join(crate::full_state::VMSTATE_FILE),
+            b"state",
+        )
+        .unwrap();
+        std::fs::write(
+            staging.path().join(crate::full_state::ROOTFS_FILE),
+            b"rootfs",
+        )
+        .unwrap();
+        let checkpoint = store
+            .commit(
+                &staging,
+                &source.name,
+                &source.uuid,
+                source.vcpus,
+                source.memory_mb,
+                PauseRollbackSandbox::snapshot(),
+            )
+            .unwrap();
+
+        let mut manager = new_test_manager(&temp_dir);
+        let mut resumed_source = source;
+        resumed_source.backend = Some(BackendType::Firecracker);
+        resumed_source
+            .full_state_cleanup_pending
+            .push(checkpoint.id.clone());
+        let mut fork = lifecycle_state("running-fork");
+        fork.backend = Some(BackendType::Firecracker);
+        fork.full_state_lineage = true;
+        fork.forked_from = Some(resumed_source.name.clone());
+        fork.full_state_source_checkpoint = Some(checkpoint.id.clone());
+        manager.save_sandbox(&resumed_source).unwrap();
+        manager.save_sandbox(&fork).unwrap();
+        manager.insert_state_for_tests(resumed_source);
+        // Deliberately leave the fork out of this manager's in-memory map.
+        // Reconciliation must discover the reference persisted by another
+        // manager while holding the cross-process checkpoint-store lease.
+
+        manager.reconcile_full_state_cleanup();
+        assert!(store.contains(&checkpoint.id).unwrap());
+        assert_eq!(
+            manager
+                .get_state("resumed-source")
+                .unwrap()
+                .full_state_cleanup_pending,
+            vec![checkpoint.id.clone()]
+        );
+
+        drop(manager);
+        let mut restarted = new_test_manager(&temp_dir);
+        restarted.sandboxes =
+            VmManager::load_sandboxes(&temp_dir.path().join("sandboxes")).unwrap();
+        restarted.reconcile_full_state_cleanup();
+        assert!(store.contains(&checkpoint.id).unwrap());
+        assert_eq!(
+            restarted
+                .get_state("resumed-source")
+                .unwrap()
+                .full_state_cleanup_pending,
+            vec![checkpoint.id]
         );
     }
 

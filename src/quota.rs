@@ -439,6 +439,7 @@ mod tests {
             paused_at: None,
             forked_from: None,
             firecracker_rootfs: None,
+            full_state_source_checkpoint: None,
             owner_user_id: Some(user.to_string()),
             owner_org_id: Some(org.to_string()),
         }

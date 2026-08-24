@@ -157,13 +157,31 @@ service identity and protected like credentials when backed up or moved.
 
 Before pausing, AgentKernel reserves conservatively for configured RAM, the
 logical rootfs size, and 64 MiB of state/metadata overhead. The checkpoint store
-defaults to a 64 GiB global cap and requires 5 GiB of filesystem headroom. Set
-`AGENTKERNEL_FULL_STATE_MAX_BYTES` and
+defaults to a 64 GiB global cap, a 16 GiB per-tenant cap, and requires 5 GiB of
+filesystem headroom. Set `AGENTKERNEL_FULL_STATE_MAX_BYTES`,
+`AGENTKERNEL_FULL_STATE_TENANT_MAX_BYTES`, and
 `AGENTKERNEL_FULL_STATE_MIN_FREE_BYTES` to positive byte counts to tune those
-limits. The daemon serializes this check with checkpoint publication, so two
-pause requests cannot both pass against the same observed capacity. These are
-host-wide safety limits, not per-tenant storage accounting or garbage
-collection.
+limits. Tenant ownership is trusted server metadata and is persisted in the
+checkpoint manifest and staging marker; legacy checkpoints without an owner
+remain globally accounted but are not assigned to a tenant. A current-user-only
+process lock serializes admission through publication, and each staging marker
+durably records its conservative reservation. Separate AgentKernel processes
+therefore cannot both pass against the same observed capacity.
+
+Checkpoint storage exposes global, published, and staging byte gauges plus
+quota-denial and garbage-collection counters through `/metrics`. The
+administrator `POST /gc` maintenance path performs reference-aware GC:
+published
+checkpoints referenced by paused sources, pending recovery, or running forks
+are retained, as are orphaned staging directories whose IDs remain referenced.
+Running forks persist their source checkpoint ID so removing the paused source
+cannot make the checkpoint eligible for deletion. GC is explicit and
+fail-closed; a scan error never falls back to recursive deletion. Unreferenced
+candidates are retained for one hour by default, and GC takes the same process
+lock as checkpoint writers so it cannot delete an active transition even after
+that grace interval. Unknown or future modification times fail closed. Set
+`AGENTKERNEL_FULL_STATE_GC_GRACE_SECONDS` to a different non-negative interval
+when invoking the administrator GC path.
 
 Every VMM instance receives a private runtime directory under
 `/tmp/agentkernel-fc-<uid>` with mode `0700`. API and vsock Unix sockets are

@@ -89,6 +89,110 @@ static SANDBOXES_ACTIVE: LazyLock<IntGauge> = LazyLock::new(|| {
     g
 });
 
+// ---- Firecracker full-state checkpoint storage metrics ----
+
+static FULL_STATE_CHECKPOINT_BYTES: LazyLock<IntGauge> = LazyLock::new(|| {
+    let g = IntGauge::new(
+        "agentkernel_full_state_checkpoint_bytes",
+        "Bytes currently used by published and staging full-state checkpoints",
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(g.clone()))
+        .expect("metric can be registered");
+    g
+});
+
+static FULL_STATE_PUBLISHED_BYTES: LazyLock<IntGauge> = LazyLock::new(|| {
+    let g = IntGauge::new(
+        "agentkernel_full_state_checkpoint_published_bytes",
+        "Bytes currently used by published full-state checkpoints",
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(g.clone()))
+        .expect("metric can be registered");
+    g
+});
+
+static FULL_STATE_STAGING_BYTES: LazyLock<IntGauge> = LazyLock::new(|| {
+    let g = IntGauge::new(
+        "agentkernel_full_state_checkpoint_staging_bytes",
+        "Bytes currently used by full-state checkpoint staging",
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(g.clone()))
+        .expect("metric can be registered");
+    g
+});
+
+static FULL_STATE_GLOBAL_QUOTA_BYTES: LazyLock<IntGauge> = LazyLock::new(|| {
+    let g = IntGauge::new(
+        "agentkernel_full_state_checkpoint_global_quota_bytes",
+        "Configured global full-state checkpoint byte quota",
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(g.clone()))
+        .expect("metric can be registered");
+    g
+});
+
+static FULL_STATE_TENANT_QUOTA_BYTES: LazyLock<IntGauge> = LazyLock::new(|| {
+    let g = IntGauge::new(
+        "agentkernel_full_state_checkpoint_tenant_quota_bytes",
+        "Configured per-tenant full-state checkpoint byte quota",
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(g.clone()))
+        .expect("metric can be registered");
+    g
+});
+
+static FULL_STATE_QUOTA_DENIALS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let c = IntCounterVec::new(
+        prometheus::opts!(
+            "agentkernel_full_state_checkpoint_quota_denials_total",
+            "Full-state checkpoint preflight quota denials"
+        ),
+        &["scope"],
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(c.clone()))
+        .expect("metric can be registered");
+    c
+});
+
+static FULL_STATE_GC_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let c = IntCounterVec::new(
+        prometheus::opts!(
+            "agentkernel_full_state_checkpoint_gc_total",
+            "Full-state checkpoint garbage-collection actions"
+        ),
+        &["kind"],
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(c.clone()))
+        .expect("metric can be registered");
+    c
+});
+
+static FULL_STATE_GC_FREED_BYTES_TOTAL: LazyLock<prometheus::IntCounter> = LazyLock::new(|| {
+    let c = prometheus::IntCounter::new(
+        "agentkernel_full_state_checkpoint_gc_freed_bytes_total",
+        "Bytes freed by full-state checkpoint garbage collection",
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(c.clone()))
+        .expect("metric can be registered");
+    c
+});
+
 // ---- Command execution metrics ----
 
 static COMMANDS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
@@ -229,6 +333,47 @@ pub fn dec_active_sandboxes() {
 
 pub fn set_active_sandboxes(count: i64) {
     SANDBOXES_ACTIVE.set(count);
+}
+
+/// Refresh full-state storage gauges after a quota scan or GC pass.
+pub fn set_full_state_storage(
+    global_bytes: u64,
+    published_bytes: u64,
+    staging_bytes: u64,
+    global_quota_bytes: u64,
+    tenant_quota_bytes: u64,
+) {
+    FULL_STATE_CHECKPOINT_BYTES.set(saturating_metric_value(global_bytes));
+    FULL_STATE_PUBLISHED_BYTES.set(saturating_metric_value(published_bytes));
+    FULL_STATE_STAGING_BYTES.set(saturating_metric_value(staging_bytes));
+    FULL_STATE_GLOBAL_QUOTA_BYTES.set(saturating_metric_value(global_quota_bytes));
+    FULL_STATE_TENANT_QUOTA_BYTES.set(saturating_metric_value(tenant_quota_bytes));
+}
+
+pub fn record_full_state_quota_denial(scope: &str) {
+    FULL_STATE_QUOTA_DENIALS_TOTAL
+        .with_label_values(&[scope])
+        .inc();
+}
+
+pub fn record_full_state_gc(removed_published: u64, removed_staging: u64, freed_bytes: u64) {
+    if removed_published > 0 {
+        FULL_STATE_GC_TOTAL
+            .with_label_values(&["published"])
+            .inc_by(removed_published);
+    }
+    if removed_staging > 0 {
+        FULL_STATE_GC_TOTAL
+            .with_label_values(&["staging"])
+            .inc_by(removed_staging);
+    }
+    if freed_bytes > 0 {
+        FULL_STATE_GC_FREED_BYTES_TOTAL.inc_by(freed_bytes);
+    }
+}
+
+fn saturating_metric_value(value: u64) -> i64 {
+    value.min(i64::MAX as u64) as i64
 }
 
 /// Record an LLM API request (counter + token counters).
