@@ -74,6 +74,13 @@ and can be reached from the namespace through the normal Kubernetes DNS name
 sandbox outside the cluster with an Ingress, Gateway, or service mesh owned by
 the application/operator.
 
+Pod, Service, and NetworkPolicy names use Kubernetes-safe DNS labels. Common
+lowercase names retain the established `agentkernel-<sandbox>` naming, while
+underscores, other normalization, or length limits add a deterministic
+short-hash suffix so distinct sandbox names cannot collide. Existing resources
+using legacy normalized names remain usable and are removed only after
+AgentKernel ownership labels/selectors are verified.
+
 For stronger isolation, set `runtime_class` to `gvisor` or `kata` to run pods in a dedicated kernel sandbox.
 
 ## Warm Pool
