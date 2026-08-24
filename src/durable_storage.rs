@@ -229,6 +229,73 @@ CREATE INDEX IF NOT EXISTS idx_scim_principal_bindings_user
     ON scim_principal_bindings(tenant_id, user_id);
 "#,
     ),
+    (
+        12,
+        r#"
+CREATE TABLE IF NOT EXISTS scim_users (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    external_id TEXT,
+    user_name TEXT NOT NULL COLLATE NOCASE,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+    display_name TEXT,
+    given_name TEXT,
+    family_name TEXT,
+    email TEXT,
+    locale TEXT,
+    timezone TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_scim_users_tenant ON scim_users(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_scim_users_tenant_external_id
+    ON scim_users(tenant_id, external_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_scim_users_tenant_user_name
+    ON scim_users(tenant_id, user_name COLLATE NOCASE) WHERE deleted = 0;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_scim_users_tenant_external_id
+    ON scim_users(tenant_id, external_id) WHERE deleted = 0 AND external_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS scim_groups (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    external_id TEXT,
+    display_name TEXT NOT NULL COLLATE NOCASE,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_scim_groups_tenant ON scim_groups(tenant_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_scim_groups_tenant_display_name
+    ON scim_groups(tenant_id, display_name COLLATE NOCASE) WHERE active = 1;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_scim_groups_tenant_external_id
+    ON scim_groups(tenant_id, external_id) WHERE active = 1 AND external_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS scim_group_members (
+    group_id TEXT NOT NULL REFERENCES scim_groups(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES scim_users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (group_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scim_group_members_user ON scim_group_members(user_id);
+
+CREATE TABLE IF NOT EXISTS scim_principal_bindings (
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES scim_users(id) ON DELETE CASCADE,
+    group_id TEXT NOT NULL REFERENCES scim_groups(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT '',
+    team_id TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, user_id, group_id, role, team_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scim_principal_bindings_user
+    ON scim_principal_bindings(tenant_id, user_id);
+"#,
+    ),
 ];
 
 /// SQLite durable storage wrapper with schema bootstrap.
@@ -335,6 +402,72 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 }
 
 #[cfg(test)]
+pub(crate) fn legacy_scim_database_for_test() -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db_path = temp.path().join("legacy-scim.db");
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        r#"
+CREATE TABLE schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+CREATE TABLE orchestrations (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    input_json TEXT,
+    output_json TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE scheduled_job_runs (
+    schedule_id TEXT PRIMARY KEY,
+    last_run_at TEXT,
+    last_run_minute INTEGER,
+    last_status TEXT,
+    last_error TEXT,
+    next_run_at TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE scim_principal_bindings (
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES scim_users(id) ON DELETE CASCADE,
+    group_id TEXT NOT NULL REFERENCES scim_groups(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT '',
+    team_id TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, user_id, group_id, role, team_id)
+);
+CREATE INDEX idx_scim_principal_bindings_user
+    ON scim_principal_bindings(tenant_id, user_id);
+INSERT INTO schema_migrations(version, applied_at) VALUES
+    (1, '2026-08-23T00:00:00Z'),
+    (2, '2026-08-23T00:00:00Z'),
+    (3, '2026-08-23T00:00:00Z'),
+    (4, '2026-08-23T00:00:00Z'),
+    (5, '2026-08-23T00:00:00Z'),
+    (6, '2026-08-23T00:00:00Z'),
+    (7, '2026-08-23T00:00:00Z'),
+    (8, '2026-08-23T00:00:00Z'),
+    (9, '2026-08-23T00:00:00Z'),
+    (10, '2026-08-23T00:00:00Z'),
+    (11, '2026-08-23T00:00:00Z');
+INSERT INTO orchestrations(
+    id, name, status, input_json, output_json, error, created_at, updated_at
+) VALUES (
+    'legacy-id', 'legacy-run', 'completed', '{"source":"existing"}',
+    '{"preserved":true}', NULL, '2026-08-23T00:00:00Z', '2026-08-23T00:01:00Z'
+);
+"#,
+    )
+    .unwrap();
+    drop(conn);
+    (temp, db_path)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -371,7 +504,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(migration_count, 11);
+        assert_eq!(migration_count, 12);
     }
 
     #[test]
@@ -429,6 +562,118 @@ INSERT INTO orchestrations(
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    }
+
+    #[test]
+    fn test_bootstrap_repairs_legacy_scim_schema_idempotently() {
+        // This is the database shape produced before SCIM was appended to
+        // migration 10: the migration is already recorded, but none of the
+        // SCIM tables or indexes exist yet.
+        let (_temp, db_path) = legacy_scim_database_for_test();
+
+        let storage = DurableStorage::new(db_path.clone()).unwrap();
+        let conn = storage.open_connection().unwrap();
+
+        for table in [
+            "scim_users",
+            "scim_groups",
+            "scim_group_members",
+            "scim_principal_bindings",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "missing repaired table {table}");
+        }
+        for index in [
+            "idx_scim_users_tenant",
+            "idx_scim_users_tenant_external_id",
+            "uq_scim_users_tenant_user_name",
+            "uq_scim_users_tenant_external_id",
+            "idx_scim_groups_tenant",
+            "uq_scim_groups_tenant_display_name",
+            "uq_scim_groups_tenant_external_id",
+            "idx_scim_group_members_user",
+            "idx_scim_principal_bindings_user",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [index],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "missing repaired index {index}");
+        }
+
+        let preserved: (String, String) = conn
+            .query_row(
+                "SELECT name, output_json FROM orchestrations WHERE id = 'legacy-id'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            preserved,
+            (
+                "legacy-run".to_string(),
+                r#"{"preserved":true}"#.to_string()
+            )
+        );
+
+        conn.execute(
+            "INSERT INTO scim_users
+             (id, tenant_id, external_id, user_name, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+            [
+                "legacy-user-id",
+                "default",
+                "legacy-external-id",
+                "legacy-user@example.com",
+                "2026-08-23T00:02:00Z",
+            ],
+        )
+        .unwrap();
+        let scim_user_name: String = conn
+            .query_row(
+                "SELECT user_name FROM scim_users WHERE id = 'legacy-user-id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(scim_user_name, "legacy-user@example.com");
+
+        let versions: Vec<i64> = conn
+            .prepare("SELECT version FROM schema_migrations ORDER BY version")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(versions, (1..=12).collect::<Vec<_>>());
+        drop(conn);
+
+        // A restart must not re-run or mutate the repair migration.
+        let storage = DurableStorage::new(db_path).unwrap();
+        let conn = storage.open_connection().unwrap();
+        let migration_count: i64 = conn
+            .query_row("SELECT COUNT(1) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(migration_count, 12);
+        let preserved_name: String = conn
+            .query_row(
+                "SELECT name FROM orchestrations WHERE id = 'legacy-id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(preserved_name, "legacy-run");
     }
 }
