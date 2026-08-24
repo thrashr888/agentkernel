@@ -9,8 +9,10 @@
 
 use anyhow::{Context, Result, bail};
 #[cfg(unix)]
-use std::ffi::CString;
-use std::fs::{self, File, OpenOptions};
+use std::ffi::{CStr, CString, OsString};
+#[cfg(not(unix))]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
 #[cfg(unix)]
 use std::io::Read;
 use std::io::Write;
@@ -18,6 +20,8 @@ use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 #[cfg(unix)]
@@ -28,8 +32,37 @@ use uuid::Uuid;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 const OWNER_MARKER: &str = ".agentkernel-owned";
-const OWNER_MARKER_CONTENT: &str = "agentkernel-rootfs-cow-v1";
+const OWNER_MARKER_CONTENT: &str = "agentkernel-rootfs-cow-v2";
 const ROOTFS_FILE: &str = "rootfs.ext4";
+const PARTIAL_ROOTFS_FILE: &str = "rootfs.ext4.partial";
+const LEASE_FILE: &str = ".agentkernel-lease";
+const PRESERVE_MARKER: &str = ".agentkernel-preserve";
+const PRESERVE_MARKER_CONTENT: &str = "agentkernel-rootfs-cow-preserve-v1";
+const ARTIFACT_PREFIX: &str = "sandbox-";
+const ARTIFACT_RANDOM_LEN: usize = 6;
+
+/// Result of a conservative scan for abandoned rootfs artifacts.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RootfsCowReapReport {
+    /// Complete AgentKernel-owned artifact directories removed.
+    pub reclaimed_artifacts: usize,
+    /// Allocated bytes released by the removed files.
+    pub reclaimed_bytes: u64,
+    /// Artifacts whose advisory lease is held by a live process.
+    pub active_artifacts: usize,
+    /// Artifacts explicitly retained as snapshot inputs.
+    pub preserved_artifacts: usize,
+    /// Entries left intact because ownership or shape was not proven.
+    pub skipped_artifacts: usize,
+    /// Owned-looking entries left intact after an operating-system error.
+    pub error_artifacts: usize,
+}
+
+impl RootfsCowReapReport {
+    fn is_meaningful(self) -> bool {
+        self.reclaimed_artifacts > 0 || self.error_artifacts > 0
+    }
+}
 
 /// How a sandbox rootfs was materialized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,10 +155,11 @@ impl RootfsCowStore {
 
     /// Prepare a unique writable rootfs for `base`.
     ///
-    /// The output is first written to a private staging file and then renamed
-    /// into place.  A marker is written only after the rename.  Cleanup will
-    /// refuse to remove an artifact unless its marker, private directory, and
-    /// containment checks all prove that AgentKernel created it.
+    /// Under an exclusive lease, a versioned ownership marker is published
+    /// before the output is written to a private staging file and renamed into
+    /// place. Cleanup refuses to remove an artifact unless its strict name,
+    /// marker, lease, private directory, contents, and containment checks all
+    /// prove that AgentKernel created it and no process is using it.
     pub fn prepare(&self, base: &Path) -> Result<RootfsCow> {
         let base = fs::canonicalize(base)
             .with_context(|| format!("failed to resolve rootfs {}", base.display()))?;
@@ -136,12 +170,13 @@ impl RootfsCowStore {
         }
 
         let temporary_dir = tempfile::Builder::new()
-            .prefix("sandbox-")
+            .prefix(ARTIFACT_PREFIX)
+            .rand_bytes(ARTIFACT_RANDOM_LEN)
             .tempdir_in(&self.root)
             .context("failed to create private rootfs COW directory")?;
         let artifact_dir = temporary_dir.path().to_path_buf();
         #[cfg(unix)]
-        let (artifact_name, artifact_identity) = {
+        let (artifact_name, artifact_identity, lease_handle) = {
             let artifact_name = artifact_dir
                 .file_name()
                 .ok_or_else(|| anyhow::anyhow!("rootfs COW artifact has no directory name"))?
@@ -153,12 +188,29 @@ impl RootfsCowStore {
                     artifact_dir.display()
                 )
             })?;
-            (artifact_name, file_identity(&artifact_handle)?)
+            make_directory_private(&artifact_handle)?;
+            let lease = create_file_at(artifact_handle.as_raw_fd(), LEASE_FILE)?;
+            lock_exclusive_nonblocking(&lease).context("failed to acquire rootfs COW lease")?;
+            (artifact_name, file_identity(&artifact_handle)?, lease)
         };
-        let staging_path = artifact_dir.join(format!("{}.partial", ROOTFS_FILE));
+        let staging_path = artifact_dir.join(PARTIAL_ROOTFS_FILE);
         let rootfs_path = artifact_dir.join(ROOTFS_FILE);
         let marker_path = artifact_dir.join(OWNER_MARKER);
         let owner_token = Uuid::new_v4().to_string();
+
+        // Publish the versioned ownership marker before copying so a hard
+        // crash during staging is recoverable. The live lease prevents a
+        // concurrent AgentKernel process from reaping this directory.
+        #[cfg(unix)]
+        {
+            let artifact = open_directory_at(self.root_handle.as_raw_fd(), &artifact_name)?;
+            write_new_file_at(
+                artifact.as_raw_fd(),
+                OWNER_MARKER,
+                format!("{OWNER_MARKER_CONTENT}\n{owner_token}").as_bytes(),
+            )?;
+            artifact.sync_all()?;
+        }
 
         let reflink_succeeded =
             self.capabilities.reflink_copy && reflink_copy(&base, &staging_path).unwrap_or(false);
@@ -193,19 +245,24 @@ impl RootfsCowStore {
                 rootfs_path.display()
             )
         })?;
+        #[cfg(unix)]
+        open_directory_at(self.root_handle.as_raw_fd(), &artifact_name)?.sync_all()?;
 
-        let mut marker = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&marker_path)
-            .with_context(|| {
-                format!(
-                    "failed to create ownership marker {}",
-                    marker_path.display()
-                )
-            })?;
-        marker.write_all(format!("{OWNER_MARKER_CONTENT}\n{owner_token}").as_bytes())?;
-        marker.sync_all()?;
+        #[cfg(not(unix))]
+        {
+            let mut marker = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&marker_path)
+                .with_context(|| {
+                    format!(
+                        "failed to create ownership marker {}",
+                        marker_path.display()
+                    )
+                })?;
+            marker.write_all(format!("{OWNER_MARKER_CONTENT}\n{owner_token}").as_bytes())?;
+            marker.sync_all()?;
+        }
 
         let artifact_dir = temporary_dir.keep();
         Ok(RootfsCow {
@@ -222,8 +279,214 @@ impl RootfsCowStore {
             artifact_name,
             #[cfg(unix)]
             artifact_identity,
+            #[cfg(unix)]
+            _lease_handle: lease_handle,
+            preserved: false,
         })
     }
+
+    /// Reclaim abandoned, AgentKernel-owned artifacts in this store.
+    ///
+    /// On Unix this uses directory-relative, no-follow operations and a
+    /// cross-process advisory lease. Other platforms conservatively report no
+    /// reclamation rather than guessing whether an artifact is live.
+    pub fn reap_stale(&self) -> Result<RootfsCowReapReport> {
+        #[cfg(unix)]
+        {
+            self.reap_stale_unix()
+        }
+
+        #[cfg(not(unix))]
+        {
+            Ok(RootfsCowReapReport::default())
+        }
+    }
+
+    #[cfg(unix)]
+    fn reap_stale_unix(&self) -> Result<RootfsCowReapReport> {
+        let mut report = RootfsCowReapReport::default();
+        for name in list_directory_at(self.root_handle.as_raw_fd())? {
+            if !is_artifact_name(&name) {
+                report.skipped_artifacts += 1;
+                continue;
+            }
+
+            let artifact = match open_directory_at(self.root_handle.as_raw_fd(), &name) {
+                Ok(artifact) => artifact,
+                Err(error)
+                    if matches!(
+                        error.raw_os_error(),
+                        Some(libc::ELOOP) | Some(libc::ENOTDIR)
+                    ) =>
+                {
+                    report.skipped_artifacts += 1;
+                    continue;
+                }
+                Err(_) => {
+                    report.error_artifacts += 1;
+                    continue;
+                }
+            };
+            let metadata = match artifact.metadata() {
+                Ok(metadata) => metadata,
+                Err(_) => {
+                    report.error_artifacts += 1;
+                    continue;
+                }
+            };
+            if metadata.uid() != unsafe { libc::geteuid() }
+                || metadata.permissions().mode() & 0o777 != 0o700
+            {
+                report.skipped_artifacts += 1;
+                continue;
+            }
+
+            let lease = match open_file_at_read_write(artifact.as_raw_fd(), LEASE_FILE) {
+                Ok(lease) => lease,
+                Err(error)
+                    if matches!(error.raw_os_error(), Some(libc::ELOOP) | Some(libc::ENOENT)) =>
+                {
+                    report.skipped_artifacts += 1;
+                    continue;
+                }
+                Err(_) => {
+                    report.error_artifacts += 1;
+                    continue;
+                }
+            };
+            if !is_regular_file(&lease) {
+                report.skipped_artifacts += 1;
+                continue;
+            }
+            match try_lock_exclusive(&lease) {
+                Ok(true) => {}
+                Ok(false) => {
+                    report.active_artifacts += 1;
+                    continue;
+                }
+                Err(_) => {
+                    report.error_artifacts += 1;
+                    continue;
+                }
+            }
+
+            let inspected = match inspect_owned_artifact(&artifact) {
+                Ok(Some(inspected)) => inspected,
+                Ok(None) => {
+                    report.skipped_artifacts += 1;
+                    continue;
+                }
+                Err(_) => {
+                    report.error_artifacts += 1;
+                    continue;
+                }
+            };
+            if inspected.preserved {
+                report.preserved_artifacts += 1;
+                continue;
+            }
+
+            let removed = (|| -> std::io::Result<()> {
+                if inspected.has_rootfs {
+                    unlink_at(artifact.as_raw_fd(), ROOTFS_FILE, 0)?;
+                }
+                if inspected.has_partial {
+                    unlink_at(artifact.as_raw_fd(), PARTIAL_ROOTFS_FILE, 0)?;
+                }
+                unlink_at(artifact.as_raw_fd(), OWNER_MARKER, 0)?;
+                unlink_at(artifact.as_raw_fd(), LEASE_FILE, 0)?;
+                unlink_at(self.root_handle.as_raw_fd(), &name, libc::AT_REMOVEDIR)
+            })();
+            if removed.is_ok() {
+                report.reclaimed_artifacts += 1;
+                report.reclaimed_bytes = report
+                    .reclaimed_bytes
+                    .saturating_add(inspected.allocated_bytes);
+            } else {
+                report.error_artifacts += 1;
+            }
+        }
+        Ok(report)
+    }
+}
+
+#[cfg(unix)]
+struct InspectedArtifact {
+    allocated_bytes: u64,
+    has_rootfs: bool,
+    has_partial: bool,
+    preserved: bool,
+}
+
+#[cfg(unix)]
+fn inspect_owned_artifact(artifact: &File) -> std::io::Result<Option<InspectedArtifact>> {
+    let names = list_directory_at(artifact.as_raw_fd())?;
+    let mut allocated_bytes = 0u64;
+    let mut has_marker = false;
+    let mut has_lease = false;
+    let mut has_rootfs = false;
+    let mut has_partial = false;
+    let mut has_preserve = false;
+    let mut preserve_token = None;
+
+    for name in names {
+        let Some(name) = name.to_str() else {
+            return Ok(None);
+        };
+        if !matches!(
+            name,
+            OWNER_MARKER | LEASE_FILE | ROOTFS_FILE | PARTIAL_ROOTFS_FILE | PRESERVE_MARKER
+        ) {
+            return Ok(None);
+        }
+        let file = match open_file_at(artifact.as_raw_fd(), name) {
+            Ok(file) => file,
+            Err(error) if error.raw_os_error() == Some(libc::ELOOP) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if !is_regular_file(&file) {
+            return Ok(None);
+        }
+        allocated_bytes = allocated_bytes.saturating_add(file.metadata()?.blocks() * 512);
+        match name {
+            OWNER_MARKER => has_marker = true,
+            LEASE_FILE => has_lease = true,
+            ROOTFS_FILE => has_rootfs = true,
+            PARTIAL_ROOTFS_FILE => has_partial = true,
+            PRESERVE_MARKER => {
+                has_preserve = true;
+                preserve_token = read_versioned_token(&file, PRESERVE_MARKER_CONTENT);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    if !has_marker || !has_lease || (has_rootfs && has_partial) {
+        return Ok(None);
+    }
+    let owner_token = read_versioned_token(
+        &open_file_at(artifact.as_raw_fd(), OWNER_MARKER)?,
+        OWNER_MARKER_CONTENT,
+    );
+    let Some(owner_token) = owner_token else {
+        return Ok(None);
+    };
+    if let Some(preserve_token) = preserve_token.as_ref() {
+        if preserve_token != &owner_token {
+            return Ok(None);
+        }
+    } else if has_preserve {
+        // A malformed preservation marker is never interpreted as permission
+        // to delete the artifact.
+        return Ok(None);
+    }
+
+    Ok(Some(InspectedArtifact {
+        allocated_bytes,
+        has_rootfs,
+        has_partial,
+        preserved: preserve_token.is_some(),
+    }))
 }
 
 fn ensure_private_store_root(root: &Path) -> Result<()> {
@@ -329,7 +592,21 @@ impl RootfsCowStore {
         let root = std::env::var_os("AGENTKERNEL_ROOTFS_COW_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::temp_dir().join("agentkernel-rootfs"));
-        Self::new(root)
+        let store = Self::new(root)?;
+        match store.reap_stale() {
+            Ok(report) if report.is_meaningful() => eprintln!(
+                "[firecracker] rootfs COW cleanup reclaimed={} bytes={} active={} preserved={} skipped={} errors={}",
+                report.reclaimed_artifacts,
+                report.reclaimed_bytes,
+                report.active_artifacts,
+                report.preserved_artifacts,
+                report.skipped_artifacts,
+                report.error_artifacts
+            ),
+            Ok(_) => {}
+            Err(error) => eprintln!("[firecracker] rootfs COW cleanup scan failed: {error:#}"),
+        }
+        Ok(store)
     }
 }
 
@@ -349,6 +626,9 @@ pub struct RootfsCow {
     artifact_name: std::ffi::OsString,
     #[cfg(unix)]
     artifact_identity: (u64, u64),
+    #[cfg(unix)]
+    _lease_handle: File,
+    preserved: bool,
 }
 
 impl RootfsCow {
@@ -360,12 +640,60 @@ impl RootfsCow {
         self.strategy
     }
 
+    /// Keep this rootfs as an input for a durable Firecracker snapshot.
+    ///
+    /// The versioned marker is durable and checked by future reapers. After
+    /// this succeeds, explicit cleanup and `Drop` intentionally leave the
+    /// complete artifact intact.
+    pub fn preserve_for_snapshot(&mut self) -> Result<()> {
+        if self.preserved {
+            return Ok(());
+        }
+
+        #[cfg(unix)]
+        {
+            let artifact =
+                open_directory_at(self.store_root_handle.as_raw_fd(), &self.artifact_name)?;
+            if file_identity(&artifact)? != self.artifact_identity {
+                bail!(
+                    "refusing to preserve replaced rootfs COW directory: {}",
+                    self.artifact_dir.display()
+                );
+            }
+            verify_marker_at(artifact.as_raw_fd(), &self.owner_token)?;
+            let mut marker = create_file_at(artifact.as_raw_fd(), PRESERVE_MARKER)?;
+            // Once the preservation direntry exists, all failure paths must
+            // fail closed and retain the artifact.
+            self.preserved = true;
+            marker
+                .write_all(format!("{PRESERVE_MARKER_CONTENT}\n{}", self.owner_token).as_bytes())?;
+            marker.sync_all()?;
+            artifact.sync_all()?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            let mut marker = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(self.artifact_dir.join(PRESERVE_MARKER))?;
+            self.preserved = true;
+            marker
+                .write_all(format!("{PRESERVE_MARKER_CONTENT}\n{}", self.owner_token).as_bytes())?;
+            marker.sync_all()?;
+        }
+        Ok(())
+    }
+
     /// Remove the rootfs and its private directory if ownership is proven.
     pub fn cleanup(self) -> Result<()> {
         self.cleanup_inner()
     }
 
     fn cleanup_inner(self) -> Result<()> {
+        if self.preserved {
+            return Ok(());
+        }
         #[cfg(unix)]
         {
             self.cleanup_unix()
@@ -379,6 +707,9 @@ impl RootfsCow {
 
     #[cfg(unix)]
     fn cleanup_unix(&self) -> Result<()> {
+        if self.preserved {
+            return Ok(());
+        }
         let artifact = open_directory_at(self.store_root_handle.as_raw_fd(), &self.artifact_name)
             .with_context(|| {
             format!(
@@ -408,6 +739,12 @@ impl RootfsCow {
                 self.marker_path.display()
             )
         })?;
+        unlink_at(artifact.as_raw_fd(), LEASE_FILE, 0).with_context(|| {
+            format!(
+                "failed to remove rootfs lease in {}",
+                self.artifact_dir.display()
+            )
+        })?;
         unlink_at(
             self.store_root_handle.as_raw_fd(),
             &self.artifact_name,
@@ -424,6 +761,9 @@ impl RootfsCow {
 
     #[cfg(not(unix))]
     fn cleanup_portable(&self) -> Result<()> {
+        if self.preserved {
+            return Ok(());
+        }
         if !is_owned_artifact_dir(&self.store_root, &self.artifact_dir) {
             bail!(
                 "refusing to clean rootfs COW directory outside store: {}",
@@ -441,6 +781,7 @@ impl RootfsCow {
                 format!("failed to remove rootfs {}", self.rootfs_path.display())
             })?;
         }
+        let _ = fs::remove_file(self.artifact_dir.join(LEASE_FILE));
         fs::remove_file(&self.marker_path).with_context(|| {
             format!(
                 "failed to remove ownership marker {}",
@@ -462,6 +803,9 @@ impl Drop for RootfsCow {
         // Drop is intentionally best-effort.  It still applies exactly the
         // same ownership checks as explicit cleanup and never removes a path
         // merely because it has an AgentKernel-looking filename.
+        if self.preserved {
+            return;
+        }
         #[cfg(unix)]
         {
             let _ = self.cleanup_unix();
@@ -542,7 +886,7 @@ fn open_directory_at(parent: RawFd, name: &std::ffi::OsStr) -> std::io::Result<F
         libc::openat(
             parent,
             bytes.as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
         )
     };
     if fd < 0 {
@@ -561,6 +905,24 @@ fn ensure_directory_fd(file: &File) -> std::io::Result<()> {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotADirectory,
             "path is not a directory",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn make_directory_private(directory: &File) -> std::io::Result<()> {
+    let result = unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let metadata = directory.metadata()?;
+    if metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != 0o700
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "rootfs COW artifact directory is not private",
         ));
     }
     Ok(())
@@ -630,7 +992,7 @@ fn open_file_at(parent: RawFd, name: &str) -> std::io::Result<File> {
         libc::openat(
             parent,
             bytes.as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
         )
     };
     if fd < 0 {
@@ -638,6 +1000,177 @@ fn open_file_at(parent: RawFd, name: &str) -> std::io::Result<File> {
     }
     // SAFETY: `fd` was returned by `openat` and is owned by this File now.
     Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+#[cfg(unix)]
+fn open_file_at_read_write(parent: RawFd, name: &str) -> std::io::Result<File> {
+    let bytes = CString::new(name)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "name contains NUL"))?;
+    let fd = unsafe {
+        libc::openat(
+            parent,
+            bytes.as_ptr(),
+            libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+#[cfg(unix)]
+fn create_file_at(parent: RawFd, name: &str) -> std::io::Result<File> {
+    let bytes = CString::new(name)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "name contains NUL"))?;
+    let fd = unsafe {
+        libc::openat(
+            parent,
+            bytes.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+#[cfg(unix)]
+fn write_new_file_at(parent: RawFd, name: &str, contents: &[u8]) -> std::io::Result<()> {
+    let mut file = create_file_at(parent, name)?;
+    file.write_all(contents)?;
+    file.sync_all()
+}
+
+#[cfg(unix)]
+fn is_regular_file(file: &File) -> bool {
+    file_stat(file)
+        .map(|(_, mode)| mode & STAT_TYPE_MASK == STAT_TYPE_REGULAR)
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn lock_exclusive_nonblocking(file: &File) -> std::io::Result<()> {
+    if try_lock_exclusive(file)? {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "rootfs COW lease is already held",
+        ))
+    }
+}
+
+#[cfg(unix)]
+fn try_lock_exclusive(file: &File) -> std::io::Result<bool> {
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(unix)]
+fn is_artifact_name(name: &std::ffi::OsStr) -> bool {
+    let bytes = name.as_bytes();
+    bytes.len() == ARTIFACT_PREFIX.len() + ARTIFACT_RANDOM_LEN
+        && bytes.starts_with(ARTIFACT_PREFIX.as_bytes())
+        && bytes[ARTIFACT_PREFIX.len()..]
+            .iter()
+            .all(u8::is_ascii_alphanumeric)
+}
+
+#[cfg(unix)]
+fn read_versioned_token(file: &File, version: &str) -> Option<String> {
+    if file.metadata().ok()?.len() > 128 {
+        return None;
+    }
+    let mut file = file.try_clone().ok()?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).ok()?;
+    let token = contents.strip_prefix(version)?.strip_prefix('\n')?;
+    if token.contains('\n') {
+        return None;
+    }
+    let parsed = Uuid::parse_str(token).ok()?;
+    (parsed.to_string() == token).then(|| token.to_string())
+}
+
+#[cfg(unix)]
+fn list_directory_at(parent: RawFd) -> std::io::Result<Vec<OsString>> {
+    let current = c".";
+    let descriptor = unsafe {
+        libc::openat(
+            parent,
+            current.as_ptr(),
+            libc::O_RDONLY
+                | libc::O_CLOEXEC
+                | libc::O_NOFOLLOW
+                | libc::O_NONBLOCK
+                | libc::O_DIRECTORY,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let directory = unsafe { libc::fdopendir(descriptor) };
+    if directory.is_null() {
+        let error = std::io::Error::last_os_error();
+        unsafe { libc::close(descriptor) };
+        return Err(error);
+    }
+
+    struct Directory(*mut libc::DIR);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            unsafe { libc::closedir(self.0) };
+        }
+    }
+    let directory = Directory(directory);
+    let mut names = Vec::new();
+    loop {
+        set_directory_errno(0);
+        let entry = unsafe { libc::readdir(directory.0) };
+        if entry.is_null() {
+            let error = directory_errno();
+            if error == 0 {
+                break;
+            }
+            return Err(std::io::Error::from_raw_os_error(error));
+        }
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if name != b"." && name != b".." {
+            names.push(OsString::from_vec(name.to_vec()));
+        }
+    }
+    Ok(names)
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn set_directory_errno(value: libc::c_int) {
+    unsafe { *libc::__errno_location() = value };
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn directory_errno() -> libc::c_int {
+    unsafe { *libc::__errno_location() }
+}
+
+#[cfg(all(unix, target_vendor = "apple"))]
+fn set_directory_errno(value: libc::c_int) {
+    unsafe { *libc::__error() = value };
+}
+
+#[cfg(all(unix, target_vendor = "apple"))]
+fn directory_errno() -> libc::c_int {
+    unsafe { *libc::__error() }
 }
 
 #[cfg(unix)]
@@ -731,6 +1264,11 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[cfg(unix)]
+    const CRASH_HELPER_ROOT: &str = "AGENTKERNEL_TEST_COW_CRASH_ROOT";
+    #[cfg(unix)]
+    const CRASH_HELPER_BASE: &str = "AGENTKERNEL_TEST_COW_CRASH_BASE";
+
     fn store() -> (tempfile::TempDir, RootfsCowStore) {
         let dir = tempfile::tempdir().unwrap();
         let store = RootfsCowStore::with_capabilities(
@@ -742,6 +1280,209 @@ mod tests {
         )
         .unwrap();
         (dir, store)
+    }
+
+    #[cfg(unix)]
+    fn create_stale_fixture(store: &RootfsCowStore, name: &str) -> PathBuf {
+        assert!(is_artifact_name(std::ffi::OsStr::new(name)));
+        let artifact = store.root().join(name);
+        fs::create_dir(&artifact).unwrap();
+        let mut permissions = fs::metadata(&artifact).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&artifact, permissions).unwrap();
+        let token = Uuid::new_v4().to_string();
+        fs::write(
+            artifact.join(OWNER_MARKER),
+            format!("{OWNER_MARKER_CONTENT}\n{token}"),
+        )
+        .unwrap();
+        fs::write(artifact.join(LEASE_FILE), b"").unwrap();
+        fs::write(artifact.join(ROOTFS_FILE), vec![7u8; 64 * 1024]).unwrap();
+        artifact
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn subprocess_holds_rootfs_lease_until_crash() {
+        let (Some(root), Some(base)) = (
+            std::env::var_os(CRASH_HELPER_ROOT),
+            std::env::var_os(CRASH_HELPER_BASE),
+        ) else {
+            return;
+        };
+        let store = RootfsCowStore::with_capabilities(
+            root,
+            RootfsCowCapabilities {
+                reflink_copy: false,
+                overlayfs_available: false,
+            },
+        )
+        .unwrap();
+        let _rootfs = store.prepare(Path::new(&base)).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_reaps_sigkill_orphan_but_not_cross_process_active_lease() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("cow");
+        let base = tmp.path().join("base.ext4");
+        fs::write(&base, vec![7u8; 64 * 1024]).unwrap();
+        let store = RootfsCowStore::with_capabilities(
+            &root,
+            RootfsCowCapabilities {
+                reflink_copy: false,
+                overlayfs_available: false,
+            },
+        )
+        .unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("cow::tests::subprocess_holds_rootfs_lease_until_crash")
+            .arg("--nocapture")
+            .env(CRASH_HELPER_ROOT, &root)
+            .env(CRASH_HELPER_BASE, &base)
+            .spawn()
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !fs::read_dir(store.root()).unwrap().any(|entry| {
+            let entry = entry.unwrap();
+            if !is_artifact_name(&entry.file_name()) {
+                return false;
+            }
+            let Ok(artifact) = open_directory_at(store.root_handle.as_raw_fd(), &entry.file_name())
+            else {
+                return false;
+            };
+            matches!(
+                inspect_owned_artifact(&artifact),
+                Ok(Some(InspectedArtifact {
+                    has_rootfs: true,
+                    ..
+                })) | Ok(Some(InspectedArtifact {
+                    has_partial: true,
+                    ..
+                }))
+            )
+        }) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child did not prepare rootfs"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        assert_eq!(
+            store.reap_stale().unwrap(),
+            RootfsCowReapReport {
+                active_artifacts: 1,
+                ..RootfsCowReapReport::default()
+            }
+        );
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let report = store.reap_stale().unwrap();
+        assert_eq!(report.reclaimed_artifacts, 1, "{report:?}");
+        assert!(report.reclaimed_bytes > 0);
+        assert_eq!(
+            report,
+            RootfsCowReapReport {
+                reclaimed_artifacts: 1,
+                reclaimed_bytes: report.reclaimed_bytes,
+                ..RootfsCowReapReport::default()
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicitly_preserved_snapshot_input_survives_cleanup_and_reaping() {
+        let (tmp, store) = store();
+        let base = tmp.path().join("base.ext4");
+        fs::write(&base, b"snapshot rootfs").unwrap();
+        let mut rootfs = store.prepare(&base).unwrap();
+        let path = rootfs.path().to_path_buf();
+        rootfs.preserve_for_snapshot().unwrap();
+        rootfs.cleanup().unwrap();
+
+        assert_eq!(
+            store.reap_stale().unwrap(),
+            RootfsCowReapReport {
+                preserved_artifacts: 1,
+                ..RootfsCowReapReport::default()
+            }
+        );
+        assert_eq!(fs::read(path).unwrap(), b"snapshot rootfs");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_artifact_with_unknown_entry_is_skipped_intact() {
+        let (_tmp, store) = store();
+        let artifact = create_stale_fixture(&store, "sandbox-ABC123");
+        fs::write(artifact.join("unexpected"), b"keep all").unwrap();
+
+        assert_eq!(
+            store.reap_stale().unwrap(),
+            RootfsCowReapReport {
+                skipped_artifacts: 1,
+                ..RootfsCowReapReport::default()
+            }
+        );
+        assert!(artifact.join(ROOTFS_FILE).exists());
+        assert_eq!(fs::read(artifact.join("unexpected")).unwrap(), b"keep all");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_malformed_and_symlink_artifacts_are_never_reaped() {
+        use std::os::unix::fs::symlink;
+
+        let (tmp, store) = store();
+        let legacy = create_stale_fixture(&store, "sandbox-LEG123");
+        fs::write(
+            legacy.join(OWNER_MARKER),
+            format!("agentkernel-rootfs-cow-v1\n{}", Uuid::new_v4()),
+        )
+        .unwrap();
+        fs::remove_file(legacy.join(LEASE_FILE)).unwrap();
+
+        let malformed = create_stale_fixture(&store, "sandbox-BAD123");
+        fs::write(malformed.join(OWNER_MARKER), b"bad marker").unwrap();
+
+        let malformed_preserve = create_stale_fixture(&store, "sandbox-PRV123");
+        fs::write(
+            malformed_preserve.join(PRESERVE_MARKER),
+            format!("{PRESERVE_MARKER_CONTENT}\n{}", Uuid::new_v4()),
+        )
+        .unwrap();
+
+        let external = tmp.path().join("external");
+        fs::create_dir(&external).unwrap();
+        fs::write(external.join("keep"), b"untouched").unwrap();
+        symlink(&external, store.root().join("sandbox-LNK123")).unwrap();
+        fs::write(store.root().join("foreign-file"), b"untouched").unwrap();
+        fs::create_dir(store.root().join("foreign-directory")).unwrap();
+
+        assert_eq!(
+            store.reap_stale().unwrap(),
+            RootfsCowReapReport {
+                skipped_artifacts: 6,
+                ..RootfsCowReapReport::default()
+            }
+        );
+        assert!(legacy.exists());
+        assert!(malformed.exists());
+        assert!(malformed_preserve.exists());
+        assert_eq!(
+            fs::read(store.root().join("foreign-file")).unwrap(),
+            b"untouched"
+        );
+        assert!(store.root().join("foreign-directory").is_dir());
+        assert_eq!(fs::read(external.join("keep")).unwrap(), b"untouched");
     }
 
     #[test]
@@ -782,6 +1523,8 @@ mod tests {
         fs::write(unowned.join(OWNER_MARKER), b"not-agentkernel").unwrap();
         #[cfg(unix)]
         let unowned_handle = open_directory(&unowned).unwrap();
+        #[cfg(unix)]
+        let unowned_lease = create_file_at(unowned_handle.as_raw_fd(), LEASE_FILE).unwrap();
 
         let rootfs = RootfsCow {
             #[cfg(not(unix))]
@@ -797,6 +1540,9 @@ mod tests {
             artifact_name: unowned.file_name().unwrap().to_os_string(),
             #[cfg(unix)]
             artifact_identity: file_identity(&unowned_handle).unwrap(),
+            #[cfg(unix)]
+            _lease_handle: unowned_lease,
+            preserved: false,
         };
         assert!(rootfs.cleanup().is_err());
         assert!(unowned.join(ROOTFS_FILE).exists());

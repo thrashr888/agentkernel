@@ -131,13 +131,21 @@ impl FirecrackerSandbox {
 
     /// Return the private rootfs image currently attached to this sandbox.
     ///
-    /// Firecracker snapshots retain the path of their block device.  Callers
-    /// that need to preserve a snapshot across `stop` can copy this image
-    /// before stopping and restore it at the same path before loading the
-    /// snapshot.  The path is only available after `start` has prepared the
-    /// image and is not a promise that the file survives `stop`.
+    /// The path is only available after `start` has prepared the image. Call
+    /// [`Self::preserve_prepared_rootfs_for_snapshot`] before stopping when a
+    /// Firecracker snapshot will retain this block-device path.
     pub fn prepared_rootfs_path(&self) -> Option<&Path> {
         self.sandbox_rootfs.as_ref().map(RootfsCow::path)
+    }
+
+    /// Deliberately retain the prepared rootfs as a durable snapshot input.
+    pub fn preserve_prepared_rootfs_for_snapshot(&mut self) -> Result<&Path> {
+        let rootfs = self
+            .sandbox_rootfs
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("sandbox rootfs has not been prepared"))?;
+        rootfs.preserve_for_snapshot()?;
+        Ok(rootfs.path())
     }
 
     /// Find kernel path
