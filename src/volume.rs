@@ -21,52 +21,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[cfg(test)]
-use std::ffi::OsString;
-#[cfg(test)]
-use std::sync::{Mutex, MutexGuard};
-
-/// Serialize tests that temporarily redirect the process HOME directory.
-#[cfg(test)]
-static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
-
-/// Test-only guard for isolating HOME-backed AgentKernel data.
-#[cfg(test)]
-pub(crate) struct HomeEnvGuard {
-    original: Option<OsString>,
-    _lock: MutexGuard<'static, ()>,
-}
-
-#[cfg(test)]
-impl HomeEnvGuard {
-    pub(crate) fn set(path: &Path) -> Self {
-        let lock = HOME_ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let original = std::env::var_os("HOME");
-        // SAFETY: HOME-mutating tests are serialized by HOME_ENV_LOCK and
-        // this guard restores the original value before releasing it.
-        unsafe { std::env::set_var("HOME", path) };
-        Self {
-            original,
-            _lock: lock,
-        }
-    }
-}
-
-#[cfg(test)]
-impl Drop for HomeEnvGuard {
-    fn drop(&mut self) {
-        // SAFETY: The guard still holds HOME_ENV_LOCK while restoring HOME.
-        unsafe {
-            match &self.original {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
-            }
-        }
-    }
-}
-
 /// A persistent volume that can be mounted into sandboxes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Volume {
@@ -195,7 +149,15 @@ pub struct VolumeManager {
 impl VolumeManager {
     /// Create a new volume manager.
     pub fn new() -> Result<Self> {
-        let base_dir = Self::base_dir();
+        Self::new_in(Self::base_dir())
+    }
+
+    /// Create a volume manager rooted at an explicit AgentKernel data directory.
+    ///
+    /// This is primarily useful for callers that already own an isolated data
+    /// root, including tests that must not mutate process-global `HOME`.
+    pub(crate) fn new_in(base_dir: impl AsRef<Path>) -> Result<Self> {
+        let base_dir = base_dir.as_ref();
         let volumes_dir = base_dir.join("volumes");
         let metadata_dir = base_dir.join("volume-metadata");
 
@@ -526,20 +488,14 @@ mod tests {
     #[test]
     fn test_volume_manager_create_delete() {
         let temp_dir = TempDir::new().unwrap();
-        let _home = HomeEnvGuard::set(temp_dir.path());
-
-        let mut manager = VolumeManager::new().unwrap();
+        let data_dir = temp_dir.path().join(".agentkernel");
+        let mut manager = VolumeManager::new_in(&data_dir).unwrap();
 
         // Create
         let vol = manager.create("test-vol", None).unwrap();
         assert_eq!(vol.slug, "test-vol");
         assert!(manager.exists("test-vol"));
-        assert!(
-            temp_dir
-                .path()
-                .join(".agentkernel/volumes/test-vol")
-                .exists()
-        );
+        assert!(data_dir.join("volumes/test-vol").exists());
 
         // List
         let volumes = manager.list();
@@ -548,20 +504,13 @@ mod tests {
         // Delete
         manager.delete("test-vol").unwrap();
         assert!(!manager.exists("test-vol"));
-        assert!(
-            !temp_dir
-                .path()
-                .join(".agentkernel/volumes/test-vol")
-                .exists()
-        );
+        assert!(!data_dir.join("volumes/test-vol").exists());
     }
 
     #[test]
     fn test_volume_manager_duplicate() {
         let temp_dir = TempDir::new().unwrap();
-        let _home = HomeEnvGuard::set(temp_dir.path());
-
-        let mut manager = VolumeManager::new().unwrap();
+        let mut manager = VolumeManager::new_in(temp_dir.path().join(".agentkernel")).unwrap();
         manager.create("test-vol", None).unwrap();
 
         // Creating duplicate should fail
@@ -571,9 +520,7 @@ mod tests {
     #[test]
     fn test_volume_manager_invalid_slug() {
         let temp_dir = TempDir::new().unwrap();
-        let _home = HomeEnvGuard::set(temp_dir.path());
-
-        let mut manager = VolumeManager::new().unwrap();
+        let mut manager = VolumeManager::new_in(temp_dir.path().join(".agentkernel")).unwrap();
 
         assert!(manager.create("", None).is_err());
         assert!(manager.create("has spaces", None).is_err());
