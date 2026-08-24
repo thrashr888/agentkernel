@@ -7,9 +7,10 @@
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use k8s_openapi::api::core::v1::{Container, Pod, PodSpec};
+use k8s_openapi::api::core::v1::{Container, Pod, PodSpec, Service, ServicePort, ServiceSpec};
 use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicySpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
+use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, DeleteParams, PostParams};
 use kube::config::{KubeConfigOptions, Kubeconfig};
 use kube::{Client, Config as KubeConfig};
@@ -39,6 +40,8 @@ pub struct KubernetesSandbox {
     node_selector: HashMap<String, String>,
     /// Whether a NetworkPolicy was created (for cleanup)
     network_policy_created: bool,
+    /// Whether an internal ClusterIP Service was created (for cleanup)
+    service_created: bool,
     /// Whether network is disabled (used to decide on NetworkPolicy)
     network_disabled: bool,
 }
@@ -56,8 +59,18 @@ impl KubernetesSandbox {
             service_account: config.service_account.clone(),
             node_selector: config.node_selector.clone(),
             network_policy_created: false,
+            service_created: false,
             network_disabled: false,
         }
+    }
+
+    fn validate_ports(config: &SandboxConfig) -> Result<()> {
+        if !config.network && !config.ports.is_empty() {
+            bail!(
+                "Kubernetes internal Services require network access; cannot declare ports when network is disabled"
+            );
+        }
+        Ok(())
     }
 
     /// Build the Kubernetes API client
@@ -119,6 +132,118 @@ impl KubernetesSandbox {
         );
         labels.insert("agentkernel/pool".to_string(), "active".to_string());
         labels
+    }
+
+    /// Generate a deterministic DNS-safe Service name for this sandbox.
+    fn service_name_for(sandbox_name: &str) -> String {
+        // Kubernetes Service names are DNS labels: ASCII lowercase, at most 63
+        // bytes, and may not start or end with a hyphen.
+        let sanitized: String = sandbox_name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let sanitized = sanitized.trim_matches('-');
+        let base = if sanitized.is_empty() {
+            "sandbox"
+        } else {
+            sanitized
+        };
+        let suffix = "-svc";
+        let max_base_len = 63 - "agentkernel-".len() - suffix.len();
+        let base: String = base.chars().take(max_base_len).collect();
+        format!("agentkernel-{}{}", base.trim_matches('-'), suffix)
+    }
+
+    /// Build the internal ClusterIP Service for the sandbox's declared ports.
+    fn build_service(&self, config: &SandboxConfig) -> Service {
+        let ports = config
+            .ports
+            .iter()
+            .enumerate()
+            .map(|(index, port)| ServicePort {
+                // The index makes names unique even when mappings repeat.
+                name: Some(format!(
+                    "port-{}-{}",
+                    index,
+                    match port.protocol {
+                        super::PortProtocol::Tcp => "tcp",
+                        super::PortProtocol::Udp => "udp",
+                    }
+                )),
+                protocol: Some(match port.protocol {
+                    super::PortProtocol::Tcp => "TCP".to_string(),
+                    super::PortProtocol::Udp => "UDP".to_string(),
+                }),
+                port: port.host_port.unwrap_or(port.container_port) as i32,
+                target_port: Some(IntOrString::Int(port.container_port as i32)),
+                ..Default::default()
+            })
+            .collect();
+
+        let mut labels = BTreeMap::new();
+        labels.insert(
+            "agentkernel/managed-by".to_string(),
+            "agentkernel".to_string(),
+        );
+        labels.insert("agentkernel/sandbox".to_string(), self.name.clone());
+
+        Service {
+            metadata: ObjectMeta {
+                name: Some(Self::service_name_for(&self.name)),
+                namespace: Some(self.namespace.clone()),
+                labels: Some(labels),
+                ..Default::default()
+            },
+            spec: Some(ServiceSpec {
+                type_: Some("ClusterIP".to_string()),
+                ports: Some(ports),
+                selector: Some({
+                    let mut selector = BTreeMap::new();
+                    selector.insert("agentkernel/sandbox".to_string(), self.name.clone());
+                    selector
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Create the internal Service for this sandbox.
+    async fn create_service(&self, client: &Client, service: &Service) -> Result<()> {
+        let services: Api<Service> = Api::namespaced(client.clone(), &self.namespace);
+        services
+            .create(&PostParams::default(), service)
+            .await
+            .context("Failed to create K8s Service")?;
+        Ok(())
+    }
+
+    /// Delete the internal Service for this sandbox.
+    async fn delete_service(&self, client: &Client) -> Result<()> {
+        let services: Api<Service> = Api::namespaced(client.clone(), &self.namespace);
+        let name = Self::service_name_for(&self.name);
+        // Reconnects do not retain service_created. Only delete a resource
+        // carrying both AgentKernel ownership labels, never a colliding
+        // user-owned Service with the same deterministic name.
+        if let Ok(service) = services.get(&name).await {
+            let labels = service.metadata.labels.as_ref();
+            let owned = labels
+                .and_then(|labels| labels.get("agentkernel/managed-by"))
+                .is_some_and(|value| value == "agentkernel")
+                && labels
+                    .and_then(|labels| labels.get("agentkernel/sandbox"))
+                    .is_some_and(|value| value == &self.name);
+            if owned {
+                let _ = services.delete(&name, &DeleteParams::default()).await;
+            }
+        }
+        Ok(())
     }
 
     /// Build the Pod spec for this sandbox
@@ -332,6 +457,8 @@ impl KubernetesSandbox {
 #[async_trait]
 impl Sandbox for KubernetesSandbox {
     async fn start(&mut self, config: &SandboxConfig) -> Result<()> {
+        Self::validate_ports(config)?;
+
         // Build K8s client
         let orch_config = OrchestratorConfig {
             namespace: self.namespace.clone(),
@@ -372,12 +499,42 @@ impl Sandbox for KubernetesSandbox {
         // Create NetworkPolicy if network is disabled
         self.network_disabled = !config.network;
         if !config.network {
-            self.create_network_policy(&client).await?;
+            if let Err(error) = self.create_network_policy(&client).await {
+                let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+                return Err(error);
+            }
             self.network_policy_created = true;
         }
 
+        // Create the per-sandbox internal Service after the pod and policy. If
+        // this fails, roll back every resource created by this start attempt.
+        if !config.ports.is_empty() {
+            let service = self.build_service(config);
+            if let Err(error) = self.create_service(&client, &service).await {
+                let _ = self.delete_service(&client).await;
+                if self.network_policy_created {
+                    let _ = self.delete_network_policy(&client).await;
+                    self.network_policy_created = false;
+                }
+                let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+                return Err(error);
+            }
+            self.service_created = true;
+        }
+
         // Wait for the pod to be running
-        self.wait_for_running(&client, &pod_name).await?;
+        if let Err(error) = self.wait_for_running(&client, &pod_name).await {
+            if self.service_created {
+                let _ = self.delete_service(&client).await;
+                self.service_created = false;
+            }
+            if self.network_policy_created {
+                let _ = self.delete_network_policy(&client).await;
+                self.network_policy_created = false;
+            }
+            let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+            return Err(error);
+        }
 
         self.pod_name = Some(pod_name);
         self.client = Some(client);
@@ -493,7 +650,13 @@ impl Sandbox for KubernetesSandbox {
             // Clean up NetworkPolicy if we created one
             if self.network_policy_created {
                 let _ = self.delete_network_policy(client).await;
+                self.network_policy_created = false;
             }
+
+            // Clean up the internal Service, including after reconnecting in a
+            // new process where the in-memory creation flag is unavailable.
+            let _ = self.delete_service(client).await;
+            self.service_created = false;
         }
 
         self.running = false;
@@ -675,5 +838,91 @@ mod tests {
             spec.policy_types,
             Some(vec!["Ingress".to_string(), "Egress".to_string()])
         );
+    }
+
+    #[test]
+    fn internal_service_has_stable_dns_name_and_pod_selector() {
+        let sandbox =
+            KubernetesSandbox::new("My Sandbox/Production", &OrchestratorConfig::default());
+        let service = sandbox.build_service(&SandboxConfig {
+            ports: vec![super::super::PortMapping {
+                host_port: Some(18080),
+                container_port: 8080,
+                protocol: super::super::PortProtocol::Tcp,
+            }],
+            ..Default::default()
+        });
+
+        assert_eq!(
+            service.metadata.name.as_deref(),
+            Some("agentkernel-my-sandbox-production-svc")
+        );
+        let spec = service.spec.expect("service spec");
+        assert_eq!(spec.type_.as_deref(), Some("ClusterIP"));
+        assert_eq!(
+            spec.selector
+                .expect("service selector")
+                .get("agentkernel/sandbox")
+                .map(String::as_str),
+            Some("My Sandbox/Production")
+        );
+        let port = &spec.ports.expect("service ports")[0];
+        assert_eq!(port.name.as_deref(), Some("port-0-tcp"));
+        assert_eq!(port.protocol.as_deref(), Some("TCP"));
+        assert_eq!(port.port, 18080);
+        assert_eq!(port.target_port, Some(IntOrString::Int(8080)));
+    }
+
+    #[test]
+    fn internal_service_preserves_udp_and_auto_port_target() {
+        let sandbox = KubernetesSandbox::new("udp sandbox", &OrchestratorConfig::default());
+        let service = sandbox.build_service(&SandboxConfig {
+            ports: vec![
+                super::super::PortMapping {
+                    host_port: None,
+                    container_port: 5353,
+                    protocol: super::super::PortProtocol::Udp,
+                },
+                super::super::PortMapping {
+                    host_port: None,
+                    container_port: 5353,
+                    protocol: super::super::PortProtocol::Udp,
+                },
+            ],
+            ..Default::default()
+        });
+        let ports = service.spec.expect("service spec").ports.expect("ports");
+
+        assert_eq!(ports[0].name.as_deref(), Some("port-0-udp"));
+        assert_eq!(ports[1].name.as_deref(), Some("port-1-udp"));
+        assert_eq!(ports[0].protocol.as_deref(), Some("UDP"));
+        assert_eq!(ports[0].port, 5353);
+        assert_eq!(ports[0].target_port, Some(IntOrString::Int(5353)));
+    }
+
+    #[test]
+    fn service_name_is_bounded_and_never_empty() {
+        let long_name = "---".to_string() + &"a".repeat(200);
+        let service_name = KubernetesSandbox::service_name_for(&long_name);
+
+        assert!(service_name.len() <= 63);
+        assert!(service_name.starts_with("agentkernel-a"));
+        assert!(!service_name.ends_with('-'));
+    }
+
+    #[test]
+    fn ports_are_rejected_when_network_is_disabled() {
+        let config = SandboxConfig {
+            network: false,
+            ports: vec![super::super::PortMapping {
+                host_port: None,
+                container_port: 8080,
+                protocol: super::super::PortProtocol::Tcp,
+            }],
+            ..Default::default()
+        };
+
+        let error = KubernetesSandbox::validate_ports(&config).expect_err("invalid ports");
+        assert!(error.to_string().contains("require network access"));
     }
 }

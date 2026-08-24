@@ -73,3 +73,10 @@ runner because GitHub-hosted runners do not expose the required KVM device and
 guest assets. The lane is scheduled and manually dispatchable; it is not silently
 treated as evidence on ordinary pull requests. Runtime maintainers (@thrashr888)
 own runner health and asset refreshes.
+
+The Kubernetes and Nomad orchestrators provide internal service discovery for
+declared sandbox ports: Kubernetes creates a per-sandbox ClusterIP Service,
+while Nomad registers native services against the generated dynamic-port
+labels. These are cluster-internal registrations only. Public domains,
+Ingress/gateway resources, service meshes, TLS, and endpoint resolution remain
+operator-owned concerns and are not inferred or created by AgentKernel.

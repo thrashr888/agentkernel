@@ -65,6 +65,15 @@ Each sandbox pod runs with:
 
 When `network: false`, a `NetworkPolicy` is automatically created that denies all ingress and egress for the sandbox pod. The policy is cleaned up on `stop`.
 
+When a sandbox declares one or more `ports`, the backend also creates a
+per-sandbox `ClusterIP` Service. The Service selects the sandbox using the
+`agentkernel/sandbox` label, preserves TCP/UDP mappings, and is removed with
+the sandbox. Its deterministic name is visible through `kubectl get service`
+and can be reached from the namespace through the normal Kubernetes DNS name
+`<service>.<namespace>.svc`. This is internal service discovery only; expose a
+sandbox outside the cluster with an Ingress, Gateway, or service mesh owned by
+the application/operator.
+
 For stronger isolation, set `runtime_class` to `gvisor` or `kata` to run pods in a dedicated kernel sandbox.
 
 ## Warm Pool
