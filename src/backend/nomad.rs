@@ -144,6 +144,15 @@ impl NomadSandbox {
         }
     }
 
+    fn validate_ports(config: &SandboxConfig) -> Result<()> {
+        if !config.network && !config.ports.is_empty() {
+            bail!(
+                "Nomad internal services require network access; cannot declare ports when network is disabled"
+            );
+        }
+        Ok(())
+    }
+
     /// Generate the job ID for this sandbox
     fn job_id_for(sandbox_name: &str) -> String {
         let sanitized: String = sandbox_name
@@ -226,6 +235,27 @@ impl NomadSandbox {
             json!({})
         };
 
+        // Nomad's native service provider keeps these registrations internal to
+        // the Nomad cluster. Each service references the stable dynamic-port
+        // label emitted above, so no public domain or Consul Connect sidecar is
+        // required for sandbox-to-sandbox discovery.
+        let services: Vec<serde_json::Value> = config
+            .ports
+            .iter()
+            .enumerate()
+            .map(|(index, port)| {
+                json!({
+                    "Name": format!("{}-port-{}", job_id, index),
+                    "PortLabel": format!("port{}", index),
+                    "Provider": "nomad",
+                    "Tags": [
+                        format!("agentkernel-port={}", port.container_port),
+                        format!("agentkernel-protocol={}", port.protocol),
+                    ],
+                })
+            })
+            .collect();
+
         json!({
             "Job": {
                 "ID": job_id,
@@ -240,6 +270,7 @@ impl NomadSandbox {
                     "Name": "sandbox",
                     "Count": 1,
                     "Networks": [network],
+                    "Services": services,
                     "Tasks": [{
                         "Name": "sandbox",
                         "Driver": self.driver,
@@ -343,6 +374,8 @@ impl NomadSandbox {
 #[async_trait]
 impl Sandbox for NomadSandbox {
     async fn start(&mut self, config: &SandboxConfig) -> Result<()> {
+        Self::validate_ports(config)?;
+
         let job_spec = self.build_job_spec(config);
         let job_id = Self::job_id_for(&self.name);
 
@@ -544,5 +577,78 @@ impl Sandbox for NomadSandbox {
             self.write_file(&file.dest, &file.content).await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{PortMapping, PortProtocol};
+
+    fn task_group(job: &serde_json::Value) -> &serde_json::Value {
+        &job["Job"]["TaskGroups"][0]
+    }
+
+    #[test]
+    fn job_registers_each_declared_port_with_nomad_provider() {
+        let sandbox = NomadSandbox::new("My Sandbox", &OrchestratorConfig::default());
+        let config = SandboxConfig {
+            ports: vec![
+                PortMapping {
+                    host_port: Some(18080),
+                    container_port: 8080,
+                    protocol: PortProtocol::Tcp,
+                },
+                PortMapping {
+                    host_port: None,
+                    container_port: 5353,
+                    protocol: PortProtocol::Udp,
+                },
+            ],
+            ..Default::default()
+        };
+        let job = sandbox.build_job_spec(&config);
+        let group = task_group(&job);
+        let dynamic_ports = &group["Networks"][0]["DynamicPorts"];
+        let services = group["Services"].as_array().expect("service registrations");
+
+        assert_eq!(dynamic_ports[0]["Label"], "port0");
+        assert_eq!(dynamic_ports[0]["To"], 8080);
+        assert_eq!(dynamic_ports[0]["Value"], 18080);
+        assert_eq!(dynamic_ports[1]["Label"], "port1");
+        assert_eq!(dynamic_ports[1]["To"], 5353);
+        assert_eq!(services.len(), 2);
+        assert_eq!(services[0]["Name"], "agentkernel-my-sandbox-port-0");
+        assert_eq!(services[0]["PortLabel"], "port0");
+        assert_eq!(services[0]["Provider"], "nomad");
+        assert_eq!(services[0]["Tags"][1], "agentkernel-protocol=tcp");
+        assert_eq!(services[1]["Name"], "agentkernel-my-sandbox-port-1");
+        assert_eq!(services[1]["PortLabel"], "port1");
+        assert_eq!(services[1]["Tags"][1], "agentkernel-protocol=udp");
+    }
+
+    #[test]
+    fn job_has_no_service_registration_without_declared_ports() {
+        let sandbox = NomadSandbox::new("no-ports", &OrchestratorConfig::default());
+        let job = sandbox.build_job_spec(&SandboxConfig::default());
+        let group = task_group(&job);
+
+        assert_eq!(group["Services"].as_array().map(Vec::len), Some(0));
+    }
+
+    #[test]
+    fn ports_are_rejected_when_network_is_disabled() {
+        let config = SandboxConfig {
+            network: false,
+            ports: vec![PortMapping {
+                host_port: None,
+                container_port: 8080,
+                protocol: PortProtocol::Tcp,
+            }],
+            ..Default::default()
+        };
+
+        let error = NomadSandbox::validate_ports(&config).expect_err("invalid ports");
+        assert!(error.to_string().contains("require network access"));
     }
 }

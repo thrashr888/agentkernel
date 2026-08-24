@@ -71,6 +71,14 @@ Each sandbox Nomad job runs with:
 - Resource limits enforced (CPU in MHz, memory in MB)
 - Metadata tags: `agentkernel-sandbox={name}`, `agentkernel-managed=true`
 
+When a sandbox declares `ports`, the generated task group registers one
+internal service per port with Nomad's native service provider. Registrations
+refer to the stable dynamic-port labels in the task group's network stanza,
+so they do not require a public domain, Consul Connect, or a sidecar. Service
+names and port labels are deterministic for the sandbox. Public exposure and
+cross-network routing remain the responsibility of the Nomad operator's
+Ingress, gateway, or mesh configuration.
+
 ## Warm Pool
 
 The Nomad warm pool uses a parameterized batch job (`agentkernel-warm-pool`). Pre-warmed allocations run `sleep infinity` until claimed. When acquired, the dispatched job ID and allocation ID are returned. When released, the allocation is stopped and a replacement dispatched.

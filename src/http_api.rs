@@ -348,13 +348,20 @@ struct CreateRequest {
 /// Keep this in the HTTP layer so malformed specs are rejected before a
 /// sandbox is created.  The existence check intentionally uses the same
 /// `VolumeManager` path as the CLI and the VMM start path.
-fn validate_volume_specs(specs: &[String]) -> Result<()> {
+fn validate_volume_specs(
+    specs: &[String],
+    volume_base_dir: Option<&std::path::Path>,
+) -> Result<()> {
     let mounts: Vec<VolumeMount> = specs
         .iter()
         .map(|spec| VolumeMount::parse(spec))
         .collect::<Result<Vec<_>>>()?;
     if !mounts.is_empty() {
-        VolumeManager::new()?.validate_mounts(&mounts)?;
+        let manager = match volume_base_dir {
+            Some(base_dir) => VolumeManager::new_in(base_dir)?,
+            None => VolumeManager::new()?,
+        };
+        manager.validate_mounts(&mounts)?;
     }
     Ok(())
 }
@@ -854,6 +861,9 @@ struct AppState {
     config_path: Option<std::path::PathBuf>,
     /// API keys for authentication (empty = no auth required)
     api_keys: Vec<String>,
+    /// Optional explicit volume data root. Production uses the standard home
+    /// directory; tests inject an isolated root without changing global HOME.
+    volume_base_dir: Option<std::path::PathBuf>,
     /// Whether HTTP API callers may request root execution (`sudo: true`).
     allow_sudo_exec: bool,
     /// Server start time for uptime calculation
@@ -997,6 +1007,7 @@ impl AppState {
         }
         Ok(Self {
             api_keys,
+            volume_base_dir: None,
             allow_sudo_exec,
             started_at: std::time::Instant::now(),
             opencode: Arc::new(OpenCodeState::new(vm_manager.clone())),
@@ -1049,6 +1060,7 @@ impl AppState {
         let vm_manager = Arc::new(std::sync::OnceLock::new());
         Self {
             api_keys,
+            volume_base_dir: None,
             allow_sudo_exec: false,
             started_at: std::time::Instant::now(),
             opencode: Arc::new(OpenCodeState::new(vm_manager.clone())),
@@ -3924,7 +3936,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         }
     };
 
-    if let Err(e) = validate_volume_specs(&body.volumes) {
+    if let Err(e) = validate_volume_specs(&body.volumes, state.volume_base_dir.as_deref()) {
         return json_response(
             StatusCode::BAD_REQUEST,
             &ApiResponse::<()>::error(format!("Invalid volume mount: {}", e)),
@@ -10859,7 +10871,7 @@ init_script = "echo ready"
 
     #[test]
     fn test_create_request_rejects_malformed_volumes_before_creation() {
-        let error = validate_volume_specs(&["cache:/cache:rw".to_string()]).unwrap_err();
+        let error = validate_volume_specs(&["cache:/cache:rw".to_string()], None).unwrap_err();
         assert!(error.to_string().contains("Invalid volume mount format"));
     }
 
@@ -10926,15 +10938,18 @@ init_script = "echo ready"
     #[tokio::test]
     async fn create_route_persists_valid_volumes_before_starting_sandbox() {
         let home = tempfile::tempdir().unwrap();
-        let _home = crate::volume::HomeEnvGuard::set(home.path());
         let slug = format!("http-volume-{}", uuid::Uuid::now_v7().simple());
-        let mut volume_manager = VolumeManager::new().unwrap();
+        let volume_base_dir = home.path().join(".agentkernel");
+        let mut volume_manager = VolumeManager::new_in(&volume_base_dir).unwrap();
         volume_manager.create(&slug, None).unwrap();
 
         let temp = tempfile::tempdir().unwrap();
-        let manager = VmManager::for_tests(temp.path()).unwrap();
+        let mut manager = VmManager::for_tests(temp.path()).unwrap();
+        manager.set_volume_base_dir_for_tests(volume_base_dir.clone());
         let manager = Arc::new(tokio::sync::RwLock::new(manager));
-        let state = Arc::new(AppState::with_api_keys(vec![]));
+        let mut state = AppState::with_api_keys(vec![]);
+        state.volume_base_dir = Some(volume_base_dir);
+        let state = Arc::new(state);
         let _ = state.vm_manager.set(manager.clone());
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -10965,7 +10980,9 @@ init_script = "echo ready"
             .send()
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
+        let status = response.status();
+        let response_body = response.text().await.unwrap();
+        assert_eq!(status, StatusCode::CREATED, "{response_body}");
         task.await.unwrap();
 
         let persisted = manager

@@ -412,6 +412,13 @@ pub struct VmManager {
     sandboxes: HashMap<String, SandboxState>,
     /// Data directory for persistence
     data_dir: PathBuf,
+    /// Optional explicit volume data root. Production resolves the standard
+    /// home-backed location; tests can inject an isolated root.
+    volume_base_dir: Option<PathBuf>,
+    /// Test managers persist and validate lifecycle state without requiring a
+    /// host container runtime.
+    #[cfg(test)]
+    bypass_backend_runtime: bool,
     /// Rootfs directory for Firecracker
     rootfs_dir: Option<PathBuf>,
     /// Next vsock CID
@@ -452,6 +459,8 @@ impl VmManager {
             running: HashMap::new(),
             sandboxes: HashMap::new(),
             data_dir: data_dir.to_path_buf(),
+            volume_base_dir: None,
+            bypass_backend_runtime: true,
             rootfs_dir: None,
             next_cid: 3,
             detached: HashMap::new(),
@@ -463,6 +472,11 @@ impl VmManager {
     #[cfg(test)]
     pub fn insert_state_for_tests(&mut self, state: SandboxState) {
         self.sandboxes.insert(state.name.clone(), state);
+    }
+
+    #[cfg(test)]
+    pub fn set_volume_base_dir_for_tests(&mut self, volume_base_dir: PathBuf) {
+        self.volume_base_dir = Some(volume_base_dir);
     }
 
     /// Create a new VM manager (auto-selects backend based on availability)
@@ -520,6 +534,9 @@ impl VmManager {
             running: HashMap::new(),
             sandboxes,
             data_dir,
+            volume_base_dir: None,
+            #[cfg(test)]
+            bypass_backend_runtime: false,
             rootfs_dir,
             next_cid: max_cid + 1,
             detached: HashMap::new(),
@@ -981,7 +998,10 @@ impl VmManager {
     ) -> Result<()> {
         let create_start = std::time::Instant::now();
 
-        if !crate::backend::backend_available(backend) {
+        let backend_available = crate::backend::backend_available(backend);
+        #[cfg(test)]
+        let backend_available = backend_available || self.bypass_backend_runtime;
+        if !backend_available {
             bail!("Backend '{}' is not available on this system", backend);
         }
 
@@ -1823,6 +1843,32 @@ impl VmManager {
         )
     }
 
+    fn resolve_volume_args(&self, state: &SandboxState) -> Result<Vec<String>> {
+        if state.volumes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let volume_manager = match self.volume_base_dir.as_deref() {
+            Some(base_dir) => VolumeManager::new_in(base_dir)?,
+            None => VolumeManager::new()?,
+        };
+        state
+            .volumes
+            .iter()
+            .map(|spec| {
+                let mount = VolumeMount::parse(spec)?;
+                if !volume_manager.exists(&mount.slug) {
+                    bail!(
+                        "Volume '{}' not found. Create it with: agentkernel volume create {}",
+                        mount.slug,
+                        mount.slug
+                    );
+                }
+                Ok(mount.to_docker_arg(volume_manager.volumes_dir()))
+            })
+            .collect()
+    }
+
     /// Start a sandbox with specific permissions
     pub async fn start_with_permissions(&mut self, name: &str, perms: &Permissions) -> Result<()> {
         self.start_with_permissions_and_files(name, perms, &[])
@@ -1905,6 +1951,12 @@ impl VmManager {
                 "Backend '{}' does not support proxy-based secret bindings; use secret env vars or secret files instead",
                 backend
             );
+        }
+
+        #[cfg(test)]
+        if self.bypass_backend_runtime {
+            self.resolve_volume_args(&state)?;
+            return Ok(());
         }
 
         // Create sandbox using unified factory
@@ -2286,25 +2338,7 @@ impl VmManager {
         };
 
         // Resolve volume mounts to docker -v arguments
-        let volume_args = if !state.volumes.is_empty() {
-            let volume_manager = VolumeManager::new()?;
-            let mut args = Vec::new();
-            for spec in &state.volumes {
-                let mount = VolumeMount::parse(spec)?;
-                // Validate volume exists
-                if !volume_manager.exists(&mount.slug) {
-                    bail!(
-                        "Volume '{}' not found. Create it with: agentkernel volume create {}",
-                        mount.slug,
-                        mount.slug
-                    );
-                }
-                args.push(mount.to_docker_arg(volume_manager.volumes_dir()));
-            }
-            args
-        } else {
-            Vec::new()
-        };
+        let volume_args = self.resolve_volume_args(&state)?;
 
         let config = SandboxConfig {
             image: state.image.clone(),
@@ -4103,6 +4137,8 @@ mod tests {
         let mut manager = VmManager {
             sandboxes: HashMap::new(),
             data_dir: temp_dir.path().to_path_buf(),
+            volume_base_dir: None,
+            bypass_backend_runtime: false,
             backend: BackendType::Docker,
             running: HashMap::new(),
             rootfs_dir: None,
@@ -4182,6 +4218,8 @@ mod tests {
         let mut manager = VmManager {
             sandboxes: HashMap::new(),
             data_dir: temp_dir.path().to_path_buf(),
+            volume_base_dir: None,
+            bypass_backend_runtime: false,
             backend: BackendType::Docker,
             running: HashMap::new(),
             rootfs_dir: None,
@@ -4270,6 +4308,8 @@ mod tests {
         let mut manager = VmManager {
             sandboxes: HashMap::new(),
             data_dir: temp_dir.path().to_path_buf(),
+            volume_base_dir: None,
+            bypass_backend_runtime: false,
             backend: BackendType::Docker,
             running: HashMap::new(),
             rootfs_dir: None,
@@ -4425,6 +4465,8 @@ mod tests {
         VmManager {
             sandboxes: HashMap::new(),
             data_dir: temp_dir.path().to_path_buf(),
+            volume_base_dir: None,
+            bypass_backend_runtime: false,
             backend: BackendType::Docker,
             running: HashMap::new(),
             rootfs_dir: None,
