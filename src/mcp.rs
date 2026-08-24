@@ -1508,16 +1508,43 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
-                reject_fresh_manager_firecracker(&manager, Some(name), "sandbox_file_write")?;
-
-                if !manager.is_running(name) {
-                    anyhow::bail!(
-                        "Sandbox '{}' is not running. Start it first with sandbox_start.",
-                        name
-                    );
+                crate::validation::validate_sandbox_name(name)?;
+                crate::backend::validate_sandbox_path(path)?;
+                let backend = manager
+                    .get_state(name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                if backend == crate::backend::BackendType::Firecracker {
+                    let port = crate::local_api_port();
+                    if !crate::try_server_health("127.0.0.1", port).await {
+                        return Err(crate::firecracker_server_required("write a file to", port));
+                    }
+                    let Some(status) = crate::delegated_firecracker_status(name).await? else {
+                        anyhow::bail!("Sandbox '{}' not found.", name);
+                    };
+                    if status.status != "running" {
+                        anyhow::bail!(
+                            "Sandbox '{}' is not running. Start it first with sandbox_start.",
+                            name
+                        );
+                    }
+                    crate::delegate_file_write_to_server(
+                        "127.0.0.1",
+                        port,
+                        name,
+                        path,
+                        content.as_bytes(),
+                    )
+                    .await?;
+                } else {
+                    if !manager.is_running(name) {
+                        anyhow::bail!(
+                            "Sandbox '{}' is not running. Start it first with sandbox_start.",
+                            name
+                        );
+                    }
+                    manager.write_file(name, path, content.as_bytes()).await?;
                 }
-
-                manager.write_file(name, path, content.as_bytes()).await?;
                 Ok(format!(
                     "Wrote {} bytes to '{}' in sandbox '{}'",
                     content.len(),
@@ -1542,16 +1569,38 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
-                reject_fresh_manager_firecracker(&manager, Some(name), "sandbox_file_read")?;
-
-                if !manager.is_running(name) {
-                    anyhow::bail!(
-                        "Sandbox '{}' is not running. Start it first with sandbox_start.",
-                        name
-                    );
-                }
-
-                let content = manager.read_file(name, path).await?;
+                crate::validation::validate_sandbox_name(name)?;
+                crate::backend::validate_sandbox_path(path)?;
+                let backend = manager
+                    .get_state(name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                let content = if backend == crate::backend::BackendType::Firecracker {
+                    let port = crate::local_api_port();
+                    if !crate::try_server_health("127.0.0.1", port).await {
+                        return Err(crate::firecracker_server_required("read a file from", port));
+                    }
+                    let Some(status) = crate::delegated_firecracker_status(name).await? else {
+                        anyhow::bail!("Sandbox '{}' not found.", name);
+                    };
+                    if status.status != "running" {
+                        anyhow::bail!(
+                            "Sandbox '{}' is not running. Start it first with sandbox_start.",
+                            name
+                        );
+                    }
+                    crate::delegate_file_read_to_server("127.0.0.1", port, name, path)
+                        .await?
+                        .content
+                } else {
+                    if !manager.is_running(name) {
+                        anyhow::bail!(
+                            "Sandbox '{}' is not running. Start it first with sandbox_start.",
+                            name
+                        );
+                    }
+                    manager.read_file(name, path).await?
+                };
 
                 // Try to convert to UTF-8 string, fall back to base64 for binary
                 match String::from_utf8(content.clone()) {
@@ -1587,20 +1636,51 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
-                reject_fresh_manager_firecracker(&manager, Some(name), "sandbox_write_files")?;
-
-                if !manager.is_running(name) {
-                    anyhow::bail!(
-                        "Sandbox '{}' is not running. Start it first with sandbox_start.",
-                        name
-                    );
-                }
-
-                let mut count = 0;
-                for (path, content) in files {
-                    let text = content.as_str().unwrap_or("");
-                    manager.write_file(name, path, text.as_bytes()).await?;
-                    count += 1;
+                crate::validation::validate_sandbox_name(name)?;
+                let backend = manager
+                    .get_state(name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                let count = files.len();
+                if backend == crate::backend::BackendType::Firecracker {
+                    let port = crate::local_api_port();
+                    if !crate::try_server_health("127.0.0.1", port).await {
+                        return Err(crate::firecracker_server_required("write files to", port));
+                    }
+                    let Some(status) = crate::delegated_firecracker_status(name).await? else {
+                        anyhow::bail!("Sandbox '{}' not found.", name);
+                    };
+                    if status.status != "running" {
+                        anyhow::bail!(
+                            "Sandbox '{}' is not running. Start it first with sandbox_start.",
+                            name
+                        );
+                    }
+                    let mut text_files = std::collections::HashMap::with_capacity(files.len());
+                    for (path, content) in files {
+                        let text = content.as_str().unwrap_or("");
+                        crate::backend::validate_sandbox_path(path)?;
+                        text_files.insert(path.clone(), text.to_string());
+                    }
+                    crate::delegate_batch_file_write_to_server(
+                        "127.0.0.1",
+                        port,
+                        name,
+                        &text_files,
+                    )
+                    .await?;
+                } else {
+                    if !manager.is_running(name) {
+                        anyhow::bail!(
+                            "Sandbox '{}' is not running. Start it first with sandbox_start.",
+                            name
+                        );
+                    }
+                    for (path, content) in files {
+                        let text = content.as_str().unwrap_or("");
+                        crate::backend::validate_sandbox_path(path)?;
+                        manager.write_file(name, path, text.as_bytes()).await?;
+                    }
                 }
 
                 Ok(format!("Wrote {} file(s) to sandbox '{}'", count, name))

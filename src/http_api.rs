@@ -2539,21 +2539,32 @@ async fn handle_request(
         }
 
         // File operations: GET /sandboxes/{name}/files/{path...}
-        (Method::GET, ["sandboxes", name, "files", ..]) => {
-            let file_path = segments[3..].join("/");
-            handle_file_read(name, &file_path, state).await
-        }
+        (Method::GET, ["sandboxes", name, "files", ..]) => match decode_file_path(&segments[3..]) {
+            Ok(file_path) => handle_file_read(name, &file_path, state).await,
+            Err(error) => json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(error.to_string()),
+            ),
+        },
 
         // File operations: PUT /sandboxes/{name}/files/{path...}
-        (Method::PUT, ["sandboxes", name, "files", ..]) => {
-            let file_path = segments[3..].join("/");
-            handle_file_write(req, name, &file_path, state).await
-        }
+        (Method::PUT, ["sandboxes", name, "files", ..]) => match decode_file_path(&segments[3..]) {
+            Ok(file_path) => handle_file_write(req, name, &file_path, state).await,
+            Err(error) => json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(error.to_string()),
+            ),
+        },
 
         // File operations: DELETE /sandboxes/{name}/files/{path...}
         (Method::DELETE, ["sandboxes", name, "files", ..]) => {
-            let file_path = segments[3..].join("/");
-            handle_file_delete(name, &file_path, state).await
+            match decode_file_path(&segments[3..]) {
+                Ok(file_path) => handle_file_delete(name, &file_path, state).await,
+                Err(error) => json_response(
+                    StatusCode::BAD_REQUEST,
+                    &ApiResponse::<()>::error(error.to_string()),
+                ),
+            }
         }
 
         // Delete a sandbox
@@ -8112,6 +8123,31 @@ fn resolve_profile(name: &str) -> Option<SecurityProfile> {
 }
 
 // --- File operation handlers ---
+
+fn decode_file_path(segments: &[&str]) -> Result<String> {
+    if segments.is_empty() {
+        anyhow::bail!("file path is required");
+    }
+    segments
+        .iter()
+        .map(|segment| {
+            let bytes = segment.as_bytes();
+            for (index, byte) in bytes.iter().enumerate() {
+                if *byte == b'%'
+                    && (index + 2 >= bytes.len()
+                        || !bytes[index + 1].is_ascii_hexdigit()
+                        || !bytes[index + 2].is_ascii_hexdigit())
+                {
+                    anyhow::bail!("invalid encoded file path");
+                }
+            }
+            urlencoding::decode(segment)
+                .map(|decoded| decoded.into_owned())
+                .map_err(|error| anyhow::anyhow!("invalid encoded file path: {error}"))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|segments| segments.join("/"))
+}
 
 async fn handle_file_read(name: &str, file_path: &str, state: Arc<AppState>) -> Response<BoxBody> {
     if let Err(e) = validation::validate_sandbox_name(name) {
@@ -15170,6 +15206,16 @@ max_total_sandboxes = 0
         let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         let file_path = segments[3..].join("/");
         assert_eq!(file_path, "home/user/projects/src/main.rs");
+    }
+
+    #[test]
+    fn test_decode_file_path_percent_decodes_each_segment() {
+        assert_eq!(
+            decode_file_path(&["tmp", "a%20file%2B%23.txt"]).unwrap(),
+            "tmp/a file+#.txt"
+        );
+        assert!(decode_file_path(&[]).is_err());
+        assert!(decode_file_path(&["%ZZ"]).is_err());
     }
 
     #[test]
