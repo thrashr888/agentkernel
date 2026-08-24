@@ -15,7 +15,11 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-pub const FORMAT_VERSION: u32 = 1;
+// Version 2 binds a checkpoint to the immutable UUID of the source sandbox.
+// Keep legacy fields deserializable with an empty default so old records can
+// reach the explicit version check and fail closed instead of being treated
+// as usable checkpoints.
+pub const FORMAT_VERSION: u32 = 2;
 pub const MEMORY_FILE: &str = "memory.bin";
 pub const VMSTATE_FILE: &str = "vmstate.bin";
 pub const ROOTFS_FILE: &str = "rootfs.ext4";
@@ -46,6 +50,8 @@ pub struct FullStateCheckpoint {
     pub format_version: u32,
     pub id: String,
     pub source_sandbox: String,
+    #[serde(default)]
+    pub source_sandbox_uuid: String,
     pub created_at: String,
     pub backend: BackendType,
     pub vcpus: u32,
@@ -56,11 +62,41 @@ pub struct FullStateCheckpoint {
     pub rootfs: CheckpointArtifact,
 }
 
+impl FullStateCheckpoint {
+    /// Verify that a checkpoint belongs to the currently persisted sandbox.
+    /// Names are retained for operator-facing diagnostics, but the UUID is
+    /// the immutable identity that prevents name reuse from adopting state.
+    pub fn validate_source(&self, source_sandbox: &str, source_sandbox_uuid: &str) -> Result<()> {
+        validate_sandbox_uuid(&self.source_sandbox_uuid)?;
+        validate_sandbox_uuid(source_sandbox_uuid)?;
+        if self.source_sandbox != source_sandbox {
+            bail!(
+                "Sandbox '{}' references checkpoint '{}' owned by sandbox '{}'",
+                source_sandbox,
+                self.id,
+                self.source_sandbox
+            );
+        }
+        if self.source_sandbox_uuid != source_sandbox_uuid {
+            bail!(
+                "Sandbox '{}' references checkpoint '{}' owned by sandbox UUID '{}', not current UUID '{}'",
+                source_sandbox,
+                self.id,
+                self.source_sandbox_uuid,
+                source_sandbox_uuid
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct RecoveryReady {
     format_version: u32,
     id: String,
     source_sandbox: String,
+    #[serde(default)]
+    source_sandbox_uuid: String,
     vcpus: u32,
     memory_mb: u64,
     backend_snapshot: FullStateSnapshot,
@@ -127,11 +163,13 @@ impl FullStateCheckpointStore {
         &self,
         staging: &CheckpointStaging,
         source_sandbox: &str,
+        source_sandbox_uuid: &str,
         vcpus: u32,
         memory_mb: u64,
         backend_snapshot: FullStateSnapshot,
     ) -> Result<FullStateCheckpoint> {
         validate_id(staging.id())?;
+        validate_sandbox_uuid(source_sandbox_uuid)?;
         let memory = inspect_artifact(staging.path(), MEMORY_FILE)?;
         let vmstate = inspect_artifact(staging.path(), VMSTATE_FILE)?;
         let rootfs = inspect_artifact(staging.path(), ROOTFS_FILE)?;
@@ -140,6 +178,7 @@ impl FullStateCheckpointStore {
             format_version: FORMAT_VERSION,
             id: staging.id.clone(),
             source_sandbox: source_sandbox.to_string(),
+            source_sandbox_uuid: source_sandbox_uuid.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             backend: BackendType::Firecracker,
             vcpus,
@@ -185,11 +224,13 @@ impl FullStateCheckpointStore {
         &self,
         staging: &CheckpointStaging,
         source_sandbox: &str,
+        source_sandbox_uuid: &str,
         vcpus: u32,
         memory_mb: u64,
         backend_snapshot: FullStateSnapshot,
     ) -> Result<()> {
         validate_id(staging.id())?;
+        validate_sandbox_uuid(source_sandbox_uuid)?;
         // Validate and sync the full artifact set before publishing the marker.
         // Digests are computed once during commit/recovery publication rather
         // than twice while the source is paused.
@@ -200,6 +241,7 @@ impl FullStateCheckpointStore {
             format_version: FORMAT_VERSION,
             id: staging.id.clone(),
             source_sandbox: source_sandbox.to_string(),
+            source_sandbox_uuid: source_sandbox_uuid.to_string(),
             vcpus,
             memory_mb,
             backend_snapshot,
@@ -241,9 +283,11 @@ impl FullStateCheckpointStore {
         &self,
         id: &str,
         source_sandbox: &str,
+        source_sandbox_uuid: &str,
         vcpus: u32,
         memory_mb: u64,
     ) -> Result<(FullStateCheckpoint, PathBuf)> {
+        validate_sandbox_uuid(source_sandbox_uuid)?;
         let staging_path = self.staging_path(id)?;
         ensure_owned_directory(&staging_path)?;
         let ready_path = staging_path.join(READY_FILE);
@@ -252,6 +296,7 @@ impl FullStateCheckpointStore {
         if ready.format_version != FORMAT_VERSION
             || ready.id != id
             || ready.source_sandbox != source_sandbox
+            || ready.source_sandbox_uuid != source_sandbox_uuid
             || ready.vcpus != vcpus
             || ready.memory_mb != memory_mb
         {
@@ -264,6 +309,7 @@ impl FullStateCheckpointStore {
         let checkpoint = self.commit(
             &staging,
             source_sandbox,
+            source_sandbox_uuid,
             vcpus,
             memory_mb,
             ready.backend_snapshot,
@@ -284,6 +330,7 @@ impl FullStateCheckpointStore {
                 if ready.format_version != FORMAT_VERSION || ready.id != id {
                     bail!("recovery-ready marker does not match checkpoint '{id}'");
                 }
+                validate_sandbox_uuid(&ready.source_sandbox_uuid)?;
                 Ok(true)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -316,6 +363,7 @@ impl FullStateCheckpointStore {
                 id
             );
         }
+        validate_sandbox_uuid(&manifest.source_sandbox_uuid)?;
         validate_artifact(&directory, &manifest.memory, MEMORY_FILE)?;
         validate_artifact(&directory, &manifest.vmstate, VMSTATE_FILE)?;
         validate_artifact(&directory, &manifest.rootfs, ROOTFS_FILE)?;
@@ -550,6 +598,14 @@ fn validate_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_sandbox_uuid(uuid: &str) -> Result<()> {
+    let parsed = Uuid::parse_str(uuid).context("invalid source sandbox UUID")?;
+    if parsed.to_string() != uuid {
+        bail!("source sandbox UUID must use canonical UUID form");
+    }
+    Ok(())
+}
+
 fn ensure_regular_file(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("checkpoint artifact is missing: {}", path.display()))?;
@@ -709,17 +765,37 @@ mod tests {
         fs::write(directory.join(ROOTFS_FILE), b"rootfs").unwrap();
     }
 
+    fn source_uuid() -> String {
+        Uuid::new_v4().to_string()
+    }
+
     #[test]
     fn commit_get_and_delete_round_trip() {
         let temp = tempfile::tempdir().unwrap();
         let store = FullStateCheckpointStore::new(temp.path()).unwrap();
         let staging = store.begin().unwrap();
         write_artifacts(staging.path());
+        let source_uuid = source_uuid();
         let manifest = store
-            .commit(&staging, "source", 2, 1024, backend_snapshot())
+            .commit(
+                &staging,
+                "source",
+                &source_uuid,
+                2,
+                1024,
+                backend_snapshot(),
+            )
             .unwrap();
         let (loaded, path) = store.load(&manifest.id).unwrap();
         assert_eq!(loaded, manifest);
+        assert_eq!(loaded.source_sandbox_uuid, source_uuid);
+        assert!(loaded.validate_source("source", &source_uuid).is_ok());
+        assert!(loaded.validate_source("renamed", &source_uuid).is_err());
+        assert!(
+            loaded
+                .validate_source("source", &Uuid::new_v4().to_string())
+                .is_err()
+        );
         assert!(path.join(ROOTFS_FILE).is_file());
         store.delete(&manifest.id).unwrap();
         assert!(store.load(&manifest.id).is_err());
@@ -731,8 +807,9 @@ mod tests {
         let store = FullStateCheckpointStore::new(temp.path()).unwrap();
         let staging = store.begin().unwrap();
         write_artifacts(staging.path());
+        let source_uuid = source_uuid();
         let manifest = store
-            .commit(&staging, "source", 1, 512, backend_snapshot())
+            .commit(&staging, "source", &source_uuid, 1, 512, backend_snapshot())
             .unwrap();
         fs::write(store.root.join(&manifest.id).join(MEMORY_FILE), b"changed").unwrap();
         assert!(store.load(&manifest.id).is_err());
@@ -750,13 +827,35 @@ mod tests {
         let store = FullStateCheckpointStore::new(temp.path()).unwrap();
         let staging = store.begin().unwrap();
         write_artifacts(staging.path());
+        let source_uuid = source_uuid();
         let manifest = store
-            .commit(&staging, "source", 1, 512, backend_snapshot())
+            .commit(&staging, "source", &source_uuid, 1, 512, backend_snapshot())
             .unwrap();
         fs::write(store.root.join(&manifest.id).join(MEMORY_FILE), b"MEMORY").unwrap();
 
         let error = store.load(&manifest.id).unwrap_err();
         assert!(error.to_string().contains("digest changed"));
+    }
+
+    #[test]
+    fn refuses_tampered_source_uuid_even_when_the_replacement_is_valid() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FullStateCheckpointStore::new(temp.path()).unwrap();
+        let staging = store.begin().unwrap();
+        write_artifacts(staging.path());
+        let source_uuid = source_uuid();
+        let manifest = store
+            .commit(&staging, "source", &source_uuid, 1, 512, backend_snapshot())
+            .unwrap();
+        let manifest_path = store.root.join(&manifest.id).join(MANIFEST_FILE);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let replacement = Uuid::new_v4().to_string();
+        json["source_sandbox_uuid"] = serde_json::Value::String(replacement);
+        fs::write(&manifest_path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+
+        let (tampered, _) = store.load(&manifest.id).unwrap();
+        assert!(tampered.validate_source("source", &source_uuid).is_err());
     }
 
     #[cfg(unix)]
@@ -772,9 +871,10 @@ mod tests {
         let outside = temp.path().join("outside");
         fs::write(&outside, b"rootfs").unwrap();
         symlink(&outside, staging.path().join(ROOTFS_FILE)).unwrap();
+        let source_uuid = source_uuid();
         assert!(
             store
-                .commit(&staging, "source", 1, 512, backend_snapshot())
+                .commit(&staging, "source", &source_uuid, 1, 512, backend_snapshot())
                 .is_err()
         );
     }
@@ -812,15 +912,119 @@ mod tests {
         let staging = store.begin().unwrap();
         let id = staging.id().to_string();
         write_artifacts(staging.path());
+        let source_uuid = source_uuid();
         store
-            .mark_recovery_ready(&staging, "source", 2, 1024, backend_snapshot())
+            .mark_recovery_ready(
+                &staging,
+                "source",
+                &source_uuid,
+                2,
+                1024,
+                backend_snapshot(),
+            )
             .unwrap();
         let _ = staging.preserve();
 
-        let (checkpoint, path) = store.recover_ready(&id, "source", 2, 1024).unwrap();
+        let (checkpoint, path) = store
+            .recover_ready(&id, "source", &source_uuid, 2, 1024)
+            .unwrap();
         assert_eq!(checkpoint.id, id);
+        assert_eq!(checkpoint.source_sandbox_uuid, source_uuid);
         assert!(path.is_dir());
         assert!(store.load(&id).is_ok());
+    }
+
+    #[test]
+    fn recovery_ready_marker_rejects_source_uuid_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FullStateCheckpointStore::new(temp.path()).unwrap();
+        let staging = store.begin().unwrap();
+        let id = staging.id().to_string();
+        let staging_path = staging.path().to_path_buf();
+        write_artifacts(staging.path());
+        let source_uuid = source_uuid();
+        store
+            .mark_recovery_ready(
+                &staging,
+                "source",
+                &source_uuid,
+                2,
+                1024,
+                backend_snapshot(),
+            )
+            .unwrap();
+        let _ = staging.preserve();
+
+        let error = store
+            .recover_ready(&id, "source", &Uuid::new_v4().to_string(), 2, 1024)
+            .unwrap_err();
+        assert!(error.to_string().contains("metadata does not match"));
+        assert!(staging_path.is_dir());
+        assert!(!store.contains(&id).unwrap());
+    }
+
+    #[test]
+    fn legacy_manifest_format_fails_closed_before_uuid_migration() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FullStateCheckpointStore::new(temp.path()).unwrap();
+        let staging = store.begin().unwrap();
+        write_artifacts(staging.path());
+        let manifest = store
+            .commit(
+                &staging,
+                "source",
+                &source_uuid(),
+                1,
+                512,
+                backend_snapshot(),
+            )
+            .unwrap();
+        let manifest_path = store.root.join(&manifest.id).join(MANIFEST_FILE);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        json["format_version"] = serde_json::Value::from(1);
+        json.as_object_mut().unwrap().remove("source_sandbox_uuid");
+        fs::write(&manifest_path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+
+        let error = store.load(&manifest.id).unwrap_err();
+        assert!(error.to_string().contains("unsupported format version 1"));
+    }
+
+    #[test]
+    fn legacy_recovery_marker_format_fails_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FullStateCheckpointStore::new(temp.path()).unwrap();
+        let staging = store.begin().unwrap();
+        let id = staging.id().to_string();
+        let staging_path = staging.path().to_path_buf();
+        write_artifacts(staging.path());
+        let source_uuid = source_uuid();
+        store
+            .mark_recovery_ready(
+                &staging,
+                "source",
+                &source_uuid,
+                2,
+                1024,
+                backend_snapshot(),
+            )
+            .unwrap();
+        let marker_path = staging.path().join(READY_FILE);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&marker_path).unwrap()).unwrap();
+        json["format_version"] = serde_json::Value::from(1);
+        json.as_object_mut().unwrap().remove("source_sandbox_uuid");
+        fs::write(&marker_path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        let _ = staging.preserve();
+
+        assert!(store.recovery_is_ready(&id).is_err());
+        assert!(
+            store
+                .recover_ready(&id, "source", &source_uuid, 2, 1024)
+                .is_err()
+        );
+        assert!(staging_path.is_dir());
+        assert!(!store.contains(&id).unwrap());
     }
 
     #[test]
@@ -835,7 +1039,11 @@ mod tests {
         let _ = staging.preserve();
 
         assert!(store.recovery_is_ready(&id).is_err());
-        assert!(store.recover_ready(&id, "source", 2, 1024).is_err());
+        assert!(
+            store
+                .recover_ready(&id, "source", &source_uuid(), 2, 1024)
+                .is_err()
+        );
         assert!(staging_path.is_dir());
         assert!(!store.contains(&id).unwrap());
     }

@@ -3515,6 +3515,7 @@ impl VmManager {
                         if let Err(marker_error) = store.mark_recovery_ready(
                             &staging,
                             name,
+                            &state.uuid,
                             state.vcpus,
                             state.memory_mb,
                             snapshot.clone(),
@@ -3522,6 +3523,7 @@ impl VmManager {
                             match store.commit(
                                 &staging,
                                 name,
+                                &state.uuid,
                                 state.vcpus,
                                 state.memory_mb,
                                 snapshot.clone(),
@@ -3552,7 +3554,14 @@ impl VmManager {
                             }
                         }
 
-                        match store.commit(&staging, name, state.vcpus, state.memory_mb, snapshot) {
+                        match store.commit(
+                            &staging,
+                            name,
+                            &state.uuid,
+                            state.vcpus,
+                            state.memory_mb,
+                            snapshot,
+                        ) {
                             Ok(checkpoint) => {
                                 crate::metrics::record_sandbox_lifecycle(
                                     "paused",
@@ -3641,6 +3650,7 @@ impl VmManager {
             .mark_recovery_ready(
                 &staging,
                 name,
+                &state.uuid,
                 state.vcpus,
                 state.memory_mb,
                 backend_snapshot.clone(),
@@ -3651,6 +3661,7 @@ impl VmManager {
         let checkpoint = match store.commit(
             &staging,
             name,
+            &state.uuid,
             state.vcpus,
             state.memory_mb,
             backend_snapshot.clone(),
@@ -3844,14 +3855,20 @@ impl VmManager {
                     .mark_recovery_ready(
                         &staging,
                         name,
+                        &state.uuid,
                         state.vcpus,
                         state.memory_mb,
                         snapshot.clone(),
                     )
                     .err();
-                if let Err(error) =
-                    store.commit(&staging, name, state.vcpus, state.memory_mb, snapshot)
-                {
+                if let Err(error) = store.commit(
+                    &staging,
+                    name,
+                    &state.uuid,
+                    state.vcpus,
+                    state.memory_mb,
+                    snapshot,
+                ) {
                     let marker_context = marker_error.as_ref().map_or(String::new(), |marker| {
                         format!("; recovery-ready marker also failed: {marker:#}")
                     });
@@ -3922,7 +3939,13 @@ impl VmManager {
             if staging_path.is_dir() {
                 if store.recovery_is_ready(checkpoint_id)? {
                     store
-                        .recover_ready(checkpoint_id, name, state.vcpus, state.memory_mb)
+                        .recover_ready(
+                            checkpoint_id,
+                            name,
+                            &state.uuid,
+                            state.vcpus,
+                            state.memory_mb,
+                        )
                         .with_context(|| {
                             format!(
                                 "failed to publish recovery-ready checkpoint for sandbox '{name}'"
@@ -3943,14 +3966,7 @@ impl VmManager {
                 );
             }
         };
-        if checkpoint.source_sandbox != name {
-            bail!(
-                "Sandbox '{}' references checkpoint '{}' owned by sandbox '{}'",
-                name,
-                checkpoint.id,
-                checkpoint.source_sandbox
-            );
-        }
+        checkpoint.validate_source(name, &state.uuid)?;
         if checkpoint.vcpus != state.vcpus || checkpoint.memory_mb != state.memory_mb {
             bail!(
                 "Sandbox '{}' resources no longer match its checkpoint",
@@ -4139,6 +4155,7 @@ impl VmManager {
                     .recover_ready(
                         checkpoint_id,
                         source,
+                        &source_state.uuid,
                         source_state.vcpus,
                         source_state.memory_mb,
                     )
@@ -4154,14 +4171,7 @@ impl VmManager {
                 );
             }
         };
-        if checkpoint.source_sandbox != source {
-            bail!(
-                "Sandbox '{}' references checkpoint '{}' owned by sandbox '{}'",
-                source,
-                checkpoint.id,
-                checkpoint.source_sandbox
-            );
-        }
+        checkpoint.validate_source(source, &source_state.uuid)?;
         if checkpoint.vcpus != source_state.vcpus || checkpoint.memory_mb != source_state.memory_mb
         {
             bail!(
