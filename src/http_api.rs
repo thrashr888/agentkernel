@@ -51,6 +51,7 @@ use crate::task_worker_vmm::VmTaskExecutor;
 use crate::tasks::{CancelOutcome, TaskManager};
 use crate::validation;
 use crate::vmm::VmManager;
+use crate::volume::{VolumeManager, VolumeMount};
 
 pub type BoxBody = http_body_util::combinators::BoxBody<bytes::Bytes, hyper::Error>;
 const MAX_HTTP_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
@@ -297,6 +298,9 @@ struct CreateRequest {
     /// Port mappings (e.g., ["8080:80", "3000", "5353:53/udp"])
     #[serde(default)]
     ports: Vec<String>,
+    /// Persistent volume mounts (e.g., ["my-data:/data", "cache:/cache:ro"])
+    #[serde(default)]
+    volumes: Vec<String>,
     /// Git repo URL to clone into /workspace (e.g., "https://github.com/user/repo")
     #[serde(default)]
     source_url: Option<String>,
@@ -337,6 +341,32 @@ struct CreateRequest {
     /// Lifecycle automation policy.
     #[serde(default)]
     lifecycle: Option<LifecyclePolicyRequest>,
+}
+
+/// Parse and validate the persistent volume mounts accepted by sandbox create.
+///
+/// Keep this in the HTTP layer so malformed specs are rejected before a
+/// sandbox is created.  The existence check intentionally uses the same
+/// `VolumeManager` path as the CLI and the VMM start path.
+fn validate_volume_specs(specs: &[String]) -> Result<()> {
+    let mounts: Vec<VolumeMount> = specs
+        .iter()
+        .map(|spec| VolumeMount::parse(spec))
+        .collect::<Result<Vec<_>>>()?;
+    if !mounts.is_empty() {
+        VolumeManager::new()?.validate_mounts(&mounts)?;
+    }
+    Ok(())
+}
+
+fn validate_backend_volume_support(backend: BackendType, specs: &[String]) -> Result<()> {
+    if !specs.is_empty() && !backend_capabilities(backend).host_volumes {
+        return Err(anyhow::anyhow!(
+            "Backend '{}' does not support host volume mounts",
+            backend
+        ));
+    }
+    Ok(())
 }
 
 /// Request to write a file
@@ -3894,6 +3924,13 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         }
     };
 
+    if let Err(e) = validate_volume_specs(&body.volumes) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(format!("Invalid volume mount: {}", e)),
+        );
+    }
+
     // Enterprise policy enforcement for port mapping
     #[cfg(feature = "enterprise")]
     if !ports.is_empty()
@@ -3920,6 +3957,16 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
             );
         }
     };
+
+    if !body.volumes.is_empty() {
+        let volume_backend = requested_backend.unwrap_or_else(|| manager.backend());
+        if let Err(e) = validate_backend_volume_support(volume_backend, &body.volumes) {
+            return json_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &ApiResponse::<()>::error(e.to_string()),
+            );
+        }
+    }
 
     #[cfg(feature = "enterprise")]
     if let Err(error) = quota_guard.check_create(&manager, &quota_subject, vcpus, memory_mb) {
@@ -3959,6 +4006,16 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
+        );
+    }
+
+    if !body.volumes.is_empty()
+        && let Err(e) = manager.set_volumes(&body.name, &body.volumes)
+    {
+        let _ = manager.remove(&body.name).await;
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &ApiResponse::<()>::error(format!("Failed to set volume mounts: {}", e)),
         );
     }
 
@@ -10775,6 +10832,161 @@ init_script = "echo ready"
         let req: CreateRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.name, "my-sandbox");
         assert!(req.image.is_none());
+        assert!(req.volumes.is_empty());
+    }
+
+    #[test]
+    fn test_create_request_deserialize_volumes() {
+        let json = r#"{
+            "name": "volume-sandbox",
+            "volumes": ["my-data:/data", "cache:/cache:ro"]
+        }"#;
+        let req: CreateRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            req.volumes,
+            vec!["my-data:/data".to_string(), "cache:/cache:ro".to_string()]
+        );
+        let mounts: Vec<VolumeMount> = req
+            .volumes
+            .iter()
+            .map(|spec| VolumeMount::parse(spec))
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(mounts[0].slug, "my-data");
+        assert_eq!(mounts[0].mount_path, "/data");
+        assert!(mounts[1].read_only);
+    }
+
+    #[test]
+    fn test_create_request_rejects_malformed_volumes_before_creation() {
+        let error = validate_volume_specs(&["cache:/cache:rw".to_string()]).unwrap_err();
+        assert!(error.to_string().contains("Invalid volume mount format"));
+    }
+
+    #[test]
+    fn test_create_request_rejects_unsupported_backend_volumes() {
+        let error = validate_backend_volume_support(
+            BackendType::Firecracker,
+            &["cache:/cache".to_string()],
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not support host volume mounts")
+        );
+        assert!(validate_backend_volume_support(BackendType::Docker, &[]).is_ok());
+    }
+
+    #[tokio::test]
+    async fn create_route_rejects_malformed_volumes_without_creating_sandbox() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = VmManager::for_tests(temp.path()).unwrap();
+        let manager = Arc::new(tokio::sync::RwLock::new(manager));
+        let state = Arc::new(AppState::with_api_keys(vec![]));
+        let _ = state.vm_manager.set(manager.clone());
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |request| {
+                let state = server_state.clone();
+                handle_request(request, state)
+            });
+            http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/sandboxes"))
+            .json(&serde_json::json!({
+                "name": "malformed-volume",
+                "volumes": ["cache:/cache:rw"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            response
+                .text()
+                .await
+                .unwrap()
+                .contains("Invalid volume mount")
+        );
+        assert!(manager.read().await.list().is_empty());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_route_persists_valid_volumes_before_starting_sandbox() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::volume::HomeEnvGuard::set(home.path());
+        let slug = format!("http-volume-{}", uuid::Uuid::now_v7().simple());
+        let mut volume_manager = VolumeManager::new().unwrap();
+        volume_manager.create(&slug, None).unwrap();
+
+        let temp = tempfile::tempdir().unwrap();
+        let manager = VmManager::for_tests(temp.path()).unwrap();
+        let manager = Arc::new(tokio::sync::RwLock::new(manager));
+        let state = Arc::new(AppState::with_api_keys(vec![]));
+        let _ = state.vm_manager.set(manager.clone());
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |request| {
+                let state = server_state.clone();
+                handle_request(request, state)
+            });
+            http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+                .unwrap();
+        });
+
+        let sandbox_name = format!("http-volume-sandbox-{}", uuid::Uuid::now_v7().simple());
+        let volume_spec = format!("{slug}:/data");
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/sandboxes"))
+            .json(&serde_json::json!({
+                "name": sandbox_name,
+                "image": "alpine:3.24",
+                "volumes": [volume_spec]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        task.await.unwrap();
+
+        let persisted = manager
+            .read()
+            .await
+            .get_state(&sandbox_name)
+            .unwrap()
+            .volumes
+            .clone();
+        assert_eq!(persisted, vec![volume_spec]);
+        let saved = std::fs::read_to_string(
+            temp.path()
+                .join("sandboxes")
+                .join(format!("{sandbox_name}.json")),
+        )
+        .unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(saved["volumes"], serde_json::json!(persisted));
+
+        manager.write().await.remove(&sandbox_name).await.unwrap();
+        volume_manager.delete(&slug).unwrap();
     }
 
     #[test]

@@ -21,6 +21,52 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use std::ffi::OsString;
+#[cfg(test)]
+use std::sync::{Mutex, MutexGuard};
+
+/// Serialize tests that temporarily redirect the process HOME directory.
+#[cfg(test)]
+static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Test-only guard for isolating HOME-backed AgentKernel data.
+#[cfg(test)]
+pub(crate) struct HomeEnvGuard {
+    original: Option<OsString>,
+    _lock: MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl HomeEnvGuard {
+    pub(crate) fn set(path: &Path) -> Self {
+        let lock = HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let original = std::env::var_os("HOME");
+        // SAFETY: HOME-mutating tests are serialized by HOME_ENV_LOCK and
+        // this guard restores the original value before releasing it.
+        unsafe { std::env::set_var("HOME", path) };
+        Self {
+            original,
+            _lock: lock,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for HomeEnvGuard {
+    fn drop(&mut self) {
+        // SAFETY: The guard still holds HOME_ENV_LOCK while restoring HOME.
+        unsafe {
+            match &self.original {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+}
+
 /// A persistent volume that can be mounted into sandboxes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Volume {
@@ -374,44 +420,7 @@ pub fn parse_size(s: &str) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
-    use std::sync::{Mutex, MutexGuard};
     use tempfile::TempDir;
-
-    static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    struct HomeEnvGuard {
-        original: Option<OsString>,
-        _lock: MutexGuard<'static, ()>,
-    }
-
-    impl HomeEnvGuard {
-        fn set(path: &Path) -> Self {
-            let lock = HOME_ENV_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let original = std::env::var_os("HOME");
-            // SAFETY: HOME-mutating tests are serialized by HOME_ENV_LOCK and
-            // this guard restores the original value before releasing it.
-            unsafe { std::env::set_var("HOME", path) };
-            Self {
-                original,
-                _lock: lock,
-            }
-        }
-    }
-
-    impl Drop for HomeEnvGuard {
-        fn drop(&mut self) {
-            // SAFETY: The guard still holds HOME_ENV_LOCK while restoring HOME.
-            unsafe {
-                match &self.original {
-                    Some(value) => std::env::set_var("HOME", value),
-                    None => std::env::remove_var("HOME"),
-                }
-            }
-        }
-    }
 
     #[test]
     fn test_volume_new() {
