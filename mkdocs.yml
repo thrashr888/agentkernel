@@ -99,6 +99,7 @@ nav:
   - Operations:
     - Overview: operations/index.md
     - Backend compatibility: operations/backend-compatibility.md
+    - Firecracker full-state: operations/firecracker-full-state.md
     - Kubernetes: operations/kubernetes.md
     - Nomad: operations/nomad.md
     - Deployment: operations/deploy.md

@@ -79,6 +79,23 @@ struct JsonRpcError {
     data: Option<Value>,
 }
 
+fn reject_fresh_manager_firecracker(
+    manager: &VmManager,
+    sandbox: Option<&str>,
+    operation: &str,
+) -> Result<()> {
+    let backend = sandbox
+        .and_then(|name| manager.get_state(name))
+        .and_then(|state| state.backend)
+        .unwrap_or(manager.backend());
+    if backend == crate::backend::BackendType::Firecracker {
+        anyhow::bail!(
+            "MCP operation '{operation}' is not yet routed through the authoritative Firecracker daemon; use the delegated sandbox lifecycle/exec tools or select another backend"
+        );
+    }
+    Ok(())
+}
+
 impl McpServer {
     pub fn new() -> Self {
         Self {
@@ -405,6 +422,52 @@ impl McpServer {
                             }
                         },
                         "required": ["name"]
+                    }
+                },
+                {
+                    "name": "sandbox_pause",
+                    "description": "Pause a running Firecracker sandbox into a durable full-VM checkpoint that preserves guest memory and processes.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the running Firecracker sandbox to pause"
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "sandbox_resume",
+                    "description": "Resume a paused Firecracker sandbox from its full-VM checkpoint.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the paused Firecracker sandbox to resume"
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "sandbox_fork",
+                    "description": "Fork a paused Firecracker sandbox into a new running sandbox. The paused source remains reusable. The fork copies guest memory and filesystem state, including any credentials captured in the checkpoint.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the paused source sandbox"
+                            },
+                            "as_name": {
+                                "type": "string",
+                                "description": "Name for the new running sandbox"
+                            }
+                        },
+                        "required": ["name", "as_name"]
                     }
                 },
                 {
@@ -924,6 +987,9 @@ impl McpServer {
                 .map(ToolOutput::Text),
             "sandbox_start" => self.tool_sandbox_start(&arguments).map(ToolOutput::Text),
             "sandbox_stop" => self.tool_sandbox_stop(&arguments).map(ToolOutput::Text),
+            "sandbox_pause" => self.tool_sandbox_pause(&arguments).map(ToolOutput::Text),
+            "sandbox_resume" => self.tool_sandbox_resume(&arguments).map(ToolOutput::Text),
+            "sandbox_fork" => self.tool_sandbox_fork(&arguments).map(ToolOutput::Text),
             "sandbox_exec_detach" => self
                 .tool_sandbox_exec_detach(&arguments)
                 .map(ToolOutput::Text),
@@ -1095,6 +1161,7 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
+                reject_fresh_manager_firecracker(&manager, None, "sandbox_run fast=false")?;
 
                 // Use optimized ephemeral run with permissions
                 manager
@@ -1159,10 +1226,38 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
+                if manager.backend() == crate::backend::BackendType::Firecracker {
+                    let port = crate::local_api_port();
+                    if !crate::try_server_health("127.0.0.1", port).await {
+                        return Err(crate::firecracker_server_required("create", port));
+                    }
+                }
                 manager
                     .create_with_options(name, image, 1, 512, None, ports)
                     .await?;
-                manager.start(name).await?;
+                let backend = manager
+                    .get_state(name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                let firecracker = backend == crate::backend::BackendType::Firecracker;
+                let port = crate::local_api_port();
+                if firecracker {
+                    if !crate::try_server_health("127.0.0.1", port).await {
+                        return Err(crate::firecracker_server_required("start", port));
+                    }
+                    let permissions = crate::permissions::Permissions::default();
+                    crate::delegate_configured_start_to_server(
+                        "127.0.0.1",
+                        port,
+                        name,
+                        &manager,
+                        &permissions,
+                        &[],
+                    )
+                    .await?;
+                } else {
+                    manager.start(name).await?;
+                }
 
                 let mut result = format!(
                     "Sandbox '{}' created and started with image '{}'{}",
@@ -1176,7 +1271,18 @@ impl McpServer {
                         "-c".to_string(),
                         "which git >/dev/null 2>&1 || apk add --no-cache git >/dev/null 2>&1 || apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1 || true".to_string(),
                     ];
-                    let _ = manager.exec_cmd(name, &install).await;
+                    if firecracker {
+                        let _ = crate::delegate_sandbox_action_to_server(
+                            "127.0.0.1",
+                            port,
+                            name,
+                            "exec",
+                            Some(json!({"command": install})),
+                        )
+                        .await;
+                    } else {
+                        let _ = manager.exec_cmd(name, &install).await;
+                    }
 
                     let clone = vec![
                         "git".to_string(),
@@ -1184,7 +1290,18 @@ impl McpServer {
                         url.clone(),
                         "/workspace".to_string(),
                     ];
-                    manager.exec_cmd(name, &clone).await?;
+                    if firecracker {
+                        crate::delegate_sandbox_action_to_server(
+                            "127.0.0.1",
+                            port,
+                            name,
+                            "exec",
+                            Some(json!({"command": clone})),
+                        )
+                        .await?;
+                    } else {
+                        manager.exec_cmd(name, &clone).await?;
+                    }
 
                     if let Some(ref git_ref) = source_ref {
                         let checkout = vec![
@@ -1194,7 +1311,18 @@ impl McpServer {
                             "checkout".to_string(),
                             git_ref.clone(),
                         ];
-                        manager.exec_cmd(name, &checkout).await?;
+                        if firecracker {
+                            crate::delegate_sandbox_action_to_server(
+                                "127.0.0.1",
+                                port,
+                                name,
+                                "exec",
+                                Some(json!({"command": checkout})),
+                            )
+                            .await?;
+                        } else {
+                            manager.exec_cmd(name, &checkout).await?;
+                        }
                         result.push_str(&format!(". Cloned {} (ref: {}) into /workspace", url, git_ref));
                     } else {
                         result.push_str(&format!(". Cloned {} into /workspace", url));
@@ -1252,7 +1380,31 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
-                manager.exec_cmd_full(name, &command, &opts).await
+                if !manager.exists(name) {
+                    anyhow::bail!("Sandbox '{}' not found.", name);
+                }
+                let backend = manager
+                    .get_state(name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                if backend == crate::backend::BackendType::Firecracker {
+                    let port = crate::local_api_port();
+                    if !crate::try_server_health("127.0.0.1", port).await {
+                        return Err(crate::firecracker_server_required("exec", port));
+                    }
+                    crate::delegate_exec_to_server(
+                        "127.0.0.1",
+                        port,
+                        name,
+                        &command,
+                        &opts.env,
+                        opts.workdir.as_deref(),
+                        sudo,
+                    )
+                    .await
+                } else {
+                    manager.exec_cmd_full(name, &command, &opts).await
+                }
             })
         })
     }
@@ -1269,11 +1421,27 @@ impl McpServer {
 
                 let mut output = String::from("NAME\tSTATUS\tBACKEND\tIP\tPORTS\n");
                 for (name, running, backend) in &sandboxes {
-                    let status = if *running { "running" } else { "stopped" };
+                    let local_status = manager
+                        .get_state(name)
+                        .map(|state| state.status(*running))
+                        .unwrap_or(if *running { "running" } else { "stopped" })
+                        .to_string();
+                    let authoritative =
+                        if *backend == Some(crate::backend::BackendType::Firecracker) {
+                            crate::delegated_firecracker_status(name).await?
+                        } else {
+                            None
+                        };
+                    let status = authoritative
+                        .as_ref()
+                        .map(|status| status.status.as_str())
+                        .unwrap_or(&local_status);
                     let backend_str = backend
                         .map(|b| format!("{}", b))
                         .unwrap_or_else(|| "unknown".to_string());
-                    let ip_str = if *running {
+                    let ip_str = if let Some(authoritative) = authoritative.as_ref() {
+                        authoritative.ip.clone().unwrap_or_else(|| "-".to_string())
+                    } else if *running {
                         manager
                             .get_container_ip(name)
                             .unwrap_or_else(|| "-".to_string())
@@ -1315,7 +1483,7 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
-                manager.remove(name).await?;
+                crate::remove_sandbox_via_authoritative_manager(&mut manager, name).await?;
                 Ok(format!("Sandbox '{}' removed.", name))
             })
         })
@@ -1340,6 +1508,7 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
+                reject_fresh_manager_firecracker(&manager, Some(name), "sandbox_file_write")?;
 
                 if !manager.is_running(name) {
                     anyhow::bail!(
@@ -1373,6 +1542,7 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
+                reject_fresh_manager_firecracker(&manager, Some(name), "sandbox_file_read")?;
 
                 if !manager.is_running(name) {
                     anyhow::bail!(
@@ -1417,6 +1587,7 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
+                reject_fresh_manager_firecracker(&manager, Some(name), "sandbox_write_files")?;
 
                 if !manager.is_running(name) {
                     anyhow::bail!(
@@ -1458,7 +1629,28 @@ impl McpServer {
                     return Ok(format!("Sandbox '{}' is already running.", name));
                 }
 
-                manager.start(name).await?;
+                let backend = manager
+                    .get_state(name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                if backend == crate::backend::BackendType::Firecracker {
+                    let port = crate::local_api_port();
+                    if !crate::try_server_health("127.0.0.1", port).await {
+                        return Err(crate::firecracker_server_required("start", port));
+                    }
+                    let permissions = crate::permissions::Permissions::default();
+                    crate::delegate_configured_start_to_server(
+                        "127.0.0.1",
+                        port,
+                        name,
+                        &manager,
+                        &permissions,
+                        &[],
+                    )
+                    .await?;
+                } else {
+                    manager.start(name).await?;
+                }
                 Ok(format!("Sandbox '{}' started.", name))
             })
         })
@@ -1478,12 +1670,159 @@ impl McpServer {
                     anyhow::bail!("Sandbox '{}' not found.", name);
                 }
 
-                if !manager.is_running(name) {
+                let backend = manager
+                    .get_state(name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                if backend == crate::backend::BackendType::Firecracker {
+                    let port = crate::local_api_port();
+                    if !crate::try_server_health("127.0.0.1", port).await {
+                        return Err(crate::firecracker_server_required("stop", port));
+                    }
+                    crate::delegate_sandbox_action_to_server("127.0.0.1", port, name, "stop", None)
+                        .await?;
+                } else if !manager.is_running(name) {
                     return Ok(format!("Sandbox '{}' is already stopped.", name));
+                } else {
+                    manager.stop(name).await?;
+                }
+                Ok(format!("Sandbox '{}' stopped.", name))
+            })
+        })
+    }
+
+    fn tool_sandbox_pause(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+        crate::validation::validate_sandbox_name(name)?;
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                if !manager.exists(name) {
+                    anyhow::bail!("Sandbox '{}' not found.", name);
                 }
 
-                manager.stop(name).await?;
-                Ok(format!("Sandbox '{}' stopped.", name))
+                let backend = manager
+                    .get_state(name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                if backend == crate::backend::BackendType::Firecracker {
+                    let port = crate::local_api_port();
+                    if !crate::try_server_health("127.0.0.1", port).await {
+                        return Err(crate::firecracker_server_required("pause", port));
+                    }
+                    crate::delegate_sandbox_action_to_server(
+                        "127.0.0.1",
+                        port,
+                        name,
+                        "pause",
+                        None,
+                    )
+                    .await?;
+                } else {
+                    manager.pause(name).await?;
+                }
+                Ok(format!(
+                    "Sandbox '{}' paused. Resume it with sandbox_resume.",
+                    name
+                ))
+            })
+        })
+    }
+
+    fn tool_sandbox_resume(&self, args: &Value) -> Result<String> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+        crate::validation::validate_sandbox_name(name)?;
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                if !manager.exists(name) {
+                    anyhow::bail!("Sandbox '{}' not found.", name);
+                }
+
+                let backend = manager
+                    .get_state(name)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                if backend == crate::backend::BackendType::Firecracker {
+                    let port = crate::local_api_port();
+                    if !crate::try_server_health("127.0.0.1", port).await {
+                        return Err(crate::firecracker_server_required("resume", port));
+                    }
+                    crate::delegate_sandbox_action_to_server(
+                        "127.0.0.1",
+                        port,
+                        name,
+                        "resume",
+                        None,
+                    )
+                    .await?;
+                } else {
+                    manager.resume(name).await?;
+                }
+                Ok(format!("Sandbox '{}' resumed.", name))
+            })
+        })
+    }
+
+    fn tool_sandbox_fork(&self, args: &Value) -> Result<String> {
+        let source = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("name is required"))?;
+        let child = args
+            .get("as_name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("as_name is required"))?;
+        crate::validation::validate_sandbox_name(source)?;
+        crate::validation::validate_sandbox_name(child)?;
+
+        self.require_permission(
+            crate::interactive_permissions::PermissionKind::SandboxCreate,
+            Some(child),
+        )?;
+
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut manager = VmManager::new()?;
+                if !manager.exists(source) {
+                    anyhow::bail!("Sandbox '{}' not found.", source);
+                }
+                if manager.exists(child) {
+                    anyhow::bail!("Sandbox '{}' already exists.", child);
+                }
+
+                let backend = manager
+                    .get_state(source)
+                    .and_then(|state| state.backend)
+                    .unwrap_or(manager.backend());
+                if backend == crate::backend::BackendType::Firecracker {
+                    let port = crate::local_api_port();
+                    if !crate::try_server_health("127.0.0.1", port).await {
+                        return Err(crate::firecracker_server_required("fork", port));
+                    }
+                    crate::delegate_sandbox_action_to_server(
+                        "127.0.0.1",
+                        port,
+                        source,
+                        "fork",
+                        Some(json!({"as_name": child})),
+                    )
+                    .await?;
+                } else {
+                    manager.fork_sandbox(source, child).await?;
+                }
+                Ok(format!(
+                    "Sandbox '{}' forked from '{}' and is running. The source remains paused and reusable.\n\nSecurity warning: {}",
+                    child, source, crate::full_state::FORK_SECURITY_WARNING
+                ))
             })
         })
     }
@@ -1518,6 +1857,7 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
+                reject_fresh_manager_firecracker(&manager, Some(name), "sandbox_exec_detach")?;
                 let opts = crate::backend::ExecOptions {
                     env,
                     workdir,
@@ -1590,15 +1930,16 @@ impl McpServer {
 
         let by = args.get("by").and_then(|v| v.as_str()).unwrap_or("1h");
 
-        // Parse the time string into seconds
-        let additional_secs = crate::ssh::parse_ttl_to_secs(by)?;
-
         let mut manager = VmManager::new()?;
         if !manager.exists(name) {
             anyhow::bail!("Sandbox '{}' not found", name);
         }
 
-        let new_expiry = manager.extend_ttl(name, additional_secs)?;
+        let new_expiry = tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                crate::extend_ttl_via_authoritative_manager(&mut manager, name, by).await
+            })
+        })?;
 
         match new_expiry {
             Some(exp) => Ok(format!(
@@ -1744,6 +2085,7 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
+                reject_fresh_manager_firecracker(&manager, None, "browser_create")?;
                 manager
                     .create_with_options(
                         name,
@@ -1785,6 +2127,7 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
+                reject_fresh_manager_firecracker(&manager, Some(name), "browser_goto")?;
                 let cmd = vec![
                     "python3".to_string(),
                     "-c".to_string(),
@@ -1810,6 +2153,7 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
+                reject_fresh_manager_firecracker(&manager, Some(name), "browser_screenshot")?;
                 let cmd = vec![
                     "python3".to_string(),
                     "-c".to_string(),
@@ -1844,6 +2188,7 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
+                reject_fresh_manager_firecracker(&manager, Some(name), "browser_evaluate")?;
                 let cmd = vec![
                     "python3".to_string(),
                     "-c".to_string(),
@@ -1868,6 +2213,7 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
+                reject_fresh_manager_firecracker(&manager, Some(name), "browser server")?;
 
                 // Check if server is already running
                 let health_cmd = vec![
@@ -1917,6 +2263,7 @@ impl McpServer {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 let mut manager = VmManager::new()?;
+                reject_fresh_manager_firecracker(&manager, Some(name), "browser request")?;
                 let mut cmd = vec![
                     "python3".to_string(),
                     "-c".to_string(),
@@ -2317,6 +2664,30 @@ mod tests {
         assert!(tool_names.contains(&"sandbox_file_read"));
         assert!(tool_names.contains(&"sandbox_start"));
         assert!(tool_names.contains(&"sandbox_stop"));
+        assert!(tool_names.contains(&"sandbox_pause"));
+        assert!(tool_names.contains(&"sandbox_resume"));
+        assert!(tool_names.contains(&"sandbox_fork"));
+    }
+
+    #[test]
+    fn test_full_state_tool_schemas() {
+        let server = McpServer::new();
+        let response = server.handle_tools_list(Value::Number(1.into()));
+        let result = response.result.unwrap();
+        let tools = result.get("tools").and_then(Value::as_array).unwrap();
+
+        let fork = tools
+            .iter()
+            .find(|tool| tool["name"] == "sandbox_fork")
+            .unwrap();
+        assert_eq!(fork["inputSchema"]["required"], json!(["name", "as_name"]));
+        assert!(
+            fork["description"]
+                .as_str()
+                .unwrap()
+                .contains("credentials")
+        );
+        assert!(crate::full_state::FORK_SECURITY_WARNING.contains("cryptographic tokens"));
     }
 
     // === handle_request tests ===
@@ -2496,6 +2867,44 @@ mod tests {
         let result = server.tool_sandbox_stop(&json!({}));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[test]
+    fn test_tool_sandbox_pause_missing_name() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_pause(&json!({}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[test]
+    fn test_tool_sandbox_resume_missing_name() {
+        let server = McpServer::new();
+        let result = server.tool_sandbox_resume(&json!({}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[test]
+    fn test_tool_sandbox_fork_missing_parameters() {
+        let server = McpServer::new();
+        let missing_source = server.tool_sandbox_fork(&json!({"as_name": "child"}));
+        assert!(missing_source.is_err());
+        assert!(
+            missing_source
+                .unwrap_err()
+                .to_string()
+                .contains("name is required")
+        );
+
+        let missing_child = server.tool_sandbox_fork(&json!({"name": "source"}));
+        assert!(missing_child.is_err());
+        assert!(
+            missing_child
+                .unwrap_err()
+                .to_string()
+                .contains("as_name is required")
+        );
     }
 
     // === Browser tool tests ===

@@ -176,6 +176,11 @@ agentkernel sandbox create ci --template rust-ci
 agentkernel snapshot take my-sandbox --name before-upgrade
 agentkernel snapshot restore before-upgrade --as rollback
 
+# Firecracker full-state lifecycle: preserve memory and running processes
+agentkernel sandbox pause my-sandbox
+agentkernel sandbox fork my-sandbox --as candidate-b
+agentkernel sandbox resume my-sandbox
+
 # Sessions: tie sandbox lifecycle to agent conversations
 agentkernel session start --name feature-x --agent claude -B docker
 agentkernel session save feature-x
@@ -191,6 +196,14 @@ agentkernel parallel \
 ```
 
 Per-branch sandboxes, image cache management, secrets vault, sandbox export/import, TTL-based auto-expiry, and garbage collection round out the developer experience.
+
+Filesystem snapshots and Firecracker full-state checkpoints have different
+guarantees. Full-state pause/resume/fork is initially restricted to Firecracker
+1.16.1 on compatible x86_64 Linux/KVM hosts and never silently falls back on
+other backends. The CLI lifecycle commands delegate to a running
+`agentkernel serve` process that owns the VMM. Read the [full-state
+compatibility and operations guide](operations/firecracker-full-state.md) before
+relying on process continuity or branching a live agent.
 
 ## It's programmable
 

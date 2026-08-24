@@ -60,6 +60,9 @@ Create a persistent sandbox.
 }
 ```
 
+When automatic backend selection chooses Firecracker, create delegates the
+start and any requested repository setup to the local API server.
+
 ### sandbox_exec
 
 Execute a command in a running sandbox.
@@ -98,6 +101,9 @@ Remove a sandbox.
 }
 ```
 
+Removing a Firecracker sandbox is delegated to the local API server so the
+server-owned VM is stopped before its state is deleted.
+
 ### sandbox_start / sandbox_stop
 
 Start or stop a sandbox.
@@ -110,6 +116,63 @@ Start or stop a sandbox.
   }
 }
 ```
+
+Firecracker start and stop operations are delegated to the local API server.
+Set `AGENTKERNEL_API_KEY` when that server requires bearer authentication.
+
+### sandbox_pause / sandbox_resume
+
+Pause and resume a Firecracker sandbox with guest memory and process state
+preserved. These operations require Firecracker on x86_64 Linux/KVM and a healthy
+local `agentkernel serve` process. The MCP server delegates Firecracker
+lifecycle operations to that long-running process so the VM survives after a
+tool call returns. `AGENTKERNEL_PORT` selects a non-default local API port.
+
+```json
+{
+  "name": "sandbox_pause",
+  "arguments": {
+    "name": "experiment-a"
+  }
+}
+```
+
+```json
+{
+  "name": "sandbox_resume",
+  "arguments": {
+    "name": "experiment-a"
+  }
+}
+```
+
+### sandbox_fork
+
+Fork a paused Firecracker sandbox into a new running sandbox. The source stays
+paused and reusable.
+
+```json
+{
+  "name": "sandbox_fork",
+  "arguments": {
+    "name": "experiment-a",
+    "as_name": "experiment-b"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Paused source sandbox |
+| `as_name` | string | Yes | Name for the new running sandbox |
+
+The response includes a security warning because the child receives a copy of
+guest memory and filesystem state. Credentials captured in the checkpoint are
+duplicated; rotate or revoke them when appropriate. Fork uses the existing
+`sandbox_create` interactive permission for the child name. Enterprise policy
+requires Run on the source plus both Create and Run for the child. The child
+inherits the source owner and tenant metadata; cross-owner or cross-tenant forks
+are rejected before restore.
 
 ### sandbox_file_write
 

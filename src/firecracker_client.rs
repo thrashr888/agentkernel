@@ -9,10 +9,24 @@ use hyper::{Method, Request};
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::Duration;
 use tokio::net::UnixStream;
+
+const FIRECRACKER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const FIRECRACKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Firecracker API client
 pub struct FirecrackerClient {
+    socket_path: String,
+    connect_timeout: Duration,
+    request_timeout: Duration,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Firecracker API {stage} timed out after {timeout:?} for {socket_path}")]
+pub struct FirecrackerApiTimeout {
+    stage: &'static str,
+    timeout: Duration,
     socket_path: String,
 }
 
@@ -58,6 +72,18 @@ pub struct InstanceAction {
     pub action_type: String,
 }
 
+/// Runtime state accepted by Firecracker's `PATCH /vm` endpoint.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub enum VmState {
+    Paused,
+    Resumed,
+}
+
+#[derive(Debug, Serialize)]
+struct VmStatePatch {
+    state: VmState,
+}
+
 /// Network interface configuration
 #[derive(Debug, Serialize)]
 pub struct NetworkInterface {
@@ -82,14 +108,38 @@ pub struct VsockOverride {
     pub uds_path: String,
 }
 
+/// Snapshot memory backend supported by Firecracker 1.16.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub enum MemoryBackendType {
+    File,
+}
+
+/// Memory source used while lazily restoring a Firecracker snapshot.
+#[derive(Debug, Serialize)]
+pub struct MemoryBackend {
+    pub backend_type: MemoryBackendType,
+    pub backend_path: String,
+}
+
+impl MemoryBackend {
+    pub fn file(path: impl AsRef<Path>) -> Self {
+        Self {
+            backend_type: MemoryBackendType::File,
+            backend_path: path.as_ref().to_string_lossy().into_owned(),
+        }
+    }
+}
+
 /// Snapshot restoration parameters supported by Firecracker 1.16.
 #[derive(Debug, Serialize)]
 #[allow(dead_code)]
 pub struct SnapshotLoadParams {
-    pub mem_file_path: String,
+    pub mem_backend: MemoryBackend,
     pub snapshot_path: String,
     pub resume_vm: bool,
     pub vsock_override: VsockOverride,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock_realtime: Option<bool>,
 }
 
 /// Instance info response
@@ -101,11 +151,32 @@ pub struct InstanceInfo {
     pub vmm_version: String,
 }
 
+/// Firecracker version response.
+#[derive(Debug, Deserialize)]
+pub struct FirecrackerVersion {
+    pub firecracker_version: String,
+}
+
 impl FirecrackerClient {
     /// Create a new Firecracker API client
     pub fn new(socket_path: impl AsRef<Path>) -> Self {
         Self {
             socket_path: socket_path.as_ref().to_string_lossy().to_string(),
+            connect_timeout: FIRECRACKER_CONNECT_TIMEOUT,
+            request_timeout: FIRECRACKER_REQUEST_TIMEOUT,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_timeouts(
+        socket_path: impl AsRef<Path>,
+        connect_timeout: Duration,
+        request_timeout: Duration,
+    ) -> Self {
+        Self {
+            socket_path: socket_path.as_ref().to_string_lossy().to_string(),
+            connect_timeout,
+            request_timeout,
         }
     }
 
@@ -120,6 +191,12 @@ impl FirecrackerClient {
     pub async fn get_instance_info(&self) -> Result<InstanceInfo> {
         let response = self.request(Method::GET, "/", None::<&()>).await?;
         serde_json::from_slice(&response).context("Failed to parse instance info")
+    }
+
+    /// Get the running Firecracker VMM version.
+    pub async fn get_version(&self) -> Result<FirecrackerVersion> {
+        let response = self.request(Method::GET, "/version", None::<&()>).await?;
+        serde_json::from_slice(&response).context("Failed to parse Firecracker version")
     }
 
     /// Set boot source configuration
@@ -172,19 +249,18 @@ impl FirecrackerClient {
     /// Pause the VM
     #[allow(dead_code)]
     pub async fn pause(&self) -> Result<()> {
-        let action = InstanceAction {
-            action_type: "Pause".to_string(),
-        };
-        self.put("/actions", &action).await
+        self.set_vm_state(VmState::Paused).await
     }
 
     /// Resume the VM
     #[allow(dead_code)]
     pub async fn resume(&self) -> Result<()> {
-        let action = InstanceAction {
-            action_type: "Resume".to_string(),
-        };
-        self.put("/actions", &action).await
+        self.set_vm_state(VmState::Resumed).await
+    }
+
+    /// Update the state of a running VM.
+    pub async fn set_vm_state(&self, state: VmState) -> Result<()> {
+        self.patch("/vm", &VmStatePatch { state }).await
     }
 
     /// Create a full VM snapshot. The VM must be paused first.
@@ -205,6 +281,12 @@ impl FirecrackerClient {
         Ok(())
     }
 
+    /// Make a PATCH request.
+    async fn patch<T: Serialize>(&self, path: &str, body: &T) -> Result<()> {
+        let _ = self.request(Method::PATCH, path, Some(body)).await?;
+        Ok(())
+    }
+
     /// Make an HTTP request to the Firecracker API
     async fn request<T: Serialize>(
         &self,
@@ -213,21 +295,35 @@ impl FirecrackerClient {
         body: Option<&T>,
     ) -> Result<Bytes> {
         // Connect to Unix socket
-        let stream = UnixStream::connect(&self.socket_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to connect to Firecracker socket: {}",
-                    self.socket_path
-                )
-            })?;
+        let stream =
+            tokio::time::timeout(self.connect_timeout, UnixStream::connect(&self.socket_path))
+                .await
+                .map_err(|_| FirecrackerApiTimeout {
+                    stage: "connect",
+                    timeout: self.connect_timeout,
+                    socket_path: self.socket_path.clone(),
+                })?
+                .with_context(|| {
+                    format!(
+                        "Failed to connect to Firecracker socket: {}",
+                        self.socket_path
+                    )
+                })?;
 
         let io = TokioIo::new(stream);
 
         // Create HTTP connection
-        let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-            .await
-            .context("Failed to create HTTP connection")?;
+        let (mut sender, conn) = tokio::time::timeout(
+            self.connect_timeout,
+            hyper::client::conn::http1::handshake(io),
+        )
+        .await
+        .map_err(|_| FirecrackerApiTimeout {
+            stage: "HTTP handshake",
+            timeout: self.connect_timeout,
+            socket_path: self.socket_path.clone(),
+        })?
+        .context("Failed to create HTTP connection")?;
 
         // Spawn connection handler
         tokio::spawn(async move {
@@ -245,23 +341,31 @@ impl FirecrackerClient {
 
         let req = Request::builder()
             .method(method)
-            .uri(format!("http://localhost{}", path))
+            .uri(path)
+            .header("Host", "localhost")
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .body(Full::new(Bytes::from(body_bytes)))
             .context("Failed to build request")?;
 
         // Send request
-        let response = sender
-            .send_request(req)
+        let response = tokio::time::timeout(self.request_timeout, sender.send_request(req))
             .await
+            .map_err(|_| FirecrackerApiTimeout {
+                stage: "response",
+                timeout: self.request_timeout,
+                socket_path: self.socket_path.clone(),
+            })?
             .context("Failed to send request to Firecracker")?;
 
         let status = response.status();
-        let body = response
-            .into_body()
-            .collect()
+        let body = tokio::time::timeout(self.request_timeout, response.into_body().collect())
             .await
+            .map_err(|_| FirecrackerApiTimeout {
+                stage: "response body",
+                timeout: self.request_timeout,
+                socket_path: self.socket_path.clone(),
+            })?
             .context("Failed to read response body")?
             .to_bytes();
 
@@ -306,20 +410,91 @@ mod tests {
     #[test]
     fn test_snapshot_load_serializes_vsock_override() {
         let snapshot = SnapshotLoadParams {
-            mem_file_path: "/tmp/vm.mem".to_string(),
+            mem_backend: MemoryBackend::file("/tmp/vm.mem"),
             snapshot_path: "/tmp/vm.state".to_string(),
-            resume_vm: true,
+            resume_vm: false,
             vsock_override: VsockOverride {
                 uds_path: "/tmp/restored-vsock.sock".to_string(),
             },
+            clock_realtime: Some(true),
         };
 
         let value = serde_json::to_value(snapshot).unwrap();
-        assert_eq!(value["resume_vm"], true);
+        assert_eq!(value["resume_vm"], false);
+        assert_eq!(value["mem_backend"]["backend_type"], "File");
+        assert_eq!(value["mem_backend"]["backend_path"], "/tmp/vm.mem");
+        assert!(value.get("mem_file_path").is_none());
         assert_eq!(
             value["vsock_override"]["uds_path"],
             "/tmp/restored-vsock.sock"
         );
+        assert_eq!(value["clock_realtime"], true);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pause_and_resume_patch_vm_state() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::UnixListener;
+
+        async fn capture_request(listener: UnixListener) -> String {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 4096];
+            let bytes = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            String::from_utf8(request[..bytes].to_vec()).unwrap()
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("firecracker.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let request = tokio::spawn(capture_request(listener));
+        FirecrackerClient::new(&socket).pause().await.unwrap();
+        let request = request.await.unwrap();
+        assert!(
+            request.starts_with("PATCH /vm HTTP/1.1"),
+            "unexpected request: {request:?}"
+        );
+        assert!(request.contains(r#"{"state":"Paused"}"#));
+
+        std::fs::remove_file(&socket).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let request = tokio::spawn(capture_request(listener));
+        FirecrackerClient::new(&socket).resume().await.unwrap();
+        let request = request.await.unwrap();
+        assert!(request.starts_with("PATCH /vm HTTP/1.1"));
+        assert!(request.contains(r#"{"state":"Resumed"}"#));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn request_times_out_when_vmm_accepts_but_never_replies() {
+        use tokio::net::UnixListener;
+
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("wedged-firecracker.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        let client = FirecrackerClient::with_timeouts(
+            &socket,
+            Duration::from_millis(100),
+            Duration::from_millis(25),
+        );
+        let error = client.get_version().await.unwrap_err();
+        assert!(
+            error.downcast_ref::<FirecrackerApiTimeout>().is_some(),
+            "unexpected error: {error:#}"
+        );
+        server.abort();
     }
 
     #[test]

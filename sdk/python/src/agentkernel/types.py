@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 SecurityProfile = Literal["permissive", "moderate", "restrictive"]
-SandboxStatus = Literal["running", "stopped"]
+SandboxStatus = Literal["running", "paused", "stopped", "dormant", "archived"]
 StreamEventType = Literal["started", "progress", "output", "done", "error"]
 
 
@@ -40,6 +40,8 @@ class BackendCapabilities(BaseModel):
     secret_files: bool
     snapshots: bool
     resume: bool
+    full_state_pause_resume: bool
+    full_state_fork: bool
     endpoints: bool
 
 

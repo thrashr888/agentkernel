@@ -61,13 +61,15 @@ class TestListSandboxes:
                 "data": [
                     {"name": "sb-1", "status": "running", "backend": "docker"},
                     {"name": "sb-2", "status": "stopped", "backend": "docker"},
+                    {"name": "sb-3", "status": "paused", "backend": "firecracker"},
                 ],
             }
         )
         result = make_client().list_sandboxes()
-        assert len(result) == 2
+        assert len(result) == 3
         assert all(isinstance(s, SandboxInfo) for s in result)
         assert result[0].name == "sb-1"
+        assert result[2].status == "paused"
 
 
 class TestCreateSandbox:

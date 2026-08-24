@@ -231,6 +231,19 @@ impl RootfsCowStore {
             RootfsCowStrategy::FullCopy
         };
 
+        // Base images (especially immutable checkpoint artifacts) may be
+        // read-only.  The private clone is Firecracker's writable root drive,
+        // so do not inherit the source file's restrictive mode.
+        #[cfg(unix)]
+        fs::set_permissions(&staging_path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to make {} writable", staging_path.display()))?;
+        #[cfg(not(unix))]
+        {
+            let mut permissions = fs::metadata(&staging_path)?.permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(&staging_path, permissions)?;
+        }
+
         // Ensure the staged image is durable before exposing it as a complete
         // artifact.  This is best-effort on platforms where sync is unusual,
         // but a failure is safer than publishing a partial rootfs.
@@ -636,8 +649,104 @@ impl RootfsCow {
         &self.rootfs_path
     }
 
+    /// Directory that must be used as Firecracker's working directory.
+    ///
+    /// The drive is deliberately configured as the relative path
+    /// `rootfs.ext4`.  A restored VM can therefore use an independent writable
+    /// COW image in a different directory without changing the path embedded in
+    /// Firecracker's vmstate file.
+    pub fn artifact_dir(&self) -> &Path {
+        &self.artifact_dir
+    }
+
     pub fn strategy(&self) -> RootfsCowStrategy {
         self.strategy
+    }
+
+    /// Copy the paused root drive into a checkpoint directory.
+    ///
+    /// A reflink is attempted first and a portable full copy is used when the
+    /// source and checkpoint stores do not share reflink-capable storage.  The
+    /// destination is published by rename only after its contents are synced.
+    pub fn snapshot_to(&self, destination: &Path) -> Result<RootfsCowStrategy> {
+        // Firecracker has stopped issuing guest I/O while paused, but its host
+        // file can still have dirty pages. Flush the source before reflinking
+        // or copying so a published checkpoint is durable as a complete set.
+        File::options()
+            .read(true)
+            .write(true)
+            .open(&self.rootfs_path)
+            .with_context(|| format!("failed to open {}", self.rootfs_path.display()))?
+            .sync_all()
+            .with_context(|| format!("failed to sync {}", self.rootfs_path.display()))?;
+
+        if fs::symlink_metadata(destination).is_ok() {
+            bail!(
+                "refusing to overwrite checkpoint rootfs {}",
+                destination.display()
+            );
+        }
+        let parent = destination.parent().ok_or_else(|| {
+            anyhow::anyhow!(
+                "checkpoint rootfs has no parent directory: {}",
+                destination.display()
+            )
+        })?;
+        let parent_metadata = fs::symlink_metadata(parent).with_context(|| {
+            format!(
+                "failed to inspect checkpoint directory {}",
+                parent.display()
+            )
+        })?;
+        if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+            bail!(
+                "checkpoint rootfs parent is not a directory: {}",
+                parent.display()
+            );
+        }
+
+        let staging = parent.join(format!(".rootfs.ext4.partial-{}", Uuid::new_v4().simple()));
+        let reflink_succeeded = reflink_copy(&self.rootfs_path, &staging).unwrap_or(false);
+        let strategy = if reflink_succeeded {
+            RootfsCowStrategy::Reflink
+        } else {
+            let _ = fs::remove_file(&staging);
+            if let Err(error) = full_copy(&self.rootfs_path, &staging) {
+                let _ = fs::remove_file(&staging);
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to copy paused rootfs {} -> {}",
+                        self.rootfs_path.display(),
+                        staging.display()
+                    )
+                });
+            }
+            RootfsCowStrategy::FullCopy
+        };
+
+        let publish = (|| -> Result<()> {
+            File::open(&staging)
+                .with_context(|| format!("failed to open {}", staging.display()))?
+                .sync_all()
+                .with_context(|| format!("failed to sync {}", staging.display()))?;
+            fs::rename(&staging, destination).with_context(|| {
+                format!(
+                    "failed to publish checkpoint rootfs {} -> {}",
+                    staging.display(),
+                    destination.display()
+                )
+            })?;
+            File::open(parent)
+                .with_context(|| format!("failed to open {}", parent.display()))?
+                .sync_all()
+                .with_context(|| format!("failed to sync {}", parent.display()))?;
+            Ok(())
+        })();
+        if let Err(error) = publish {
+            let _ = fs::remove_file(&staging);
+            return Err(error);
+        }
+        Ok(strategy)
     }
 
     /// Keep this rootfs as an input for a durable Firecracker snapshot.
@@ -1416,6 +1525,42 @@ mod tests {
             }
         );
         assert_eq!(fs::read(path).unwrap(), b"snapshot rootfs");
+    }
+
+    #[test]
+    fn paused_rootfs_snapshot_is_independent_and_never_overwritten() {
+        let (tmp, store) = store();
+        let base = tmp.path().join("base.ext4");
+        fs::write(&base, b"checkpoint contents").unwrap();
+        let rootfs = store.prepare(&base).unwrap();
+        assert_eq!(rootfs.path().parent(), Some(rootfs.artifact_dir()));
+
+        let checkpoint = tmp.path().join("checkpoint");
+        fs::create_dir(&checkpoint).unwrap();
+        let destination = checkpoint.join(ROOTFS_FILE);
+        rootfs.snapshot_to(&destination).unwrap();
+        fs::write(rootfs.path(), b"mutated live rootfs").unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"checkpoint contents");
+        assert!(rootfs.snapshot_to(&destination).is_err());
+        assert!(fs::read_dir(&checkpoint).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".rootfs.ext4.partial-")
+        }));
+
+        let mut permissions = fs::metadata(&destination).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&destination, permissions).unwrap();
+        let restored = store.prepare(&destination).unwrap();
+        assert!(
+            !fs::metadata(restored.path())
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
     }
 
     #[cfg(unix)]

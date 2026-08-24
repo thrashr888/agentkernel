@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { AgentKernel } from "../src/client.js";
+import type { SandboxStatus } from "../src/types.js";
 import {
   AuthError,
   NotFoundError,
@@ -10,6 +11,13 @@ import {
 } from "../src/errors.js";
 
 const BASE_URL = "http://localhost:9999";
+const lifecycleStatuses: SandboxStatus[] = [
+  "running",
+  "paused",
+  "stopped",
+  "dormant",
+  "archived",
+];
 
 const handlers = [
   http.get(`${BASE_URL}/health`, () =>
@@ -83,6 +91,16 @@ function client(opts?: { apiKey?: string }) {
 }
 
 describe("AgentKernel", () => {
+  it("represents every sandbox lifecycle status", () => {
+    expect(lifecycleStatuses).toEqual([
+      "running",
+      "paused",
+      "stopped",
+      "dormant",
+      "archived",
+    ]);
+  });
+
   describe("health", () => {
     it("returns ok", async () => {
       expect(await client().health()).toBe("ok");

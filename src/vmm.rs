@@ -5,12 +5,14 @@
 
 use crate::audit::{AuditEvent, log_event};
 use crate::backend::{
-    BackendType, FileInjection, PortMapping, RemoteSandboxContext, ResolvedEndpoint, Sandbox,
-    SandboxConfig, SandboxRuntimeMetadata, backend_capabilities, create_sandbox,
-    create_sandbox_with_state, detect_best_backend,
+    BackendType, FileInjection, FullStatePauseError, FullStateSnapshot, FullStateTerminationError,
+    PortMapping, RemoteSandboxContext, ResolvedEndpoint, Sandbox, SandboxConfig,
+    SandboxRuntimeMetadata, backend_capabilities, create_sandbox, create_sandbox_with_state,
+    detect_best_backend,
 };
 use crate::config::Config;
 use crate::docker_backend::detect_container_runtime;
+use crate::full_state::{FullStateCheckpoint, FullStateCheckpointStore};
 use crate::languages::docker_image_to_firecracker_runtime;
 use crate::permissions::Permissions;
 use crate::pool::ContainerPool;
@@ -297,6 +299,22 @@ pub struct SandboxState {
     /// Optional lifecycle automation policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_policy: Option<SandboxLifecyclePolicy>,
+    /// Durable Firecracker full-state checkpoint used while this sandbox is paused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_state_checkpoint: Option<String>,
+    /// Published checkpoints awaiting best-effort deletion after consumption.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub full_state_cleanup_pending: Vec<String>,
+    /// True after this sandbox has restored mutable disk state from a full-state checkpoint.
+    /// This is dedicated metadata because user-editable labels cannot enforce safety.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub full_state_lineage: bool,
+    /// Timestamp at which the running Firecracker VM was paused to zero compute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_at: Option<String>,
+    /// Source sandbox name when this sandbox was created by a full-state fork.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<String>,
 }
 
 impl SandboxState {
@@ -306,6 +324,8 @@ impl SandboxState {
             "archived"
         } else if self.dormant_at.is_some() {
             "dormant"
+        } else if self.paused_at.is_some() {
+            "paused"
         } else if running {
             "running"
         } else {
@@ -411,6 +431,15 @@ pub struct VmManager {
     backend: BackendType,
     /// Running sandboxes (unified interface)
     running: HashMap<String, Box<dyn Sandbox>>,
+    /// Interrupted pause transitions retained after automatic recovery fails.
+    /// Entries own either a possibly-live source runtime, safe completed
+    /// staging metadata, or both. Only resume or explicit removal may consume
+    /// them; normal exec paths must never expose these transitional states.
+    pause_recovery: HashMap<String, PendingFullStateRecovery>,
+    /// Running runtimes whose post-resume metadata write failed. A repeated
+    /// resume retries only the atomic state publication; it never starts a
+    /// second VM or destroys the retained runtime.
+    resume_state_recovery: HashMap<String, SandboxState>,
     /// Persisted sandbox configurations
     sandboxes: HashMap<String, SandboxState>,
     /// Data directory for persistence
@@ -431,6 +460,31 @@ pub struct VmManager {
     /// Enterprise policy engine (when enterprise feature is enabled)
     #[cfg(feature = "enterprise")]
     policy_engine: Option<Arc<crate::policy::PolicyEngine>>,
+}
+
+struct PendingFullStateRecovery {
+    sandbox: Option<Box<dyn Sandbox>>,
+    staging_path: PathBuf,
+    completed_snapshot: Option<FullStateSnapshot>,
+}
+
+fn runtime_may_survive_failed_stop(error: &anyhow::Error, probe_running: bool) -> bool {
+    error
+        .downcast_ref::<FullStateTerminationError>()
+        .map_or(probe_running, |failure| failure.process_may_be_running)
+}
+
+fn with_full_state_cleanup_intent(mut state: SandboxState, checkpoint_id: &str) -> SandboxState {
+    if !state
+        .full_state_cleanup_pending
+        .iter()
+        .any(|id| id == checkpoint_id)
+    {
+        state
+            .full_state_cleanup_pending
+            .push(checkpoint_id.to_string());
+    }
+    state
 }
 
 /// Escape a string for use inside a single-quoted shell command.
@@ -460,6 +514,8 @@ impl VmManager {
         Ok(Self {
             backend: BackendType::Docker,
             running: HashMap::new(),
+            pause_recovery: HashMap::new(),
+            resume_state_recovery: HashMap::new(),
             sandboxes: HashMap::new(),
             data_dir: data_dir.to_path_buf(),
             volume_base_dir: None,
@@ -535,6 +591,8 @@ impl VmManager {
         let mut manager = Self {
             backend,
             running: HashMap::new(),
+            pause_recovery: HashMap::new(),
+            resume_state_recovery: HashMap::new(),
             sandboxes,
             data_dir,
             volume_base_dir: None,
@@ -549,6 +607,8 @@ impl VmManager {
 
         // Detect already-running sandboxes
         manager.detect_running_sandboxes();
+        manager.reconcile_full_state_cleanup();
+        manager.report_full_state_recovery_state();
 
         crate::metrics::set_active_sandboxes(manager.sandboxes.len() as i64);
 
@@ -672,6 +732,107 @@ impl VmManager {
         }
     }
 
+    /// Report interrupted pause transitions without deleting artifacts that
+    /// could still belong to another live manager. Deterministic staging names
+    /// let operators correlate a paused sandbox with its recovery directory.
+    fn report_full_state_recovery_state(&self) {
+        let Ok(store) = FullStateCheckpointStore::new(&self.data_dir) else {
+            return;
+        };
+        let referenced: std::collections::HashSet<String> = self
+            .sandboxes
+            .values()
+            .filter(|state| state.paused_at.is_some())
+            .filter_map(|state| state.full_state_checkpoint.clone())
+            .collect();
+
+        if let Ok(entries) = store.staging_entries() {
+            for (id, path) in entries {
+                if id.as_ref().is_some_and(|id| referenced.contains(id)) {
+                    let recovery_ready = id
+                        .as_deref()
+                        .is_some_and(|id| store.recovery_is_ready(id).unwrap_or(false));
+                    if recovery_ready {
+                        eprintln!(
+                            "Warning: interrupted full-state pause retained recovery-ready staging at {}; the next resume or fork will publish it",
+                            path.display()
+                        );
+                    } else {
+                        eprintln!(
+                            "Warning: interrupted full-state pause retained diagnostic staging at {}; automatic restore is unavailable until the transition is reconciled",
+                            path.display()
+                        );
+                    }
+                } else {
+                    eprintln!(
+                        "Warning: orphaned full-state checkpoint staging retained at {}; it was not deleted because another manager may still own the transition",
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        for id in referenced {
+            let published = store.contains(&id).unwrap_or(false);
+            let staged = store.staging_path(&id).is_ok_and(|path| path.is_dir());
+            if !published && !staged {
+                eprintln!(
+                    "Warning: paused sandbox references missing full-state checkpoint '{id}'"
+                );
+            }
+        }
+    }
+
+    fn delete_full_state_artifacts(
+        store: &FullStateCheckpointStore,
+        checkpoint_id: &str,
+    ) -> Result<()> {
+        store.delete(checkpoint_id)?;
+        let staging_path = store.staging_path(checkpoint_id)?;
+        store.discard_staging(&staging_path)
+    }
+
+    /// Retry durable deletion intents left after a checkpoint was consumed.
+    /// The intent is cleared only after both published and staging locations
+    /// are absent and the updated sandbox state is atomically persisted.
+    fn reconcile_full_state_cleanup(&mut self) {
+        let Ok(store) = FullStateCheckpointStore::new(&self.data_dir) else {
+            return;
+        };
+        let names: Vec<String> = self.sandboxes.keys().cloned().collect();
+        for name in names {
+            let Some(current) = self.sandboxes.get(&name).cloned() else {
+                continue;
+            };
+            if current.full_state_cleanup_pending.is_empty() {
+                continue;
+            }
+            let mut remaining = Vec::new();
+            for checkpoint_id in &current.full_state_cleanup_pending {
+                if let Err(error) = Self::delete_full_state_artifacts(&store, checkpoint_id) {
+                    eprintln!(
+                        "Warning: failed to finish checkpoint cleanup '{}' for sandbox '{}': {error:#}",
+                        checkpoint_id, name
+                    );
+                    remaining.push(checkpoint_id.clone());
+                }
+            }
+            if remaining == current.full_state_cleanup_pending {
+                continue;
+            }
+            let mut updated = current;
+            updated.full_state_cleanup_pending = remaining;
+            if let Err(error) = self.save_sandbox(&updated) {
+                eprintln!(
+                    "Warning: checkpoint artifacts were deleted for sandbox '{}', but its cleanup intent could not be cleared: {error:#}",
+                    name
+                );
+                continue;
+            }
+            self.sandboxes.insert(name, updated);
+        }
+    }
+
     /// Get the data directory
     fn data_dir() -> PathBuf {
         if let Some(home) = std::env::var_os("HOME") {
@@ -721,23 +882,36 @@ impl VmManager {
 
     /// Save a sandbox state to disk
     fn save_sandbox(&self, state: &SandboxState) -> Result<()> {
-        let path = self
-            .data_dir
-            .join("sandboxes")
-            .join(format!("{}.json", state.name));
-        let content = serde_json::to_string_pretty(state)?;
-        std::fs::write(path, content)?;
+        let directory = self.data_dir.join("sandboxes");
+        std::fs::create_dir_all(&directory)?;
+        let path = directory.join(format!("{}.json", state.name));
+        let content = serde_json::to_vec_pretty(state)?;
+        let mut staging =
+            tempfile::NamedTempFile::new_in(&directory).context("failed to stage sandbox state")?;
+        std::io::Write::write_all(staging.as_file_mut(), &content)?;
+        staging.as_file().sync_all()?;
+        staging
+            .persist(&path)
+            .map_err(|error| error.error)
+            .with_context(|| format!("failed to publish sandbox state {}", path.display()))?;
+        // The state is atomically visible after rename. A directory fsync
+        // failure is advisory: reporting it as a failed write would cause
+        // callers to roll back after the new state is already published.
+        if let Err(error) = std::fs::File::open(&directory).and_then(|dir| dir.sync_all()) {
+            eprintln!("Warning: failed to sync sandbox state directory: {error}");
+        }
         Ok(())
     }
 
     /// Delete a sandbox state from disk
     fn delete_sandbox(&self, name: &str) -> Result<()> {
-        let path = self
-            .data_dir
-            .join("sandboxes")
-            .join(format!("{}.json", name));
+        let directory = self.data_dir.join("sandboxes");
+        let path = directory.join(format!("{}.json", name));
         if path.exists() {
             std::fs::remove_file(path)?;
+            if let Err(error) = std::fs::File::open(&directory).and_then(|dir| dir.sync_all()) {
+                eprintln!("Warning: failed to sync sandbox state deletion: {error}");
+            }
         }
         Ok(())
     }
@@ -1096,6 +1270,11 @@ impl VmManager {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            full_state_checkpoint: None,
+            full_state_cleanup_pending: Vec::new(),
+            full_state_lineage: false,
+            paused_at: None,
+            forked_from: None,
         };
 
         self.save_sandbox(&state)?;
@@ -1360,18 +1539,14 @@ impl VmManager {
         let tenant_id = tenant_id
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        {
-            let state = self
-                .sandboxes
-                .get_mut(name)
-                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
-            state.tenant_id = tenant_id;
-        }
-        let state = self
+        let mut state = self
             .sandboxes
             .get(name)
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
-        self.save_sandbox(state)?;
+        state.tenant_id = tenant_id;
+        self.save_sandbox(&state)?;
+        self.sandboxes.insert(name.to_string(), state);
         Ok(())
     }
 
@@ -1411,14 +1586,39 @@ impl VmManager {
 
     /// Persist trusted ownership metadata supplied by the authenticated API.
     pub fn set_owner_identity(&mut self, name: &str, tenant: &str, user: &str) -> Result<()> {
-        let state = self
+        let mut state = self
             .sandboxes
-            .get_mut(name)
+            .get(name)
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
         state.owner_org_id = Some(tenant.to_string());
         state.owner_user_id = Some(user.to_string());
-        let snapshot = state.clone();
-        self.save_sandbox(&snapshot)?;
+        self.save_sandbox(&state)?;
+        self.sandboxes.insert(name.to_string(), state);
+        Ok(())
+    }
+
+    /// Atomically persist the trusted tenant and owner established by an
+    /// authenticated first-start claim, then publish it in memory.
+    pub fn set_trusted_ownership(
+        &mut self,
+        name: &str,
+        tenant_id: Option<String>,
+        user_id: Option<&str>,
+        org_id: Option<&str>,
+    ) -> Result<()> {
+        let mut state = self
+            .sandboxes
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        state.tenant_id = tenant_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        state.owner_user_id = user_id.map(ToString::to_string);
+        state.owner_org_id = org_id.map(ToString::to_string);
+        self.save_sandbox(&state)?;
+        self.sandboxes.insert(name.to_string(), state);
         Ok(())
     }
 
@@ -1465,14 +1665,15 @@ impl VmManager {
         user_id: Option<&str>,
         org_id: Option<&str>,
     ) -> Result<()> {
-        let state = self
+        let mut state = self
             .sandboxes
-            .get_mut(name)
+            .get(name)
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
         state.owner_user_id = user_id.map(ToString::to_string);
         state.owner_org_id = org_id.map(ToString::to_string);
-        let snapshot = state.clone();
-        self.save_sandbox(&snapshot)?;
+        self.save_sandbox(&state)?;
+        self.sandboxes.insert(name.to_string(), state);
         Ok(())
     }
 
@@ -1494,13 +1695,14 @@ impl VmManager {
         name: &str,
         policy: Option<SandboxLifecyclePolicy>,
     ) -> Result<()> {
-        let state = self
+        let mut state = self
             .sandboxes
-            .get_mut(name)
+            .get(name)
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
         state.lifecycle_policy = policy;
-        let snapshot = state.clone();
-        self.save_sandbox(&snapshot)?;
+        self.save_sandbox(&state)?;
+        self.sandboxes.insert(name.to_string(), state);
         Ok(())
     }
 
@@ -1518,15 +1720,16 @@ impl VmManager {
 
     /// Mark a stopped sandbox dormant after a configured period of disuse.
     pub fn mark_dormant(&mut self, name: &str, at: &str, reason: &str) -> Result<()> {
-        let state = self
+        let mut state = self
             .sandboxes
-            .get_mut(name)
+            .get(name)
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
         if state.dormant_at.is_none() {
             state.dormant_at = Some(at.to_string());
             state.dormant_reason = Some(reason.to_string());
-            let snapshot = state.clone();
-            self.save_sandbox(&snapshot)?;
+            self.save_sandbox(&state)?;
+            self.sandboxes.insert(name.to_string(), state);
         }
         Ok(())
     }
@@ -1775,57 +1978,49 @@ impl VmManager {
     pub fn extend_ttl(&mut self, name: &str, additional_secs: u64) -> Result<Option<String>> {
         use chrono::{DateTime, Duration, Utc};
 
-        let new_expiry = {
-            let state = self
-                .sandboxes
-                .get_mut(name)
-                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
-
-            // Calculate new expiry based on current state
-            let now = Utc::now();
-            let base_time = if let Some(ref expires_at) = state.expires_at {
-                // Extend from current expiry (if not already expired)
-                expires_at
-                    .parse::<DateTime<Utc>>()
-                    .ok()
-                    .filter(|exp| *exp > now)
-                    .unwrap_or(now)
-            } else {
-                // No current expiry, extend from now
-                now
-            };
-
-            let new_exp = base_time + Duration::seconds(additional_secs as i64);
-            let new_expiry_str = new_exp.to_rfc3339();
-
-            // Update state
-            state.expires_at = Some(new_expiry_str.clone());
-            // Also update ttl_seconds to reflect total TTL from creation
-            if let Ok(created) = state.created_at.parse::<DateTime<Utc>>() {
-                let total_secs = (new_exp - created).num_seconds();
-                if total_secs > 0 {
-                    state.ttl_seconds = Some(total_secs as u64);
-                }
-            }
-
-            Some(new_expiry_str)
-        };
-
-        // Save the updated state
-        let state = self
+        let mut state = self
             .sandboxes
             .get(name)
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
-        self.save_sandbox(state)?;
 
-        Ok(new_expiry)
+        // Calculate new expiry based on current state
+        let now = Utc::now();
+        let base_time = if let Some(ref expires_at) = state.expires_at {
+            // Extend from current expiry (if not already expired)
+            expires_at
+                .parse::<DateTime<Utc>>()
+                .ok()
+                .filter(|exp| *exp > now)
+                .unwrap_or(now)
+        } else {
+            // No current expiry, extend from now
+            now
+        };
+
+        let new_exp = base_time + Duration::seconds(additional_secs as i64);
+        let new_expiry_str = new_exp.to_rfc3339();
+
+        state.expires_at = Some(new_expiry_str.clone());
+        if let Ok(created) = state.created_at.parse::<DateTime<Utc>>() {
+            let total_secs = (new_exp - created).num_seconds();
+            if total_secs > 0 {
+                state.ttl_seconds = Some(total_secs as u64);
+            }
+        }
+
+        self.save_sandbox(&state)?;
+        self.sandboxes.insert(name.to_string(), state);
+
+        Ok(Some(new_expiry_str))
     }
 
     /// Recover an archived sandbox back to a normal lifecycle state.
     pub fn recover(&mut self, name: &str) -> Result<()> {
-        let state = self
+        let mut state = self
             .sandboxes
-            .get_mut(name)
+            .get(name)
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
 
         state.archived_at = None;
@@ -1834,8 +2029,8 @@ impl VmManager {
         state.dormant_reason = None;
         state.last_activity_at = Some(chrono::Utc::now().to_rfc3339());
 
-        let snapshot = state.clone();
-        self.save_sandbox(&snapshot)?;
+        self.save_sandbox(&state)?;
+        self.sandboxes.insert(name.to_string(), state);
         Ok(())
     }
 
@@ -1919,12 +2114,42 @@ impl VmManager {
         perms: &Permissions,
         files: &[FileInjection],
     ) -> Result<()> {
+        self.start_with_permissions_and_files_impl(name, perms, files, false)
+            .await
+    }
+
+    /// Start after the HTTP layer has authorized the authenticated principal.
+    /// This avoids re-evaluating Cedar against the daemon process identity.
+    pub(crate) async fn start_with_permissions_and_files_authorized(
+        &mut self,
+        name: &str,
+        perms: &Permissions,
+        files: &[FileInjection],
+    ) -> Result<()> {
+        self.start_with_permissions_and_files_impl(name, perms, files, true)
+            .await
+    }
+
+    async fn start_with_permissions_and_files_impl(
+        &mut self,
+        name: &str,
+        perms: &Permissions,
+        files: &[FileInjection],
+        _policy_prechecked: bool,
+    ) -> Result<()> {
         let start_time = std::time::Instant::now();
         let state = self
             .sandboxes
             .get(name)
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?
             .clone();
+        let backend = state.backend.unwrap_or(self.backend);
+        if self.pause_recovery.contains_key(name) || self.resume_state_recovery.contains_key(name) {
+            bail!(
+                "Sandbox '{}' has a pending full-state recovery; retry the recovery operation or remove it before starting another runtime",
+                name
+            );
+        }
 
         crate::llm_intercept::register_sandbox_metadata(
             name,
@@ -1958,17 +2183,32 @@ impl VmManager {
             );
         }
 
+        if state.paused_at.is_some() {
+            bail!(
+                "Sandbox '{}' is paused with full VM state. Resume it instead of cold-starting it.",
+                name
+            );
+        }
+
+        if backend == BackendType::Firecracker && state.full_state_lineage {
+            bail!(
+                "Sandbox '{}' belongs to a full-state Firecracker lineage whose writable runtime is not attached; cold start would lose that state. Resume a checkpoint when available or remove the sandbox explicitly.",
+                name
+            );
+        }
+
         if self.running.contains_key(name) {
             bail!("Sandbox '{}' is already running", name);
         }
 
         // Enterprise policy check for start
         #[cfg(feature = "enterprise")]
-        self.check_enterprise_policy(crate::policy::Action::Run, name, "unknown", &state.image)
-            .await?;
+        if !_policy_prechecked {
+            self.check_enterprise_policy(crate::policy::Action::Run, name, "unknown", &state.image)
+                .await?;
+        }
 
         // Use the backend from stored state, or fall back to current backend
-        let backend = state.backend.unwrap_or(self.backend);
         let capabilities = backend_capabilities(backend);
 
         if effective_perms.mount_home && !capabilities.mount_home {
@@ -2403,7 +2643,16 @@ impl VmManager {
             volumes: volume_args,
         };
 
-        sandbox.start(&config).await?;
+        if let Err(error) = sandbox.start(&config).await {
+            if runtime_may_survive_failed_stop(&error, sandbox.is_running()) {
+                self.running.insert(name.to_string(), sandbox);
+                return Err(error).context(format!(
+                    "sandbox '{name}' failed to start cleanly, but its runtime may still exist and remains under manager ownership; remove it before retrying"
+                ));
+            }
+            return Err(error);
+        }
+        let setup_result = async {
         if let Some(persisted) = self.sandboxes.get_mut(name) {
             persisted.work_dir = config.work_dir.clone();
             if let Some(metadata) = sandbox.runtime_metadata() {
@@ -2705,6 +2954,24 @@ impl VmManager {
                 return Err(error)
                     .context("failed to persist devcontainer postCreateCommand completion");
             }
+        }
+
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        if let Err(setup_error) = setup_result {
+            if let Err(stop_error) = sandbox.stop().await {
+                if runtime_may_survive_failed_stop(&stop_error, sandbox.is_running()) {
+                    self.running.insert(name.to_string(), sandbox);
+                    return Err(setup_error).context(format!(
+                        "post-start setup failed and cleanup could not prove sandbox '{name}' exited ({stop_error:#}); the runtime remains under manager ownership and must be removed before retrying"
+                    ));
+                }
+                return Err(setup_error).context(format!(
+                    "post-start setup failed; sandbox '{name}' exited, but cleanup also failed ({stop_error:#})"
+                ));
+            }
+            return Err(setup_error);
         }
 
         self.running.insert(name.to_string(), sandbox);
@@ -3125,6 +3392,905 @@ impl VmManager {
         result
     }
 
+    /// Pause a running Firecracker sandbox into a durable, full-VM checkpoint.
+    ///
+    /// The backend keeps the source VM running if snapshot creation fails. A
+    /// successful call terminates the paused Firecracker process only after
+    /// memory, device state, and an immutable disk have been captured.
+    pub async fn pause(&mut self, name: &str) -> Result<FullStateCheckpoint> {
+        self.pause_impl(name, false).await
+    }
+
+    pub(crate) async fn pause_authorized(&mut self, name: &str) -> Result<FullStateCheckpoint> {
+        self.pause_impl(name, true).await
+    }
+
+    async fn pause_impl(
+        &mut self,
+        name: &str,
+        _policy_prechecked: bool,
+    ) -> Result<FullStateCheckpoint> {
+        let pause_start = std::time::Instant::now();
+        validation::validate_sandbox_name(name)?;
+        let state = self
+            .sandboxes
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        let backend = state.backend.unwrap_or(self.backend);
+        if backend != BackendType::Firecracker {
+            bail!(
+                "Backend '{}' does not support full-state pause/resume; Firecracker on Linux/KVM is required",
+                backend
+            );
+        }
+        if state.paused_at.is_some() {
+            bail!("Sandbox '{}' is already paused", name);
+        }
+        if state.proxy_port.is_some() || !state.secret_bindings.is_empty() {
+            bail!(
+                "Sandbox '{}' uses a host-side secret or governance proxy whose live state cannot yet be checkpointed",
+                name
+            );
+        }
+
+        #[cfg(feature = "enterprise")]
+        if !_policy_prechecked {
+            self.check_enterprise_policy(crate::policy::Action::Run, name, "unknown", &state.image)
+                .await?;
+        }
+
+        if !self.running.contains_key(name) {
+            bail!("Sandbox '{}' is not running", name);
+        }
+        let store = FullStateCheckpointStore::new(&self.data_dir)?;
+        let reservation_bytes = self
+            .running
+            .get(name)
+            .expect("running presence was validated before capacity reservation")
+            .full_state_reservation_bytes(state.memory_mb)?;
+        store
+            .ensure_capacity(reservation_bytes)
+            .with_context(|| format!("cannot pause sandbox '{name}'"))?;
+        let staging = store.begin()?;
+        // Persist the checkpoint identity before changing the VM. If the
+        // service exits after Firecracker stops but before publication, the
+        // sandbox remains conservatively paused instead of silently becoming
+        // a cold-startable state with an orphaned memory image.
+        let mut paused_state = state.clone();
+        paused_state.full_state_checkpoint = Some(staging.id().to_string());
+        paused_state.full_state_lineage = true;
+        paused_state.paused_at = Some(chrono::Utc::now().to_rfc3339());
+        paused_state.last_activity_at = Some(chrono::Utc::now().to_rfc3339());
+        if let Err(error) = self.save_sandbox(&paused_state) {
+            if let Err(cleanup_error) = store.discard_staging(staging.path()) {
+                return Err(error).context(format!(
+                    "failed to persist pause transition and failed to discard staging: {cleanup_error:#}"
+                ));
+            }
+            return Err(error).context("failed to persist pause transition");
+        }
+        self.sandboxes
+            .insert(name.to_string(), paused_state.clone());
+
+        let mut sandbox = self
+            .running
+            .remove(name)
+            .expect("running presence was validated before pause transition");
+        let backend_snapshot = match sandbox.pause_to(staging.path()).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                if let Some(recovery) = error.downcast_ref::<FullStatePauseError>().cloned() {
+                    debug_assert!(recovery.source_resume_failed);
+
+                    if recovery.artifacts_complete {
+                        let snapshot = recovery.snapshot.clone();
+                        // Never publish a cloneable checkpoint until process
+                        // death is confirmed. Otherwise a failed kill could
+                        // leave the original VM alive beside a resumed copy.
+                        if let Err(stop_error) = sandbox.stop().await {
+                            let termination_confirmed = stop_error
+                                .downcast_ref::<FullStateTerminationError>()
+                                .is_some_and(|failure| !failure.process_may_be_running);
+                            if !termination_confirmed {
+                                let recovery_path = staging.preserve();
+                                self.pause_recovery.insert(
+                                    name.to_string(),
+                                    PendingFullStateRecovery {
+                                        sandbox: Some(sandbox),
+                                        staging_path: recovery_path.clone(),
+                                        completed_snapshot: Some(snapshot),
+                                    },
+                                );
+                                return Err(error).context(format!(
+                                    "complete checkpoint artifacts were produced, but source termination could not be confirmed ({stop_error:#}); checkpoint remains unpublished at {} and the source stays under recovery ownership; call resume to retry termination and publication or remove to abandon it",
+                                    recovery_path.display()
+                                ));
+                            }
+                            eprintln!(
+                                "Warning: source termination was confirmed, but runtime cleanup failed before checkpoint publication: {stop_error:#}"
+                            );
+                        }
+
+                        if let Err(marker_error) = store.mark_recovery_ready(
+                            &staging,
+                            name,
+                            state.vcpus,
+                            state.memory_mb,
+                            snapshot.clone(),
+                        ) {
+                            match store.commit(
+                                &staging,
+                                name,
+                                state.vcpus,
+                                state.memory_mb,
+                                snapshot.clone(),
+                            ) {
+                                Ok(checkpoint) => {
+                                    crate::metrics::record_sandbox_lifecycle(
+                                        "paused",
+                                        "firecracker",
+                                        pause_start.elapsed().as_secs_f64(),
+                                    );
+                                    return Ok(checkpoint);
+                                }
+                                Err(commit_error) => {
+                                    let recovery_path = staging.preserve();
+                                    self.pause_recovery.insert(
+                                        name.to_string(),
+                                        PendingFullStateRecovery {
+                                            sandbox: None,
+                                            staging_path: recovery_path.clone(),
+                                            completed_snapshot: Some(snapshot),
+                                        },
+                                    );
+                                    return Err(commit_error).context(format!(
+                                        "source was terminated, but complete checkpoint staging could neither be marked recovery-ready ({marker_error:#}) nor published after pause recovery ({error:#}); safe completed artifacts retained under recovery ownership at {}",
+                                        recovery_path.display()
+                                    ));
+                                }
+                            }
+                        }
+
+                        match store.commit(&staging, name, state.vcpus, state.memory_mb, snapshot) {
+                            Ok(checkpoint) => {
+                                crate::metrics::record_sandbox_lifecycle(
+                                    "paused",
+                                    "firecracker",
+                                    pause_start.elapsed().as_secs_f64(),
+                                );
+                                return Ok(checkpoint);
+                            }
+                            Err(commit_error) => {
+                                let recovery_path = staging.preserve();
+                                return Err(commit_error).context(format!(
+                                    "source was terminated after pause recovery, but checkpoint publication failed ({error:#}); recovery-ready artifacts retained at {}",
+                                    recovery_path.display()
+                                ));
+                            }
+                        }
+                    }
+
+                    // Partial artifacts cannot restore independently. Retry
+                    // the live source once now and retain exact ownership if
+                    // the retry is still ambiguous or unsuccessful.
+                    match sandbox.retry_full_state_resume().await {
+                        Ok(()) => {
+                            let running_state =
+                                with_full_state_cleanup_intent(state.clone(), staging.id());
+                            if let Err(rollback_error) = self.save_sandbox(&running_state) {
+                                let recovery_path = staging.preserve();
+                                self.running.insert(name.to_string(), sandbox);
+                                self.resume_state_recovery
+                                    .insert(name.to_string(), running_state);
+                                return Err(error).context(format!(
+                                    "failed to pause Firecracker sandbox; source resumed on retry, but failed to roll back persisted pause transition ({rollback_error:#}); the live runtime and desired metadata remain under recovery ownership and staging remains at {}; call resume to retry metadata publication",
+                                    recovery_path.display()
+                                ));
+                            }
+                            self.running.insert(name.to_string(), sandbox);
+                            self.sandboxes.insert(name.to_string(), running_state);
+                            self.reconcile_full_state_cleanup();
+                            return Err(error).context(
+                                "failed to create a complete checkpoint; source resumed on retry",
+                            );
+                        }
+                        Err(retry_error) => {
+                            let recovery_path = staging.preserve();
+                            self.pause_recovery.insert(
+                                name.to_string(),
+                                PendingFullStateRecovery {
+                                    sandbox: Some(sandbox),
+                                    staging_path: recovery_path.clone(),
+                                    completed_snapshot: None,
+                                },
+                            );
+                            return Err(error).context(format!(
+                                "checkpoint is incomplete and source resume retry failed ({retry_error:#}); source remains paused under manager ownership and diagnostic artifacts are retained at {}; call resume to retry in place",
+                                recovery_path.display()
+                            ));
+                        }
+                    }
+                }
+
+                // Ordinary backend errors guarantee a confirmed running
+                // source. Restore both in-memory and persisted state.
+                let running_state = with_full_state_cleanup_intent(state.clone(), staging.id());
+                if let Err(rollback_error) = self.save_sandbox(&running_state) {
+                    let recovery_path = staging.preserve();
+                    self.running.insert(name.to_string(), sandbox);
+                    self.resume_state_recovery
+                        .insert(name.to_string(), running_state);
+                    return Err(error).context(format!(
+                        "failed to pause Firecracker sandbox; failed to roll back persisted pause transition ({rollback_error:#}); the live runtime and desired metadata remain under recovery ownership and staging remains at {}; call resume to retry metadata publication",
+                        recovery_path.display()
+                    ));
+                }
+                self.running.insert(name.to_string(), sandbox);
+                self.sandboxes.insert(name.to_string(), running_state);
+                self.reconcile_full_state_cleanup();
+                return Err(error).context("failed to pause Firecracker sandbox");
+            }
+        };
+
+        // The backend has completed all artifacts and terminated the source.
+        // Publish a durable ready marker before the manifest rename so a
+        // crash in the narrow commit window can be recovered without risking
+        // a duplicate of a still-live VM.
+        let marker_failure = store
+            .mark_recovery_ready(
+                &staging,
+                name,
+                state.vcpus,
+                state.memory_mb,
+                backend_snapshot.clone(),
+            )
+            .err()
+            .map(|error| format!("{error:#}"));
+
+        let checkpoint = match store.commit(
+            &staging,
+            name,
+            state.vcpus,
+            state.memory_mb,
+            backend_snapshot.clone(),
+        ) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                let marker_context = marker_failure.as_deref().map_or(String::new(), |failure| {
+                    format!("; recovery-ready marker also failed: {failure}")
+                });
+                let retained_kind = if marker_failure.is_some() {
+                    "diagnostic"
+                } else {
+                    "recovery-ready"
+                };
+                // Snapshot artifacts still live in staging. Restore from them
+                // so a publication failure does not destroy a running session.
+                match sandbox
+                    .restore_from(staging.path(), &backend_snapshot)
+                    .await
+                {
+                    Ok(()) => {
+                        let running_state =
+                            with_full_state_cleanup_intent(state.clone(), staging.id());
+                        if let Err(rollback_error) = self.save_sandbox(&running_state) {
+                            let recovery_path = staging.preserve();
+                            self.running.insert(name.to_string(), sandbox);
+                            self.resume_state_recovery
+                                .insert(name.to_string(), running_state);
+                            return Err(error).context(format!(
+                                "failed to publish checkpoint{marker_context}; source resumed but persisted pause transition rollback failed ({rollback_error:#}); the live runtime and desired metadata remain under recovery ownership and {retained_kind} staging is retained at {}; call resume to retry metadata publication",
+                                recovery_path.display()
+                            ));
+                        }
+                        self.running.insert(name.to_string(), sandbox);
+                        self.sandboxes.insert(name.to_string(), running_state);
+                        self.reconcile_full_state_cleanup();
+                        return Err(error).context(format!(
+                            "failed to publish checkpoint{marker_context}; the source sandbox was resumed"
+                        ));
+                    }
+                    Err(restore_error) => {
+                        let recovery_path = staging.preserve();
+                        let sandbox =
+                            runtime_may_survive_failed_stop(&restore_error, sandbox.is_running())
+                                .then_some(sandbox);
+                        self.pause_recovery.insert(
+                            name.to_string(),
+                            PendingFullStateRecovery {
+                                sandbox,
+                                staging_path: recovery_path.clone(),
+                                completed_snapshot: Some(backend_snapshot),
+                            },
+                        );
+                        return Err(error).context(format!(
+                            "failed to publish checkpoint{marker_context} and failed to resume source ({restore_error:#}); safe completed {retained_kind} artifacts retained under recovery ownership at {}",
+                            recovery_path.display()
+                        ));
+                    }
+                }
+            }
+        };
+        debug_assert_eq!(
+            paused_state.full_state_checkpoint.as_deref(),
+            Some(checkpoint.id.as_str())
+        );
+        crate::metrics::record_sandbox_lifecycle(
+            "paused",
+            "firecracker",
+            pause_start.elapsed().as_secs_f64(),
+        );
+        Ok(checkpoint)
+    }
+
+    /// Resume a paused Firecracker sandbox from its durable checkpoint.
+    pub async fn resume(&mut self, name: &str) -> Result<()> {
+        self.resume_impl(name, false).await
+    }
+
+    pub(crate) async fn resume_authorized(&mut self, name: &str) -> Result<()> {
+        self.resume_impl(name, true).await
+    }
+
+    async fn resume_impl(&mut self, name: &str, _policy_prechecked: bool) -> Result<()> {
+        let resume_start = std::time::Instant::now();
+        validation::validate_sandbox_name(name)?;
+        let state = self
+            .sandboxes
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        let backend = state.backend.unwrap_or(self.backend);
+        if backend != BackendType::Firecracker {
+            bail!(
+                "Backend '{}' does not support full-state pause/resume; Firecracker on Linux/KVM is required",
+                backend
+            );
+        }
+        if state.paused_at.is_none() {
+            bail!("Sandbox '{}' is not paused", name);
+        }
+        if state.archived_at.is_some() || state.dormant_at.is_some() {
+            bail!(
+                "Sandbox '{}' is archived or dormant; recover it before resuming",
+                name
+            );
+        }
+        let checkpoint_id = state
+            .full_state_checkpoint
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' has no full-state checkpoint", name))?;
+        if state.proxy_port.is_some() || !state.secret_bindings.is_empty() {
+            bail!(
+                "Sandbox '{}' requires host-side proxy rehydration, which full-state resume does not yet support",
+                name
+            );
+        }
+
+        #[cfg(feature = "enterprise")]
+        if !_policy_prechecked {
+            self.check_enterprise_policy(crate::policy::Action::Run, name, "unknown", &state.image)
+                .await?;
+        }
+
+        if let Some(running_state) = self.resume_state_recovery.get(name).cloned() {
+            if !self
+                .running
+                .get(name)
+                .is_some_and(|sandbox| sandbox.is_running())
+            {
+                bail!(
+                    "Sandbox '{}' no longer has a confirmed-live runtime for its pending resume-state recovery; remove it before retrying",
+                    name
+                );
+            }
+            self.save_sandbox(&running_state).with_context(|| {
+                format!("failed to retry running-state publication for sandbox '{name}'")
+            })?;
+            self.sandboxes.insert(name.to_string(), running_state);
+            self.resume_state_recovery.remove(name);
+            self.reconcile_full_state_cleanup();
+            log_event(AuditEvent::SandboxStarted {
+                name: name.to_string(),
+                profile: Some("full-state-resume-metadata-recovery".to_string()),
+            });
+            crate::metrics::record_sandbox_lifecycle(
+                "resumed",
+                "firecracker",
+                resume_start.elapsed().as_secs_f64(),
+            );
+            return Ok(());
+        }
+        if self.running.contains_key(name) {
+            bail!("Sandbox '{}' is already running", name);
+        }
+
+        let store = FullStateCheckpointStore::new(&self.data_dir)?;
+        if let Some(mut recovery) = self.pause_recovery.remove(name) {
+            if let Some(snapshot) = recovery.completed_snapshot.clone() {
+                if let Some(mut sandbox) = recovery.sandbox.take()
+                    && let Err(error) = sandbox.stop().await
+                {
+                    let termination_confirmed = error
+                        .downcast_ref::<FullStateTerminationError>()
+                        .is_some_and(|failure| !failure.process_may_be_running);
+                    if !termination_confirmed {
+                        recovery.sandbox = Some(sandbox);
+                        self.pause_recovery.insert(name.to_string(), recovery);
+                        return Err(error).with_context(|| {
+                            format!(
+                                "failed to confirm termination of recovery-pending sandbox '{name}'; retry resume or remove"
+                            )
+                        });
+                    }
+                    eprintln!(
+                        "Warning: source termination was confirmed during recovery, but runtime cleanup failed: {error:#}"
+                    );
+                }
+
+                let staging = match store.open_staging(checkpoint_id) {
+                    Ok(staging) => staging,
+                    Err(error) => {
+                        self.pause_recovery.insert(name.to_string(), recovery);
+                        return Err(error).with_context(|| {
+                            format!(
+                                "failed to reopen completed checkpoint staging for sandbox '{name}'"
+                            )
+                        });
+                    }
+                };
+                let marker_error = store
+                    .mark_recovery_ready(
+                        &staging,
+                        name,
+                        state.vcpus,
+                        state.memory_mb,
+                        snapshot.clone(),
+                    )
+                    .err();
+                if let Err(error) =
+                    store.commit(&staging, name, state.vcpus, state.memory_mb, snapshot)
+                {
+                    let marker_context = marker_error.as_ref().map_or(String::new(), |marker| {
+                        format!("; recovery-ready marker also failed: {marker:#}")
+                    });
+                    self.pause_recovery.insert(name.to_string(), recovery);
+                    return Err(error).context(format!(
+                        "failed to publish completed checkpoint for sandbox '{name}'{marker_context}; safe staging remains at {}",
+                        staging.path().display()
+                    ));
+                }
+            } else {
+                let Some(mut sandbox) = recovery.sandbox.take() else {
+                    self.pause_recovery.insert(name.to_string(), recovery);
+                    bail!(
+                        "Sandbox '{}' has invalid partial recovery ownership without a source runtime",
+                        name
+                    );
+                };
+                if let Err(error) = sandbox.retry_full_state_resume().await {
+                    recovery.sandbox = Some(sandbox);
+                    self.pause_recovery.insert(name.to_string(), recovery);
+                    return Err(error).with_context(|| {
+                        format!("failed to resume recovery-pending sandbox '{name}' in place")
+                    });
+                }
+
+                let mut running_state = state.clone();
+                running_state.full_state_checkpoint = None;
+                if !running_state
+                    .full_state_cleanup_pending
+                    .iter()
+                    .any(|id| id == checkpoint_id)
+                {
+                    running_state
+                        .full_state_cleanup_pending
+                        .push(checkpoint_id.to_string());
+                }
+                running_state.paused_at = None;
+                running_state.last_activity_at = Some(chrono::Utc::now().to_rfc3339());
+                if let Err(error) = self.save_sandbox(&running_state) {
+                    self.running.insert(name.to_string(), sandbox);
+                    self.resume_state_recovery
+                        .insert(name.to_string(), running_state);
+                    return Err(error).context(format!(
+                        "sandbox '{name}' resumed in place, but its running state could not be persisted; the runtime and desired metadata remain under recovery ownership, and diagnostic artifacts remain at {}; call resume to retry metadata publication",
+                        recovery.staging_path.display()
+                    ));
+                }
+                self.running.insert(name.to_string(), sandbox);
+                self.sandboxes.insert(name.to_string(), running_state);
+                self.reconcile_full_state_cleanup();
+                log_event(AuditEvent::SandboxStarted {
+                    name: name.to_string(),
+                    profile: Some("full-state-in-place-recovery".to_string()),
+                });
+                crate::metrics::record_sandbox_lifecycle(
+                    "resumed",
+                    "firecracker",
+                    resume_start.elapsed().as_secs_f64(),
+                );
+                return Ok(());
+            }
+        }
+
+        let (checkpoint, checkpoint_path) = if store.contains(checkpoint_id)? {
+            store.load(checkpoint_id)?
+        } else {
+            let staging_path = store.staging_path(checkpoint_id)?;
+            if staging_path.is_dir() {
+                if store.recovery_is_ready(checkpoint_id)? {
+                    store
+                        .recover_ready(checkpoint_id, name, state.vcpus, state.memory_mb)
+                        .with_context(|| {
+                            format!(
+                                "failed to publish recovery-ready checkpoint for sandbox '{name}'"
+                            )
+                        })?
+                } else {
+                    bail!(
+                        "Sandbox '{}' has an interrupted pause transition at {} that cannot be restored automatically; keep these artifacts for operator recovery",
+                        name,
+                        staging_path.display()
+                    );
+                }
+            } else {
+                bail!(
+                    "Sandbox '{}' references missing full-state checkpoint '{}'",
+                    name,
+                    checkpoint_id
+                );
+            }
+        };
+        if checkpoint.source_sandbox != name {
+            bail!(
+                "Sandbox '{}' references checkpoint '{}' owned by sandbox '{}'",
+                name,
+                checkpoint.id,
+                checkpoint.source_sandbox
+            );
+        }
+        if checkpoint.vcpus != state.vcpus || checkpoint.memory_mb != state.memory_mb {
+            bail!(
+                "Sandbox '{}' resources no longer match its checkpoint",
+                name
+            );
+        }
+        let mut sandbox = create_sandbox(BackendType::Firecracker, name)?;
+        if let Err(error) = sandbox
+            .restore_from(&checkpoint_path, &checkpoint.backend_snapshot)
+            .await
+        {
+            if runtime_may_survive_failed_stop(&error, sandbox.is_running()) {
+                self.pause_recovery.insert(
+                    name.to_string(),
+                    PendingFullStateRecovery {
+                        sandbox: Some(sandbox),
+                        staging_path: checkpoint_path.clone(),
+                        completed_snapshot: None,
+                    },
+                );
+                return Err(error).context(format!(
+                    "failed to resume sandbox '{name}', and restore cleanup could not prove the new VMM exited; it remains under recovery ownership while the durable checkpoint stays paused; call resume to retry in place or remove to abandon it"
+                ));
+            }
+            return Err(error).with_context(|| format!("failed to resume sandbox '{name}'"));
+        }
+
+        let mut running_state = state.clone();
+        running_state.full_state_checkpoint = None;
+        if !running_state
+            .full_state_cleanup_pending
+            .iter()
+            .any(|id| id == checkpoint_id)
+        {
+            running_state
+                .full_state_cleanup_pending
+                .push(checkpoint_id.to_string());
+        }
+        running_state.paused_at = None;
+        running_state.last_activity_at = Some(chrono::Utc::now().to_rfc3339());
+        running_state.labels.insert(
+            "agentkernel.full-state-lineage".to_string(),
+            "true".to_string(),
+        );
+        running_state.full_state_lineage = true;
+        if let Err(error) = self.save_sandbox(&running_state) {
+            if let Err(stop_error) = sandbox.stop().await {
+                if runtime_may_survive_failed_stop(&stop_error, sandbox.is_running()) {
+                    // Fail closed: retain ownership of an ambiguously live
+                    // runtime, but keep the persisted paused state and its
+                    // checkpoint visible for operator recovery.
+                    self.running.insert(name.to_string(), sandbox);
+                    self.resume_state_recovery
+                        .insert(name.to_string(), running_state);
+                    return Err(error).context(format!(
+                        "failed to persist resumed state and failed to stop the restored runtime ({stop_error:#}); an ambiguously live runtime and its desired metadata remain under recovery ownership while the sandbox stays conservatively paused; call resume to retry metadata publication"
+                    ));
+                }
+                return Err(error).context(format!(
+                    "failed to persist resumed state; the restored runtime exited, but cleanup also failed ({stop_error:#}); the checkpoint remains available"
+                ));
+            }
+            return Err(error).context(
+                "failed to persist resumed state; restored runtime was stopped and the checkpoint remains available",
+            );
+        }
+
+        self.sandboxes.insert(name.to_string(), running_state);
+        self.running.insert(name.to_string(), sandbox);
+        self.reconcile_full_state_cleanup();
+        log_event(AuditEvent::SandboxStarted {
+            name: name.to_string(),
+            profile: Some("full-state-resume".to_string()),
+        });
+        crate::metrics::record_sandbox_lifecycle(
+            "resumed",
+            "firecracker",
+            resume_start.elapsed().as_secs_f64(),
+        );
+        Ok(())
+    }
+
+    /// Fork a paused Firecracker sandbox into a running child.
+    pub async fn fork_sandbox(&mut self, source: &str, child: &str) -> Result<()> {
+        self.fork_sandbox_impl(source, child, false).await
+    }
+
+    pub(crate) async fn fork_sandbox_authorized(
+        &mut self,
+        source: &str,
+        child: &str,
+    ) -> Result<()> {
+        self.fork_sandbox_impl(source, child, true).await
+    }
+
+    async fn fork_sandbox_impl(
+        &mut self,
+        source: &str,
+        child: &str,
+        _policy_prechecked: bool,
+    ) -> Result<()> {
+        let fork_start = std::time::Instant::now();
+        validation::validate_sandbox_name(source)?;
+        validation::validate_sandbox_name(child)?;
+        if source == child {
+            bail!("Fork child name must differ from the source sandbox");
+        }
+        if self.sandboxes.contains_key(child) {
+            bail!("Sandbox '{}' already exists", child);
+        }
+        if self.pause_recovery.contains_key(source)
+            || self.resume_state_recovery.contains_key(source)
+        {
+            bail!(
+                "Sandbox '{}' has pending full-state recovery; resume or remove it before forking",
+                source
+            );
+        }
+        let source_state = self
+            .sandboxes
+            .get(source)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", source))?;
+        let backend = source_state.backend.unwrap_or(self.backend);
+        if backend != BackendType::Firecracker {
+            bail!(
+                "Backend '{}' does not support full-state fork; Firecracker on Linux/KVM is required",
+                backend
+            );
+        }
+        if source_state.paused_at.is_none() {
+            bail!(
+                "Sandbox '{}' must be paused before it can be forked",
+                source
+            );
+        }
+        if source_state.archived_at.is_some() || source_state.dormant_at.is_some() {
+            bail!(
+                "Sandbox '{}' is archived or dormant; recover it before forking",
+                source
+            );
+        }
+        if source_state.proxy_port.is_some() || !source_state.secret_bindings.is_empty() {
+            bail!(
+                "Sandbox '{}' uses a host-side proxy whose live state cannot yet be forked",
+                source
+            );
+        }
+        let checkpoint_id = source_state
+            .full_state_checkpoint
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' has no full-state checkpoint", source))?;
+
+        #[cfg(feature = "enterprise")]
+        if !_policy_prechecked {
+            self.check_enterprise_policy(
+                crate::policy::Action::Run,
+                source,
+                "unknown",
+                &source_state.image,
+            )
+            .await?;
+            self.check_enterprise_policy(
+                crate::policy::Action::Create,
+                child,
+                "unknown",
+                &source_state.image,
+            )
+            .await?;
+            self.check_enterprise_policy(
+                crate::policy::Action::Run,
+                child,
+                "unknown",
+                &source_state.image,
+            )
+            .await?;
+        }
+
+        let store = FullStateCheckpointStore::new(&self.data_dir)?;
+        let (checkpoint, checkpoint_path) = if store.contains(checkpoint_id)? {
+            store.load(checkpoint_id)?
+        } else {
+            let staging_path = store.staging_path(checkpoint_id)?;
+            if staging_path.is_dir() && store.recovery_is_ready(checkpoint_id)? {
+                store
+                    .recover_ready(
+                        checkpoint_id,
+                        source,
+                        source_state.vcpus,
+                        source_state.memory_mb,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "failed to publish recovery-ready checkpoint for sandbox '{source}'"
+                        )
+                    })?
+            } else {
+                bail!(
+                    "Sandbox '{}' has no published, recovery-ready full-state checkpoint",
+                    source
+                );
+            }
+        };
+        if checkpoint.source_sandbox != source {
+            bail!(
+                "Sandbox '{}' references checkpoint '{}' owned by sandbox '{}'",
+                source,
+                checkpoint.id,
+                checkpoint.source_sandbox
+            );
+        }
+        if checkpoint.vcpus != source_state.vcpus || checkpoint.memory_mb != source_state.memory_mb
+        {
+            bail!(
+                "Sandbox '{}' resources no longer match its checkpoint",
+                source
+            );
+        }
+        let now = chrono::Utc::now();
+        let mut child_state = source_state.clone();
+        child_state.name = child.to_string();
+        child_state.uuid = uuid::Uuid::now_v7().to_string();
+        child_state.vsock_cid = self.next_cid;
+        self.next_cid += 1;
+        child_state.created_at = now.to_rfc3339();
+        child_state.expires_at = child_state
+            .ttl_seconds
+            .map(|ttl| (now + chrono::Duration::seconds(ttl as i64)).to_rfc3339());
+        child_state.remote_id = None;
+        child_state.remote_namespace = None;
+        child_state.remote_metadata.clear();
+        child_state.workspace_revision = None;
+        child_state.endpoints.clear();
+        child_state.work_dir = None;
+        child_state.container_work_dir = None;
+        child_state.git_worktree = None;
+        child_state.ports.clear();
+        child_state.ssh_enabled = false;
+        child_state.ssh_host_port = None;
+        child_state.volumes.clear();
+        child_state.proxy_port = None;
+        child_state.full_state_checkpoint = None;
+        child_state.paused_at = None;
+        child_state.forked_from = Some(source.to_string());
+        child_state.archived_at = None;
+        child_state.archived_reason = None;
+        child_state.dormant_at = None;
+        child_state.dormant_reason = None;
+        child_state.last_activity_at = Some(now.to_rfc3339());
+        child_state
+            .labels
+            .insert("agentkernel.forked-from".to_string(), source.to_string());
+        child_state.labels.insert(
+            "agentkernel.full-state-lineage".to_string(),
+            "true".to_string(),
+        );
+        child_state.full_state_lineage = true;
+
+        let mut sandbox = create_sandbox(BackendType::Firecracker, child)?;
+        if let Err(error) = sandbox
+            .restore_from(&checkpoint_path, &checkpoint.backend_snapshot)
+            .await
+        {
+            if runtime_may_survive_failed_stop(&error, sandbox.is_running()) {
+                let persistence_error = self.save_sandbox(&child_state).err();
+                self.sandboxes
+                    .insert(child.to_string(), child_state.clone());
+                self.pause_recovery.insert(
+                    child.to_string(),
+                    PendingFullStateRecovery {
+                        sandbox: Some(sandbox),
+                        // This is diagnostic ownership only. The published
+                        // source checkpoint is never consumed by child removal.
+                        staging_path: checkpoint_path.clone(),
+                        completed_snapshot: None,
+                    },
+                );
+                crate::metrics::inc_active_sandboxes();
+                let persistence_context =
+                    persistence_error.as_ref().map_or(String::new(), |persist| {
+                        format!("; transitional child state also failed to persist: {persist:#}")
+                    });
+                return Err(error).context(format!(
+                    "failed to restore fork '{child}' from sandbox '{source}', and cleanup could not prove the child VMM exited{persistence_context}; the child remains under recovery ownership and must be removed before retrying"
+                ));
+            }
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to restore fork '{}' from sandbox '{}'",
+                    child, source
+                )
+            });
+        }
+
+        // Publish a normal child only after its runtime has restored. If the
+        // atomic state write fails, stop the unadvertised runtime so callers
+        // never observe a persisted fork that did not actually start.
+        if let Err(error) = self.save_sandbox(&child_state) {
+            if let Err(stop_error) = sandbox.stop().await {
+                if runtime_may_survive_failed_stop(&stop_error, sandbox.is_running()) {
+                    self.sandboxes
+                        .insert(child.to_string(), child_state.clone());
+                    self.running.insert(child.to_string(), sandbox);
+                    crate::metrics::inc_active_sandboxes();
+                    return Err(error).context(format!(
+                        "failed to persist restored fork '{}'; failed to stop an ambiguously live runtime ({stop_error:#}), so it remains under manager ownership and must be explicitly removed",
+                        child
+                    ));
+                }
+                return Err(error).context(format!(
+                    "failed to persist restored fork '{}'; its runtime exited, but cleanup also failed ({stop_error:#})",
+                    child
+                ));
+            }
+            return Err(error)
+                .with_context(|| format!("failed to persist restored fork '{child}'"));
+        }
+        self.sandboxes
+            .insert(child.to_string(), child_state.clone());
+        self.running.insert(child.to_string(), sandbox);
+
+        log_event(AuditEvent::SandboxCreated {
+            name: child.to_string(),
+            image: child_state.image.clone(),
+            backend: "firecracker".to_string(),
+            labels: child_state.labels.clone(),
+        });
+        log_event(AuditEvent::SandboxStarted {
+            name: child.to_string(),
+            profile: Some(format!("fork-of:{source}")),
+        });
+        crate::metrics::inc_active_sandboxes();
+        crate::metrics::record_sandbox_lifecycle(
+            "forked",
+            "firecracker",
+            fork_start.elapsed().as_secs_f64(),
+        );
+        Ok(())
+    }
+
     /// Stop a sandbox
     pub async fn stop(&mut self, name: &str) -> Result<()> {
         let stop_start = std::time::Instant::now();
@@ -3133,6 +4299,18 @@ impl VmManager {
             .get(name)
             .and_then(|state| state.backend)
             .unwrap_or(self.backend);
+        if backend == BackendType::Firecracker
+            && self.running.contains_key(name)
+            && self
+                .sandboxes
+                .get(name)
+                .is_some_and(|state| state.full_state_lineage)
+        {
+            bail!(
+                "Refusing to stop full-state Firecracker sandbox '{}': ordinary stop would discard its writable disk; use full-state pause to preserve it or remove to discard it",
+                name
+            );
+        }
         if let Err(e) = self.hydrate_remote_runtime(name) {
             eprintln!(
                 "Warning: failed to hydrate remote runtime for '{}': {}",
@@ -3143,8 +4321,19 @@ impl VmManager {
         if let Some(handle) = PROXY_HANDLES.write().await.remove(name) {
             let _ = handle.shutdown_tx.send(());
         }
+        // A recovery-pending source is already paused. Keep its exact backend
+        // handle alive so `resume` can retry in place; `remove` is the explicit
+        // operation that abandons it.
+        if self.pause_recovery.contains_key(name) || self.resume_state_recovery.contains_key(name) {
+            return Ok(());
+        }
         if let Some(mut sandbox) = self.running.remove(name) {
-            sandbox.stop().await?;
+            if let Err(error) = sandbox.stop().await {
+                if runtime_may_survive_failed_stop(&error, sandbox.is_running()) {
+                    self.running.insert(name.to_string(), sandbox);
+                }
+                return Err(error).with_context(|| format!("failed to stop sandbox '{name}'"));
+            }
             if let Some(metadata) = sandbox.runtime_metadata()
                 && let Some(state) = self.sandboxes.get_mut(name)
             {
@@ -3189,7 +4378,17 @@ impl VmManager {
         #[cfg(not(test))]
         let bypass_backend_runtime = false;
 
-        if let Some(mut sandbox) = self.running.remove(name) {
+        if let Some(mut recovery) = self.pause_recovery.remove(name) {
+            if let Some(mut sandbox) = recovery.sandbox.take()
+                && let Err(error) = sandbox.remove().await
+            {
+                recovery.sandbox = Some(sandbox);
+                self.pause_recovery.insert(name.to_string(), recovery);
+                return Err(error).with_context(|| {
+                    format!("failed to abandon recovery-pending sandbox '{name}'")
+                });
+            }
+        } else if let Some(mut sandbox) = self.running.remove(name) {
             if let Err(error) = sandbox.remove().await {
                 self.running.insert(name.to_string(), sandbox);
                 return Err(error).with_context(|| format!("failed to remove sandbox '{name}'"));
@@ -3217,14 +4416,34 @@ impl VmManager {
                 .with_context(|| format!("failed to clean up Git worktree for sandbox '{name}'"));
         }
 
-        if let Some(state) = self.sandboxes.get(name)
-            && let Some(network) = state.managed_network.as_ref()
-        {
-            crate::backend::NetworkAllocator::new(self.data_dir.clone()).release(name, network)?;
+        if let Some(state) = self.sandboxes.get(name).cloned() {
+            if let Some(network) = state.managed_network.as_ref() {
+                crate::backend::NetworkAllocator::new(self.data_dir.clone())
+                    .release(name, network)?;
+            }
+
+            let mut checkpoint_ids = state.full_state_cleanup_pending;
+            if let Some(checkpoint_id) = state.full_state_checkpoint {
+                checkpoint_ids.push(checkpoint_id);
+            }
+            checkpoint_ids.sort();
+            checkpoint_ids.dedup();
+            if !checkpoint_ids.is_empty() {
+                let store = FullStateCheckpointStore::new(&self.data_dir)?;
+                for checkpoint_id in checkpoint_ids {
+                    Self::delete_full_state_artifacts(&store, &checkpoint_id).with_context(|| {
+                        format!(
+                            "failed to delete full-state artifacts '{}' for sandbox '{}' after its runtime was removed; retry removal to finish cleanup",
+                            checkpoint_id, name
+                        )
+                    })?;
+                }
+            }
         }
 
         self.delete_sandbox(name)?;
         self.sandboxes.remove(name);
+        self.resume_state_recovery.remove(name);
 
         log_event(AuditEvent::SandboxRemoved {
             name: name.to_string(),
@@ -3360,11 +4579,11 @@ impl VmManager {
                         if self.is_running(&decision.sandbox) {
                             self.stop(&decision.sandbox).await?;
                         }
-                        if let Some(state) = self.sandboxes.get_mut(&decision.sandbox) {
+                        if let Some(mut state) = self.sandboxes.get(&decision.sandbox).cloned() {
                             state.archived_at = Some(now.to_rfc3339());
                             state.archived_reason = Some(decision.reason.clone());
-                            let snapshot = state.clone();
-                            self.save_sandbox(&snapshot)?;
+                            self.save_sandbox(&state)?;
+                            self.sandboxes.insert(decision.sandbox.clone(), state);
                         }
                     }
                     result.archived.push(decision.sandbox);
@@ -3427,17 +4646,13 @@ impl VmManager {
         self.sandboxes
             .iter()
             .map(|(name, state)| {
-                let running = self
-                    .running
-                    .get(name)
-                    .map(|s| s.is_running())
-                    .unwrap_or_else(|| {
-                        state.backend.is_some_and(|backend| backend.is_remote())
-                            && state
-                                .remote_metadata
-                                .get("last_known_status")
-                                .is_some_and(|value| value == "running")
-                    });
+                let running = self.is_running(name) || {
+                    state.backend.is_some_and(|backend| backend.is_remote())
+                        && state
+                            .remote_metadata
+                            .get("last_known_status")
+                            .is_some_and(|value| value == "running")
+                };
                 (name.as_str(), running, state.backend)
             })
             .collect()
@@ -3448,13 +4663,103 @@ impl VmManager {
         self.sandboxes.contains_key(name)
     }
 
+    /// Import a sandbox that another AgentKernel process persisted after this
+    /// manager started.
+    ///
+    /// The long-lived HTTP service uses this narrow refresh path when a CLI
+    /// creates a Firecracker sandbox and then delegates runtime ownership to
+    /// the service. Existing entries are never overwritten, so live runtime
+    /// state cannot be replaced by a stale file.
+    pub fn refresh_sandbox_if_missing(&mut self, name: &str) -> Result<bool> {
+        validation::validate_sandbox_name(name)?;
+        if self.sandboxes.contains_key(name) {
+            return Ok(false);
+        }
+
+        let Some(mut state) = self.read_persisted_sandbox(name)? else {
+            return Ok(false);
+        };
+        if state.uuid.is_empty() {
+            state.uuid = uuid::Uuid::now_v7().to_string();
+            self.save_sandbox(&state)?;
+        }
+        self.sandboxes.insert(name.to_string(), state);
+        Ok(true)
+    }
+
+    /// Reload a persisted sandbox only when no runtime or recovery transition
+    /// is owned by this manager. This is the second half of the CLI-to-daemon
+    /// start handoff: a one-shot manifest binds the exact disk state, then the
+    /// daemon atomically adopts that final configuration before starting it.
+    pub fn refresh_stopped_sandbox_from_disk(&mut self, name: &str) -> Result<bool> {
+        validation::validate_sandbox_name(name)?;
+        if self.running.contains_key(name)
+            || self.pause_recovery.contains_key(name)
+            || self.resume_state_recovery.contains_key(name)
+        {
+            bail!(
+                "Sandbox '{}' owns a runtime or full-state recovery and cannot be refreshed from disk",
+                name
+            );
+        }
+        let Some(state) = self.read_persisted_sandbox(name)? else {
+            return Ok(false);
+        };
+        if state.uuid.is_empty() {
+            bail!("persisted sandbox '{}' has no generation UUID", name);
+        }
+        if let Some(current) = self.sandboxes.get(name)
+            && current.uuid != state.uuid
+        {
+            bail!(
+                "sandbox generation changed while refreshing '{}': daemon={}, disk={}",
+                name,
+                current.uuid,
+                state.uuid
+            );
+        }
+        self.sandboxes.insert(name.to_string(), state);
+        Ok(true)
+    }
+
+    fn read_persisted_sandbox(&self, name: &str) -> Result<Option<SandboxState>> {
+        let path = self.data_dir.join("sandboxes").join(format!("{name}.json"));
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to read sandbox state {}", path.display()));
+            }
+        };
+        let state: SandboxState = serde_json::from_str(&contents)
+            .with_context(|| format!("failed to parse sandbox state {}", path.display()))?;
+        if state.name != name {
+            bail!(
+                "sandbox state identity mismatch: requested '{}' but {} contains '{}'",
+                name,
+                path.display(),
+                state.name
+            );
+        }
+        Ok(Some(state))
+    }
+
     /// Get the backend type for a sandbox (from stored state or current default)
     /// Check if a sandbox is currently running
     pub fn is_running(&self, name: &str) -> bool {
         self.running
             .get(name)
             .map(|s| s.is_running())
-            .unwrap_or_else(|| {
+            .unwrap_or(false)
+            || self
+                .pause_recovery
+                .get(name)
+                .and_then(|recovery| recovery.sandbox.as_ref())
+                // A recovery-owned handle is charged conservatively: its
+                // typed cleanup failure means termination is not yet proved.
+                .is_some()
+            || {
                 self.sandboxes.get(name).is_some_and(|state| {
                     state.backend.is_some_and(|backend| backend.is_remote())
                         && state
@@ -3462,19 +4767,32 @@ impl VmManager {
                             .get("last_known_status")
                             .is_some_and(|value| value == "running")
                 })
-            })
+            }
     }
 
     /// Update persisted sandbox resource values without recreating.
     pub fn update_resources(&mut self, name: &str, vcpus: u32, memory_mb: u64) -> Result<()> {
-        let state = self
+        if self.pause_recovery.contains_key(name) || self.resume_state_recovery.contains_key(name) {
+            bail!(
+                "Sandbox '{}' has a pending full-state recovery; resume or remove it before changing resources",
+                name
+            );
+        }
+        let mut state = self
             .sandboxes
-            .get_mut(name)
+            .get(name)
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
+        if state.paused_at.is_some() || state.full_state_checkpoint.is_some() {
+            bail!(
+                "Sandbox '{}' is paused with a full-state checkpoint; resume or remove it before changing resources",
+                name
+            );
+        }
         state.vcpus = vcpus;
         state.memory_mb = memory_mb;
-        let snapshot = state.clone();
-        self.save_sandbox(&snapshot)?;
+        self.save_sandbox(&state)?;
+        self.sandboxes.insert(name.to_string(), state);
         Ok(())
     }
 
@@ -3809,6 +5127,7 @@ mod tests {
     use super::*;
     use crate::backend::ExecResult;
     use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     #[test]
@@ -3861,6 +5180,11 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            full_state_checkpoint: None,
+            full_state_cleanup_pending: Vec::new(),
+            full_state_lineage: false,
+            paused_at: None,
+            forked_from: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -3880,13 +5204,24 @@ mod tests {
             "created_at": "2024-01-01T00:00:00Z"
         }"#;
 
-        let state: SandboxState = serde_json::from_str(json).unwrap();
+        let mut state: SandboxState = serde_json::from_str(json).unwrap();
         assert_eq!(state.name, "my-sandbox");
         assert_eq!(state.image, "python:3.12-alpine");
         assert_eq!(state.vcpus, 4);
         assert_eq!(state.memory_mb, 2048);
         assert_eq!(state.vsock_cid, 10);
         assert!(!state.post_create_completed);
+        assert!(state.full_state_checkpoint.is_none());
+        assert!(state.full_state_cleanup_pending.is_empty());
+        assert!(!state.full_state_lineage);
+        assert!(state.paused_at.is_none());
+        assert!(state.forked_from.is_none());
+        assert_eq!(state.status(false), "stopped");
+
+        state.full_state_checkpoint = Some("checkpoint-id".to_string());
+        state.paused_at = Some("2026-08-23T00:00:00Z".to_string());
+        assert_eq!(state.status(false), "paused");
+        assert_eq!(state.status(true), "paused");
     }
 
     #[test]
@@ -3987,6 +5322,11 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            full_state_checkpoint: None,
+            full_state_cleanup_pending: Vec::new(),
+            full_state_lineage: false,
+            paused_at: None,
+            forked_from: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -4074,6 +5414,11 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            full_state_checkpoint: None,
+            full_state_cleanup_pending: Vec::new(),
+            full_state_lineage: false,
+            paused_at: None,
+            forked_from: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         std::fs::write(temp_dir.path().join("loaded-sandbox.json"), &json).unwrap();
@@ -4177,6 +5522,11 @@ mod tests {
                 dormant_at: None,
                 dormant_reason: None,
                 lifecycle_policy: None,
+                full_state_checkpoint: None,
+                full_state_cleanup_pending: Vec::new(),
+                full_state_lineage: false,
+                paused_at: None,
+                forked_from: None,
             };
             let json = serde_json::to_string(&state).unwrap();
             std::fs::write(temp_dir.path().join(format!("{}.json", name)), &json).unwrap();
@@ -4207,6 +5557,8 @@ mod tests {
             bypass_backend_runtime: false,
             backend: BackendType::Docker,
             running: HashMap::new(),
+            pause_recovery: HashMap::new(),
+            resume_state_recovery: HashMap::new(),
             rootfs_dir: None,
             next_cid: 3,
             detached: HashMap::new(),
@@ -4263,6 +5615,11 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            full_state_checkpoint: None,
+            full_state_cleanup_pending: Vec::new(),
+            full_state_lineage: false,
+            paused_at: None,
+            forked_from: None,
         };
         std::fs::create_dir_all(temp_dir.path().join("sandboxes")).unwrap();
         manager.sandboxes.insert("label-test".to_string(), state);
@@ -4289,6 +5646,8 @@ mod tests {
             bypass_backend_runtime: false,
             backend: BackendType::Docker,
             running: HashMap::new(),
+            pause_recovery: HashMap::new(),
+            resume_state_recovery: HashMap::new(),
             rootfs_dir: None,
             next_cid: 3,
             detached: HashMap::new(),
@@ -4349,6 +5708,11 @@ mod tests {
                 dormant_at: None,
                 dormant_reason: None,
                 lifecycle_policy: None,
+                full_state_checkpoint: None,
+                full_state_cleanup_pending: Vec::new(),
+                full_state_lineage: false,
+                paused_at: None,
+                forked_from: None,
             };
             manager.sandboxes.insert(name.to_string(), state);
         }
@@ -4380,6 +5744,8 @@ mod tests {
             bypass_backend_runtime: false,
             backend: BackendType::Docker,
             running: HashMap::new(),
+            pause_recovery: HashMap::new(),
+            resume_state_recovery: HashMap::new(),
             rootfs_dir: None,
             next_cid: 3,
             detached: HashMap::new(),
@@ -4436,6 +5802,11 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            full_state_checkpoint: None,
+            full_state_cleanup_pending: Vec::new(),
+            full_state_lineage: false,
+            paused_at: None,
+            forked_from: None,
         };
         manager.sandboxes.insert("desc-test".to_string(), state);
 
@@ -4517,6 +5888,11 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            full_state_checkpoint: None,
+            full_state_cleanup_pending: Vec::new(),
+            full_state_lineage: false,
+            paused_at: None,
+            forked_from: None,
         };
 
         // Save to disk
@@ -4583,13 +5959,101 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            full_state_checkpoint: None,
+            full_state_cleanup_pending: Vec::new(),
+            full_state_lineage: false,
+            paused_at: None,
+            forked_from: None,
         }
+    }
+
+    #[test]
+    fn refresh_sandbox_imports_only_missing_persisted_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let state = lifecycle_state("created-by-cli");
+        let state_path = temp_dir
+            .path()
+            .join("sandboxes")
+            .join("created-by-cli.json");
+        std::fs::write(&state_path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+
+        assert!(
+            manager
+                .refresh_sandbox_if_missing("created-by-cli")
+                .unwrap()
+        );
+        assert_eq!(
+            manager.get_state("created-by-cli").unwrap().uuid,
+            state.uuid
+        );
+
+        let mut stale = state.clone();
+        stale.image = "should-not-overwrite-live-state".to_string();
+        std::fs::write(&state_path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();
+        assert!(
+            !manager
+                .refresh_sandbox_if_missing("created-by-cli")
+                .unwrap()
+        );
+        assert_eq!(
+            manager.get_state("created-by-cli").unwrap().image,
+            "alpine:3.24"
+        );
     }
 
     #[allow(dead_code)]
     struct TestSandbox {
         name: String,
         running: bool,
+    }
+
+    struct RecoverySandbox {
+        name: String,
+        running: bool,
+        stop_attempts: Option<Arc<AtomicUsize>>,
+        stop_failures_before_success: usize,
+    }
+
+    #[cfg(unix)]
+    #[derive(Clone, Copy)]
+    enum PauseRollbackMode {
+        Ordinary,
+        Partial,
+        Commit,
+        CommitAmbiguousRestore,
+    }
+
+    #[cfg(unix)]
+    struct PauseRollbackSandbox {
+        name: String,
+        running: bool,
+        state_directory: PathBuf,
+        mode: PauseRollbackMode,
+        stop_attempts: Option<Arc<AtomicUsize>>,
+    }
+
+    #[cfg(unix)]
+    impl PauseRollbackSandbox {
+        fn snapshot() -> FullStateSnapshot {
+            FullStateSnapshot {
+                firecracker_version: "1.16.1".to_string(),
+                architecture: std::env::consts::ARCH.to_string(),
+                host_kernel_release: "test-host-kernel".to_string(),
+                host_identity_sha256: "test-host".to_string(),
+                cpu_fingerprint_sha256: "test-cpu".to_string(),
+                guest_kernel_release: "6.18.45-agentkernel".to_string(),
+            }
+        }
+
+        fn block_state_writes(&self) -> Result<()> {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = std::fs::metadata(&self.state_directory)?.permissions();
+            permissions.set_mode(0o500);
+            std::fs::set_permissions(&self.state_directory, permissions)?;
+            Ok(())
+        }
     }
 
     #[async_trait]
@@ -4635,6 +6099,736 @@ mod tests {
         async fn mkdir_unchecked(&mut self, _path: &str, _recursive: bool) -> Result<()> {
             Ok(())
         }
+    }
+
+    #[async_trait]
+    impl Sandbox for RecoverySandbox {
+        async fn start(&mut self, _config: &SandboxConfig) -> Result<()> {
+            self.running = true;
+            Ok(())
+        }
+
+        async fn exec(&mut self, _cmd: &[&str]) -> Result<ExecResult> {
+            Ok(ExecResult::success(String::new()))
+        }
+
+        async fn stop(&mut self) -> Result<()> {
+            if let Some(attempts) = &self.stop_attempts
+                && attempts.fetch_add(1, Ordering::SeqCst) < self.stop_failures_before_success
+            {
+                return Err(FullStateTerminationError {
+                    process_may_be_running: true,
+                    detail: "simulated ambiguous wait after kill".to_string(),
+                }
+                .into());
+            }
+            self.running = false;
+            Ok(())
+        }
+
+        async fn retry_full_state_resume(&mut self) -> Result<()> {
+            self.running = true;
+            Ok(())
+        }
+
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn backend_type(&self) -> BackendType {
+            BackendType::Firecracker
+        }
+
+        fn is_running(&self) -> bool {
+            self.running
+        }
+
+        async fn write_file_unchecked(&mut self, _path: &str, _content: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn read_file_unchecked(&mut self, _path: &str) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+
+        async fn remove_file_unchecked(&mut self, _path: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn mkdir_unchecked(&mut self, _path: &str, _recursive: bool) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    #[async_trait]
+    impl Sandbox for PauseRollbackSandbox {
+        async fn start(&mut self, _config: &SandboxConfig) -> Result<()> {
+            self.running = true;
+            Ok(())
+        }
+
+        async fn exec(&mut self, _cmd: &[&str]) -> Result<ExecResult> {
+            Ok(ExecResult::success(String::new()))
+        }
+
+        async fn stop(&mut self) -> Result<()> {
+            if let Some(attempts) = &self.stop_attempts {
+                attempts.fetch_add(1, Ordering::SeqCst);
+            }
+            self.running = false;
+            Ok(())
+        }
+
+        async fn pause_to(&mut self, checkpoint_dir: &Path) -> Result<FullStateSnapshot> {
+            match self.mode {
+                PauseRollbackMode::Ordinary => {
+                    self.block_state_writes()?;
+                    bail!("simulated ordinary snapshot failure")
+                }
+                PauseRollbackMode::Partial => {
+                    self.running = false;
+                    Err(FullStatePauseError::source_resume_failed(
+                        Self::snapshot(),
+                        false,
+                        "simulated partial snapshot failure",
+                        "simulated first resume failure",
+                    )
+                    .into())
+                }
+                PauseRollbackMode::Commit | PauseRollbackMode::CommitAmbiguousRestore => {
+                    std::fs::write(checkpoint_dir.join("memory.bin"), b"memory")?;
+                    std::fs::write(checkpoint_dir.join("vmstate.bin"), b"vmstate")?;
+                    std::fs::write(checkpoint_dir.join("rootfs.ext4"), b"rootfs")?;
+                    let staging_name = checkpoint_dir
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .context("missing checkpoint staging name")?;
+                    let checkpoint_id = staging_name
+                        .strip_prefix(".staging-")
+                        .context("invalid checkpoint staging name")?;
+                    std::fs::create_dir(checkpoint_dir.parent().unwrap().join(checkpoint_id))?;
+                    self.running = false;
+                    Ok(Self::snapshot())
+                }
+            }
+        }
+
+        async fn retry_full_state_resume(&mut self) -> Result<()> {
+            self.running = true;
+            self.block_state_writes()
+        }
+
+        async fn restore_from(
+            &mut self,
+            _checkpoint_dir: &Path,
+            _snapshot: &FullStateSnapshot,
+        ) -> Result<()> {
+            if matches!(self.mode, PauseRollbackMode::CommitAmbiguousRestore) {
+                self.running = false;
+                return Err(FullStateTerminationError {
+                    process_may_be_running: true,
+                    detail: "simulated ambiguous cleanup after rollback restore".to_string(),
+                }
+                .into());
+            }
+            self.running = true;
+            self.block_state_writes()
+        }
+
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn backend_type(&self) -> BackendType {
+            BackendType::Firecracker
+        }
+
+        fn is_running(&self) -> bool {
+            self.running
+        }
+
+        async fn write_file_unchecked(&mut self, _path: &str, _content: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn read_file_unchecked(&mut self, _path: &str) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+
+        async fn remove_file_unchecked(&mut self, _path: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn mkdir_unchecked(&mut self, _path: &str, _recursive: bool) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn insert_pause_recovery(manager: &mut VmManager, name: &str) -> PathBuf {
+        let store = FullStateCheckpointStore::new(&manager.data_dir).unwrap();
+        let staging = store.begin().unwrap();
+        let id = staging.id().to_string();
+        let staging_path = staging.preserve();
+        let mut state = lifecycle_state(name);
+        state.backend = Some(BackendType::Firecracker);
+        state.paused_at = Some(chrono::Utc::now().to_rfc3339());
+        state.full_state_checkpoint = Some(id);
+        manager.sandboxes.insert(name.to_string(), state);
+        manager.pause_recovery.insert(
+            name.to_string(),
+            PendingFullStateRecovery {
+                sandbox: Some(Box::new(RecoverySandbox {
+                    name: name.to_string(),
+                    running: false,
+                    stop_attempts: None,
+                    stop_failures_before_success: 0,
+                })),
+                staging_path: staging_path.clone(),
+                completed_snapshot: None,
+            },
+        );
+        staging_path
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn pause_recovery_owned_runtime_counts_toward_running_quota() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        insert_pause_recovery(&mut manager, "quota-recovery");
+
+        assert!(manager.is_running("quota-recovery"));
+        let subject = crate::quota::QuotaSubject {
+            user_id: "anonymous".to_string(),
+            org_id: "default".to_string(),
+        };
+        let quota = crate::quota::QuotaController::new(crate::config::ResourceQuotaConfig {
+            enabled: true,
+            default_limits: crate::config::ResourceQuotaLimits {
+                max_running_sandboxes: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        let status = quota.status(&manager, &subject);
+        assert_eq!(status.user.usage.running_sandboxes, 1);
+        let error = quota.check_create(&manager, &subject, 1, 512).unwrap_err();
+        assert!(error.to_string().contains("max_running_sandboxes"));
+    }
+
+    #[tokio::test]
+    async fn recovery_pending_resume_retries_live_source_and_cleans_staging() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let staging_path = insert_pause_recovery(&mut manager, "recover-live");
+
+        manager.resume("recover-live").await.unwrap();
+
+        assert!(manager.pause_recovery.is_empty());
+        assert!(manager.is_running("recover-live"));
+        assert!(!staging_path.exists());
+        let state = manager.get_state("recover-live").unwrap();
+        assert!(state.paused_at.is_none());
+        assert!(state.full_state_checkpoint.is_none());
+        assert!(state.full_state_cleanup_pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resumed_runtime_metadata_failure_is_retryable_without_a_second_vm() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let staging_path = insert_pause_recovery(&mut manager, "resume-metadata-retry");
+        let sandboxes_dir = temp_dir.path().join("sandboxes");
+        std::fs::remove_dir(&sandboxes_dir).unwrap();
+        std::fs::write(&sandboxes_dir, b"blocks state directory").unwrap();
+
+        let error = manager.resume("resume-metadata-retry").await.unwrap_err();
+        assert!(error.to_string().contains("could not be persisted"));
+        assert!(manager.is_running("resume-metadata-retry"));
+        assert!(
+            manager
+                .resume_state_recovery
+                .contains_key("resume-metadata-retry")
+        );
+        assert!(staging_path.exists());
+
+        #[cfg(feature = "enterprise")]
+        {
+            let quota = crate::quota::QuotaController::new(crate::config::ResourceQuotaConfig {
+                enabled: true,
+                default_limits: crate::config::ResourceQuotaLimits {
+                    max_running_sandboxes: Some(1),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            quota
+                .check_start(&manager, "resume-metadata-retry")
+                .expect("metadata recovery must not consume a second running slot");
+        }
+
+        std::fs::remove_file(&sandboxes_dir).unwrap();
+        std::fs::create_dir(&sandboxes_dir).unwrap();
+        manager.resume("resume-metadata-retry").await.unwrap();
+
+        assert!(manager.is_running("resume-metadata-retry"));
+        assert!(manager.resume_state_recovery.is_empty());
+        assert!(!staging_path.exists());
+        assert!(
+            manager
+                .get_state("resume-metadata-retry")
+                .unwrap()
+                .paused_at
+                .is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    async fn assert_failed_pause_rollback_is_metadata_retryable(
+        name: &str,
+        mode: PauseRollbackMode,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let state_directory = temp_dir.path().join("sandboxes");
+        let mut state = lifecycle_state(name);
+        state.backend = Some(BackendType::Firecracker);
+        manager.save_sandbox(&state).unwrap();
+        manager.sandboxes.insert(name.to_string(), state);
+        manager.running.insert(
+            name.to_string(),
+            Box::new(PauseRollbackSandbox {
+                name: name.to_string(),
+                running: true,
+                state_directory: state_directory.clone(),
+                mode,
+                stop_attempts: None,
+            }),
+        );
+
+        let error = manager.pause(name).await.unwrap_err();
+        assert!(error.to_string().contains("recovery ownership"));
+        assert!(manager.running.contains_key(name));
+        assert!(manager.resume_state_recovery.contains_key(name));
+        let paused = manager.get_state(name).unwrap();
+        assert!(paused.paused_at.is_some());
+        let checkpoint_id = paused.full_state_checkpoint.clone().unwrap();
+        let staging_path = FullStateCheckpointStore::new(&manager.data_dir)
+            .unwrap()
+            .staging_path(&checkpoint_id)
+            .unwrap();
+        assert!(staging_path.is_dir());
+
+        let persisted: SandboxState = serde_json::from_slice(
+            &std::fs::read(state_directory.join(format!("{name}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert!(persisted.paused_at.is_some());
+        assert_eq!(
+            persisted.full_state_checkpoint.as_deref(),
+            Some(checkpoint_id.as_str())
+        );
+
+        let mut permissions = std::fs::metadata(&state_directory).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&state_directory, permissions).unwrap();
+        manager.resume(name).await.unwrap();
+
+        assert!(manager.running.contains_key(name));
+        assert!(!manager.resume_state_recovery.contains_key(name));
+        assert!(!staging_path.exists());
+        let running = manager.get_state(name).unwrap();
+        assert!(running.paused_at.is_none());
+        assert!(running.full_state_checkpoint.is_none());
+        assert!(running.full_state_cleanup_pending.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ordinary_pause_failure_and_rollback_write_failure_retain_live_recovery() {
+        assert_failed_pause_rollback_is_metadata_retryable(
+            "ordinary-rollback-retry",
+            PauseRollbackMode::Ordinary,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn partial_pause_failure_and_rollback_write_failure_retain_live_recovery() {
+        assert_failed_pause_rollback_is_metadata_retryable(
+            "partial-rollback-retry",
+            PauseRollbackMode::Partial,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn commit_failure_and_rollback_write_failure_retain_live_recovery() {
+        assert_failed_pause_rollback_is_metadata_retryable(
+            "commit-rollback-retry",
+            PauseRollbackMode::Commit,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ambiguous_commit_rollback_retains_runtime_and_blocks_fork_until_reconciled() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let name = "ambiguous-commit-rollback";
+        let mut state = lifecycle_state(name);
+        state.backend = Some(BackendType::Firecracker);
+        manager.save_sandbox(&state).unwrap();
+        manager.sandboxes.insert(name.to_string(), state);
+        let stop_attempts = Arc::new(AtomicUsize::new(0));
+        manager.running.insert(
+            name.to_string(),
+            Box::new(PauseRollbackSandbox {
+                name: name.to_string(),
+                running: true,
+                state_directory: temp_dir.path().join("sandboxes"),
+                mode: PauseRollbackMode::CommitAmbiguousRestore,
+                stop_attempts: Some(Arc::clone(&stop_attempts)),
+            }),
+        );
+
+        let pause_error = manager.pause(name).await.unwrap_err();
+        assert!(pause_error.to_string().contains("failed to resume source"));
+        let recovery = manager.pause_recovery.get(name).unwrap();
+        assert!(recovery.sandbox.is_some());
+        assert!(recovery.completed_snapshot.is_some());
+
+        let fork_error = manager
+            .fork_sandbox(name, "unsafe-child")
+            .await
+            .unwrap_err();
+        assert!(
+            fork_error
+                .to_string()
+                .contains("pending full-state recovery")
+        );
+        assert!(!manager.sandboxes.contains_key("unsafe-child"));
+
+        let checkpoint_id = manager
+            .get_state(name)
+            .unwrap()
+            .full_state_checkpoint
+            .clone()
+            .unwrap();
+        std::fs::remove_dir(
+            manager
+                .data_dir
+                .join("full-state-checkpoints")
+                .join(&checkpoint_id),
+        )
+        .unwrap();
+
+        // Reconciliation must stop the retained possibly-live runtime before
+        // publishing the checkpoint. Loading then fails on the mock host
+        // fingerprint, leaving the source safely paused and reusable.
+        assert!(manager.resume(name).await.is_err());
+        assert_eq!(stop_attempts.load(Ordering::SeqCst), 1);
+        assert!(!manager.pause_recovery.contains_key(name));
+        assert!(
+            FullStateCheckpointStore::new(&manager.data_dir)
+                .unwrap()
+                .contains(&checkpoint_id)
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_recovery_reconfirms_termination_then_publishes() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let store = FullStateCheckpointStore::new(&manager.data_dir).unwrap();
+        let staging = store.begin().unwrap();
+        let checkpoint_id = staging.id().to_string();
+        std::fs::write(staging.path().join("memory.bin"), b"memory").unwrap();
+        std::fs::write(staging.path().join("vmstate.bin"), b"vmstate").unwrap();
+        std::fs::write(staging.path().join("rootfs.ext4"), b"rootfs").unwrap();
+        let staging_path = staging.preserve();
+
+        let mut state = lifecycle_state("complete-recovery");
+        state.backend = Some(BackendType::Firecracker);
+        state.paused_at = Some(chrono::Utc::now().to_rfc3339());
+        state.full_state_checkpoint = Some(checkpoint_id.clone());
+        manager
+            .sandboxes
+            .insert("complete-recovery".to_string(), state);
+
+        let stop_attempts = Arc::new(AtomicUsize::new(0));
+        manager.pause_recovery.insert(
+            "complete-recovery".to_string(),
+            PendingFullStateRecovery {
+                sandbox: Some(Box::new(RecoverySandbox {
+                    name: "complete-recovery".to_string(),
+                    running: false,
+                    stop_attempts: Some(Arc::clone(&stop_attempts)),
+                    stop_failures_before_success: 1,
+                })),
+                staging_path: staging_path.clone(),
+                completed_snapshot: Some(FullStateSnapshot {
+                    firecracker_version: "1.16.1".to_string(),
+                    architecture: "incompatible-test-architecture".to_string(),
+                    host_kernel_release: "test-host-kernel".to_string(),
+                    host_identity_sha256: "test-host".to_string(),
+                    cpu_fingerprint_sha256: "test-cpu".to_string(),
+                    guest_kernel_release: "6.18.45-agentkernel".to_string(),
+                }),
+            },
+        );
+
+        let first_error = manager.resume("complete-recovery").await.unwrap_err();
+        assert!(first_error.to_string().contains("confirm termination"));
+        assert!(staging_path.exists());
+        assert!(!store.contains(&checkpoint_id).unwrap());
+        assert!(manager.pause_recovery.contains_key("complete-recovery"));
+
+        // The second termination probe succeeds. Restore then fails at the
+        // deliberately incompatible architecture, proving publication
+        // happened before any VMM was allowed to load the checkpoint.
+        assert!(manager.resume("complete-recovery").await.is_err());
+        assert_eq!(stop_attempts.load(Ordering::SeqCst), 2);
+        assert!(!staging_path.exists());
+        assert!(store.contains(&checkpoint_id).unwrap());
+        assert!(!manager.pause_recovery.contains_key("complete-recovery"));
+    }
+
+    #[test]
+    fn pending_checkpoint_cleanup_is_retried_and_persistently_cleared() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let store = FullStateCheckpointStore::new(&manager.data_dir).unwrap();
+        let staging = store.begin().unwrap();
+        let checkpoint_id = staging.id().to_string();
+        let staging_path = staging.preserve();
+
+        let mut state = lifecycle_state("cleanup-retry");
+        state.full_state_cleanup_pending = vec![checkpoint_id];
+        manager.save_sandbox(&state).unwrap();
+        manager.sandboxes.insert("cleanup-retry".to_string(), state);
+
+        manager.reconcile_full_state_cleanup();
+
+        assert!(!staging_path.exists());
+        assert!(
+            manager
+                .get_state("cleanup-retry")
+                .unwrap()
+                .full_state_cleanup_pending
+                .is_empty()
+        );
+        let reloaded = VmManager::load_sandboxes(&temp_dir.path().join("sandboxes")).unwrap();
+        assert!(
+            reloaded["cleanup-retry"]
+                .full_state_cleanup_pending
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_recovery_pending_source_discards_live_handle_and_staging() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let staging_path = insert_pause_recovery(&mut manager, "remove-recovery");
+
+        manager.remove("remove-recovery").await.unwrap();
+
+        assert!(!manager.exists("remove-recovery"));
+        assert!(manager.pause_recovery.is_empty());
+        assert!(!staging_path.exists());
+    }
+
+    #[tokio::test]
+    async fn archived_or_dormant_paused_sandboxes_require_recovery_first() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+
+        let mut archived = lifecycle_state("archived-pause");
+        archived.backend = Some(BackendType::Firecracker);
+        archived.paused_at = Some(chrono::Utc::now().to_rfc3339());
+        archived.full_state_checkpoint = Some(uuid::Uuid::new_v4().to_string());
+        archived.archived_at = Some(chrono::Utc::now().to_rfc3339());
+        manager
+            .sandboxes
+            .insert("archived-pause".to_string(), archived);
+        let resume_error = manager.resume("archived-pause").await.unwrap_err();
+        assert!(
+            resume_error
+                .to_string()
+                .contains("recover it before resuming")
+        );
+
+        let mut dormant = lifecycle_state("dormant-pause");
+        dormant.backend = Some(BackendType::Firecracker);
+        dormant.paused_at = Some(chrono::Utc::now().to_rfc3339());
+        dormant.full_state_checkpoint = Some(uuid::Uuid::new_v4().to_string());
+        dormant.dormant_at = Some(chrono::Utc::now().to_rfc3339());
+        manager
+            .sandboxes
+            .insert("dormant-pause".to_string(), dormant);
+        let fork_error = manager
+            .fork_sandbox("dormant-pause", "child")
+            .await
+            .unwrap_err();
+        assert!(fork_error.to_string().contains("recover it before forking"));
+    }
+
+    #[test]
+    fn paused_and_recovery_pending_sandboxes_reject_resource_changes() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+
+        let mut paused = lifecycle_state("paused-resize");
+        paused.backend = Some(BackendType::Firecracker);
+        paused.paused_at = Some(chrono::Utc::now().to_rfc3339());
+        paused.full_state_checkpoint = Some(uuid::Uuid::new_v4().to_string());
+        manager
+            .sandboxes
+            .insert("paused-resize".to_string(), paused);
+        let error = manager
+            .update_resources("paused-resize", 8, 16_384)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("paused with a full-state checkpoint")
+        );
+        assert_eq!(manager.get_state("paused-resize").unwrap().vcpus, 1);
+
+        insert_pause_recovery(&mut manager, "recovery-resize");
+        let error = manager
+            .update_resources("recovery-resize", 8, 16_384)
+            .unwrap_err();
+        assert!(error.to_string().contains("pending full-state recovery"));
+        assert_eq!(manager.get_state("recovery-resize").unwrap().vcpus, 1);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_fork_restore_owner_rejects_a_second_start() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let name = "ambiguous-fork-child";
+        let mut state = lifecycle_state(name);
+        state.backend = Some(BackendType::Firecracker);
+        state.full_state_lineage = true;
+        manager.sandboxes.insert(name.to_string(), state);
+        manager.pause_recovery.insert(
+            name.to_string(),
+            PendingFullStateRecovery {
+                sandbox: Some(Box::new(RecoverySandbox {
+                    name: name.to_string(),
+                    running: false,
+                    stop_attempts: None,
+                    stop_failures_before_success: 0,
+                })),
+                staging_path: temp_dir.path().join("published-source-checkpoint"),
+                completed_snapshot: None,
+            },
+        );
+
+        let error = manager.start(name).await.unwrap_err();
+        assert!(error.to_string().contains("pending full-state recovery"));
+        assert!(manager.pause_recovery.contains_key(name));
+        assert!(!manager.running.contains_key(name));
+    }
+
+    #[tokio::test]
+    async fn full_state_lineage_rejects_lossy_ordinary_stop() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let mut state = lifecycle_state("full-state-child");
+        state.backend = Some(BackendType::Firecracker);
+        state.full_state_lineage = true;
+        manager
+            .sandboxes
+            .insert("full-state-child".to_string(), state);
+        manager.running.insert(
+            "full-state-child".to_string(),
+            Box::new(RecoverySandbox {
+                name: "full-state-child".to_string(),
+                running: true,
+                stop_attempts: None,
+                stop_failures_before_success: 0,
+            }),
+        );
+
+        manager
+            .set_labels(
+                "full-state-child",
+                &HashMap::from([("team".to_string(), "sandbox".to_string())]),
+            )
+            .unwrap();
+        assert!(
+            manager
+                .get_state("full-state-child")
+                .unwrap()
+                .full_state_lineage
+        );
+
+        let error = manager.stop("full-state-child").await.unwrap_err();
+        assert!(error.to_string().contains("use full-state pause"));
+        assert!(manager.is_running("full-state-child"));
+    }
+
+    #[tokio::test]
+    async fn persisted_full_state_lineage_rejects_cold_start_after_manager_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = new_test_manager(&temp_dir);
+        let name = "restarted-full-state-child";
+        let mut state = lifecycle_state(name);
+        state.backend = Some(BackendType::Firecracker);
+        state.full_state_lineage = true;
+        manager.save_sandbox(&state).unwrap();
+        drop(manager);
+
+        let persisted = VmManager::load_sandboxes(&temp_dir.path().join("sandboxes")).unwrap();
+        let mut restarted = new_test_manager(&temp_dir);
+        restarted.sandboxes = persisted;
+
+        let error = restarted.start(name).await.unwrap_err();
+        assert!(error.to_string().contains("cold start would lose"));
+        assert!(!restarted.running.contains_key(name));
+    }
+
+    #[tokio::test]
+    async fn ordinary_stop_retains_handle_when_typed_error_says_runtime_may_survive() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let mut state = lifecycle_state("ambiguous-stop");
+        state.backend = Some(BackendType::Firecracker);
+        manager
+            .sandboxes
+            .insert("ambiguous-stop".to_string(), state);
+        let stop_attempts = Arc::new(AtomicUsize::new(0));
+        manager.running.insert(
+            "ambiguous-stop".to_string(),
+            Box::new(RecoverySandbox {
+                name: "ambiguous-stop".to_string(),
+                // Simulate a best-effort process probe returning false even
+                // though the strict termination result remains ambiguous.
+                running: false,
+                stop_attempts: Some(Arc::clone(&stop_attempts)),
+                stop_failures_before_success: 1,
+            }),
+        );
+
+        let error = manager.stop("ambiguous-stop").await.unwrap_err();
+        assert!(error.to_string().contains("failed to stop sandbox"));
+        assert!(manager.running.contains_key("ambiguous-stop"));
+        assert_eq!(stop_attempts.load(Ordering::SeqCst), 1);
+
+        manager.stop("ambiguous-stop").await.unwrap();
+        assert!(!manager.running.contains_key("ambiguous-stop"));
+        assert_eq!(stop_attempts.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -4689,6 +6883,37 @@ mod tests {
         assert_eq!(
             manager.dormant_time("dormant-test").unwrap().to_rfc3339(),
             "2026-02-01T00:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn failed_lifecycle_policy_save_does_not_mutate_manager_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        manager.sandboxes.insert(
+            "policy-save-failure".to_string(),
+            lifecycle_state("policy-save-failure"),
+        );
+        let sandboxes_dir = temp_dir.path().join("sandboxes");
+        std::fs::remove_dir(&sandboxes_dir).unwrap();
+        std::fs::write(&sandboxes_dir, b"blocks state directory").unwrap();
+
+        let result = manager.set_lifecycle_policy(
+            "policy-save-failure",
+            Some(SandboxLifecyclePolicy {
+                auto_stop_after_seconds: None,
+                auto_archive_after_seconds: Some(0),
+                auto_delete_after_seconds: Some(0),
+            }),
+        );
+
+        assert!(result.is_err());
+        assert!(
+            manager
+                .get_state("policy-save-failure")
+                .unwrap()
+                .lifecycle_policy
+                .is_none()
         );
     }
 

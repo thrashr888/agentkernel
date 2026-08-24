@@ -5,13 +5,8 @@
 
 use agentkernel::backend::firecracker::FirecrackerSandbox;
 use agentkernel::backend::{Sandbox, SandboxConfig};
-use agentkernel::firecracker_client::{
-    FirecrackerClient, SnapshotCreateParams, SnapshotLoadParams, VsockOverride,
-};
-use agentkernel::vsock::VsockClient;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::path::PathBuf;
+use std::process::Command;
 
 fn required_path(name: &str) -> PathBuf {
     let path = std::env::var_os(name)
@@ -19,27 +14,6 @@ fn required_path(name: &str) -> PathBuf {
         .unwrap_or_else(|| panic!("{name} must point to a prepared smoke-test asset"));
     assert!(path.is_file(), "{name} does not exist: {}", path.display());
     path
-}
-
-async fn wait_for_path(path: &Path) {
-    for _ in 0..100 {
-        if path.exists() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("timed out waiting for {}", path.display());
-}
-
-async fn wait_for_vsock(path: &Path) -> VsockClient {
-    let client = VsockClient::for_firecracker(path.to_path_buf());
-    for _ in 0..100 {
-        if client.ping().await.unwrap_or(false) {
-            return client;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("timed out waiting for restored vsock {}", path.display());
 }
 
 #[tokio::test]
@@ -88,73 +62,90 @@ async fn firecracker_lifecycle_exec_network_vsock_snapshot_recovery() {
         .write_file("/tmp/snapshot-marker", b"survived-restore")
         .await
         .expect("write snapshot marker over vsock");
+    let background = sandbox
+        .exec(&[
+            "sh",
+            "-c",
+            "nohup sh -c 'while :; do sleep 60; done' >/dev/null 2>&1 & echo $! >/tmp/snapshot-process.pid",
+        ])
+        .await
+        .expect("start process whose memory state must survive");
+    assert_eq!(background.exit_code, 0, "{}", background.stderr);
 
     let snapshot_dir = tempfile::tempdir().expect("create snapshot directory");
-    let mem_path = snapshot_dir.path().join("microvm.mem");
-    let state_path = snapshot_dir.path().join("microvm.state");
-    let original_socket = PathBuf::from(format!("/tmp/agentkernel-{name}.sock"));
-    let original_rootfs = sandbox
-        .prepared_rootfs_path()
-        .expect("started sandbox has a private rootfs")
-        .to_path_buf();
-    let rootfs_backup = snapshot_dir.path().join("rootfs.ext4");
-    let client = FirecrackerClient::new(&original_socket);
-    client.pause().await.expect("pause microVM for snapshot");
-    client
-        .create_snapshot(&SnapshotCreateParams {
-            mem_file_path: mem_path.to_string_lossy().into_owned(),
-            snapshot_path: state_path.to_string_lossy().into_owned(),
-            snapshot_type: "Full".to_string(),
-        })
+    let source_api = sandbox.api_socket_path().to_path_buf();
+    let source_vsock = sandbox.vsock_socket_path().to_path_buf();
+    let snapshot = sandbox
+        .pause_to(snapshot_dir.path())
         .await
-        .expect("create full Firecracker snapshot");
-    std::fs::copy(&original_rootfs, &rootfs_backup).expect("preserve snapshot rootfs");
-    sandbox.stop().await.expect("stop original microVM");
-    std::fs::create_dir_all(original_rootfs.parent().expect("rootfs has a parent"))
-        .expect("recreate rootfs artifact directory");
-    std::fs::copy(&rootfs_backup, &original_rootfs).expect("restore snapshot rootfs path");
+        .expect("pause microVM into full-state checkpoint");
+    assert_eq!(snapshot.firecracker_version, "1.16.1");
+    assert!(!sandbox.is_running());
+    assert!(!source_api.exists());
+    assert!(!source_vsock.exists());
+    for artifact in ["memory.bin", "vmstate.bin", "rootfs.ext4"] {
+        assert!(snapshot_dir.path().join(artifact).is_file(), "{artifact}");
+    }
 
-    let restored_socket = snapshot_dir.path().join("restored-api.sock");
-    let restored_vsock = snapshot_dir.path().join("restored-vsock.sock");
-    let mut restored = Command::new(&firecracker)
-        .arg("--api-sock")
-        .arg(&restored_socket)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start Firecracker for snapshot recovery");
-    wait_for_path(&restored_socket).await;
+    let mut first = FirecrackerSandbox::new(&format!("{name}-fork-a"))
+        .expect("create first restored Firecracker sandbox");
+    let mut second = FirecrackerSandbox::new(&format!("{name}-fork-b"))
+        .expect("create second restored Firecracker sandbox");
+    assert_ne!(first.api_socket_path(), second.api_socket_path());
+    assert_ne!(first.vsock_socket_path(), second.vsock_socket_path());
+    assert_ne!(first.api_socket_path(), source_api);
+    assert_ne!(second.vsock_socket_path(), source_vsock);
 
-    let restored_client = FirecrackerClient::new(&restored_socket);
-    restored_client
-        .load_snapshot(&SnapshotLoadParams {
-            mem_file_path: mem_path.to_string_lossy().into_owned(),
-            snapshot_path: state_path.to_string_lossy().into_owned(),
-            resume_vm: true,
-            vsock_override: VsockOverride {
-                uds_path: restored_vsock.to_string_lossy().into_owned(),
-            },
-        })
-        .await
-        .expect("load and resume Firecracker snapshot");
-
-    let restored_vsock_client = wait_for_vsock(&restored_vsock).await;
-    let marker = restored_vsock_client
-        .run_command(&["cat".to_string(), "/tmp/snapshot-marker".to_string()])
-        .await
-        .expect("execute after snapshot recovery");
-    assert_eq!(marker.exit_code, 0, "{}", marker.stderr);
-    assert_eq!(marker.stdout, "survived-restore");
-
-    let _ = restored_client.send_ctrl_alt_del().await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let _ = restored.kill();
-    let _ = restored.wait();
-    let _ = std::fs::remove_file(&original_rootfs);
-    let _ = std::fs::remove_dir(
-        original_rootfs
-            .parent()
-            .expect("rootfs has a parent after restore"),
+    let (first_restore, second_restore) = tokio::join!(
+        first.restore_from(snapshot_dir.path(), &snapshot),
+        second.restore_from(snapshot_dir.path(), &snapshot),
     );
+    first_restore.expect("restore and resume first fork");
+    second_restore.expect("restore and resume second fork");
+    assert!(first.is_running());
+    assert!(second.is_running());
+
+    for fork in [&mut first, &mut second] {
+        let marker = fork
+            .exec(&["cat", "/tmp/snapshot-marker"])
+            .await
+            .expect("execute after snapshot recovery");
+        assert_eq!(marker.exit_code, 0, "{}", marker.stderr);
+        assert_eq!(marker.stdout, "survived-restore");
+        let process = fork
+            .exec(&["sh", "-c", "kill -0 $(cat /tmp/snapshot-process.pid)"])
+            .await
+            .expect("check restored guest process");
+        assert_eq!(process.exit_code, 0, "{}", process.stderr);
+    }
+
+    first
+        .write_file("/tmp/fork-a-only", b"fork-a")
+        .await
+        .expect("write first fork marker");
+    second
+        .write_file("/tmp/fork-b-only", b"fork-b")
+        .await
+        .expect("write second fork marker");
+    let first_isolated = first
+        .exec(&[
+            "sh",
+            "-c",
+            "test -f /tmp/fork-a-only && test ! -e /tmp/fork-b-only",
+        ])
+        .await
+        .expect("check first fork disk isolation");
+    let second_isolated = second
+        .exec(&[
+            "sh",
+            "-c",
+            "test -f /tmp/fork-b-only && test ! -e /tmp/fork-a-only",
+        ])
+        .await
+        .expect("check second fork disk isolation");
+    assert_eq!(first_isolated.exit_code, 0, "{}", first_isolated.stderr);
+    assert_eq!(second_isolated.exit_code, 0, "{}", second_isolated.stderr);
+
+    first.stop().await.expect("stop first restored microVM");
+    second.stop().await.expect("stop second restored microVM");
 }

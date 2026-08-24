@@ -28,6 +28,10 @@ servers:
   - url: http://localhost:18888
     description: Local development server
 
+security:
+  - {}
+  - BearerAuth: []
+
 tags:
   - name: Health
     description: Health check endpoint
@@ -65,6 +69,7 @@ paths:
       summary: Health check
       description: Returns 200 if the server is healthy.
       operationId: healthCheck
+      security: []
       responses:
         '200':
           description: Server is healthy
@@ -72,6 +77,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
+
+  /metrics:
+    get:
+      tags: [Health]
+      summary: Prometheus metrics
+      description: Returns Prometheus metrics in the text exposition format.
+      operationId: getMetrics
+      security: []
+      responses:
+        '200':
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
 
   /llm/spend:
     get:
@@ -133,11 +153,13 @@ paths:
         and current usage. When enterprise quotas are disabled, `enabled` is
         false and usage is still returned for the authenticated tenant.
         Quota accounting covers persistent HTTP create, list, get, start,
-        stop, resize, delete, logs, snapshot restore, and config import.
-        Snapshot restore is created stopped and consumes total capacity; its
-        running slot is charged when started. Ephemeral `/run`, CLI/MCP,
-        scheduler, and background object/task entrypoints are not
-        quota-accounted. All sandbox-scoped HTTP routes are owner-filtered;
+        stop, pause, resume, fork, resize, delete, logs, snapshot restore, and
+        config import. Snapshot restore is created stopped and consumes total
+        capacity; its running slot is charged when started. Firecracker CLI
+        and MCP lifecycle operations delegate through these quota-enforced
+        HTTP routes. Ephemeral `/run`, direct CLI/MCP manager calls, scheduler,
+        and background object/task entrypoints are not quota-accounted. All
+        sandbox-scoped HTTP routes are owner-filtered;
         only an explicit JWT `admin` role may cross owners. Unauthorized and
         legacy unowned sandboxes return `404` without revealing ownership.
       operationId: getQuotas
@@ -295,6 +317,7 @@ paths:
       summary: Server status
       description: Returns server version, backend, and whether API key auth is configured.
       operationId: getStatus
+      security: []
       responses:
         '200':
           description: Server status
@@ -311,6 +334,7 @@ paths:
         Returns current sandbox count, resource usage (CPU, memory, disk),
         and server metadata. Designed for fleet load-balancing decisions.
       operationId: getStats
+      security: []
       responses:
         '200':
           description: Server statistics
@@ -374,7 +398,7 @@ paths:
     post:
       tags: [Sandboxes]
       summary: Garbage-collect expired sandboxes
-      description: Removes sandboxes that have exceeded their time-to-live.
+      description: Removes sandboxes that have exceeded their time-to-live. Enterprise deployments require an administrator identity.
       operationId: garbageCollect
       responses:
         '200':
@@ -383,6 +407,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GcResponse'
+        '403':
+          description: Enterprise fleet garbage collection requires an administrator identity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /lifecycle/reconcile:
     post:
@@ -391,6 +421,7 @@ paths:
       description: |
         Evaluates lifecycle policies for all sandboxes and applies any needed
         stop/archive/delete actions. Supports dry-run mode for previews.
+        Enterprise deployments require an administrator identity.
       operationId: reconcileLifecycle
       requestBody:
         required: false
@@ -415,6 +446,12 @@ paths:
                 $ref: '#/components/schemas/LifecycleReconcileResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '403':
+          description: Enterprise lifecycle reconciliation requires an administrator identity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -604,20 +641,212 @@ paths:
     post:
       tags: [Sandboxes]
       summary: Start a stopped sandbox
+      description: |
+        Starts a stopped sandbox. Omit the optional request body to use the
+        historical defaults (moderate permissions and no injected files). The
+        local CLI may select a private persisted configuration when delegating
+        a Firecracker VM to the long-running server. Capability values are
+        derived by the server and cannot be supplied in this request.
       operationId: startSandbox
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartSandboxRequest'
       responses:
         '200':
           description: Sandbox started
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SandboxResponse'
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '429':
           $ref: '#/components/responses/QuotaExceeded'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /sandboxes/{name}/stop:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+    post:
+      tags: [Sandboxes]
+      summary: Stop a running sandbox
+      description: |
+        Stops the sandbox while retaining its persisted configuration. The
+        long-running server owns the lifecycle task after accepting the
+        request, so an HTTP waiter disconnect does not cancel the stop. Use
+        full-state pause instead when Firecracker memory, processes, and the
+        writable disk must survive.
+      operationId: stopSandbox
+      responses:
+        '200':
+          description: Sandbox stopped
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /sandboxes/{name}/pause:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+    post:
+      tags: [Sandboxes]
+      summary: Pause a running Firecracker sandbox
+      description: |
+        Captures a durable full-VM checkpoint, including guest memory and
+        process state, then stops the Firecracker VM. This operation is only
+        supported by the Firecracker backend on x86_64 Linux/KVM. Enterprise policy
+        requires the Run action.
+      operationId: pauseSandbox
+      responses:
+        '200':
+          description: Sandbox paused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          description: The sandbox backend does not support full-state pause
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /sandboxes/{name}/resume:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+    post:
+      tags: [Sandboxes]
+      summary: Resume a paused Firecracker sandbox
+      description: Restores guest memory, processes, devices, and disk state from the sandbox's full-VM checkpoint. Enterprise policy requires the Run action.
+      operationId: resumeSandbox
+      responses:
+        '200':
+          description: Sandbox resumed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          description: The sandbox backend does not support full-state resume
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /sandboxes/{name}/fork:
+    parameters:
+      - $ref: '#/components/parameters/SandboxName'
+    post:
+      tags: [Sandboxes]
+      summary: Fork a paused Firecracker sandbox
+      description: |
+        Restores the paused source checkpoint into a new running sandbox. The
+        source remains paused and may be resumed or forked again.
+
+        Security warning: the fork copies guest memory and filesystem state.
+        Credentials captured in the checkpoint are duplicated and should be
+        rotated or revoked when appropriate. Enterprise policy requires Run on
+        the source plus Create and Run for the child.
+      operationId: forkSandbox
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForkSandboxRequest'
+            example:
+              as_name: experiment-b
+      responses:
+        '201':
+          description: Running sandbox forked from the paused source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForkSandboxResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '403':
+          description: The requested fork would cross an owner or tenant boundary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          description: The sandbox backend does not support full-state fork
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /sandboxes/{name}/resize:
     parameters:
@@ -2372,6 +2601,29 @@ components:
           description: Optional fixed IPv4 address for this sandbox. It cannot be changed after allocation.
           example: "172.30.0.10"
 
+    StartSandboxRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        configuration:
+          type: object
+          additionalProperties: false
+          required: [source, token]
+          description: |
+            Select the server-derived private start configuration previously
+            persisted by the local CLI. Callers cannot provide permission or
+            file-injection values in the HTTP request. The token is one-shot
+            and bound to the sandbox UUID, owner, request identity, and a
+            five-minute validity window.
+          properties:
+            source:
+              type: string
+              enum: [persisted]
+            token:
+              type: string
+              pattern: '^[0-9a-f]{64}$'
+              description: Opaque one-shot nonce generated by the local CLI.
+
     ResizeSandboxRequest:
       type: object
       properties:
@@ -2639,7 +2891,7 @@ components:
 
     BackendCapabilities:
       type: object
-      required: [mount_cwd, mount_home, attach, host_volumes, ssh, proxy_secret_bindings, secret_files, snapshots, resume, endpoints]
+      required: [mount_cwd, mount_home, attach, host_volumes, ssh, proxy_secret_bindings, secret_files, snapshots, resume, full_state_pause_resume, full_state_fork, endpoints]
       properties:
         mount_cwd: {type: boolean}
         mount_home: {type: boolean}
@@ -2650,6 +2902,12 @@ components:
         secret_files: {type: boolean}
         snapshots: {type: boolean}
         resume: {type: boolean}
+        full_state_pause_resume:
+          type: boolean
+          description: Preserves guest memory, process, and device state; currently Firecracker only
+        full_state_fork:
+          type: boolean
+          description: Restores independent running children from a paused full-state checkpoint; currently Firecracker only
         endpoints: {type: boolean}
 
     StatsResponse:
@@ -2796,7 +3054,7 @@ components:
           example: "019abc12-1234-7def-89ab-0123456789ab"
         status:
           type: string
-          enum: [running, stopped, archived]
+          enum: [running, paused, stopped, dormant, archived]
           example: "running"
         backend:
           type: string
@@ -2843,6 +3101,36 @@ components:
           example: true
         data:
           $ref: '#/components/schemas/SandboxInfo'
+
+    ForkSandboxRequest:
+      type: object
+      additionalProperties: false
+      required: [as_name]
+      properties:
+        as_name:
+          type: string
+          description: Name for the new running sandbox
+          example: "experiment-b"
+
+    ForkSandboxResult:
+      type: object
+      required: [sandbox, security_warning]
+      properties:
+        sandbox:
+          $ref: '#/components/schemas/SandboxInfo'
+        security_warning:
+          type: string
+          description: Warning that guest memory and filesystem state, including captured credentials, were cloned.
+          example: "Forking duplicates userspace memory. Rotate cached identifiers and cryptographic tokens in each child; prefer proxy-managed secrets that never enter the VM."
+
+    ForkSandboxResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/ForkSandboxResult'
 
     SandboxListResponse:
       type: object
@@ -3435,14 +3723,14 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
 
     Forbidden:
-      description: Authenticated identity is outside the requested scope
+      description: Authenticated identity lacks the required access or policy permission
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
 
     ServiceUnavailable:
-      description: Durable aggregation storage is unavailable
+      description: A required service, policy engine, or durable store is unavailable
       content:
         application/json:
           schema:
@@ -3455,7 +3743,3 @@ components:
       description: |
         Optional API key authentication. When enabled, include the
         API key in the Authorization header as a Bearer token.
-
-# Security is optional - uncomment to require authentication
-# security:
-#   - BearerAuth: []

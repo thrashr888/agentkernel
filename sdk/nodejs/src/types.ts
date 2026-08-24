@@ -2,7 +2,12 @@
 export type SecurityProfile = "permissive" | "moderate" | "restrictive";
 
 /** Sandbox status. */
-export type SandboxStatus = "running" | "stopped";
+export type SandboxStatus =
+  | "running"
+  | "paused"
+  | "stopped"
+  | "dormant"
+  | "archived";
 
 /** SSE event types emitted by /run/stream. */
 export type StreamEventType = "started" | "progress" | "output" | "done" | "error";
@@ -92,6 +97,8 @@ export interface BackendCapabilities {
   secret_files: boolean;
   snapshots: boolean;
   resume: boolean;
+  full_state_pause_resume: boolean;
+  full_state_fork: boolean;
   endpoints: boolean;
 }
 

@@ -53,16 +53,18 @@ type SandboxInfo struct {
 
 // BackendCapabilities describes operations supported by a backend.
 type BackendCapabilities struct {
-	MountCWD            bool `json:"mount_cwd"`
-	MountHome           bool `json:"mount_home"`
-	Attach              bool `json:"attach"`
-	HostVolumes         bool `json:"host_volumes"`
-	SSH                 bool `json:"ssh"`
-	ProxySecretBindings bool `json:"proxy_secret_bindings"`
-	SecretFiles         bool `json:"secret_files"`
-	Snapshots           bool `json:"snapshots"`
-	Resume              bool `json:"resume"`
-	Endpoints           bool `json:"endpoints"`
+	MountCWD             bool `json:"mount_cwd"`
+	MountHome            bool `json:"mount_home"`
+	Attach               bool `json:"attach"`
+	HostVolumes          bool `json:"host_volumes"`
+	SSH                  bool `json:"ssh"`
+	ProxySecretBindings  bool `json:"proxy_secret_bindings"`
+	SecretFiles          bool `json:"secret_files"`
+	Snapshots            bool `json:"snapshots"`
+	Resume               bool `json:"resume"`
+	FullStatePauseResume bool `json:"full_state_pause_resume"`
+	FullStateFork        bool `json:"full_state_fork"`
+	Endpoints            bool `json:"endpoints"`
 }
 
 // BackendDescriptor describes one server backend.

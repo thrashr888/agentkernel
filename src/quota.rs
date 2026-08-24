@@ -293,12 +293,25 @@ impl QuotaController {
             org_id: owner_org.to_string(),
         };
         let (user_usage, org_usage) = self.usage_for(manager, &subject);
-        Self::check_scope("user", &self.user_limits(&subject), &user_usage, 1, 0, 0, 0)?;
+        // Recovery may already own a confirmed-live runtime while its
+        // persisted state still says paused. Rechecking start must preserve
+        // that existing slot rather than charging a second one and making
+        // metadata reconciliation impossible at the quota limit.
+        let additional_running = u32::from(!manager.is_running(name));
+        Self::check_scope(
+            "user",
+            &self.user_limits(&subject),
+            &user_usage,
+            additional_running,
+            0,
+            0,
+            0,
+        )?;
         Self::check_scope(
             "organization",
             &self.organization_limits(&subject),
             &org_usage,
-            1,
+            additional_running,
             0,
             0,
             0,
@@ -420,6 +433,11 @@ mod tests {
             dormant_at: None,
             dormant_reason: None,
             lifecycle_policy: None,
+            full_state_checkpoint: None,
+            full_state_cleanup_pending: Vec::new(),
+            full_state_lineage: false,
+            paused_at: None,
+            forked_from: None,
             owner_user_id: Some(user.to_string()),
             owner_org_id: Some(org.to_string()),
         }

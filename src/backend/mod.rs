@@ -223,6 +223,94 @@ pub struct RemoteSandboxContext {
     pub config_path: Option<String>,
 }
 
+/// Backend-specific compatibility metadata for a full VM state snapshot.
+///
+/// Filesystem-only snapshots do not use this type.  A backend that implements
+/// full-state pause/resume must persist enough information here to reject a
+/// restore on an incompatible VMM or host before loading guest memory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FullStateSnapshot {
+    pub firecracker_version: String,
+    pub architecture: String,
+    pub host_kernel_release: String,
+    /// SHA-256 of the host machine identity; the raw identifier is never persisted.
+    pub host_identity_sha256: String,
+    /// SHA-256 of snapshot-relevant CPU identity and feature flags.
+    pub cpu_fingerprint_sha256: String,
+    /// Exact kernel release reported by the guest at snapshot time.
+    pub guest_kernel_release: String,
+}
+
+/// A full-state pause failed and the source VM could not be confirmed resumed.
+///
+/// Callers can downcast an [`anyhow::Error`] to this type to decide whether the
+/// staging directory must be retained. `artifacts_complete` means all memory,
+/// vmstate, and rootfs artifacts were durably produced; when it is false the
+/// directory may still contain useful partial recovery data and must not be
+/// discarded automatically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FullStatePauseError {
+    pub source_resume_failed: bool,
+    pub artifacts_complete: bool,
+    pub snapshot: FullStateSnapshot,
+    pub operation_error: String,
+    pub resume_error: Option<String>,
+}
+
+impl FullStatePauseError {
+    pub fn source_resume_failed(
+        snapshot: FullStateSnapshot,
+        artifacts_complete: bool,
+        operation_error: impl fmt::Display,
+        resume_error: impl fmt::Display,
+    ) -> Self {
+        Self {
+            source_resume_failed: true,
+            artifacts_complete,
+            snapshot,
+            operation_error: operation_error.to_string(),
+            resume_error: Some(resume_error.to_string()),
+        }
+    }
+}
+
+impl fmt::Display for FullStatePauseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "full-state pause failed and source VM could not be resumed: {}",
+            self.operation_error
+        )?;
+        if let Some(resume_error) = &self.resume_error {
+            write!(f, "; resume failed: {resume_error}")?;
+        }
+        write!(
+            f,
+            "; checkpoint artifacts complete: {}",
+            self.artifacts_complete
+        )
+    }
+}
+
+impl std::error::Error for FullStatePauseError {}
+
+/// A Firecracker termination attempt failed after a full-state snapshot.
+/// `process_may_be_running` is false only when process exit was confirmed and
+/// the remaining failure is cleanup-only, so checkpoint publication is safe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FullStateTerminationError {
+    pub process_may_be_running: bool,
+    pub detail: String,
+}
+
+impl fmt::Display for FullStateTerminationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for FullStateTerminationError {}
+
 /// Outcome-level backend capabilities used for compatibility checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BackendCapabilities {
@@ -235,6 +323,10 @@ pub struct BackendCapabilities {
     pub secret_files: bool,
     pub snapshots: bool,
     pub resume: bool,
+    /// Preserves guest memory/process/device state, not only the filesystem.
+    pub full_state_pause_resume: bool,
+    /// Restores multiple independent running children from one paused state.
+    pub full_state_fork: bool,
     pub endpoints: bool,
 }
 
@@ -250,14 +342,18 @@ pub fn backend_capabilities(backend: BackendType) -> BackendCapabilities {
             secret_files: true,
             snapshots: true,
             resume: true,
+            full_state_pause_resume: false,
+            full_state_fork: false,
             endpoints: true,
         };
     }
 
+    let full_state = backend == BackendType::Firecracker
+        && cfg!(all(target_os = "linux", target_arch = "x86_64"));
     BackendCapabilities {
         mount_cwd: true,
         mount_home: true,
-        attach: !matches!(backend, BackendType::Hyperlight),
+        attach: !matches!(backend, BackendType::Firecracker | BackendType::Hyperlight),
         // Named persistent volumes are currently translated into Docker/Podman
         // `-v` arguments by the VMM. Other local backends must reject them
         // rather than advertising support and silently dropping the mounts.
@@ -267,6 +363,8 @@ pub fn backend_capabilities(backend: BackendType) -> BackendCapabilities {
         secret_files: true,
         snapshots: !matches!(backend, BackendType::Hyperlight),
         resume: !matches!(backend, BackendType::Hyperlight),
+        full_state_pause_resume: full_state,
+        full_state_fork: full_state,
         endpoints: true,
     }
 }
@@ -540,6 +638,55 @@ pub trait Sandbox: Send + Sync {
 
     /// Stop the sandbox and clean up resources
     async fn stop(&mut self) -> Result<()>;
+
+    /// Pause a running sandbox into a durable, full-state checkpoint.
+    ///
+    /// Backends must attempt to leave the sandbox running if checkpoint
+    /// creation fails before the original runtime is terminated. If that
+    /// recovery cannot be confirmed, return [`FullStatePauseError`] and retain
+    /// ownership so the caller can publish complete artifacts or retry the
+    /// live source in place. The default is deliberately unsupported so
+    /// filesystem snapshot support is not mistaken for full VM state support.
+    async fn pause_to(&mut self, _checkpoint_dir: &Path) -> Result<FullStateSnapshot> {
+        anyhow::bail!(
+            "Backend '{}' does not support full-state pause/resume",
+            self.backend_type()
+        )
+    }
+
+    /// Conservative bytes to reserve before creating a full-state checkpoint.
+    /// Backends with a writable disk should include its logical size in
+    /// addition to configured guest memory and snapshot metadata overhead.
+    fn full_state_reservation_bytes(&self, memory_mb: u64) -> Result<u64> {
+        memory_mb
+            .checked_mul(1024 * 1024)
+            .and_then(|bytes| bytes.checked_add(64 * 1024 * 1024))
+            .ok_or_else(|| anyhow::anyhow!("full-state checkpoint reservation overflow"))
+    }
+
+    /// Retry resuming the still-live source after a failed full-state pause.
+    ///
+    /// This exists for the recovery path represented by
+    /// [`FullStatePauseError`]. Callers must retain the backend object while a
+    /// partial checkpoint is not independently restorable.
+    async fn retry_full_state_resume(&mut self) -> Result<()> {
+        anyhow::bail!(
+            "Backend '{}' does not support in-place full-state resume",
+            self.backend_type()
+        )
+    }
+
+    /// Restore a sandbox from a previously-created full-state checkpoint.
+    async fn restore_from(
+        &mut self,
+        _checkpoint_dir: &Path,
+        _snapshot: &FullStateSnapshot,
+    ) -> Result<()> {
+        anyhow::bail!(
+            "Backend '{}' does not support full-state pause/resume",
+            self.backend_type()
+        )
+    }
 
     /// Permanently delete the sandbox and provider-side resources.
     async fn remove(&mut self) -> Result<()> {
@@ -1364,6 +1511,20 @@ mod tests {
         assert!(caps.snapshots);
         assert!(!caps.proxy_secret_bindings);
         assert!(!caps.host_volumes);
+        assert!(!caps.full_state_pause_resume);
+        assert!(!caps.full_state_fork);
+    }
+
+    #[test]
+    fn full_state_capabilities_match_the_linux_x86_64_firecracker_boundary() {
+        for backend in BackendType::all() {
+            let capabilities = backend_capabilities(backend);
+            let expected = backend == BackendType::Firecracker
+                && cfg!(all(target_os = "linux", target_arch = "x86_64"));
+            assert_eq!(capabilities.full_state_pause_resume, expected, "{backend}");
+            assert_eq!(capabilities.full_state_fork, expected, "{backend}");
+        }
+        assert!(!backend_capabilities(BackendType::Firecracker).attach);
     }
 
     #[test]
