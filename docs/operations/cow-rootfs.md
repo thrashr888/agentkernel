@@ -36,3 +36,18 @@ that diagnostic rather than inferring it from elapsed time alone.
 `AGENTKERNEL_ROOTFS_COW_DIR` may point to a new private directory or an
 existing directory owned by the current user with mode `0700`. Existing
 permissive directories are rejected rather than chmodded in place.
+
+Each new staging directory carries a versioned AgentKernel ownership marker
+and an advisory lease held for the lifetime of the running sandbox. Opening
+the default store scans for artifacts whose lease is no longer held (for
+example, after a process is killed) and reports the number of artifacts and
+allocated bytes reclaimed. The scan is intentionally conservative: foreign
+names, symlinks, malformed or legacy v1 markers, missing leases, and
+directories with any unexpected entry are left untouched. In particular, a
+rolling upgrade never guesses whether an artifact created by an older process
+is still active.
+
+Firecracker snapshots retain the path of their root block device. Snapshot
+code must call `preserve_prepared_rootfs_for_snapshot` before stopping the
+sandbox. That writes a durable, token-bound preservation marker; normal stop
+cleanup and later orphan scans then leave the rootfs intact.
