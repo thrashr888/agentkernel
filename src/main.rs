@@ -2069,20 +2069,39 @@ memory_mb = 512
                 let (src_sandbox, src_path) = parse_cp_path(&source);
                 let (dst_sandbox, dst_path) = parse_cp_path(&dest);
 
+                let mut manager = VmManager::new()?;
+
                 match (src_sandbox, dst_sandbox) {
                     (Some(sandbox), None) => {
                         // Copy from sandbox to local
                         validation::validate_sandbox_name(&sandbox)?;
-                        let mut manager = VmManager::new()?;
 
                         if !manager.exists(&sandbox) {
                             bail!("Sandbox '{}' not found", sandbox);
                         }
-                        if !manager.is_running(&sandbox) {
-                            bail!("Sandbox '{}' is not running", sandbox);
-                        }
-
-                        let content = manager.read_file(&sandbox, &src_path).await?;
+                        crate::backend::validate_sandbox_path(&src_path)?;
+                        let firecracker = sandbox_backend(&manager, &sandbox)
+                            == crate::backend::BackendType::Firecracker;
+                        let content = if firecracker {
+                            let port = local_api_port();
+                            if !try_server_health("127.0.0.1", port).await {
+                                return Err(firecracker_server_required("read a file from", port));
+                            }
+                            let Some(status) = delegated_firecracker_status(&sandbox).await? else {
+                                bail!("Sandbox '{}' not found", sandbox);
+                            };
+                            if status.status != "running" {
+                                bail!("Sandbox '{}' is not running", sandbox);
+                            }
+                            delegate_file_read_to_server("127.0.0.1", port, &sandbox, &src_path)
+                                .await?
+                                .content
+                        } else {
+                            if !manager.is_running(&sandbox) {
+                                bail!("Sandbox '{}' is not running", sandbox);
+                            }
+                            manager.read_file(&sandbox, &src_path).await?
+                        };
                         std::fs::write(&dst_path, content)?;
                         println!(
                             "Copied {} bytes from {}:{} to {}",
@@ -2095,17 +2114,39 @@ memory_mb = 512
                     (None, Some(sandbox)) => {
                         // Copy from local to sandbox
                         validation::validate_sandbox_name(&sandbox)?;
-                        let mut manager = VmManager::new()?;
 
                         if !manager.exists(&sandbox) {
                             bail!("Sandbox '{}' not found", sandbox);
                         }
-                        if !manager.is_running(&sandbox) {
-                            bail!("Sandbox '{}' is not running", sandbox);
-                        }
-
+                        crate::backend::validate_sandbox_path(&dst_path)?;
                         let content = std::fs::read(&src_path)?;
-                        manager.write_file(&sandbox, &dst_path, &content).await?;
+                        let firecracker = sandbox_backend(&manager, &sandbox)
+                            == crate::backend::BackendType::Firecracker;
+                        if firecracker {
+                            let port = local_api_port();
+                            if !try_server_health("127.0.0.1", port).await {
+                                return Err(firecracker_server_required("write a file to", port));
+                            }
+                            let Some(status) = delegated_firecracker_status(&sandbox).await? else {
+                                bail!("Sandbox '{}' not found", sandbox);
+                            };
+                            if status.status != "running" {
+                                bail!("Sandbox '{}' is not running", sandbox);
+                            }
+                            delegate_file_write_to_server(
+                                "127.0.0.1",
+                                port,
+                                &sandbox,
+                                &dst_path,
+                                &content,
+                            )
+                            .await?;
+                        } else {
+                            if !manager.is_running(&sandbox) {
+                                bail!("Sandbox '{}' is not running", sandbox);
+                            }
+                            manager.write_file(&sandbox, &dst_path, &content).await?;
+                        }
                         println!(
                             "Copied {} bytes from {} to {}:{}",
                             content.len(),
@@ -2403,7 +2444,7 @@ memory_mb = 512
 
             if firecracker {
                 bail!(
-                    "Interactive attach is not yet supported for server-owned Firecracker sandboxes; use 'agentkernel exec' or SSH instead"
+                    "Interactive attach is not yet supported for server-owned Firecracker sandboxes because the local API has no terminal streaming bridge; use 'agentkernel exec' or SSH instead"
                 );
             }
 
@@ -6074,21 +6115,46 @@ fn delegated_sandbox_uri(
         .map_err(|error| anyhow::anyhow!("invalid URI: {error}"))
 }
 
-async fn delegate_sandbox_request_to_server(
-    host: &str,
-    port: u16,
+fn delegated_file_uri(host: &str, port: u16, name: &str, path: &str) -> Result<hyper::Uri> {
+    crate::validation::validate_sandbox_name(name)?;
+    crate::backend::validate_sandbox_path(path)?;
+
+    let relative_path = path.strip_prefix('/').unwrap_or(path);
+    let encoded_path = relative_path
+        .split('/')
+        .map(|segment| urlencoding::encode(segment).into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
+    delegated_sandbox_uri(host, port, name, Some(&format!("files/{encoded_path}")))
+}
+
+async fn delegate_request_uri_to_server(
+    uri: hyper::Uri,
     method: hyper::Method,
-    name: &str,
-    suffix: Option<&str>,
     body: Option<serde_json::Value>,
     operation: &str,
+) -> Result<String> {
+    delegate_request_uri_to_server_with_authorization(
+        uri,
+        method,
+        body,
+        operation,
+        delegated_authorization_header(),
+    )
+    .await
+}
+
+async fn delegate_request_uri_to_server_with_authorization(
+    uri: hyper::Uri,
+    method: hyper::Method,
+    body: Option<serde_json::Value>,
+    operation: &str,
+    authorization: Option<String>,
 ) -> Result<String> {
     use http_body_util::{BodyExt, Full};
     use hyper::Request;
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
-
-    let uri = delegated_sandbox_uri(host, port, name, suffix)?;
 
     let body = body
         .map(|value| serde_json::to_vec(&value))
@@ -6101,10 +6167,8 @@ async fn delegate_sandbox_request_to_server(
         .method(method)
         .uri(uri)
         .header("content-type", "application/json");
-    if let Ok(api_key) = std::env::var("AGENTKERNEL_API_KEY")
-        && !api_key.is_empty()
-    {
-        request = request.header(hyper::header::AUTHORIZATION, format!("Bearer {api_key}"));
+    if let Some(header) = authorization {
+        request = request.header(hyper::header::AUTHORIZATION, header);
     }
     let req = request
         .body(Full::new(bytes::Bytes::from(body)))
@@ -6140,6 +6204,153 @@ async fn delegate_sandbox_request_to_server(
         }
         .into())
     }
+}
+
+fn delegated_authorization_header() -> Option<String> {
+    let api_key = std::env::var("AGENTKERNEL_API_KEY").ok();
+    delegated_authorization_header_for_key(api_key.as_deref())
+}
+
+fn delegated_authorization_header_for_key(api_key: Option<&str>) -> Option<String> {
+    api_key
+        .filter(|api_key| !api_key.is_empty())
+        .map(|api_key| format!("Bearer {api_key}"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DelegatedFileRead {
+    pub(crate) content: Vec<u8>,
+    pub(crate) size: usize,
+}
+
+fn parse_delegated_file_read(response: &str) -> Result<DelegatedFileRead> {
+    let response: serde_json::Value = serde_json::from_str(response)
+        .context("local API server returned an invalid file-read response")?;
+    if response.get("success").and_then(serde_json::Value::as_bool) != Some(true) {
+        let error = response
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown file-read failure");
+        bail!("local API server rejected file read: {error}");
+    }
+    let data = response.get("data").ok_or_else(|| {
+        anyhow::anyhow!("local API server file-read response did not include data")
+    })?;
+    let content = data
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!("local API server file-read response did not include content")
+        })?;
+    let encoding = data
+        .get("encoding")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!("local API server file-read response did not include encoding")
+        })?;
+    let size = data
+        .get("size")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|size| usize::try_from(size).ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!("local API server file-read response did not include size")
+        })?;
+
+    let content = match encoding {
+        "utf8" => content.as_bytes().to_vec(),
+        "base64" => base64::Engine::decode(&base64::engine::general_purpose::STANDARD, content)
+            .context("local API server returned invalid base64 file content")?,
+        other => bail!("local API server returned unsupported file encoding '{other}'"),
+    };
+    if content.len() != size {
+        bail!(
+            "local API server file-read response size mismatch: expected {size}, got {}",
+            content.len()
+        );
+    }
+    Ok(DelegatedFileRead { content, size })
+}
+
+fn parse_delegated_file_write_response(response: &str) -> Result<()> {
+    let response: serde_json::Value = serde_json::from_str(response)
+        .context("local API server returned an invalid file-write response")?;
+    if response.get("success").and_then(serde_json::Value::as_bool) == Some(true) {
+        Ok(())
+    } else {
+        let error = response
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown file-write failure");
+        bail!("local API server rejected file write: {error}")
+    }
+}
+
+pub(crate) async fn delegate_file_read_to_server(
+    host: &str,
+    port: u16,
+    name: &str,
+    path: &str,
+) -> Result<DelegatedFileRead> {
+    let uri = delegated_file_uri(host, port, name, path)?;
+    let response =
+        delegate_request_uri_to_server(uri, hyper::Method::GET, None, "file read").await?;
+    parse_delegated_file_read(&response)
+}
+
+pub(crate) async fn delegate_file_write_to_server(
+    host: &str,
+    port: u16,
+    name: &str,
+    path: &str,
+    content: &[u8],
+) -> Result<()> {
+    let uri = delegated_file_uri(host, port, name, path)?;
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, content);
+    let response = delegate_request_uri_to_server(
+        uri,
+        hyper::Method::PUT,
+        Some(serde_json::json!({"content": encoded, "encoding": "base64"})),
+        "file write",
+    )
+    .await?;
+    parse_delegated_file_write_response(&response)
+}
+
+pub(crate) async fn delegate_batch_file_write_to_server(
+    host: &str,
+    port: u16,
+    name: &str,
+    files: &std::collections::HashMap<String, String>,
+) -> Result<()> {
+    crate::validation::validate_sandbox_name(name)?;
+    if files.is_empty() {
+        bail!("files map is empty");
+    }
+    for path in files.keys() {
+        crate::backend::validate_sandbox_path(path)?;
+    }
+    let uri = delegated_sandbox_uri(host, port, name, Some("files"))?;
+    let response = delegate_request_uri_to_server(
+        uri,
+        hyper::Method::POST,
+        Some(serde_json::json!({"files": files})),
+        "batch file write",
+    )
+    .await?;
+    parse_delegated_file_write_response(&response)
+}
+
+async fn delegate_sandbox_request_to_server(
+    host: &str,
+    port: u16,
+    method: hyper::Method,
+    name: &str,
+    suffix: Option<&str>,
+    body: Option<serde_json::Value>,
+    operation: &str,
+) -> Result<String> {
+    let uri = delegated_sandbox_uri(host, port, name, suffix)?;
+    delegate_request_uri_to_server(uri, method, body, operation).await
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -6421,9 +6632,11 @@ fn delegated_exec_output(response: &str) -> Result<String> {
 mod tests {
     use super::{
         Cli, Commands, DelegatedHttpError, SandboxAction, config_has_build_settings,
-        delegate_exec_to_server, delegated_exec_failure, delegated_exec_output,
-        delegated_extend_ttl_expiry, delegated_request_timeout, delegated_sandbox_uri,
-        firecracker_server_required, parse_delegated_sandbox_status, resolve_batch_backend,
+        delegate_exec_to_server, delegate_request_uri_to_server_with_authorization,
+        delegated_authorization_header_for_key, delegated_exec_failure, delegated_exec_output,
+        delegated_extend_ttl_expiry, delegated_file_uri, delegated_request_timeout,
+        delegated_sandbox_uri, firecracker_server_required, parse_delegated_file_read,
+        parse_delegated_file_write_response, parse_delegated_sandbox_status, resolve_batch_backend,
         resolve_devcontainer, resolve_requested_backend, resolve_workspace_root,
         sandbox_connection_command, sandbox_uses_authoritative_server, should_build_run_image,
         try_server_health,
@@ -6535,6 +6748,101 @@ mod tests {
             extend.to_string(),
             "http://127.0.0.1:18888/sandboxes/demo/extend"
         );
+    }
+
+    #[test]
+    fn delegated_file_uri_preserves_path_segments_and_encodes_unsafe_bytes() {
+        let uri = delegated_file_uri("127.0.0.1", 18888, "demo", "/tmp/a file+#.txt").unwrap();
+        assert_eq!(
+            uri.to_string(),
+            "http://127.0.0.1:18888/sandboxes/demo/files/tmp/a%20file%2B%23.txt"
+        );
+        assert!(delegated_file_uri("127.0.0.1", 18888, "demo", "relative").is_err());
+        assert!(delegated_file_uri("127.0.0.1", 18888, "demo", "/tmp/../secret").is_err());
+    }
+
+    #[test]
+    fn delegated_file_read_response_decodes_utf8_and_base64() {
+        let utf8 = parse_delegated_file_read(
+            r#"{"success":true,"data":{"content":"hello","encoding":"utf8","size":5}}"#,
+        )
+        .unwrap();
+        assert_eq!(utf8.content, b"hello");
+        assert_eq!(utf8.size, 5);
+
+        let binary = parse_delegated_file_read(
+            r#"{"success":true,"data":{"content":"AP8=","encoding":"base64","size":2}}"#,
+        )
+        .unwrap();
+        assert_eq!(binary.content, [0, 255]);
+        assert!(
+            parse_delegated_file_read(
+                r#"{"success":true,"data":{"content":"hello","encoding":"utf8","size":4}}"#,
+            )
+            .is_err()
+        );
+        assert!(parse_delegated_file_read(r#"{"success":true,"data":{}}"#).is_err());
+        assert!(parse_delegated_file_read(r#"{"success":false,"error":"not found"}"#).is_err());
+    }
+
+    #[test]
+    fn delegated_file_write_response_requires_success_contract() {
+        assert!(parse_delegated_file_write_response(r#"{"success":true}"#).is_ok());
+        assert!(
+            parse_delegated_file_write_response(r#"{"success":false,"error":"denied"}"#).is_err()
+        );
+        assert!(parse_delegated_file_write_response("not json").is_err());
+    }
+
+    #[test]
+    fn delegated_requests_propagate_configured_bearer_auth() {
+        assert_eq!(
+            delegated_authorization_header_for_key(Some("secret")),
+            Some("Bearer secret".to_string())
+        );
+        assert_eq!(delegated_authorization_header_for_key(Some("")), None);
+        assert_eq!(delegated_authorization_header_for_key(None), None);
+    }
+
+    #[tokio::test]
+    async fn delegated_file_request_propagates_auth_and_parses_server_response() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let bytes_read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..bytes_read]);
+            assert!(request.contains("GET /sandboxes/demo/files/tmp/a%20file.txt HTTP/1.1"));
+            assert!(request.contains("authorization: Bearer secret"));
+
+            let body = r#"{"success":true,"data":{"content":"hello","encoding":"utf8","size":5}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let uri = delegated_file_uri("127.0.0.1", port, "demo", "/tmp/a file.txt").unwrap();
+        let response = delegate_request_uri_to_server_with_authorization(
+            uri,
+            hyper::Method::GET,
+            None,
+            "file read",
+            Some("Bearer secret".to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            parse_delegated_file_read(&response).unwrap().content,
+            b"hello"
+        );
+        server.await.unwrap();
     }
 
     #[test]
