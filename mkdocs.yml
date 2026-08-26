@@ -22,6 +22,8 @@ theme:
   features:
     - navigation.instant
     - navigation.tracking
+    - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.sections
     - navigation.expand
     - navigation.top
@@ -41,69 +43,74 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Getting Started:
-    - Overview: getting-started/index.md
-    - Installation: getting-started/installation.md
-    - Quick Start: getting-started/quick-start.md
-    - Comparisons: getting-started/comparisons.md
-    - Benchmarks: getting-started/benchmarks.md
-  - Features:
-    - Overview: features/index.md
-    - Secrets: features/secrets.md
-    - Browser Automation: features/browser-automation.md
-    - Desktop App: features/desktop-app.md
-    - Compliance Mapping: features/compliance-mapping.md
-  - Commands:
-    - Overview: commands/index.md
-    - run: commands/run.md
-    - receipt: commands/receipts.md
-    - create: commands/create.md
-    - start / stop: commands/start-stop.md
-    - exec / attach: commands/exec-attach.md
-    - list: commands/list.md
-    - secret: commands/secrets.md
-    - images: commands/images.md
-    - volumes: commands/volumes.md
-    - snapshots: commands/snapshots.md
-    - sessions: commands/sessions.md
-    - templates: commands/templates.md
-    - export / import: commands/export-import.md
-    - parallel: commands/parallel.md
-    - pipelines: commands/pipelines.md
-  - Configuration:
-    - Overview: config/index.md
-    - agentkernel.toml: config/toml.md
-    - Security Profiles: config/security.md
-    - Backends: config/backends.md
-  - AI Agents:
-    - Overview: agents/index.md
-    - Claude Code: agents/claude.md
-    - OpenAI Codex: agents/codex.md
-    - Google Gemini: agents/gemini.md
-    - Amp: agents/amp.md
-    - OpenCode: agents/opencode.md
-    - GitHub Copilot: agents/copilot.md
-    - Pi: agents/pi.md
-  - API:
-    - Overview: api/index.md
-    - HTTP API: api/http.md
-    - OpenAPI Spec: api/openapi.md
-    - MCP Server: api/mcp.md
-  - SDKs:
-    - Overview: sdks/index.md
-    - Node.js: sdks/nodejs.md
-    - Python: sdks/python.md
-    - Go: sdks/golang.md
-    - Rust: sdks/rust.md
-    - Swift: sdks/swift.md
-  - Operations:
-    - Overview: operations/index.md
-    - Backend compatibility: operations/backend-compatibility.md
-    - Firecracker full-state: operations/firecracker-full-state.md
-    - Kubernetes: operations/kubernetes.md
-    - Nomad: operations/nomad.md
-    - Deployment: operations/deploy.md
+  - Docs:
+    - Platform overview: platform-overview.md
+    - Getting Started:
+      - Overview: getting-started/index.md
+      - Installation: getting-started/installation.md
+      - Quick Start: getting-started/quick-start.md
+      - Comparisons: getting-started/comparisons.md
+      - Benchmarks: getting-started/benchmarks.md
+    - Features:
+      - Overview: features/index.md
+      - Secrets: features/secrets.md
+      - Browser Automation: features/browser-automation.md
+      - Desktop App: features/desktop-app.md
+      - Compliance Mapping: features/compliance-mapping.md
+    - Commands:
+      - Overview: commands/index.md
+      - run: commands/run.md
+      - receipt: commands/receipts.md
+      - create: commands/create.md
+      - start / stop: commands/start-stop.md
+      - exec / attach: commands/exec-attach.md
+      - list: commands/list.md
+      - secret: commands/secrets.md
+      - images: commands/images.md
+      - volumes: commands/volumes.md
+      - snapshots: commands/snapshots.md
+      - sessions: commands/sessions.md
+      - templates: commands/templates.md
+      - export / import: commands/export-import.md
+      - parallel: commands/parallel.md
+      - pipelines: commands/pipelines.md
+    - Configuration:
+      - Overview: config/index.md
+      - agentkernel.toml: config/toml.md
+      - Security Profiles: config/security.md
+      - Backends: config/backends.md
+    - AI Agents:
+      - Overview: agents/index.md
+      - Claude Code: agents/claude.md
+      - OpenAI Codex: agents/codex.md
+      - Google Gemini: agents/gemini.md
+      - Amp: agents/amp.md
+      - OpenCode: agents/opencode.md
+      - GitHub Copilot: agents/copilot.md
+      - Pi: agents/pi.md
+    - API:
+      - Overview: api/index.md
+      - HTTP API: api/http.md
+      - OpenAPI Spec: api/openapi.md
+      - MCP Server: api/mcp.md
+    - SDKs:
+      - Overview: sdks/index.md
+      - Node.js: sdks/nodejs.md
+      - Python: sdks/python.md
+      - Go: sdks/golang.md
+      - Rust: sdks/rust.md
+      - Swift: sdks/swift.md
+    - Operations:
+      - Overview: operations/index.md
+      - Backend compatibility: operations/backend-compatibility.md
+      - Firecracker full-state: operations/firecracker-full-state.md
+      - Kubernetes: operations/kubernetes.md
+      - Nomad: operations/nomad.md
+      - Deployment: operations/deploy.md
   - Changelog: changelog.md
+
+extra_css:
+  - stylesheets/home.css
 
 extra:
   social:
