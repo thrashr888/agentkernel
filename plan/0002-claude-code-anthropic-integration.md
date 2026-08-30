@@ -6,9 +6,11 @@
 
 **Date**: 2026-08-26
 
-**Last updated**: 2026-08-26
+**Last updated**: 2026-08-29
 
 **Tracking epic**: `agentkernel-mkfk`
+
+**Working-backwards PRFAQ**: [AgentKernel for Claude](0002-claude-code-anthropic-integration-prfaq.md)
 
 ## Decision requested
 
