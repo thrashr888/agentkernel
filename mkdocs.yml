@@ -45,8 +45,15 @@ nav:
     - Overview: getting-started/index.md
     - Installation: getting-started/installation.md
     - Quick Start: getting-started/quick-start.md
-    - Comparisons: getting-started/comparisons.md
+    - Choosing a Sandbox: getting-started/choosing-a-sandbox.md
     - Benchmarks: getting-started/benchmarks.md
+  - Comparisons:
+    - Overview: getting-started/comparisons.md
+    - AgentKernel vs E2B: comparisons/e2b.md
+    - AgentKernel vs Daytona: comparisons/daytona.md
+    - AgentKernel vs Docker: comparisons/docker.md
+  - Use Cases:
+    - AI Coding Agents: use-cases/coding-agents.md
   - Features:
     - Overview: features/index.md
     - Secrets: features/secrets.md

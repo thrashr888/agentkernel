@@ -1,3 +1,7 @@
+---
+title: "AgentKernel: sandboxes for AI coding agents"
+description: Run AI agent commands with local or hosted sandbox backends through a CLI, HTTP API, MCP server, and SDKs. Compare options and start your first sandbox.
+---
 
 # agentkernel
 
@@ -5,9 +9,14 @@
 
 AI coding agents execute arbitrary code on your machine. They install packages, modify files, run scripts, and shell out to system commands. That's what makes them useful -- and dangerous. A single hallucinated `rm -rf` or a compromised dependency runs with your full permissions, your credentials, your SSH keys.
 
-Docker helps, but it shares the host kernel. Container escapes are not theoretical -- they're documented CVEs. When the threat model is "an AI is running arbitrary code," you need stronger isolation than a namespace boundary.
+AgentKernel gives you a choice of execution backends. Firecracker provides a dedicated guest kernel on Linux/KVM; Apple Containers provides VM-backed Linux containers on supported Macs. Docker and Podman use container isolation. Choose the backend and permissions that fit your workload.
 
-agentkernel gives each sandbox its own virtual machine with a dedicated Linux kernel. Hardware-enforced memory boundaries via KVM. No shared kernel, no container escapes, no attack surface beyond the hypervisor. The same isolation model behind AWS Lambda (Firecracker), now available as a single binary for your dev machine.
+## Find your starting point
+
+- [Create your first sandbox](getting-started/quick-start.md) after [installation](getting-started/installation.md).
+- [Choose a sandbox for AI coding agents](getting-started/choosing-a-sandbox.md) by execution location, isolation, and integration.
+- Compare AgentKernel with [E2B](comparisons/e2b.md), [Daytona](comparisons/daytona.md), or [Docker Sandboxes](comparisons/docker.md).
+- [Connect an assistant through MCP](api/mcp.md) or follow the [coding agent workflow](use-cases/coding-agents.md).
 
 ## It's fast
 
