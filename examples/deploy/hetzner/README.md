@@ -1,6 +1,6 @@
 # Hetzner Cloud Deployment
 
-Bare metal-like performance at low cost. Ideal for production Firecracker deployments.
+Terraform example for a Docker-backed AgentKernel service on a Hetzner Cloud host. Firecracker requires separately verified Linux KVM access.
 
 ## Quick Start
 
@@ -17,15 +17,9 @@ terraform apply
 
 ## Server Types
 
-| Type | vCPU | RAM | Price/mo | Notes |
-|------|------|-----|----------|-------|
-| `cpx11` | 2 | 2GB | €4.49 | Development |
-| `cpx21` | 3 | 4GB | €8.98 | Small production |
-| `cpx31` | 4 | 8GB | €16.99 | Medium production |
-| `cpx41` | 8 | 16GB | €32.99 | Large production |
-| `cpx51` | 16 | 32GB | €65.99 | High performance |
-
-AMD EPYC CPUs with dedicated vCPUs - excellent for Firecracker.
+Choose a currently available server type for your workload and region. Check
+[Hetzner Cloud](https://www.hetzner.com/cloud/) for current resources and pricing.
+Dedicated vCPUs alone do not establish nested-virtualization support.
 
 ## Locations
 
@@ -52,7 +46,7 @@ allowed_ips     = ["1.2.3.4/32"]  # Restrict to your IP
 
 ## Firecracker Support
 
-Hetzner dedicated vCPU instances support nested virtualization:
+Do not assume a Cloud instance exposes nested virtualization. Confirm provider support and usable KVM access before selecting Firecracker:
 
 ```bash
 # SSH into server
@@ -61,7 +55,7 @@ ssh root@$(terraform output -raw server_ip)
 # Verify KVM
 ls -la /dev/kvm
 
-# agentkernel will auto-detect and use Firecracker
+# Firecracker must also be installed and usable; otherwise select Docker explicitly
 ```
 
 ## Persistent Storage
@@ -75,9 +69,8 @@ volume_size   = 50  # Increase if needed
 
 ## Costs
 
-- Server: €4.49 - €65.99/month
-- Volume: €0.052/GB/month
-- Traffic: 20TB included, then €1/TB
+Confirm current compute, volume, and network charges with the provider before
+applying the configuration.
 
 ## Destroy
 

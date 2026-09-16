@@ -1,7 +1,7 @@
 
 # Quick Start
 
-This guide walks you through your first sandbox.
+This guide walks you through your first sandbox. Complete [installation](installation.md) and run `agentkernel doctor` first. Automatic selection prefers available local runtimes but can fall back to a configured hosted provider. Use `--backend docker`, `--backend apple`, or `--backend firecracker` to require a specific execution location.
 
 ## One-Shot Commands
 
@@ -18,7 +18,7 @@ agentkernel run node -e "console.log('Hello from sandbox!')"
 agentkernel run sh -c "uname -a"
 ```
 
-The sandbox is automatically created, the command runs, and cleanup happens.
+The sandbox is automatically created, the command runs, and cleanup happens. The default moderate profile does not mount your project directory; these inline examples need no host files. For project tests, follow the [coding agent workflow](../use-cases/coding-agents.md).
 
 ## Persistent Sandboxes
 

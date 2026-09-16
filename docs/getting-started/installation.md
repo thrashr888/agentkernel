@@ -3,8 +3,8 @@
 
 ## Prerequisites
 
-- **Linux**: KVM-enabled host (most cloud VMs, bare metal)
-- **macOS**: Docker Desktop or Apple Containers (macOS 26+)
+- **Linux**: Docker/Podman for container execution, or installed Firecracker with usable `/dev/kvm` for microVMs. Cloud guests need explicit nested-virtualization support; do not assume it is available.
+- **macOS**: Docker Desktop/Podman, or the separately installed Apple `container` CLI on Apple Silicon with macOS 26+.
 - **Windows**: WSL2 with Docker (untested)
 
 ## Quick Install
@@ -27,10 +27,13 @@ This installs the `agentkernel` binary to `~/.local/bin/`.
 
 ### From Source
 
+Use Rust 1.89 or newer. Kubernetes, Nomad, and enterprise support are enabled by default; Hyperlight is optional.
+
 ```bash
 git clone https://github.com/thrashr888/agentkernel
 cd agentkernel
 cargo build --release
+mkdir -p ~/.local/bin
 cp target/release/agentkernel ~/.local/bin/
 ```
 
@@ -71,11 +74,19 @@ Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) and en
 
 ### macOS 26+ (Apple Containers)
 
-Apple Containers is built-in to macOS 26+. No additional setup required.
+Install the signed `container` package using [Apple's installation instructions](https://github.com/apple/container#initial-install), then start the service:
+
+```bash
+container system start
+container --version
+```
+
+AgentKernel starts the service on demand when needed, but the Apple CLI must already be installed. See [backend compatibility](../operations/backend-compatibility.md) for the version tested by this repository.
 
 ## Verify Installation
 
 ```bash
 agentkernel --version
+agentkernel doctor
 agentkernel run echo "Hello from sandbox!"
 ```

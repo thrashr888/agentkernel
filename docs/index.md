@@ -1,3 +1,7 @@
+---
+title: "AgentKernel: sandboxes for AI coding agents"
+description: Run AI agent commands with local or hosted sandbox backends through a CLI, HTTP API, MCP server, and SDKs. Compare options and start your first sandbox.
+---
 
 # agentkernel
 
@@ -5,23 +9,22 @@
 
 AI coding agents execute arbitrary code on your machine. They install packages, modify files, run scripts, and shell out to system commands. That's what makes them useful -- and dangerous. A single hallucinated `rm -rf` or a compromised dependency runs with your full permissions, your credentials, your SSH keys.
 
-Docker helps, but it shares the host kernel. Container escapes are not theoretical -- they're documented CVEs. When the threat model is "an AI is running arbitrary code," you need stronger isolation than a namespace boundary.
+AgentKernel gives you a choice of execution backends. Firecracker provides a dedicated guest kernel on Linux/KVM; Apple Containers provides VM-backed Linux containers on supported Macs. Docker and Podman use container isolation. Choose the backend and permissions that fit your workload.
 
-agentkernel gives each sandbox its own virtual machine with a dedicated Linux kernel. Hardware-enforced memory boundaries via KVM. No shared kernel, no container escapes, no attack surface beyond the hypervisor. The same isolation model behind AWS Lambda (Firecracker), now available as a single binary for your dev machine.
+## Find your starting point
 
-## It's fast
+- [Create your first sandbox](getting-started/quick-start.md) after [installation](getting-started/installation.md).
+- [Choose a sandbox for AI coding agents](getting-started/choosing-a-sandbox.md) by execution location, isolation, and integration.
+- Compare AgentKernel with [E2B](comparisons/e2b.md), [Daytona](comparisons/daytona.md), or [Docker Sandboxes](comparisons/docker.md).
+- [Connect an assistant through MCP](api/mcp.md) or follow the [coding agent workflow](use-cases/coding-agents.md).
 
-The usual knock on VMs is startup time. agentkernel sidesteps this entirely:
+## Measure the workflow you run
 
-| Mode | Latency |
-|------|---------|
-| Hyperlight pool (pre-warmed) | **<1&micro;s** |
-| Hyperlight (cold start) | ~41ms |
-| Firecracker daemon (warm pool) | ~195ms |
-| Docker (macOS) | ~220ms |
-| Podman (macOS) | ~300ms |
-
-Pre-warmed VM pools make execution feel instant. Cold starts are still faster than most container runtimes. The daemon maintains 3-5 pre-booted Firecracker VMs so commands execute in ~195ms vs ~800ms for cold starts -- a 4x speedup.
+Startup, pool acquisition, command execution, and full sandbox cleanup have
+different costs. AgentKernel includes a benchmark command and backend-specific
+harnesses so you can measure the path your agent uses. See the
+[benchmark methodology and historical results](getting-started/benchmarks.md)
+before comparing warm pools with cold starts.
 
 ## It's simple
 
@@ -35,8 +38,7 @@ agentkernel setup
 
 # Run any command in an isolated sandbox
 agentkernel run python3 -c "print('Hello from sandbox!')"
-agentkernel run npm test
-agentkernel run cargo build
+agentkernel run node -e "console.log(1 + 1)"
 
 # Create from a template
 agentkernel sandbox create my-project --template python
@@ -47,9 +49,9 @@ agentkernel exec my-project -- pytest
 agentkernel sandbox create --branch -B docker
 ```
 
-agentkernel auto-detects the runtime from your command or project files. Run `python3` and it pulls `python:3.12-alpine`. Run `cargo build` and it pulls `rust:1.85-alpine`. No configuration needed for 12+ languages -- JavaScript, Python, Rust, Go, Ruby, Java, C#, C/C++, PHP, Elixir, Terraform, and Shell.
+agentkernel auto-detects the runtime from your command or project files. Run `python3` and it pulls `python:3.12-alpine`. Run `cargo build` and it pulls `rust:1.85-alpine`. Image selection covers JavaScript, Python, Rust, Go, Ruby, Java, C#, C/C++, PHP, Elixir, Terraform, and Shell. Project files and dependencies still need to be supplied explicitly; the moderate profile does not mount your working directory. See the [coding agent workflow](use-cases/coding-agents.md).
 
-## It works with every agent
+## Connect your coding agent
 
 Claude Code, Codex, Gemini CLI, GitHub Copilot, Amp, OpenCode, Pi -- agentkernel runs them all. Each agent gets its own isolated sandbox with configurable security profiles.
 
@@ -63,13 +65,14 @@ agentkernel sandbox start my-project
 agentkernel attach my-project -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
 ```
 
-For Claude Code specifically, agentkernel ships as a plugin. Install it and Claude automatically sandboxes risky operations:
+For Claude Code, install the project integration to make sandbox tools and the `/sandbox` command available. Other host tools keep their own permissions:
 
 ```bash
-# In Claude Code
-/plugin install sandbox@thrashr888/agentkernel
-/sandbox npm test
-/sandbox cargo build
+# In your project terminal
+agentkernel plugin install claude
+
+# Then in Claude Code
+/sandbox python3 -c "print(1 + 1)"
 ```
 
 ## Security is configurable
@@ -84,17 +87,17 @@ Not every task needs maximum lockdown. agentkernel provides three security profi
 
 ```bash
 # Run with no network access and read-only filesystem
-agentkernel run --profile restrictive python3 script.py
+agentkernel run --profile restrictive python3 -c "print(1 + 1)"
 
 # Or toggle individual settings
 agentkernel run --no-network curl example.com  # Will fail
 ```
 
-## Secrets never enter the VM
+## Keep API keys on the host with proxy injection
 
 AI agents need API keys to call LLMs, but putting secrets inside sandboxes defeats the purpose of isolation. A compromised agent could exfiltrate your `ANTHROPIC_API_KEY` to any host.
 
-agentkernel solves this with **network-layer secret injection** -- the Gondolin pattern. A host-side HTTPS proxy intercepts outbound requests and injects credentials at the network layer, scoped to specific domains. The real secret never crosses the VM boundary.
+AgentKernel supports **network-layer secret injection** for compatible workloads. A host-side HTTPS proxy intercepts outbound requests and injects credentials at the network layer, scoped to specific domains. The real secret never crosses the VM boundary.
 
 ```bash
 # Inject API key into requests to api.openai.com only
@@ -106,7 +109,7 @@ agentkernel sandbox create my-agent --secret OPENAI_API_KEY:api.openai.com
 # echo $OPENAI_API_KEY → "ak-proxy-managed" (placeholder)
 ```
 
-The sandbox sees placeholder env vars so tools pass existence checks, but the real key stays on the host. Unauthorized domains are blocked. No other sandbox runtime offers this -- most inject secrets as env vars or mounted files, which a compromised agent can read and exfiltrate.
+With proxy injection, the sandbox sees placeholder environment values and the real key stays on the host. The proxy restricts the destinations it forwards to. File injection and explicit environment passthrough have a different contract: the workload can read those real credentials. See [secret delivery methods](features/secrets.md), and note that full-state Firecracker checkpoints currently reject sandboxes using host-side proxies.
 
 ## It runs everywhere
 
@@ -117,7 +120,7 @@ agentkernel covers local, cluster, and hosted backends behind the same CLI and H
 | Platform | Backend | Isolation |
 |----------|---------|-----------|
 | Linux (x86_64, aarch64) | Firecracker microVMs | Full VM isolation via KVM |
-| Linux (x86_64, aarch64) | Hyperlight Wasm | Hypervisor + Wasm sandbox (experimental) |
+| Linux (x86_64) | Hyperlight Wasm | Hypervisor + Wasm sandbox (experimental; [arm64 probe](operations/dependency-compatibility.md#hyperlight-arm64-exception)) |
 | macOS 26+ (Apple Silicon) | Apple Containers | Full VM isolation |
 | macOS (Apple Silicon, Intel) | Docker / Podman | Container isolation |
 
@@ -138,7 +141,7 @@ agentkernel covers local, cluster, and hosted backends behind the same CLI and H
 | Modal | `modal` | Hosted sandbox with tunnels, attach, and workspace snapshots |
 | Agent Computer | `agentcomputer` | Contract wired; live bundled adapter still pending |
 
-On Linux with KVM, you get Firecracker -- the same microVM technology that powers AWS Lambda and Fargate. On macOS 26+, Apple Containers provide native VM isolation. On older macOS or systems without KVM, Docker and Podman provide container-level isolation as a fallback. For team and cloud environments, deploy on [Kubernetes](operations/kubernetes.md) or [Nomad](operations/nomad.md) with warm pools, CRDs, and Helm/Nomad Pack support.
+On Linux with KVM and an installed Firecracker runtime, automatic selection prefers Firecracker. On macOS 26+, Apple Containers provide native VM isolation. On older macOS or systems without KVM, Docker and Podman provide container-level isolation as a fallback. For team and cloud environments, deploy on [Kubernetes](operations/kubernetes.md) or [Nomad](operations/nomad.md) with warm pools, CRDs, and Helm/Nomad Pack support.
 
 For team and multi-tenant deployments, Kubernetes, Nomad, Daytona, Runloop, E2B, and Modal keep the same sandbox lifecycle and command surface while moving execution off your laptop. See the [Backends Guide](config/backends.md) for the full matrix and the [Remote Backends Guide](operations/remote.md) for hosted setup, templates, and examples.
 
@@ -162,7 +165,7 @@ agentkernel sandbox create remote-e2b --backend e2b
 agentkernel sandbox create remote-modal --backend modal
 ```
 
-Cluster backends support warm pools for fast acquisition (~570ms one-shot latency) and scale to dozens of concurrent sandboxes per node. Hosted backends use the same sandbox lifecycle, with provider-side execution and managed `/workspace` sync.
+Cluster backends offer warm-pool workflows; capacity and latency depend on the cluster and workload. Hosted backends use the same sandbox lifecycle, with provider-side execution and managed `/workspace` sync.
 
 ## It has a complete workflow
 
@@ -198,7 +201,7 @@ agentkernel parallel \
 Per-branch sandboxes, image cache management, secrets vault, sandbox export/import, TTL-based auto-expiry, and garbage collection round out the developer experience.
 
 Filesystem snapshots and Firecracker full-state checkpoints have different
-guarantees. Full-state pause/resume/fork is initially restricted to Firecracker
+guarantees. Full-state pause/resume/fork remains a preview and is initially restricted to Firecracker
 1.16.1 on compatible x86_64 Linux/KVM hosts and never silently falls back on
 other backends. The CLI lifecycle commands delegate to a running
 `agentkernel serve` process that owns the VMM. Read the [full-state
@@ -211,7 +214,7 @@ Run agentkernel as an HTTP server for programmatic sandbox management:
 
 ```bash
 # As a background service (recommended)
-brew services start thrashr888/agentkernel/agentkernel
+brew services start agentkernel
 
 # Or run manually
 agentkernel serve --host 127.0.0.1 --port 18888
@@ -305,19 +308,16 @@ policy server for meaningful authorization.
 
 Build with `cargo build --features enterprise`. See [example policies](https://github.com/thrashr888/agentkernel/tree/main/examples/enterprise/policies) for RBAC, MFA enforcement, runtime restrictions, and org isolation patterns.
 
-## Docker vs. agentkernel
+## Docker vs. AgentKernel
 
-The comparison people ask about most:
+AgentKernel's Docker backend runs ordinary containers. Select Firecracker or
+Apple Containers when you need their VM boundaries and meet their host
+requirements. Docker's separate Sandboxes product also uses microVMs; it is not
+the same thing as an ordinary Docker container.
 
-| | Docker | agentkernel |
-|--|--------|-------------|
-| **Kernel** | Shared with host | Dedicated per sandbox |
-| **Escape risk** | Container escapes documented | Hardware-enforced isolation |
-| **Boot time** | 1-5 seconds | <1&micro;s (warm pool) to ~220ms |
-| **Memory overhead** | 50-100MB | <10MB |
-| **Setup** | Docker Desktop or daemon | Single binary, no daemon required |
-
-Docker is a great tool for packaging and deploying applications. agentkernel is purpose-built for running untrusted code. Different tools for different threat models.
+The [Docker Sandboxes comparison](comparisons/docker.md) explains these choices
+and the CLI, API, and MCP workflows. No isolation backend protects files and
+credentials you deliberately share with it.
 
 ## Get started
 
@@ -340,5 +340,5 @@ agentkernel run python3 -c "print('Hello from sandbox!')"
 - [Agents](agents/index.md) - Running Claude Code, Codex, Gemini CLI
 - [HTTP API](api/index.md) - Programmatic access
 - [SDKs](sdks/index.md) - Client libraries for [Node.js](sdks/nodejs.md), [Python](sdks/python.md), [Go](sdks/golang.md), [Rust](sdks/rust.md), [Swift](sdks/swift.md)
-- [Benchmarks](getting-started/benchmarks.md) - Performance numbers for every backend
+- [Benchmarks](getting-started/benchmarks.md) - Measurement methods and historical results
 - [Comparisons](getting-started/comparisons.md) - How agentkernel compares to E2B, Daytona, Docker, and others

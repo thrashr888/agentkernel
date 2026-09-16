@@ -1,7 +1,9 @@
 
 # Deploying agentkernel
 
-Run agentkernel as a service locally, in the cloud, or on Kubernetes/Nomad clusters.
+Run agentkernel as a service locally, in the cloud, or on Kubernetes/Nomad clusters. Commands using `examples/` or `deploy/` paths assume a repository checkout.
+
+Starting the HTTP service alone does not provide a sandbox runtime. Verify Docker/Podman access, usable Linux KVM for Firecracker, or a configured remote backend on the deployment host. A dedicated CPU plan does not establish nested-virtualization support.
 
 ## Quick Start
 
@@ -10,7 +12,7 @@ Run agentkernel as a service locally, in the cloud, or on Kubernetes/Nomad clust
 | [Docker Compose](#docker-compose) | Easy | 2 min | Local dev, small teams |
 | [Fly.io](#flyio) | Easy | 5 min | Quick cloud deploy |
 | [Railway](#railway) | Easy | 5 min | Prototyping |
-| [Hetzner](#hetzner-cloud) | Medium | 15 min | Production, Firecracker |
+| [Hetzner](#hetzner-cloud) | Medium | 15 min | Docker-backed service on a managed host |
 | [Kubernetes](#kubernetes) | Complex | 30 min | Enterprise |
 | [Nomad](#nomad) | Medium | 15 min | HashiCorp shops |
 
@@ -29,7 +31,7 @@ Local multi-container setup for development and small teams.
 
 ```bash
 cd examples/deploy/docker-compose
-docker-compose up -d
+docker compose up -d
 
 # Check health
 curl http://localhost:18888/health
@@ -39,10 +41,10 @@ With HTTPS via Caddy:
 
 ```bash
 # Edit Caddyfile with your domain
-docker-compose --profile with-proxy up -d
+docker compose --profile with-proxy up -d
 ```
 
-See [`examples/deploy/docker-compose/`](../examples/deploy/docker-compose/) for full configuration.
+See [`examples/deploy/docker-compose/`](https://github.com/thrashr888/agentkernel/tree/main/examples/deploy/docker-compose) for full configuration.
 
 ## Fly.io
 
@@ -61,9 +63,9 @@ fly deploy
 fly secrets set AGENTKERNEL_API_KEY=your-key
 ```
 
-Costs: ~$5-10/month (shared CPU), ~$30-60/month (dedicated CPU for Firecracker).
+Check the provider's current pricing and runtime capabilities before deployment. The example does not establish that Firecracker can run inside the selected Fly Machine.
 
-See [`examples/deploy/fly/`](../examples/deploy/fly/) for details.
+See [`examples/deploy/fly/`](https://github.com/thrashr888/agentkernel/tree/main/examples/deploy/fly) for details.
 
 ## Railway
 
@@ -83,11 +85,11 @@ railway up
 
 Or use the deploy button: [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/v6tIeu?referralCode=gieWq1)
 
-See [`examples/deploy/railway/`](../examples/deploy/railway/) for details.
+See [`examples/deploy/railway/`](https://github.com/thrashr888/agentkernel/tree/main/examples/deploy/railway) for details.
 
 ## Hetzner Cloud
 
-Bare metal-like performance at low cost. Best for production Firecracker deployments.
+Terraform configuration for a Hetzner Cloud host running the service with Docker. Verify `/dev/kvm` access separately before choosing Firecracker.
 
 ```bash
 cd examples/deploy/hetzner
@@ -100,9 +102,9 @@ terraform init
 terraform apply
 ```
 
-Costs: €4.49-65.99/month depending on server size.
+Select a server size and region for your workload and confirm current provider pricing.
 
-See [`examples/deploy/hetzner/`](../examples/deploy/hetzner/) for Terraform configuration.
+See [`examples/deploy/hetzner/`](https://github.com/thrashr888/agentkernel/tree/main/examples/deploy/hetzner) for Terraform configuration.
 
 ## Kubernetes
 
@@ -123,16 +125,16 @@ kubectl -n agentkernel port-forward svc/agentkernel 18888:18888
 
 For advanced deployments, see:
 - [Kubernetes Backend](kubernetes.md) - Full orchestration docs
-- [Enterprise CRDs](enterprise.md) - AgentKernelPolicy resources
+- [Enterprise CRDs](kubernetes.md#agentkernelpolicy-crd-enterprise) - AgentKernelPolicy resources
 
-See [`examples/deploy/kubernetes/`](../examples/deploy/kubernetes/) for manifests.
+See [`examples/deploy/kubernetes/`](https://github.com/thrashr888/agentkernel/tree/main/examples/deploy/kubernetes) for manifests.
 
 ## Nomad
 
 Deploy as a Nomad job:
 
 ```bash
-nomad job run agentkernel.nomad
+nomad job run deploy/nomad/agentkernel.nomad.hcl
 ```
 
 See [Nomad Backend](nomad.md) for full configuration.
@@ -142,12 +144,12 @@ See [Nomad Backend](nomad.md) for full configuration.
 If you prefer to build from source:
 
 ```bash
-# All features
+# Default features include Kubernetes, Nomad, and enterprise policy support
 cargo build --release --features kubernetes,nomad
 
-# Or specific backend
-cargo build --release --features kubernetes
-cargo build --release --features nomad
+# Or build only a specific optional backend
+cargo build --release --no-default-features --features kubernetes
+cargo build --release --no-default-features --features nomad
 ```
 
 ## Environment Variables
@@ -155,13 +157,12 @@ cargo build --release --features nomad
 | Variable | Description |
 |----------|-------------|
 | `AGENTKERNEL_API_KEY` | API key for HTTP authentication |
-| `AGENTKERNEL_HOST` | Bind address (default: 127.0.0.1) |
-| `AGENTKERNEL_PORT` | Listen port (default: 18888) |
-| `AGENTKERNEL_TLS_CERT` | Path to TLS certificate |
-| `AGENTKERNEL_TLS_KEY` | Path to TLS private key |
+| `AGENTKERNEL_CONTROL_SOCKET` | Private local CLI/MCP control socket; use the same path on server and clients |
 | `KUBECONFIG` | Path to kubeconfig (Kubernetes backend) |
 | `NOMAD_ADDR` | Nomad API address |
 | `NOMAD_TOKEN` | Nomad ACL token |
+
+Set the listener with `agentkernel serve --host 127.0.0.1 --port 18888`. Configure TLS with `--tls --tls-cert /path/cert.pem --tls-key /path/key.pem`. `AGENTKERNEL_PORT` selects the delegated CLI control port; it does not replace the server's `--port` flag.
 
 ## Using the HTTP API
 
@@ -176,11 +177,13 @@ curl -X POST http://agentkernel:18888/sandboxes \
 
 # Execute a command
 curl -X POST http://agentkernel:18888/sandboxes/my-sandbox/exec \
+  -H "Authorization: Bearer $AGENTKERNEL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"command": ["python", "-c", "print(42)"]}'
 
 # Delete the sandbox
-curl -X DELETE http://agentkernel:18888/sandboxes/my-sandbox
+curl -X DELETE http://agentkernel:18888/sandboxes/my-sandbox \
+  -H "Authorization: Bearer $AGENTKERNEL_API_KEY"
 ```
 
 See [HTTP API Reference](../api/http.md) for the full endpoint list.
