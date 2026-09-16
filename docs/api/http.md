@@ -7,7 +7,7 @@ agentkernel includes a REST API for programmatic sandbox management.
 
 ```bash
 # As a background service (recommended — survives reboots)
-brew services start thrashr888/agentkernel/agentkernel
+brew services start agentkernel
 
 # Or start manually on default port (18888)
 agentkernel serve
@@ -38,6 +38,14 @@ agentkernel serve --otel-endpoint http://localhost:4318 \
   --webhook-url http://hook1.example.com \
   --webhook-url http://hook2.example.com
 ```
+
+## Private local control socket
+
+For CLI/MCP delegation alongside a TLS-only TCP listener, use
+`--control-socket /absolute/private/path/api.sock` or `[api].control_socket`.
+Set `AGENTKERNEL_CONTROL_SOCKET` to that same path in clients. See the
+[Firecracker control transport example](../operations/firecracker-full-state.md#lifecycle)
+for directory permissions, TLS setup, and authentication.
 
 ## Authentication
 
@@ -248,7 +256,7 @@ POST /run
 ```bash
 curl -X POST http://localhost:18888/run \
   -H "Content-Type: application/json" \
-  -d '{"command": ["python3", "-c", "print(1+1)"]}'
+  -d '{"command": ["python3", "-c", "print(1+1)"], "fast": false}'
 ```
 
 ```json
@@ -263,8 +271,8 @@ curl -X POST http://localhost:18888/run \
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `command` | array | Yes | Command and arguments |
-| `image` | string | No | Docker image (auto-detected if omitted) |
-| `profile` | string | No | Security profile |
+| `image` | string | No | Docker image on the non-fast path (auto-detected if omitted) |
+| `profile` | string | No | Security profile on the non-fast path |
 | `fast` | bool | No | Use container pool (default: true) |
 
 ### Run Command (Streaming)
@@ -278,7 +286,7 @@ POST /run/stream
 ```bash
 curl -X POST http://localhost:18888/run/stream \
   -H "Content-Type: application/json" \
-  -d '{"command": ["python3", "long_script.py"]}'
+  -d '{"command": ["python3", "-u", "-c", "import time; print(1); time.sleep(1); print(2)"], "fast": false}'
 ```
 
 **Response (SSE stream):**
@@ -374,7 +382,7 @@ curl -X POST http://localhost:18888/sandboxes \
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | Yes | Sandbox name |
-| `image` | string | No | Docker image (auto-detected if omitted) |
+| `image` | string | No | Docker image on the non-fast path (auto-detected if omitted) |
 | `vcpus` | integer | No | Number of vCPUs (default: 1) |
 | `memory_mb` | integer | No | Memory in MB (default: 512) |
 | `profile` | string | No | Security profile: `permissive`, `moderate`, `restrictive` |

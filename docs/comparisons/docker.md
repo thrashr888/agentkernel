@@ -32,7 +32,7 @@ Neither a VM nor a container protects files and credentials you deliberately sha
 With Docker running and [AgentKernel installed](../getting-started/installation.md):
 
 ```bash
-agentkernel run --backend docker --fast=false --image python:3.12-alpine -- python3 -c "print('hello from Docker')"
+agentkernel run --backend docker --image python:3.12-alpine -- python3 -c "print('hello from Docker')"
 ```
 
 This explicitly selects a Docker container. To evaluate a VM backend, follow its setup instructions and select that backend explicitly. Do not infer the backend from the command's successful output.

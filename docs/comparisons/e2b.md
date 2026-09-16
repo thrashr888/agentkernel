@@ -28,13 +28,13 @@ Local execution still uses your compute, storage, and maintenance time. An agent
 
 ## Try the same command locally
 
-[Install AgentKernel and configure a backend](../getting-started/installation.md), then run:
+[Install AgentKernel and configure a backend](../getting-started/installation.md), then run with Docker available:
 
 ```bash
-agentkernel run python3 -c "print(sum([1, 2, 3]))"
+agentkernel run --backend docker python3 -c "print(sum([1, 2, 3]))"
 ```
 
-The expected output is `6`. This is a shell-command smoke test. E2B's code interpreter exposes execution results and logs through its SDK; replacing that API with a shell command does not preserve notebook state, rich outputs, or exception handling automatically.
+This trial explicitly uses local Docker container isolation. Select a different local backend only after completing its setup. The expected output is `6`. This is a shell-command smoke test. E2B's code interpreter exposes execution results and logs through its SDK; replacing that API with a shell command does not preserve notebook state, rich outputs, or exception handling automatically.
 
 For a migration, first port one representative job. Recreate its dependencies, copy only its required input files, compare output and exit status, and then test timeout and cleanup behavior. AgentKernel and E2B SDKs are not drop-in replacements.
 

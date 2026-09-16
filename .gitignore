@@ -37,3 +37,7 @@ scripts/node_modules/
 
 # Beads / Dolt files (added by bd init)
 .beads-credential-key
+
+# Local documentation build environment and generated site
+.venv-docs/
+/site/

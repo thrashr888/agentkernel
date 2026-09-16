@@ -76,7 +76,7 @@ brew tap thrashr888/tap && brew install agentkernel
 
 ```bash
 # As a background service (recommended — survives reboots)
-brew services start thrashr888/agentkernel/agentkernel
+brew services start agentkernel
 
 # Or run manually
 agentkernel serve

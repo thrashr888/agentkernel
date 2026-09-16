@@ -13,6 +13,8 @@ The bundled bridge currently ships live adapters for:
 
 ## Prerequisites
 
+The commands below assume a repository checkout containing `scripts/`. A standalone installed binary does not include these JavaScript dependencies.
+
 ```bash
 npm install --prefix scripts
 node --version   # Node.js 20+
@@ -152,7 +154,7 @@ agentkernel snapshot take my-runloop --name my-runloop-snap
 
 ## Examples
 
-- [examples/remote-daytona/README.md](../../examples/remote-daytona/README.md)
-- [examples/remote-runloop/README.md](../../examples/remote-runloop/README.md)
-- [examples/remote-e2b/README.md](../../examples/remote-e2b/README.md)
-- [examples/remote-modal/README.md](../../examples/remote-modal/README.md)
+- [examples/remote-daytona/README.md](https://github.com/thrashr888/agentkernel/tree/main/examples/remote-daytona)
+- [examples/remote-runloop/README.md](https://github.com/thrashr888/agentkernel/tree/main/examples/remote-runloop)
+- [examples/remote-e2b/README.md](https://github.com/thrashr888/agentkernel/tree/main/examples/remote-e2b)
+- [examples/remote-modal/README.md](https://github.com/thrashr888/agentkernel/tree/main/examples/remote-modal)

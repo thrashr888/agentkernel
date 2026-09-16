@@ -17,16 +17,16 @@ agentkernel run [OPTIONS] <COMMAND>...
 | `--build` | Build and use the current project's Dockerfile. Conflicts with `--image` and `--fast`. |
 | `-p, --profile <PROFILE>` | Security profile: `permissive`, `moderate`, `restrictive` |
 | `-k, --keep` | Keep the sandbox after execution (for debugging) |
-| `-F, --fast` | Use container pool for faster startup (default: true) |
+| `-F, --fast` | Opt into the container pool (default: off) |
 | `-c, --config <FILE>` | Path to agentkernel.toml config file |
 | `--devcontainer <FILE>` | Path to a JSONC Development Container file |
 | `--auto-devcontainer` | Detect `.devcontainer/devcontainer.json` in the project |
 | `-B, --backend <BACKEND>` | Backend: `docker`, `podman`, `firecracker`, `apple`, etc. |
 | `--template <NAME>` | Use a template (built-in, local, `github:owner/repo/path`, or file) |
 | `--ttl <DURATION>` | TTL for kept sandboxes (e.g. `1h`, `30m`, `3d`; default: `1h`) |
-| `--branch` | Use git project+branch as sandbox name (reuses existing sandbox) |
+| `--branch` | Derive the name from git on the multi-step path. See the lifecycle limitation below. |
 | `--no-network` | Disable network access |
-| `-P, --publish <PORT>` | Port mapping (e.g. `8080:80`, `3000`). Repeatable. Requires `--fast=false`. |
+| `-P, --publish <PORT>` | Port mapping (e.g. `8080:80`, `3000`). Repeatable. Omit `--fast`. |
 | `--ssh` | Enable SSH access to the sandbox |
 | `-S, --secret <BINDING>` | Bind a secret to a host via proxy (`KEY:host`, `KEY=value:host`, `KEY:host:header`). Repeatable. |
 | `--secret-file <KEY>` | Inject a vault secret as a file inside the sandbox. Repeatable. |
@@ -44,8 +44,8 @@ agentkernel run python3 -c "print('hello')"
 # Auto-detects node image
 agentkernel run node -e "console.log('hello')"
 
-# Run a script
-agentkernel run python3 script.py
+# Run inline code without mounting host files
+agentkernel run python3 -c "print(1 + 1)"
 ```
 
 ### Specify image
@@ -98,26 +98,34 @@ agentkernel exec <sandbox-name> -- cat /tmp/debug.log
 
 ### Branch-aware execution
 
-```bash
-# Reuses sandbox named after your git project + branch
-# On branch "feature/auth" in project "myapp" → sandbox "myapp-feature-auth"
-agentkernel run --branch -- npm test
+For a predictable per-branch lifecycle, create and manage the sandbox explicitly:
 
-# Subsequent runs reuse the same sandbox (faster, state preserved)
-agentkernel run --branch -- npm run lint
+```bash
+# Prints the generated project-and-branch sandbox name
+agentkernel sandbox create --branch --backend docker --image python:3.12-alpine
+
+# Use the printed name (example: myapp-feature-auth)
+agentkernel sandbox start myapp-feature-auth
+agentkernel exec myapp-feature-auth -- python3 -c "print(1 + 1)"
+agentkernel sandbox stop myapp-feature-auth
 ```
+
+`run --branch` currently reaches name/reuse handling only on the multi-step
+path; an ephemeral backend can bypass it. A retained container is stopped after
+`run --keep`, and reuse does not automatically restart it. Use explicit lifecycle
+commands when you need to control that state.
 
 ### Port mapping
 
 ```bash
-# Run a web server with port mapping (requires --fast=false)
-agentkernel run -p 8080:80 --fast=false python3 -m http.server 80
+# Run a web server with port mapping
+agentkernel run -P 8080:80 python3 -m http.server 80
 
 # Multiple ports
-agentkernel run -p 8080:80 -p 3000:3000 --fast=false node server.js
+agentkernel run -P 8080:80 -P 3000:3000 node -e '[80,3000].forEach(port => require("http").createServer((req,res) => res.end("hello")).listen(port, "0.0.0.0"))'
 ```
 
-Note: Port mapping is not compatible with `--fast` mode (container pool). Use `--fast=false` or omit `--fast` when using `-p`.
+Note: Port mapping is not compatible with `--fast` mode (container pool). Omit `--fast` when using `-P`/`--publish`. Lowercase `-p` selects the security profile for `run`; `sandbox create` uses lowercase `-p` for publishing ports.
 
 ### From a template
 
@@ -156,10 +164,8 @@ Override with `--image` when needed, or pass `--build` to build the current proj
 
 ## Exit Codes
 
-The command returns the exit code from the executed command, or:
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | Command failed |
-| 125 | agentkernel error (sandbox creation failed, etc.) |
+A successful command returns `0`; command or runtime failures return nonzero.
+The CLI does not consistently preserve a guest's numeric exit code across
+backends and error paths, and it does not reserve `125` for runtime failures.
+Use the reported error and, where supported, the execution receipt's outcome to
+inspect the guest failure.

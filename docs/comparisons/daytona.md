@@ -26,13 +26,13 @@ Daytona is worth evaluating when your application benefits from its integrated e
 
 ## Try a local sandbox
 
-After [installation and backend setup](../getting-started/installation.md):
+After [installation and backend setup](../getting-started/installation.md), with Docker available:
 
 ```bash
-agentkernel run node -e "console.log('sandbox ready')"
+agentkernel run --backend docker node -e "console.log('sandbox ready')"
 ```
 
-The expected output is `sandbox ready`. For a repeatable session, follow the [persistent sandbox quickstart](../getting-started/quick-start.md#persistent-sandboxes).
+This trial explicitly uses local Docker container isolation. Select a different local backend only after completing its setup. The expected output is `sandbox ready`. For a repeatable session, follow the [persistent sandbox quickstart](../getting-started/quick-start.md#persistent-sandboxes).
 
 Before moving an existing Daytona workload, list its image dependencies, files, secrets, ports, and lifecycle assumptions. Port one job and verify its results and cleanup. Rebuild the environment from its source definition; do not assume provider snapshots or saved process state are portable.
 
