@@ -18,6 +18,7 @@ mod devcontainer;
 mod docker_backend;
 mod durable_storage;
 mod events;
+mod cloud_hypervisor_client;
 mod firecracker_client;
 mod full_state;
 mod git_utils;
@@ -139,7 +140,7 @@ enum Commands {
         /// Use container pool for faster execution (skips create/destroy overhead)
         #[arg(short = 'F', long)]
         fast: bool,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, cloudhypervisor, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
         /// Template to use (built-in name, local name, github:owner/repo/path, or file path)
@@ -212,6 +213,9 @@ enum Commands {
         /// Run non-interactively with defaults
         #[arg(short = 'y', long)]
         yes: bool,
+        /// Explicit runtimes to install
+        #[arg(long, value_delimiter = ',')]
+        runtimes: Option<Vec<String>>,
     },
     /// Initialize a new agentkernel.toml in the current directory
     Init {
@@ -508,7 +512,7 @@ enum SandboxAction {
         /// Create an AgentKernel-managed Git worktree for the mounted project
         #[arg(long)]
         git_worktree: bool,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, cloudhypervisor, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
         /// Template to use (built-in name, local name, github:owner/repo/path, or file path)
@@ -570,7 +574,7 @@ enum SandboxAction {
     Start {
         /// Name of the sandbox to start
         name: String,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, cloudhypervisor, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
     },
@@ -991,8 +995,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Setup { yes } => {
-            run_setup(yes).await?;
+        Commands::Setup { yes, runtimes } => {
+            run_setup(yes, runtimes).await?;
         }
         Commands::Template { action } => match action {
             TemplateAction::List => {

@@ -11,6 +11,7 @@ pub mod container_network;
 pub mod cow;
 pub mod docker_backend;
 pub mod durable_storage;
+pub mod cloud_hypervisor_client;
 pub mod firecracker_client;
 pub mod full_state;
 mod git_worktree;

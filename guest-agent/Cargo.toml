@@ -2,7 +2,7 @@
 name = "agentkernel-guest"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.85"
 description = "Guest agent for agentkernel microVMs"
 authors = ["Paul Thrasher <thrashr888@gmail.com>"]
 license = "MIT"
