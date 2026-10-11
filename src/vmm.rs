@@ -3191,7 +3191,7 @@ impl VmManager {
                 "amp" => Some(
                     "npm install -g --allow-scripts=@ampcode/cli @ampcode/cli@0.0.1787342526-gc11bfb",
                 ),
-                "pi" => Some("npm install -g @earendil-works/pi-coding-agent@0.84.2"),
+                "pi" => Some("npm install -g @earendil-works/pi-coding-agent@1.0.1"),
                 "copilot" => Some("npm install -g @github/copilot@1.0.80"),
                 _ => None,
             };

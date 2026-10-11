@@ -13,7 +13,7 @@
 
 FROM node:24-alpine3.24
 
-ARG PI_VERSION=0.84.2
+ARG PI_VERSION=1.0.1
 
 # Install essential tools
 RUN apk add --no-cache \

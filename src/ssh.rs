@@ -85,15 +85,18 @@ AcceptEnv LANG LC_*
 pub fn generate_ca_keypair() -> Result<(String, String)> {
     let mut rng = ssh_key::rand_core::OsRng;
     let private_key = PrivateKey::random(&mut rng, Algorithm::Ed25519)
+        .map_err(anyhow::Error::msg)
         .context("Failed to generate CA ed25519 keypair")?;
 
     let private_pem = private_key
         .to_openssh(LineEnding::LF)
+        .map_err(anyhow::Error::msg)
         .context("Failed to encode CA private key")?;
 
     let public_openssh = private_key
         .public_key()
         .to_openssh()
+        .map_err(anyhow::Error::msg)
         .context("Failed to encode CA public key")?;
 
     Ok((private_pem.to_string(), public_openssh))
@@ -105,15 +108,18 @@ pub fn generate_ca_keypair() -> Result<(String, String)> {
 fn generate_host_keypair() -> Result<(String, String)> {
     let mut rng = ssh_key::rand_core::OsRng;
     let private_key = PrivateKey::random(&mut rng, Algorithm::Ed25519)
+        .map_err(anyhow::Error::msg)
         .context("Failed to generate host ed25519 keypair")?;
 
     let private_pem = private_key
         .to_openssh(LineEnding::LF)
+        .map_err(anyhow::Error::msg)
         .context("Failed to encode host private key")?;
 
     let public_openssh = private_key
         .public_key()
         .to_openssh()
+        .map_err(anyhow::Error::msg)
         .context("Failed to encode host public key")?;
 
     Ok((private_pem.to_string(), public_openssh))
@@ -228,10 +234,12 @@ pub fn sign_client_key_local(
     principals: &[&str],
     ttl_secs: u64,
 ) -> Result<String> {
-    let ca_key =
-        PrivateKey::from_openssh(ca_private_key).context("Failed to parse CA private key")?;
+    let ca_key = PrivateKey::from_openssh(ca_private_key)
+        .map_err(anyhow::Error::msg)
+        .context("Failed to parse CA private key")?;
 
     let client_pubkey = ssh_key::PublicKey::from_openssh(client_public_key)
+        .map_err(anyhow::Error::msg)
         .context("Failed to parse client public key")?;
 
     let mut rng = ssh_key::rand_core::OsRng;
@@ -248,19 +256,23 @@ pub fn sign_client_key_local(
         valid_after,
         valid_before,
     )
+    .map_err(anyhow::Error::msg)
     .context("Failed to create certificate builder")?;
 
     builder
         .cert_type(certificate::CertType::User)
+        .map_err(anyhow::Error::msg)
         .context("Failed to set cert type")?;
 
     builder
         .key_id("agentkernel-client")
+        .map_err(anyhow::Error::msg)
         .context("Failed to set key id")?;
 
     for principal in principals {
         builder
             .valid_principal(principal.to_string())
+            .map_err(anyhow::Error::msg)
             .context("Failed to add principal")?;
     }
 
@@ -275,14 +287,18 @@ pub fn sign_client_key_local(
     ] {
         builder
             .extension(*ext, "")
+            .map_err(anyhow::Error::msg)
             .context("Failed to add extension")?;
     }
 
     let cert = builder
         .sign(&ca_key)
+        .map_err(anyhow::Error::msg)
         .context("Failed to sign client certificate")?;
 
-    cert.to_openssh().context("Failed to encode certificate")
+    cert.to_openssh()
+        .map_err(anyhow::Error::msg)
+        .context("Failed to encode certificate")
 }
 
 /// Generate an ephemeral ed25519 client keypair.
@@ -291,15 +307,18 @@ pub fn sign_client_key_local(
 pub fn generate_client_keypair() -> Result<(String, String)> {
     let mut rng = ssh_key::rand_core::OsRng;
     let private_key = PrivateKey::random(&mut rng, Algorithm::Ed25519)
+        .map_err(anyhow::Error::msg)
         .context("Failed to generate client ed25519 keypair")?;
 
     let private_pem = private_key
         .to_openssh(LineEnding::LF)
+        .map_err(anyhow::Error::msg)
         .context("Failed to encode client private key")?;
 
     let public_openssh = private_key
         .public_key()
         .to_openssh()
+        .map_err(anyhow::Error::msg)
         .context("Failed to encode client public key")?;
 
     Ok((private_pem.to_string(), public_openssh))
@@ -544,6 +563,13 @@ mod tests {
     }
 
     #[test]
+    fn test_ssh_signing_keys_keep_zeroize_on_drop() {
+        // This dalek version implements Drop only when its zeroize feature is
+        // enabled. Do not rely on the unrelated JWT provider to enable it.
+        assert!(std::mem::needs_drop::<ssh_ed25519_dalek::SigningKey>());
+    }
+
+    #[test]
     fn test_generate_ca_keypair() {
         let (private_key, public_key) = generate_ca_keypair().unwrap();
 
@@ -603,7 +629,7 @@ mod tests {
 
     #[test]
     fn test_sign_client_key_local() {
-        let (ca_priv, _ca_pub) = generate_ca_keypair().unwrap();
+        let (ca_priv, ca_pub) = generate_ca_keypair().unwrap();
 
         // Generate a client keypair
         let mut rng = ssh_key::rand_core::OsRng;
@@ -623,6 +649,19 @@ mod tests {
 
         // Verify the cert includes permit-pty and other standard extensions
         let parsed = ssh_key::Certificate::from_openssh(&cert).unwrap();
+        let ca_public = ssh_key::PublicKey::from_openssh(&ca_pub).unwrap();
+        let fingerprint = ca_public.fingerprint(ssh_key::HashAlg::Sha256);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        parsed.validate_at(now, [&fingerprint]).unwrap();
+        let (_, unrelated_ca) = generate_ca_keypair().unwrap();
+        let unrelated_fingerprint = ssh_key::PublicKey::from_openssh(&unrelated_ca)
+            .unwrap()
+            .fingerprint(ssh_key::HashAlg::Sha256);
+        assert!(parsed.validate_at(now, [&unrelated_fingerprint]).is_err());
+        assert!(parsed.validate_at(now + 3600, [&fingerprint]).is_err());
         let extensions = parsed.extensions();
         assert!(
             extensions.get("permit-pty").is_some(),
@@ -630,6 +669,17 @@ mod tests {
         );
         assert!(extensions.get("permit-port-forwarding").is_some());
         assert!(extensions.get("permit-agent-forwarding").is_some());
+    }
+
+    #[test]
+    fn test_sign_client_key_preserves_invalid_key_errors() {
+        let error = sign_client_key_local("invalid", "invalid", &["sandbox"], 1800).unwrap_err();
+        assert_eq!(error.to_string(), "Failed to parse CA private key");
+        assert!(error.chain().count() > 1);
+        let (ca_priv, _) = generate_ca_keypair().unwrap();
+        let error = sign_client_key_local(&ca_priv, "invalid", &["sandbox"], 1800).unwrap_err();
+        assert_eq!(error.to_string(), "Failed to parse client public key");
+        assert!(error.chain().count() > 1);
     }
 
     #[test]

@@ -11,7 +11,14 @@
   "dependencies": {
     "@daytona/sdk": "^0.205.1",
     "@runloop/api-client": "^1.29.0",
+    "braces": "file:vendor/braces",
     "e2b": "^2.45.0",
     "modal": "^0.9.0"
+  },
+  "overrides": {
+    "e2b": {
+      "undici8": "npm:undici@8.10.2"
+    },
+    "braces": "$braces"
   }
 }

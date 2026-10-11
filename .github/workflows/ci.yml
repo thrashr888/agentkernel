@@ -177,7 +177,7 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked --version 0.22.2
       - name: Audit Rust dependencies
-        run: cargo audit --ignore RUSTSEC-2023-0071
+        run: cargo audit
 
   build:
     name: Build
