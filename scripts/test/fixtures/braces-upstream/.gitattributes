@@ -1,0 +1,2 @@
+# Preserve the upstream fixtures byte-for-byte, including trailing blank lines.
+*.js whitespace=-blank-at-eof
