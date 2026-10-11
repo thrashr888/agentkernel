@@ -139,6 +139,10 @@ keys = ["ed25519-public-key-base64-1", "ed25519-public-key-base64-2"]
 | JWT validation | RS256/RS384/RS512 | RFC 7519 |
 | TLS transport | TLS 1.2+ (rustls) | FIPS 140-2 compatible |
 
+JWT verification uses the AWS-LC provider and supports 2048–8192-bit RSA keys.
+Issuers using legacy keys smaller than the RFC 7518 2048-bit minimum must rotate
+to compliant keys before upgrading.
+
 ---
 
 ## 5. Policy Management

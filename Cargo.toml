@@ -64,8 +64,11 @@ urlencoding = "2"
 tokio-stream = "0.1"
 futures = "0.3"
 
-# SSH support (CA key generation and client key signing)
-ssh-key = { version = "0.6", features = ["ed25519", "getrandom"] }
+# SSH support (CA key generation and client key signing). Keep the existing key
+# formats, but use alloc APIs: std pulls dormant RSA dependencies into Cargo.lock.
+ssh-key = { version = "0.6", default-features = false, features = ["alloc", "ecdsa", "ed25519", "getrandom"] }
+# Preserve wiping of SSH signing-key temporaries independently of JWT features.
+ssh-ed25519-dalek = { package = "ed25519-dalek", version = "2", default-features = false, features = ["zeroize"] }
 rand = "0.10"
 ring = "0.17"
 hex = "0.4"
@@ -95,7 +98,8 @@ reqwest = { version = "0.13", default-features = false, features = ["charset", "
 # Enterprise policy engine (optional, behind "enterprise" feature)
 cedar-policy = { version = "4", optional = true }
 ed25519-dalek = { version = "3", features = ["rand_core"], optional = true }
-jsonwebtoken = { version = "11", features = ["rust_crypto"], optional = true }
+# Use AWS-LC to avoid the unpatched rsa crate advisory (RUSTSEC-2023-0071).
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"], optional = true }
 webpki-roots = "1.0.6"
 
 # Unix socket support for Firecracker API
