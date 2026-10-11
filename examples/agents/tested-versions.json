@@ -109,14 +109,14 @@
       "display_name": "Pi",
       "description": "Pi coding agent",
       "package": "@earendil-works/pi-coding-agent",
-      "version": "0.84.2",
-      "install_command": "npm install -g @earendil-works/pi-coding-agent@0.84.2",
+      "version": "1.0.1",
+      "install_command": "npm install -g @earendil-works/pi-coding-agent@1.0.1",
       "integration_target": "pi",
       "source": "https://github.com/earendil-works/pi",
       "base": "node_alpine",
       "executable": "pi",
       "smoke_arg": "--version",
-      "expected_output": "0.84.2"
+      "expected_output": "1.0.1"
     },
     {
       "id": "hermes",

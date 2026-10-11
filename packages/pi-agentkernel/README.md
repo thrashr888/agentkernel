@@ -44,7 +44,39 @@ This extension overrides Pi's built-in `bash` tool so every shell command runs i
 ## Requirements
 
 - [agentkernel](https://github.com/thrashr888/agentkernel) running locally or remotely
-- Pi v0.84.2 or later
+- Pi >=1.0.1 <2 (Node.js >=22.19.0 for npm installations)
+
+## Host security and upgrades
+
+Support now starts at Pi 1.0.1; Pi 0.x and 1.0.0 are no longer supported.
+[Pi 1.0.1 fixes the vulnerable `brace-expansion` dependency](https://github.com/earendil-works/pi/releases/tag/v1.0.1).
+Updating this extension does not update an already-installed Pi host: Pi's package
+manager suppresses automatic host-peer installation.
+
+Upgrade Pi with the installer or package manager you originally used. For a global
+npm installation:
+
+```bash
+npm install -g --ignore-scripts '@earendil-works/pi-coding-agent@^1.0.1'
+pi --version
+```
+
+Verify the reported host version is at least 1.0.1 and below 2 before loading this
+extension. Managed installations can use `pi update` instead.
+
+## Development
+
+Install a supported host, then run the offline contract tests:
+
+```bash
+npm install --ignore-scripts --no-audit
+npm test
+```
+
+CI checks the minimum patched host (1.0.1) and the current supported 1.x host. The
+tests use Pi's public extension loader with an isolated configuration directory and
+mock the AgentKernel API; no credentials, live sandboxes, or registry audits are
+needed during test execution.
 
 ## License
 

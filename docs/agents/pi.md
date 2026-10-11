@@ -20,6 +20,24 @@ agentkernel plugin install pi     # or via agentkernel CLI
 pi
 ```
 
+## Supported Pi host
+
+Use Pi >=1.0.1 <2; npm installations require Node.js >=22.19.0. Pi 0.x and 1.0.0
+are no longer supported. [Pi 1.0.1 fixes the vulnerable `brace-expansion` dependency](https://github.com/earendil-works/pi/releases/tag/v1.0.1).
+This requirement applies to both extension installation methods above.
+
+Updating the extension does not upgrade an existing Pi host. Update Pi using its
+original installer or package manager (`pi update` for managed installations).
+For a global npm installation, run:
+
+```bash
+npm install -g --ignore-scripts '@earendil-works/pi-coding-agent@^1.0.1'
+pi --version
+```
+
+Check that `pi --version` reports at least 1.0.1 and below 2 before loading the
+extension.
+
 ## Extension Integration
 
 Unlike MCP-based agents, Pi uses a native extension that replaces the built-in `bash` tool. When the extension loads:
@@ -188,7 +206,7 @@ FROM node:24-alpine3.24
 RUN apk add --no-cache git bash python3 ripgrep fd jq
 
 # Pi CLI
-RUN npm install -g @earendil-works/pi-coding-agent@0.84.2
+RUN npm install -g @earendil-works/pi-coding-agent@1.0.1
 
 # Your additions
 RUN apk add --no-cache rust cargo

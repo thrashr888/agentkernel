@@ -1,0 +1,51 @@
+name: Pi Extension CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/pi-agentkernel/**"
+      - "plugins/pi/**"
+      - "examples/agents/pi/**"
+      - "examples/agents/tested-versions.json"
+      - "templates/pi-sandbox.toml"
+      - "src/vmm.rs"
+      - "docs/agents/pi.md"
+      - ".github/workflows/pi-extension-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/pi-agentkernel/**"
+      - "plugins/pi/**"
+      - "examples/agents/pi/**"
+      - "examples/agents/tested-versions.json"
+      - "templates/pi-sandbox.toml"
+      - "src/vmm.rs"
+      - "docs/agents/pi.md"
+      - ".github/workflows/pi-extension-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    name: Pi host (${{ matrix.pi-host }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Exercise the minimum patched host and the newest supported 1.x host.
+        pi-host: ["1.0.1", "^1.0.1"]
+    defaults:
+      run:
+        working-directory: packages/pi-agentkernel
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Install host fixture without lifecycle scripts
+        run: npm install --ignore-scripts --no-audit --no-fund --no-save --package-lock=false "@earendil-works/pi-coding-agent@${{ matrix.pi-host }}"
+      - run: npm test
+      - name: Check extension package contents
+        run: npm pack --dry-run --ignore-scripts
