@@ -1,7 +1,34 @@
+---
+title: "MCP server for sandboxed code execution"
+description: Connect an MCP-compatible assistant to AgentKernel to run commands and manage sandboxes, with setup requirements and a first tool call.
+---
 
-# MCP Server
+# MCP server for sandboxed code execution
 
-agentkernel implements the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) for integration with AI assistants like Claude Desktop.
+AgentKernel exposes sandbox execution and lifecycle tools through the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/). Connect an MCP-compatible assistant to run commands, create environments, and inspect sandboxes from the assistant's tool workflow.
+
+## Before you connect
+
+[Install AgentKernel and configure a backend](../getting-started/installation.md). The MCP server uses that host's available backends; a stdio connection does not itself provide VM isolation. Review the [backend choices](../config/backends.md) and [security profiles](../config/security.md).
+
+The assistant remains outside the sandbox when it invokes MCP tools. Its other shell and file tools retain their own permissions. To run the agent process itself inside a sandbox, use the [coding agent workflow](../use-cases/coding-agents.md).
+
+## First tool call
+
+Ask the client to call `sandbox_run` with these arguments:
+
+```json
+{
+  "command": ["python3", "-c", "print('hello from MCP')"],
+  "image": "python:3.12-alpine",
+  "fast": false,
+  "profile": "moderate"
+}
+```
+
+Expect `hello from MCP` in the command output. `fast: false` matters here: the default fast path uses a container pool, and custom images and profile settings apply to the non-fast path. This example does not require sharing a project directory.
+
+If the client cannot start the server, use the absolute path to the installed `agentkernel` binary in its configuration. If a tool fails, confirm the selected backend is running and that its image can be prepared.
 
 ## Starting the Server
 
@@ -13,7 +40,7 @@ The server communicates via JSON-RPC over stdio (stdin/stdout).
 
 ## Claude Desktop Integration
 
-Add to your Claude Desktop configuration (`~/.config/claude/claude_desktop_config.json`):
+Add this server entry to your Claude Desktop MCP configuration, preserving any existing servers:
 
 ```json
 {
@@ -41,7 +68,8 @@ Run a command in a temporary sandbox.
   "name": "sandbox_run",
   "arguments": {
     "command": ["python3", "-c", "print('hello')"],
-    "image": "python:3.12-alpine"
+    "image": "python:3.12-alpine",
+    "fast": false
   }
 }
 ```
@@ -451,3 +479,9 @@ The MCP server implements:
 - MCP protocol version 2024-11-05
 - Tool calling with structured arguments
 - Error responses for invalid operations
+
+## Choose your next step
+
+- [Coding agent workflow](../use-cases/coding-agents.md) — decide what runs inside the sandbox.
+- [Sandbox selection guide](../getting-started/choosing-a-sandbox.md) — choose an execution boundary.
+- [HTTP API](http.md) — integrate directly from an application.

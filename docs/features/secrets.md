@@ -31,11 +31,11 @@ agentkernel sandbox create my-agent --secret-file OPENAI_API_KEY
 
 | Backend | Storage | Writable | Best For |
 |---------|---------|----------|----------|
-| `file` (default) | `~/.agentkernel/secrets.json` (`0600`) | Yes | Local dev |
+| `file` (default) | Encrypted `~/.agentkernel/secrets.json` with a local `secrets.key` (`0600`) | Yes | Local dev |
 | `env` | Host environment variables | No | CI/CD |
-| `keyring` | OS keychain (macOS Keychain, Linux secret-service) | Yes | Production |
+| `keyring` | Reserved value; not implemented | No | Unavailable |
 
-The `keyring` backend requires the `keyring` Cargo feature.
+The current build implements `file` and `env`. Selecting `keyring` returns an error; there is no `keyring` Cargo feature to enable. Protect both the encrypted store and its local key file.
 
 ### CLI
 
@@ -176,7 +176,7 @@ curl http://localhost:18888/sandboxes/my-agent/proxy
 
 ```toml
 [secrets]
-backend = "file"   # "file", "env", or "keyring"
+backend = "file"   # "file" or "env"; "keyring" is unavailable
 
 # Pre-configured bindings (applied to all sandboxes)
 OPENAI_API_KEY = { host = "api.openai.com" }
@@ -197,8 +197,8 @@ ANTHROPIC_API_KEY = { host = "api.anthropic.com", header = "x-api-key" }
 1. Use `--secret KEY:host` for HTTP API keys. Secrets never enter the VM.
 2. Use `--secret-file KEY --placeholder-secrets` when code reads from files. Tokens are substituted by the proxy.
 3. Use `--secret-file KEY` only for credentials that must be real on disk (TLS certs, SSH keys).
-4. Avoid `-e KEY=value` — env vars are visible to all processes via `/proc`.
-5. Pipe secrets via stdin to avoid shell history: `echo "val" | agentkernel secret set KEY`
+4. Avoid `-e KEY=value` when proxy injection fits the workload — the receiving process can read its environment, and other processes may have permission to inspect it.
+5. Use `agentkernel secret set KEY` to read from stdin. Avoid typing a literal secret in an `echo` command, which still records it in shell history.
 
 ## Proxy Hooks
 
@@ -221,5 +221,5 @@ Payloads include timestamp, sandbox name, method, URL, host, status code, latenc
 - [Secret CLI Commands](../commands/secrets.md) — vault management
 - [Security Profiles](../config/security.md) — domain filtering, command filtering, seccomp
 - [SDK Reference](../sdks/index.md) — Go, Rust, Swift examples
-- [Desktop App](../app/index.md) — GUI for managing vault secrets
+- [Desktop App](desktop-app.md) — GUI for managing vault secrets
 - [Getting Started](../getting-started/quick-start.md) — first sandbox walkthrough

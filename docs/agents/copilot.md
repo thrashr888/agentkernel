@@ -9,7 +9,7 @@ Copilot CLI supports MCP natively. The agentkernel plugin registers MCP tools th
 
 ```bash
 # 1. Start agentkernel API server (pick one)
-brew services start thrashr888/agentkernel/agentkernel   # runs in background, survives reboots
+brew services start agentkernel   # runs in background, survives reboots
 agentkernel serve                 # or run manually in a terminal
 
 # 2. Install the plugin into your project

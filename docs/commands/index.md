@@ -136,7 +136,7 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 
 ```bash
 # One-shot execution
-agentkernel run python3 script.py
+agentkernel run python3 -c "print(1 + 1)"
 
 # Persistent sandbox
 agentkernel sandbox create my-sandbox --template python -B docker

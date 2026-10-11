@@ -4,6 +4,17 @@ site_description: Run AI coding agents in secure, isolated microVMs
 repo_url: https://github.com/thrashr888/agentkernel
 repo_name: thrashr888/agentkernel
 
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
+
 theme:
   name: material
   palette:
@@ -45,14 +56,27 @@ nav:
     - Overview: getting-started/index.md
     - Installation: getting-started/installation.md
     - Quick Start: getting-started/quick-start.md
-    - Comparisons: getting-started/comparisons.md
+    - Choosing a Sandbox: getting-started/choosing-a-sandbox.md
     - Benchmarks: getting-started/benchmarks.md
+  - Comparisons:
+    - Overview: getting-started/comparisons.md
+    - AgentKernel vs E2B: comparisons/e2b.md
+    - AgentKernel vs Daytona: comparisons/daytona.md
+    - AgentKernel vs Docker: comparisons/docker.md
+  - Use Cases:
+    - AI Coding Agents: use-cases/coding-agents.md
   - Features:
     - Overview: features/index.md
     - Secrets: features/secrets.md
+    - Development Containers: features/devcontainers.md
     - Browser Automation: features/browser-automation.md
     - Desktop App: features/desktop-app.md
     - Compliance Mapping: features/compliance-mapping.md
+    - Prometheus Metrics: features/metrics.md
+    - Durable Functions: features/durable-functions.md
+    - Durable Objects: features/durable-objects.md
+    - Durable Stores: features/durable-stores.md
+    - Durable Protocol: features/durable-protocol.md
   - Commands:
     - Overview: commands/index.md
     - run: commands/run.md
@@ -70,6 +94,7 @@ nav:
     - export / import: commands/export-import.md
     - parallel: commands/parallel.md
     - pipelines: commands/pipelines.md
+    - tasks: commands/tasks.md
   - Configuration:
     - Overview: config/index.md
     - agentkernel.toml: config/toml.md
@@ -84,6 +109,8 @@ nav:
     - OpenCode: agents/opencode.md
     - GitHub Copilot: agents/copilot.md
     - Pi: agents/pi.md
+    - Hermes: agents/hermes.md
+    - Symphony: agents/symphony.md
   - API:
     - Overview: api/index.md
     - HTTP API: api/http.md
@@ -99,10 +126,14 @@ nav:
   - Operations:
     - Overview: operations/index.md
     - Backend compatibility: operations/backend-compatibility.md
+    - Dependency compatibility: operations/dependency-compatibility.md
+    - Remote Backends: operations/remote.md
+    - Copy-on-write Root Filesystems: operations/cow-rootfs.md
     - Firecracker full-state: operations/firecracker-full-state.md
     - Kubernetes: operations/kubernetes.md
     - Nomad: operations/nomad.md
     - Deployment: operations/deploy.md
+  - Contributing to Docs: contributing-docs.md
   - Changelog: changelog.md
 
 extra:

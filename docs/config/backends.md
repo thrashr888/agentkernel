@@ -5,19 +5,20 @@ agentkernel supports multiple isolation backends. Each provides different tradeo
 
 ## Backend Comparison
 
-| Backend | Isolation | Boot Time | Platform | Status |
-|---------|-----------|-----------|----------|--------|
-| Docker | Container | ~220ms | All | Stable |
-| Podman | Container | ~300ms | Linux, macOS | Stable |
-| Firecracker | MicroVM | <125ms | Linux (KVM) | Stable |
-| Hyperlight | Wasm + Hypervisor | ~68ms | Linux (KVM) | Experimental |
-| Apple | Container | ~940ms | macOS 26+ | Beta |
-| Kubernetes | Pod | ~2-5s | Any K8s cluster | Stable |
-| Nomad | Job allocation | ~2-5s | Any Nomad cluster | Stable |
-| Daytona | Hosted sandbox | Provider-dependent | Hosted | Experimental |
-| Runloop | Hosted devbox | Provider-dependent | Hosted | Experimental |
-| E2B | Hosted sandbox | Provider-dependent | Hosted | Experimental |
-| Agent Computer | Hosted machine | Provider-dependent | Hosted | Experimental |
+| Backend | Isolation | Requirements / support |
+|---------|-----------|------------------------|
+| Docker / Podman | Containers sharing the runtime host's kernel | A working container runtime |
+| Firecracker | MicroVM with a dedicated guest kernel | Linux/KVM; full-state operations have an additional x86_64 compatibility gate |
+| Hyperlight | Wasm inside a hypervisor boundary | Experimental; Linux x86_64/KVM and the `hyperlight` Cargo feature |
+| Apple | VM-backed Linux containers | Apple Silicon, macOS 26+, installed Apple `container` CLI |
+| Kubernetes | Pod; stronger isolation depends on RuntimeClass | Cluster access and the `kubernetes` feature (enabled by default) |
+| Nomad | Depends on the configured task driver | Cluster access and the `nomad` feature (enabled by default) |
+| Daytona / Runloop / E2B / Modal | Provider-specific | Experimental hosted adapters; bridge dependencies and credentials |
+| Agent Computer | Custom bridge contract | No bundled live adapter |
+
+Use [benchmarks](../getting-started/benchmarks.md) for measurement scope and
+[backend compatibility](../operations/backend-compatibility.md) for validation
+gates. Backend availability does not mean every lifecycle operation is supported.
 
 ## Docker
 
@@ -35,7 +36,7 @@ agentkernel sandbox create my-sandbox --backend docker
 
 **Cons:**
 - Shared kernel (container escape possible)
-- Slower than Firecracker
+- Shares a kernel with other containers on the same runtime host
 
 ## Podman
 
@@ -69,8 +70,7 @@ agentkernel sandbox create my-sandbox --backend firecracker
 **Pros:**
 - Dedicated kernel per sandbox
 - Hardware-enforced isolation
-- Sub-125ms boot times
-- Minimal memory overhead (~10MB)
+- Separate guest kernel per sandbox; guest memory allocation is additional to the VMM process
 
 **Cons:**
 - Linux only
@@ -95,17 +95,16 @@ agentkernel run --backend hyperlight module.wasm
 
 **Pros:**
 - Dual-layer isolation (Wasm + hypervisor)
-- ~68ms cold start, sub-microsecond with pre-warmed pool
-- Smallest attack surface
+- Pool acquisition and Wasm execution can be measured separately
 
 **Cons:**
 - Runs WebAssembly modules only (not arbitrary shell commands)
-- Linux only, requires KVM
+- Linux x86_64 with KVM; see the [arm64 compatibility exception](../operations/dependency-compatibility.md#hyperlight-arm64-exception)
 - Experimental
 
 ## Apple Containers
 
-Native container support on macOS Tahoe (26+).
+VM-backed Linux containers using the separately installed Apple `container` CLI on Apple Silicon with macOS 26+.
 
 ```bash
 agentkernel sandbox create my-sandbox --backend apple
@@ -113,16 +112,15 @@ agentkernel sandbox create my-sandbox --backend apple
 
 **Pros:**
 - Native macOS integration
-- Good performance
 - No Docker Desktop required
 
 **Cons:**
 - macOS 26+ only
-- Beta status
+- Runtime compatibility must match the [tested Apple CLI](../operations/backend-compatibility.md)
 
 ## Kubernetes
 
-Run sandboxes as Kubernetes Pods on any cluster. Requires building with `--features kubernetes`.
+Run sandboxes as Kubernetes Pods on any cluster. Uses the `kubernetes` feature, enabled in default builds.
 
 ```bash
 cargo build --features kubernetes
@@ -135,8 +133,7 @@ agentkernel sandbox create my-sandbox --backend kubernetes --image alpine:3.24
 - Build with `--features kubernetes`
 
 **Pros:**
-- Scales to thousands of sandboxes
-- Warm pool for fast acquisition (~100ms vs ~2-5s cold start)
+- Cluster scheduling and optional warm pools
 - NetworkPolicy-based network isolation
 - Optional RuntimeClass for gVisor/Kata isolation
 - Kubernetes-native CRDs (AgentSandbox, AgentSandboxPool)
@@ -150,7 +147,7 @@ See the [Orchestration Guide](../operations/index.md) for full configuration and
 
 ## Nomad
 
-Run sandboxes as HashiCorp Nomad job allocations. Requires building with `--features nomad`.
+Run sandboxes as HashiCorp Nomad job allocations. Uses the `nomad` feature, enabled in default builds.
 
 ```bash
 cargo build --features nomad
@@ -184,7 +181,6 @@ agentkernel sandbox create my-sandbox --backend daytona
 agentkernel sandbox create my-sandbox --backend runloop
 agentkernel sandbox create my-sandbox --backend e2b
 agentkernel sandbox create my-sandbox --backend modal
-agentkernel sandbox create my-sandbox --backend agentcomputer
 ```
 
 **Common behavior:**
@@ -214,19 +210,28 @@ agentkernel sandbox create my-sandbox --backend agentcomputer
 
 ## Auto-Detection
 
-By default, agentkernel selects the best available *local* backend:
+For ordinary sandbox creation, AgentKernel prefers local backends in this order:
 
-1. **Hyperlight** - If KVM available and `--features hyperlight` built (Linux, Wasm only)
-2. **Firecracker** - If KVM is available (Linux)
-3. **Apple** - If Apple Containers available (macOS 26+)
-4. **Docker** - If Docker is installed
-5. **Podman** - If Podman is installed
+1. **Firecracker** on Linux when KVM and Firecracker are available.
+2. **Apple Containers** on supported macOS hosts when the CLI is available.
+3. **Podman** when available.
+4. **Docker** when available.
 
-Kubernetes, Nomad, and all hosted remote backends are never auto-detected. They must be specified explicitly with `--backend ...`.
+If no local runtime is usable, a configured hosted backend may be selected:
+Daytona, Runloop, E2B, Modal, then Agent Computer, in that order. The last option
+requires a custom live bridge. Hyperlight, Kubernetes, and Nomad are not selected
+by this detector; select them explicitly.
+
+Use `--backend` when execution location matters. `run --fast` instead selects a
+container-pool path; HTTP `/run` and MCP `sandbox_run` also default to that pool.
+Their defaults differ from ordinary CLI execution.
 
 ```bash
-# Check which backend is selected
-agentkernel setup --check
+# Inspect available runtimes and host prerequisites
+agentkernel doctor
+
+# Require a local Docker backend
+agentkernel run --backend docker -- echo hello
 ```
 
 ## Backend Persistence

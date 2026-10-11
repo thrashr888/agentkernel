@@ -1,30 +1,29 @@
 
 # Benchmarks
 
-agentkernel runs on five different backends across Linux and macOS. We benchmark all of them so you know exactly what to expect.
+This page preserves historical measurements from different hosts and harnesses.
+They are not a single current-release benchmark or an apples-to-apples ranking.
+Some older results lack checked-in raw reports and complete version metadata;
+treat them as observations to reproduce, not performance guarantees.
 
-All numbers below are measured on real hardware -- an AMD EPYC server for Linux backends and an M3 Pro MacBook for macOS backends. No synthetic microbenchmarks. Every number represents the full end-to-end latency of `agentkernel run -- echo hello`, from command invocation to output.
+## Read the timing boundary first
 
-## The headline numbers
+| Measurement | What it includes | What it does not establish |
+|-------------|------------------|----------------------------|
+| Warm pool acquire | Retrieving an already prepared instance | Full command latency, image preparation, or VM boot |
+| Guest boot / ready | One startup phase | Host setup, command execution, and cleanup |
+| Exec on a running sandbox | A command in an existing environment | The cost of creating that environment |
+| Full lifecycle | The phases included by the particular harness | A universal result across hosts and cold/warm states |
+| Concurrent throughput | Completed work over a batch's wall time | The reciprocal of a single-request latency |
 
-| Backend | Latency | Throughput | Isolation |
-|---------|---------|------------|-----------|
-| **Hyperlight pool** (Linux) | **<1&micro;s** | ~3,300 RPS | Hypervisor + Wasm |
-| **Firecracker daemon** (Linux) | **195ms** | ~5.1/sec | Full VM (separate kernel) |
-| Docker (macOS) | ~220ms | ~4.5/sec | Container (shared kernel) |
-| Docker pool (Linux) | ~250ms | ~4.0/sec | Container (shared kernel) |
-| Podman (macOS) | ~300ms | ~3.3/sec | Container (rootless) |
-| Podman (Linux) | ~310ms | ~3.2/sec | Container (rootless) |
-| **Kubernetes** (remote) | ~570ms | ~7.7/sec | Pod (NetworkPolicy) |
-| **Nomad** (remote) | ~570ms | ~6.1/sec | Job allocation |
-| Firecracker cold (Linux) | 800ms | ~1.3/sec | Full VM (separate kernel) |
-| Apple Containers (macOS 26+) | ~940ms | ~1.1/sec | Full VM (separate kernel) |
-
-Pre-warmed pools make the fastest backends feel instant. Cold starts are still faster than most container runtimes.
+Use the [reproduction commands](#running-your-own-benchmarks) with the same
+workload, timing boundary, runtime versions, and hardware when comparing
+backends. Hyperlight runs Wasm workloads; its pool timings are not shell-command
+or Firecracker lifecycle measurements.
 
 ## Where the time goes
 
-Every sandbox execution has phases: boot the isolation boundary, wait for the environment to be ready, execute the command, then tear down. Here's how each backend breaks down:
+The historical phase observations below came from different paths. They are not additive components of one end-to-end measurement; in particular, the Apple boot and ready measurements can overlap.
 
 | Backend | Boot | Ready | Exec | Shutdown |
 |---------|------|-------|------|----------|
@@ -39,7 +38,7 @@ The daemon and pool backends eliminate boot and shutdown by reusing pre-warmed i
 
 ## Firecracker vs Docker
 
-The comparison that matters most -- VM isolation vs container isolation on the same Linux hardware:
+Historical per-operation observations on a Linux host. The memory row is retained as reported, but the original accounting boundary is unspecified; it must not be interpreted as total guest plus host memory.
 
 | Metric | Docker | Firecracker | Winner |
 |--------|--------|-------------|--------|
@@ -50,7 +49,7 @@ The comparison that matters most -- VM isolation vs container isolation on the s
 | Memory per instance | ~50-100MB | **<10MB** | Firecracker (5-10x) |
 | Isolation | Shared kernel | **Separate kernel** | Firecracker |
 
-Firecracker uses vsock for command execution -- a direct host-to-VM communication channel that's 3x faster than Docker's exec path. Shutdown is 6.5x faster because there's no container runtime overhead.
+The reported exec and shutdown observations differ, but they do not isolate the cause or establish a general speedup for current builds. Repeat the same workload before drawing that conclusion.
 
 And Firecracker's boot time was optimized from 961ms down to 110ms -- an **89% reduction** -- by disabling unnecessary kernel drivers:
 
@@ -60,11 +59,11 @@ And Firecracker's boot time was optimized from 961ms down to 110ms -- an **89% r
 | Skip PS/2 aux port probe (`i8042.noaux`) | ~260ms |
 | Quiet boot (`quiet loglevel=4`) | ~90ms |
 
-## Hyperlight: sub-microsecond execution
+## Hyperlight: pool acquisition and Wasm calls
 
 Hyperlight is the experimental backend that pushes the boundaries of what's possible. It uses Microsoft's hypervisor-isolated micro VMs to run WebAssembly modules with dual-layer security: a Wasm sandbox inside a hypervisor boundary.
 
-The key number: **warm pool acquire takes 0.2&micro;s**. That's 50,000x faster than a cold Hyperlight startup (68ms) and over 1,000,000x faster than a Firecracker cold boot (800ms).
+The historical **0.2&micro;s warm acquire** figure measures acquiring a prepared pool entry. It excludes startup and guest execution and must not be presented as end-to-end sandbox execution latency.
 
 | Metric | Value |
 |--------|-------|
@@ -73,7 +72,7 @@ The key number: **warm pool acquire takes 0.2&micro;s**. That's 50,000x faster t
 | Function call | <1ms |
 | 100 concurrent requests | **0.03s** (~3,333 RPS) |
 
-For comparison, running 100 concurrent requests on other backends:
+Historical 100-request batches are retained below. Workload equivalence between Wasm and container paths is not established:
 
 | Backend | 100 concurrent | RPS |
 |---------|----------------|-----|
@@ -81,7 +80,7 @@ For comparison, running 100 concurrent requests on other backends:
 | Docker | 8.4s | ~12 |
 | Podman | 18.2s | ~5.5 |
 
-Hyperlight is 280x faster than Docker and 600x faster than Podman at concurrent workloads. The trade-off: it runs Wasm modules only, not arbitrary shell commands, and requires Linux with KVM.
+These batches are not a supported cross-backend speedup claim. Hyperlight runs Wasm modules rather than arbitrary shell commands and requires a supported Linux/KVM build.
 
 ## Apple Containers: VM isolation on macOS
 
@@ -94,7 +93,7 @@ Apple Containers (macOS 26+) give you Firecracker-like isolation on Apple Silico
 | Full lifecycle | ~500ms | ~940ms |
 | Memory per instance | ~50MB | ~100MB+ |
 
-Apple Containers are 2x slower than Docker on macOS, but they provide hardware-level isolation. If you're running untrusted code on macOS, that trade-off is worth it.
+This historical lifecycle comparison uses different isolation boundaries. Choose the required boundary first, then measure the current runtime on your host.
 
 ### Measuring Apple startup locally
 
@@ -126,7 +125,7 @@ the historical measurements above.
 
 ## Docker and Podman: the container backends
 
-Both Docker and Podman use an optimized `run --rm` path that combines creation, execution, and cleanup into a single operation. This is 35x faster than the naive start-exec-stop cycle.
+Both Docker and Podman use an optimized `run --rm` path that combines creation, execution, and cleanup into a single operation. Measure this separately from a multi-command create/start/exec/stop workflow.
 
 ### macOS (M3 Pro)
 
@@ -135,7 +134,7 @@ Both Docker and Podman use an optimized `run --rm` path that combines creation, 
 | **Docker** | ~220ms | ~270ms |
 | Podman | ~300ms | ~730ms |
 
-Docker is ~30% faster on macOS due to its daemon architecture.
+The historical macOS timings favor Docker for this workload; they do not isolate daemon architecture as the cause.
 
 ### Linux (AMD EPYC)
 
@@ -144,9 +143,9 @@ Docker is ~30% faster on macOS due to its daemon architecture.
 | **Podman** | ~310ms | ~350ms |
 | Docker | ~350ms | ~550ms |
 
-On Linux, Podman is ~10-15% faster because it runs daemonless -- no Docker daemon overhead.
+The historical Linux timings favor Podman for this workload; this is not a general guarantee for other runtime versions or configurations.
 
-## Daemon mode: 4x speedup for repeated commands
+## Daemon mode: historical warm-pool measurements
 
 The daemon maintains a pool of 3-5 pre-booted Firecracker VMs. When you run a command, it grabs a warm VM from the pool, executes via vsock, and returns the VM for reuse.
 
@@ -157,7 +156,7 @@ The daemon maintains a pool of 3-5 pre-booted Firecracker VMs. When you run a co
 | 10 sequential | 8.0s | **1.95s** | 4.1x |
 | VM reuse rate | 0% | ~95% | -- |
 
-The daemon starts in ~3 seconds (pre-warms 3 VMs) and then every command benefits from the warm pool.
+These historical command timings assume a ready pool. Daemon startup and pre-warming were reported separately at about 3 seconds and are excluded from the table. Pool exhaustion and workload changes require separate measurement.
 
 ## Stress test results
 
@@ -225,7 +224,7 @@ Full create → start → exec → stop cycle, averaged over 5 iterations:
 | Stop | 78ms | 159ms | 169ms |
 | **Total** | **1,083ms** | **1,997ms** | **620ms** |
 
-Kubernetes has the fastest exec path on both platforms thanks to its WebSocket-based exec API. Docker is fastest for the full lifecycle due to simpler local container management.
+In this table Docker has the lowest full-lifecycle total on both hosts. Exec results differ by host: Docker is lowest on Linux, while Kubernetes is lowest on macOS. These observations do not establish the cause.
 
 ### One-shot `run` command
 
@@ -237,7 +236,7 @@ Kubernetes has the fastest exec path on both platforms thanks to its WebSocket-b
 | Nomad | 569ms | 580ms |
 | Docker | 580ms | 577ms |
 
-All three backends converge to ~575ms for one-shot execution on both platforms.
+The reported one-shot results are close for this workload. They are distinct from the sequential-exec throughput measurements below.
 
 ### Exec throughput
 
@@ -263,7 +262,7 @@ How many sandboxes can run simultaneously on a single node:
 | 10 | 134ms | 1.4s | 10/10 | 163ms |
 | 20 | 241ms | 120s | 15/20 | 287ms |
 
-The k3d single-node cluster hits resource limits at ~15 pods. A production cluster with multiple nodes handles hundreds.
+The historical single-node k3d run started 15 of the 20 requested pods. Capacity depends on node resources and workload; this does not establish a production-cluster limit.
 
 **Nomad (local dev agent)**
 
@@ -273,21 +272,14 @@ The k3d single-node cluster hits resource limits at ~15 pods. A production clust
 | 10 | 52ms | 834ms | 10/10 | 197ms |
 | 20 | 107ms | 1.4s | 20/20 | 310ms |
 
-Nomad successfully ran all 20 concurrent sandboxes where k3d failed at 20. Nomad's scheduling is more resilient on a single node, though K8s is faster per-operation when resources are available.
+Nomad started all 20 requested sandboxes in this run. Different runtime configurations and resource limits prevent treating this result as a general scheduler-resilience comparison.
 
 ## Choosing a backend
 
-| Use case | Recommended | Why |
-|----------|-------------|-----|
-| Interactive / API server | Firecracker daemon | 195ms latency, full VM isolation |
-| High-throughput Wasm | Hyperlight pool | 3,300 RPS, sub-microsecond acquire |
-| macOS development (speed) | Docker | Fastest macOS backend at ~220ms |
-| macOS development (security) | Apple Containers | VM isolation on macOS |
-| Linux CI/CD (no KVM) | Docker | Works without KVM |
-| Untrusted code (Linux) | Firecracker | Separate kernel per sandbox |
-| Untrusted code (macOS) | Apple Containers | Separate VM per sandbox |
-| Team / multi-tenant | Kubernetes | 7.7 exec/sec, NetworkPolicy isolation |
-| HashiCorp stack | Nomad | Integrates with Consul/Vault, scales to 50+ on single node |
+Use the [sandbox selection guide](choosing-a-sandbox.md) to choose by workload,
+execution location, and isolation requirements. Then benchmark that backend on
+the host you intend to operate. Historical timings alone are not a deployment
+recommendation.
 
 ## Running your own benchmarks
 
@@ -315,7 +307,7 @@ STRESS_VM_COUNT=1000 STRESS_MAX_CONCURRENT=100 cargo test --test stress_test -- 
 BENCH_SANDBOXES=20 BENCH_ITERATIONS=5 cargo test --test benchmark_test -- --nocapture --ignored
 ```
 
-Results are saved to `benchmark-results/` as JSON for comparison across runs.
+The Rust benchmark and stress tests write reports under `benchmark-results/`. The shell stress script uses a temporary results directory printed by the script. Record the host, OS, runtime versions, image, source revision, concurrency, and timing boundary with each report.
 
 ## Test hardware
 
