@@ -9,7 +9,7 @@ Pi is an open-source coding agent with its own extension system. The agentkernel
 
 ```bash
 # 1. Start agentkernel API server (pick one)
-brew services start thrashr888/agentkernel/agentkernel   # runs in background, survives reboots
+brew services start agentkernel   # runs in background, survives reboots
 agentkernel serve                 # or run manually in a terminal
 
 # 2. Install the extension (pick one)
@@ -85,7 +85,7 @@ Your project should have:
 
 ```bash
 # As a background service (recommended — survives reboots)
-brew services start thrashr888/agentkernel/agentkernel
+brew services start agentkernel
 
 # Or run manually
 agentkernel serve --host 127.0.0.1 --port 18888

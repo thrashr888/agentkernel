@@ -51,7 +51,7 @@ agentkernel receipt verify ./exec-receipt.json
 
 ### Output
 
-The command's stdout is printed to your terminal. Exit code is passed through.
+The command's output is printed to your terminal. Success returns `0`; errors return nonzero. Do not assume the CLI's failure status equals the guest's numeric exit code on every backend; a supported execution receipt can retain that detail.
 
 ```bash
 $ agentkernel exec my-sandbox -- python3 -c "print(1+1)"

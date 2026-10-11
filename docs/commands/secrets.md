@@ -20,8 +20,8 @@ Manage secrets (API keys and credentials) in the secret vault.
 # Set directly
 agentkernel secret set ANTHROPIC_API_KEY sk-ant-...
 
-# Read from stdin (more secure, avoids shell history)
-echo "sk-ant-..." | agentkernel secret set ANTHROPIC_API_KEY
+# Read from stdin; paste the value and press Ctrl-D
+agentkernel secret set ANTHROPIC_API_KEY
 ```
 
 ### Retrieve a secret
@@ -48,20 +48,20 @@ agentkernel secret delete GITHUB_TOKEN
 
 ## Storage Backends
 
-The vault supports three backends, configured in `agentkernel.toml`:
+The vault backend is configured in `agentkernel.toml`:
 
 ```toml
 [secrets]
-backend = "file"   # "file" (default), "env", or "keyring"
+backend = "file"   # "file" (default) or "env"; "keyring" is unavailable
 ```
 
 | Backend | Storage | set/delete | Best For |
 |---------|---------|------------|----------|
-| `file` | `~/.agentkernel/secrets.json` (base64-encoded, `0600` perms) | Yes | Local development |
+| `file` | Encrypted `~/.agentkernel/secrets.json` with a local `secrets.key` (`0600` permissions) | Yes | Local development |
 | `env` | Host environment variables | No (read-only) | CI/CD pipelines |
-| `keyring` | OS keychain (macOS Keychain, Linux secret-service) | Yes | Production workstations |
+| `keyring` | Reserved value; not implemented | No | Unavailable |
 
-The `keyring` backend requires building with the `keyring` Cargo feature.
+The current build implements `file` and `env`. Selecting `keyring` returns an error; there is no `keyring` Cargo feature to enable. Keep `secrets.json` and `secrets.key` protected together: someone who can read both can decrypt the stored values.
 
 ## See Also
 

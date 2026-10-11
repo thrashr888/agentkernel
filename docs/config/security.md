@@ -33,7 +33,7 @@ profile = "moderate"
 
 ### restrictive
 
-Maximum isolation — completely untrusted code, compliance requirements.
+Disables network and host directory mounts and requests a read-only filesystem. Enforcement depends on the backend; a profile alone does not establish regulatory compliance.
 
 ```toml
 [security]
@@ -51,7 +51,7 @@ mount_cwd = true    # Override: enable mounting current directory
 ```
 
 ```bash
-agentkernel run --profile restrictive python3 untrusted_script.py
+agentkernel run --profile restrictive python3 -c "print(1 + 1)"
 ```
 
 ## Environment Variable Passthrough
@@ -66,7 +66,7 @@ agentkernel sandbox create my-agent --secret-file OPENAI_API_KEY --placeholder-s
 agentkernel sandbox create my-agent --secret-file OPENAI_API_KEY                     # acceptable
 ```
 
-Environment variables are visible to all processes and appear in `/proc/*/environ`.
+A process can read credentials passed in its environment; other processes may also read them when OS permissions allow. Avoid passing a real key when host-side proxy injection is suitable.
 
 ## Domain Filtering
 

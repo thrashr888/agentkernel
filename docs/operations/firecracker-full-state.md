@@ -53,11 +53,25 @@ than a lossy local stop.
 agentkernel serve --host 127.0.0.1 --port 18888
 ```
 
-The delegated CLI/MCP control path currently speaks plaintext HTTP on loopback.
-A TLS-only (`--require-tls`) listener is deliberately not mistaken for a healthy
-control endpoint; run the lifecycle daemon on a host-private loopback port
-without `--require-tls`. TLS-aware or Unix-socket delegation is tracked before
-this preview is suitable for a TLS-only service topology.
+By default, delegated CLI/MCP control uses plaintext HTTP on loopback. For a
+TLS-only TCP listener, configure the supported private Unix-domain control
+socket and set the same absolute path in every CLI/MCP client environment:
+
+```bash
+mkdir -p "$HOME/.agentkernel/control"
+chmod 700 "$HOME/.agentkernel/control"
+export AGENTKERNEL_CONTROL_SOCKET="$HOME/.agentkernel/control/api.sock"
+agentkernel serve --tls --require-tls \
+  --tls-cert /path/to/cert.pem --tls-key /path/to/key.pem \
+  --control-socket "$AGENTKERNEL_CONTROL_SOCKET"
+```
+
+The server also accepts `[api].control_socket` in its configuration. The socket
+has owner-only permissions, and the API's authentication requirements still
+apply; set `AGENTKERNEL_API_KEY` in clients when needed. An explicitly selected
+socket fails closed if unavailable rather than falling back to TCP. Export the
+same socket path in a second terminal before running the lifecycle commands
+below.
 
 Then, from another terminal:
 

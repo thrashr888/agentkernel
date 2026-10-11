@@ -5,7 +5,8 @@ Manage the lifecycle of persistent sandboxes.
 
 `start` and `stop` are the portable lifecycle operations. Firecracker sandboxes
 on x86_64 Linux/KVM also support full-state `pause`, `resume`, and `fork`, which
-preserve guest memory and process state.
+preserve guest memory and process state. These full-state operations remain a
+[preview with native validation requirements](../operations/firecracker-full-state.md).
 
 ## start
 
@@ -14,7 +15,9 @@ Start a stopped sandbox.
 Firecracker sandboxes are started through the long-running local API server so
 the VM process survives after the CLI exits. Run `agentkernel serve` first;
 `AGENTKERNEL_PORT` selects a non-default local port. If the server requires an
-API key, set `AGENTKERNEL_API_KEY` for delegated CLI requests.
+API key, set `AGENTKERNEL_API_KEY` for delegated CLI requests. For a TLS-only
+TCP listener, use the [private Unix control socket](../operations/firecracker-full-state.md#lifecycle)
+and set `AGENTKERNEL_CONTROL_SOCKET` in the client.
 
 Each ordinary Firecracker start owns an AgentKernel-managed writable rootfs
 lineage. The opaque lineage reference is stored with the sandbox state and is

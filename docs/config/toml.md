@@ -161,12 +161,14 @@ HTTP API server security settings.
 api_key = "my-secret-key"
 api_key_env = "AGENTKERNEL_API_KEY"
 allow_sudo_exec = false
+# control_socket = "/absolute/private/path/api.sock"
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `api_key` | string | - | Static API key for HTTP Bearer authentication. |
 | `api_key_env` | string | - | Environment variable name to read the API key from (used if set). |
+| `control_socket` | path | - | Private Unix-domain socket for local CLI/MCP delegation. Clients set `AGENTKERNEL_CONTROL_SOCKET` to the same absolute path. |
 | `allow_sudo_exec` | bool | `false` | Allow `/exec` and `/sandboxes/{name}/exec` to run with `sudo: true` when explicitly requested. |
 
 HTTP API authentication uses the `Authorization: Bearer <api_key>` header when enabled.

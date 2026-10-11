@@ -5,11 +5,13 @@ The agentkernel HTTP API is documented using OpenAPI 3.1.
 
 ## Specification File
 
-Download: [openapi.yaml](openapi.yaml)
+Download: [openapi.yaml](https://raw.githubusercontent.com/thrashr888/agentkernel/main/api/openapi.yaml)
 
 ## Quick Reference
 
-### Endpoints
+### Selected endpoints
+
+The downloadable specification is the complete endpoint reference.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -21,6 +23,12 @@ Download: [openapi.yaml](openapi.yaml)
 | GET | `/sandboxes/by-uuid/{uuid}` | Get sandbox info by UUID |
 | DELETE | `/sandboxes/{name}` | Remove a sandbox |
 | POST | `/sandboxes/{name}/exec` | Execute command in sandbox |
+| POST | `/sandboxes/{name}/start` | Start a sandbox |
+| POST | `/sandboxes/{name}/stop` | Stop a sandbox |
+| POST | `/sandboxes/{name}/pause` | Pause a Firecracker sandbox (preview) |
+| POST | `/sandboxes/{name}/resume` | Resume a full-state checkpoint (preview) |
+| POST | `/sandboxes/{name}/fork` | Fork a paused Firecracker sandbox (preview) |
+| POST | `/sandboxes/{name}/recover` | Recover a quarantined Firecracker sandbox |
 | GET | `/orchestrations` | List orchestrations |
 | POST | `/orchestrations` | Create orchestration |
 | GET | `/orchestrations/definitions` | List orchestration definitions |
@@ -50,22 +58,24 @@ Download: [openapi.yaml](openapi.yaml)
 
 ### Authentication
 
-Set `AGENTKERNEL_API_KEY` environment variable to enable authentication.
+Set `AGENTKERNEL_API_KEY` in the server environment to enable authentication. Use the same value in a second terminal for the client examples below.
 
 ```bash
 # Start server with API key
-AGENTKERNEL_API_KEY=secret123 agentkernel serve
+export AGENTKERNEL_API_KEY="replace-with-your-api-key"
+agentkernel serve
 
 # Make authenticated request
-curl -H "Authorization: Bearer secret123" http://localhost:18888/sandboxes
+curl -H "Authorization: Bearer $AGENTKERNEL_API_KEY" http://localhost:18888/sandboxes
 ```
 
 ### Example: Run Command
 
 ```bash
 curl -X POST http://localhost:18888/run \
+  -H "Authorization: Bearer $AGENTKERNEL_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"command": ["echo", "hello"]}'
+  -d '{"command": ["echo", "hello"], "fast": false}'
 ```
 
 Response:
@@ -83,16 +93,19 @@ Response:
 ```bash
 # Create
 curl -X POST http://localhost:18888/sandboxes \
+  -H "Authorization: Bearer $AGENTKERNEL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"name": "my-sandbox", "image": "python:3.12-alpine"}'
 
 # Execute
 curl -X POST http://localhost:18888/sandboxes/my-sandbox/exec \
+  -H "Authorization: Bearer $AGENTKERNEL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"command": ["python3", "-c", "print(1+1)"]}'
 
 # Remove
-curl -X DELETE http://localhost:18888/sandboxes/my-sandbox
+curl -X DELETE http://localhost:18888/sandboxes/my-sandbox \
+  -H "Authorization: Bearer $AGENTKERNEL_API_KEY"
 ```
 
 ## Using with API Clients
@@ -100,21 +113,21 @@ curl -X DELETE http://localhost:18888/sandboxes/my-sandbox
 Import `openapi.yaml` into your favorite API client:
 
 - **Swagger UI**: Paste URL or upload file
-- **Postman**: Import → OpenAPI 3.0
+- **Postman**: Import the OpenAPI file
 - **Insomnia**: Import/Export → Import Data
 - **HTTPie**: Use directly with endpoints
 
 ## Code Generation
 
-Generate client SDKs using OpenAPI Generator:
+From a repository checkout, generate clients into a separate directory with an OpenAPI 3.1-compatible generator. These examples leave the maintained SDKs untouched:
 
 ```bash
 # Python client
-openapi-generator generate -i api/openapi.yaml -g python -o sdk/python
+openapi-generator generate -i api/openapi.yaml -g python -o generated/sdk/python
 
 # TypeScript client
-openapi-generator generate -i api/openapi.yaml -g typescript-fetch -o sdk/typescript
+openapi-generator generate -i api/openapi.yaml -g typescript-fetch -o generated/sdk/typescript
 
 # Go client
-openapi-generator generate -i api/openapi.yaml -g go -o sdk/go
+openapi-generator generate -i api/openapi.yaml -g go -o generated/sdk/go
 ```
