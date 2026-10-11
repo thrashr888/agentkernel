@@ -58,6 +58,10 @@ struct CloudHypervisorRelease {
     sha256: &'static str,
 }
 
+fn cloud_hypervisor_supported(os: &str, arch: &str) -> bool {
+    os == "linux" && arch == "x86_64"
+}
+
 fn cloud_hypervisor_release(arch: &str) -> Result<CloudHypervisorRelease> {
     match arch {
         "x86_64" => Ok(CloudHypervisorRelease {
@@ -115,7 +119,10 @@ impl Default for SetupConfig {
             kernel_version: DEFAULT_KERNEL_VERSION.to_string(),
             runtimes: vec!["base".to_string()],
             install_firecracker: true,
-            install_cloud_hypervisor: true,
+            install_cloud_hypervisor: cloud_hypervisor_supported(
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+            ),
         }
     }
 }
@@ -177,8 +184,7 @@ pub struct SetupStatus {
 impl SetupStatus {
     pub fn is_ready(&self) -> bool {
         // For Firecracker/CH backend, we need kernel + rootfs
-        let vmm_ready =
-            self.kvm_available && self.kernel_installed && self.rootfs_base_installed;
+        let vmm_ready = self.kvm_available && self.kernel_installed && self.rootfs_base_installed;
 
         // For container backends (Docker/Apple), just need the backend available
         let container_ready = self.docker_available || self.apple_containers_available;
@@ -542,7 +548,10 @@ pub async fn run_setup(non_interactive: bool, runtimes: Option<Vec<String>>) -> 
     // Determine what to install
     let mut install_kernel = !status.kernel_installed;
     let mut install_firecracker = !status.firecracker_installed;
-    let mut install_cloud_hypervisor = !status.cloud_hypervisor_installed;
+    let cloud_hypervisor_supported =
+        cloud_hypervisor_supported(std::env::consts::OS, std::env::consts::ARCH);
+    let mut install_cloud_hypervisor =
+        cloud_hypervisor_supported && !status.cloud_hypervisor_installed;
     let mut runtimes_to_install: Vec<String> = Vec::new();
 
     if let Some(r) = runtimes {
@@ -562,8 +571,9 @@ pub async fn run_setup(non_interactive: bool, runtimes: Option<Vec<String>>) -> 
             install_firecracker = prompt_yes_no("Download and install Firecracker?", true)?;
         }
 
-        if !status.cloud_hypervisor_installed {
-            install_cloud_hypervisor = prompt_yes_no("Download and install Cloud Hypervisor?", true)?;
+        if cloud_hypervisor_supported && !status.cloud_hypervisor_installed {
+            install_cloud_hypervisor =
+                prompt_yes_no("Download and install Cloud Hypervisor?", true)?;
         }
 
         // Ask which runtimes to install
@@ -600,7 +610,9 @@ pub async fn run_setup(non_interactive: bool, runtimes: Option<Vec<String>>) -> 
 
         // Check for Docker (needed for building)
         if (install_kernel || !runtimes_to_install.is_empty()) && !status.docker_available {
-            bail!("Docker is required to build kernel and rootfs images. Please install Docker first.");
+            bail!(
+                "Docker is required to build kernel and rootfs images. Please install Docker first."
+            );
         }
     }
 
@@ -687,60 +699,19 @@ pub async fn run_setup(non_interactive: bool, runtimes: Option<Vec<String>>) -> 
 
 /// Build the kernel
 async fn build_kernel(data_dir: &Path) -> Result<()> {
-    let kernel_dir = data_dir.join("images/kernel");
-    std::fs::create_dir_all(&kernel_dir)?;
+    build_kernel_with_docker(data_dir, Path::new("docker")).await
+}
 
-    if std::env::consts::ARCH == "x86_64" {
-        println!("  Pulling pre-built kernel from liquidmetal-dev (GHCR)...");
-        let image = "ghcr.io/liquidmetal-dev/firecracker-kernel-bin:5.10.77";
-        
-        let status = Command::new("docker")
-            .args(["pull", image])
-            .status()
-            .context("Failed to pull kernel image")?;
-            
-        if !status.success() {
-            bail!("Failed to pull kernel image from GHCR");
-        }
-        
-        let container_name = "agentkernel-kernel-extract-tmp";
-        let _ = Command::new("docker").args(["rm", "-f", container_name]).output();
-        
-        let status = Command::new("docker")
-            .args(["create", "--name", container_name, image, "sh"])
-            .status()
-            .context("Failed to create container from kernel image")?;
-            
-        if !status.success() {
-            bail!("Failed to create temp container for kernel extraction");
-        }
-        
-        let vmlinux_path = kernel_dir.join(format!("vmlinux-{}-agentkernel", DEFAULT_KERNEL_VERSION));
-        
-        let status = Command::new("docker")
-            .args(["cp", &format!("{}:/boot/vmlinux", container_name), &vmlinux_path.to_string_lossy()])
-            .status()
-            .context("Failed to extract vmlinux from container")?;
-            
-        let _ = Command::new("docker").args(["rm", "-f", container_name]).output();
-        
-        if !status.success() {
-            bail!("Failed to extract vmlinux from container");
-        }
-        
-        println!("  Kernel successfully pulled and extracted!");
-        return Ok(());
-    }
-
-    println!("  Architecture is not x86_64, falling back to local source compilation...");
-
+// Keep a single source-build path for every architecture. An explicit executable
+// makes the orchestration testable without downloading or compiling a kernel.
+async fn build_kernel_with_docker(data_dir: &Path, docker: &Path) -> Result<()> {
     // Find the build script in the source directory or use embedded version
     let script_content = include_str!("../images/build/build-kernel.sh");
     let config_content = include_str!("../images/kernel/microvm.config");
 
     // Create temp directory for build
-    let temp_dir = std::env::temp_dir().join("agentkernel-kernel-build");
-    std::fs::create_dir_all(&temp_dir)?;
+    let build_context = tempfile::tempdir().context("Failed to create kernel build directory")?;
+    let temp_dir = build_context.path();
 
     // Write build script and config
     let script_path = temp_dir.join("build-kernel.sh");
@@ -778,9 +749,9 @@ CMD ["__AGENTKERNEL_DEFAULT_KERNEL__"]
     )?;
 
     // Build the Docker image
-    let status = Command::new("docker")
+    let status = Command::new(docker)
         .args(["build", "-t", "agentkernel-kernel-builder", "."])
-        .current_dir(&temp_dir)
+        .current_dir(temp_dir)
         .status()
         .context("Failed to build kernel builder Docker image")?;
 
@@ -795,7 +766,7 @@ CMD ["__AGENTKERNEL_DEFAULT_KERNEL__"]
     // Copy config to kernel dir BEFORE running Docker (volume mount shadows image contents)
     std::fs::write(kernel_dir.join("microvm.config"), config_content)?;
 
-    let status = Command::new("docker")
+    let status = Command::new(docker)
         .args([
             "run",
             "--rm",
@@ -818,6 +789,20 @@ CMD ["__AGENTKERNEL_DEFAULT_KERNEL__"]
 const GUEST_AGENT_MAIN_SOURCE: &str = include_str!("embedded/guest_agent_main.rs");
 const GUEST_AGENT_PTY_SOURCE: &str = include_str!("embedded/guest_agent_pty.rs");
 const GUEST_AGENT_CARGO_SOURCE: &str = include_str!("embedded/guest_agent_cargo.toml");
+
+// Keep the build image at least as new as the declared guest MSRV.
+const GUEST_AGENT_DOCKERFILE: &str = r#"
+FROM rust:1.89-alpine AS builder
+RUN apk add --no-cache musl-dev
+WORKDIR /build
+COPY . .
+RUN cargo build --release --target x86_64-unknown-linux-musl 2>/dev/null || cargo build --release
+RUN cp target/*/release/agent /agent || cp target/release/agent /agent
+
+FROM scratch
+COPY --from=builder /agent /agent
+CMD ["/agent"]
+"#;
 
 fn write_guest_agent_build_context(build_dir: &Path) -> Result<()> {
     for (relative_path, contents) in [
@@ -852,21 +837,7 @@ async fn build_guest_agent(data_dir: &Path) -> Result<()> {
         tempfile::tempdir().context("Failed to create temporary guest agent build directory")?;
     write_guest_agent_build_context(temp_dir.path())?;
 
-    // Dockerfile for building with musl
-    let dockerfile = r#"
-FROM rust:1.85-alpine AS builder
-RUN apk add --no-cache musl-dev
-WORKDIR /build
-COPY . .
-RUN cargo build --release --target x86_64-unknown-linux-musl 2>/dev/null || cargo build --release
-RUN cp target/*/release/agent /agent || cp target/release/agent /agent
-
-FROM scratch
-COPY --from=builder /agent /agent
-CMD ["/agent"]
-"#;
-
-    std::fs::write(temp_dir.path().join("Dockerfile"), dockerfile)?;
+    std::fs::write(temp_dir.path().join("Dockerfile"), GUEST_AGENT_DOCKERFILE)?;
 
     // Build in Docker
     let status = Command::new("docker")
@@ -987,60 +958,63 @@ async fn build_rootfs(data_dir: &Path, runtime: &str) -> Result<()> {
     std::fs::create_dir_all(&temp_dir)?;
 
     let mut extra_docker_args = vec![];
-    let build_script_core;
-
-    if runtime == "k8s-node" {
+    let build_script_core = if runtime == "k8s-node" {
         println!("  Pulling k8s-node OS image from liquidmetal-dev (GHCR)...");
         let image = "ghcr.io/liquidmetal-dev/capmvm-k8s-ubuntu-22.04:1.30.14";
-        
+
         let status = Command::new("docker")
             .args(["pull", image])
             .status()
             .context("Failed to pull OS image")?;
-            
+
         if !status.success() {
             bail!("Failed to pull OS image from GHCR");
         }
-        
+
         let container_name = "agentkernel-k8s-extract-tmp";
-        let _ = Command::new("docker").args(["rm", "-f", container_name]).output();
-        
+        let _ = Command::new("docker")
+            .args(["rm", "-f", container_name])
+            .output();
+
         let status = Command::new("docker")
             .args(["create", "--name", container_name, image])
             .status()?;
-            
+
         if !status.success() {
             bail!("Failed to create temp container for OS extraction");
         }
-            
+
         let tar_path = temp_dir.join("rootfs.tar");
         let status = Command::new("docker")
             .args(["export", "-o", tar_path.to_str().unwrap(), container_name])
             .status()?;
-            
-        let _ = Command::new("docker").args(["rm", "-f", container_name]).output();
-        
+
+        let _ = Command::new("docker")
+            .args(["rm", "-f", container_name])
+            .output();
+
         if !status.success() {
             bail!("Failed to export OS filesystem");
         }
-        
+
         extra_docker_args.push("-v".to_string());
         extra_docker_args.push(format!("{}:/rootfs.tar:ro", tar_path.display()));
-        
-        build_script_core = r#"
+
+        r#"
 echo "Extracting Liquid Metal k8s-node OS image..."
 tar -xf /rootfs.tar -C "$MOUNT_DIR" || true
-"#.to_string();
-
+"#
+        .to_string()
     } else {
-        build_script_core = format!(r#"
+        r#"
 echo "Installing Alpine base system..."
 apk -X https://dl-cdn.alpinelinux.org/alpine/v3.24/main \
     -X https://dl-cdn.alpinelinux.org/alpine/v3.24/community \
     -U --allow-untrusted --root "$MOUNT_DIR" --initdb \
     add alpine-base busybox-static $PACKAGES || true
-"#);
-    }
+"#
+        .to_string()
+    };
 
     // Create init script
     let init_script = if runtime == "k8s-node" {
@@ -1191,16 +1165,13 @@ ls -lh "$ROOTFS_IMG"
         "-v",
         &format!("{}:/agent-bin:ro", data_dir.join("bin").display()),
     ]);
-    
+
     docker_cmd.args(extra_docker_args);
-    
-    let status = docker_cmd.args([
-        "alpine:3.24",
-        "/bin/sh",
-        "/build.sh",
-    ])
-    .status()
-    .context("Failed to run rootfs build")?;
+
+    let status = docker_cmd
+        .args(["alpine:3.24", "/bin/sh", "/build.sh"])
+        .status()
+        .context("Failed to run rootfs build")?;
 
     if !status.success() {
         bail!("Rootfs build failed for {}", runtime);
@@ -1473,6 +1444,10 @@ async fn install_firecracker_binary(data_dir: &Path) -> Result<()> {
 
 /// Install Cloud Hypervisor binary
 async fn install_cloud_hypervisor_binary(data_dir: &Path) -> Result<()> {
+    if !cloud_hypervisor_supported(std::env::consts::OS, std::env::consts::ARCH) {
+        bail!("Cloud Hypervisor is currently supported only on Linux x86_64");
+    }
+
     let bin_dir = data_dir.join("bin");
     std::fs::create_dir_all(&bin_dir)?;
 
@@ -1492,7 +1467,8 @@ async fn install_cloud_hypervisor_binary(data_dir: &Path) -> Result<()> {
         DEFAULT_CLOUD_HYPERVISOR_VERSION, arch
     );
 
-    let temp_dir = tempfile::tempdir().context("Failed to create Cloud Hypervisor download directory")?;
+    let temp_dir =
+        tempfile::tempdir().context("Failed to create Cloud Hypervisor download directory")?;
     let binary_path = temp_dir.path().join("cloud-hypervisor");
 
     let status = Command::new("curl")
@@ -1518,7 +1494,10 @@ async fn install_cloud_hypervisor_binary(data_dir: &Path) -> Result<()> {
 
     let target_path = bin_dir.join("cloud-hypervisor");
     std::fs::copy(&binary_path, &target_path).with_context(|| {
-        format!("Failed to install Cloud Hypervisor binary from {}", binary_path.display())
+        format!(
+            "Failed to install Cloud Hypervisor binary from {}",
+            binary_path.display()
+        )
     })?;
 
     #[cfg(unix)]
@@ -1528,12 +1507,119 @@ async fn install_cloud_hypervisor_binary(data_dir: &Path) -> Result<()> {
     }
 
     println!("Cloud Hypervisor installed to: {}", target_path.display());
+    println!(
+        "Set CLOUD_HYPERVISOR_KERNEL to a separately provisioned compatible PVH ELF or bzImage \
+         with PCI and virtio support built in. The shared Firecracker kernel is not compatible."
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_hypervisor_setup_is_limited_to_supported_hosts() {
+        assert!(cloud_hypervisor_supported("linux", "x86_64"));
+        for (os, arch) in [
+            ("linux", "aarch64"),
+            ("linux", "riscv64"),
+            ("macos", "x86_64"),
+            ("macos", "aarch64"),
+            ("windows", "x86_64"),
+        ] {
+            assert!(!cloud_hypervisor_supported(os, arch));
+        }
+        assert_eq!(
+            SetupConfig::default().install_cloud_hypervisor,
+            cloud_hypervisor_supported(std::env::consts::OS, std::env::consts::ARCH)
+        );
+    }
+
+    #[test]
+    fn guest_agent_msrv_matches_embedded_build() {
+        let manifest: toml::Value = toml::from_str(GUEST_AGENT_CARGO_SOURCE).unwrap();
+        assert_eq!(manifest["package"]["rust-version"].as_str(), Some("1.89"));
+        assert!(GUEST_AGENT_DOCKERFILE.contains("FROM rust:1.89-alpine AS builder"));
+        assert_eq!(
+            GUEST_AGENT_CARGO_SOURCE,
+            include_str!("../guest-agent/Cargo.toml")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kernel_setup_builds_verified_source_without_prebuilt_download() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let docker = temp.path().join("docker");
+        let log = temp.path().join("docker.log");
+        let script = format!(
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> '{}'
+case "$1" in
+    build)
+        # Check the actual staged source build and pinned version, not a label
+        # applied to a downloaded binary.
+        grep -F 'https://cdn.kernel.org/pub/linux/kernel/' build-kernel.sh
+        grep -F 'sha256sum -c -' build-kernel.sh
+        grep -F 'make -j"$NPROC" vmlinux' build-kernel.sh
+        grep -F 'CMD ["{}"]' Dockerfile
+        test -s microvm.config
+        ;;
+    run)
+        test "$5" = agentkernel-kernel-builder
+        test "$6" = '{}'
+        ;;
+    *) exit 97 ;;
+esac
+"#,
+            log.display(),
+            DEFAULT_KERNEL_VERSION,
+            DEFAULT_KERNEL_VERSION
+        );
+        std::fs::write(&docker, script).unwrap();
+        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        build_kernel_with_docker(temp.path(), &docker)
+            .await
+            .unwrap();
+        let calls = std::fs::read_to_string(log).unwrap();
+        assert_eq!(calls.lines().count(), 2);
+        assert!(calls.starts_with("build -t agentkernel-kernel-builder .\n"));
+        assert!(calls.contains(&format!(
+            "agentkernel-kernel-builder {DEFAULT_KERNEL_VERSION}\n"
+        )));
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("images/kernel/microvm.config")).unwrap(),
+            include_str!("../images/kernel/microvm.config")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kernel_setup_does_not_fall_back_after_source_build_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let docker = temp.path().join("docker");
+        let log = temp.path().join("docker.log");
+        std::fs::write(
+            &docker,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 7\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = build_kernel_with_docker(temp.path(), &docker)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Failed to build kernel builder"));
+        assert_eq!(std::fs::read_to_string(log).unwrap().lines().count(), 1);
+    }
 
     #[test]
     fn supported_runtime_defaults_match_verified_release_metadata() {
