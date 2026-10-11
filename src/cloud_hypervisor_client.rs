@@ -144,25 +144,34 @@ impl CloudHypervisorClient {
     /// Get the running VMM version.
     #[allow(dead_code)]
     pub async fn get_version(&self) -> Result<Version> {
-        let response = self.request(Method::GET, "/api/v1/vmm.ping", None::<&()>).await?;
+        let response = self
+            .request(Method::GET, "/api/v1/vmm.ping", None::<&()>)
+            .await?;
         serde_json::from_slice(&response).context("Failed to parse Cloud Hypervisor version")
     }
 
     /// Create the VM with the given configuration
     pub async fn create_vm(&self, config: &VmConfig) -> Result<()> {
-        let _ = self.request(Method::PUT, "/api/v1/vm.create", Some(config)).await?;
+        let _ = self
+            .request(Method::PUT, "/api/v1/vm.create", Some(config))
+            .await?;
         Ok(())
     }
 
     /// Boot the created VM
     pub async fn boot_vm(&self) -> Result<()> {
-        let _ = self.request(Method::PUT, "/api/v1/vm.boot", None::<&()>).await?;
+        let _ = self
+            .request(Method::PUT, "/api/v1/vm.boot", None::<&()>)
+            .await?;
         Ok(())
     }
 
     /// Stop the VM cleanly
+    #[allow(dead_code)]
     pub async fn shutdown_vm(&self) -> Result<()> {
-        let _ = self.request(Method::PUT, "/api/v1/vm.shutdown", None::<&()>).await?;
+        let _ = self
+            .request(Method::PUT, "/api/v1/vm.shutdown", None::<&()>)
+            .await?;
         Ok(())
     }
 
@@ -172,18 +181,52 @@ impl CloudHypervisorClient {
         path: &str,
         body: Option<&T>,
     ) -> Result<Bytes> {
-        let socket_path = self.socket_path.clone();
+        let stream =
+            tokio::time::timeout(self.connect_timeout, UnixStream::connect(&self.socket_path))
+                .await
+                .map_err(|_| CloudHypervisorApiTimeout {
+                    stage: "connect",
+                    timeout: self.connect_timeout,
+                    socket_path: self.socket_path.clone(),
+                })?
+                .with_context(|| format!("Failed to connect to {}", self.socket_path))?;
+        self.request_on_stream(stream, method, path, body).await
+    }
 
-        // 1. Connect to the socket with a timeout
-        let stream = tokio::time::timeout(self.connect_timeout, UnixStream::connect(&socket_path))
-            .await
-            .map_err(|_| CloudHypervisorApiTimeout {
-                stage: "connect",
-                timeout: self.connect_timeout,
-                socket_path: socket_path.clone(),
-            })?
-            .with_context(|| format!("Failed to connect to {}", socket_path))?;
+    async fn request_on_stream<T, S>(
+        &self,
+        stream: S,
+        method: Method,
+        path: &str,
+        body: Option<&T>,
+    ) -> Result<Bytes>
+    where
+        T: Serialize,
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        tokio::time::timeout(
+            self.request_timeout,
+            self.exchange(stream, method, path, body),
+        )
+        .await
+        .map_err(|_| CloudHypervisorApiTimeout {
+            stage: "request (including response body)",
+            timeout: self.request_timeout,
+            socket_path: self.socket_path.clone(),
+        })?
+    }
 
+    async fn exchange<T, S>(
+        &self,
+        stream: S,
+        method: Method,
+        path: &str,
+        body: Option<&T>,
+    ) -> Result<Bytes>
+    where
+        T: Serialize,
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         let io = TokioIo::new(stream);
 
         // 2. Perform the HTTP handshake
@@ -191,14 +234,18 @@ impl CloudHypervisorClient {
             .await
             .context("HTTP handshake failed")?;
 
-        tokio::spawn(async move {
-            if let Err(_err) = conn.await {
-                // ignore errors for now
+        // Cancel the connection task as well if the request is cancelled or times out.
+        struct ConnectionTask(tokio::task::JoinHandle<()>);
+        impl Drop for ConnectionTask {
+            fn drop(&mut self) {
+                self.0.abort();
             }
-        });
+        }
+        let _connection = ConnectionTask(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
 
         // 3. Prepare the request
-        let uri = format!("http://localhost{}", path);
         let req_body = match body {
             Some(b) => Full::new(Bytes::from(serde_json::to_vec(b)?)),
             None => Full::new(Bytes::new()),
@@ -206,20 +253,16 @@ impl CloudHypervisorClient {
 
         let req = Request::builder()
             .method(method)
-            .uri(uri)
+            .uri(path)
+            .header("Host", "localhost")
             .header("Accept", "application/json")
             .header("Content-Type", "application/json")
             .body(req_body)
             .context("Failed to build request")?;
 
-        // 4. Send the request and wait for the response with a timeout
-        let res = tokio::time::timeout(self.request_timeout, sender.send_request(req))
+        let res = sender
+            .send_request(req)
             .await
-            .map_err(|_| CloudHypervisorApiTimeout {
-                stage: "request",
-                timeout: self.request_timeout,
-                socket_path,
-            })?
             .context("Failed to send request")?;
 
         let status = res.status();
@@ -238,5 +281,79 @@ impl CloudHypervisorClient {
         }
 
         Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn sends_vm_configuration_and_preserves_api_errors() {
+        // In-memory transport exercises the exact HTTP exchange without host sockets.
+        let (client_stream, mut stream) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                header.push(stream.read_u8().await.unwrap());
+            }
+            let header = String::from_utf8(header).unwrap();
+            assert!(header.starts_with("PUT /api/v1/vm.create HTTP/1.1"));
+            let length = header
+                .lines()
+                .find_map(|l| {
+                    l.to_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|n| n.trim().parse::<usize>().unwrap())
+                })
+                .unwrap();
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).await.unwrap();
+            let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(config["memory"]["size"], 128 * 1024 * 1024);
+            assert_eq!(config["cpus"]["kvm_hyperv"], true);
+            let error = r#"{"error":"unsupported test configuration"}"#;
+            stream.write_all(format!("HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", error.len(), error).as_bytes()).await.unwrap();
+        });
+        let mut config = VmConfig::default();
+        config.memory.size = 128 * 1024 * 1024;
+        config.cpus.kvm_hyperv = Some(true);
+        let error = CloudHypervisorClient::new("unused-test-path")
+            .request_on_stream(
+                client_stream,
+                Method::PUT,
+                "/api/v1/vm.create",
+                Some(&config),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("unsupported test configuration"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn request_timeout_includes_stalled_response_body() {
+        // In-memory transport exercises the exact HTTP exchange without host sockets.
+        let (client_stream, mut stream) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                header.push(stream.read_u8().await.unwrap());
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{")
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+        let mut client = CloudHypervisorClient::new("unused-test-path");
+        client.request_timeout = Duration::from_millis(100);
+        let error = client
+            .request_on_stream(client_stream, Method::GET, "/api/v1/vmm.ping", None::<&()>)
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<CloudHypervisorApiTimeout>().is_some());
+        server.abort();
     }
 }

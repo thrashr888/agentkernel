@@ -9,6 +9,7 @@ mod backend;
 mod benchmark;
 mod browser_scripts;
 mod build;
+mod cloud_hypervisor_client;
 mod config;
 mod container_network;
 #[allow(dead_code)]
@@ -18,7 +19,6 @@ mod devcontainer;
 mod docker_backend;
 mod durable_storage;
 mod events;
-mod cloud_hypervisor_client;
 mod firecracker_client;
 mod full_state;
 mod git_utils;

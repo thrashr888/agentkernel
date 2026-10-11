@@ -1,7 +1,7 @@
 # ADR 08: Cloud Hypervisor Backend
 
 ## Status
-Accepted
+Experimental; real Linux x86_64/KVM boot gate required before rollout
 
 ## Context
 AgentKernel currently uses Firecracker as its primary Linux microVM backend. While Firecracker is excellent for extremely fast, lightweight, and secure sandboxing, there are use cases where users require features not supported by Firecracker, such as:
@@ -27,3 +27,15 @@ This backend will:
 1. Add `CloudHypervisor` to `BackendType`.
 2. Implement `CloudHypervisorSandbox`.
 3. Add CLI fallback and selection logic.
+
+## Current implementation boundaries
+
+The initial implementation supports explicitly selected Linux x86_64/KVM VMs,
+with networking and host mounts disabled. `virtio-fs`, cloud-init, SSH, MSHV, and
+full-state/durable disk resume are not implemented. Discovery must not advertise
+these capabilities. Unsupported configuration fails explicitly.
+
+The Firecracker kernel build and provenance remain unchanged. Cloud Hypervisor
+requires an explicitly supplied, compatible `CLOUD_HYPERVISOR_KERNEL`; it must
+not reuse the MMIO-only Firecracker configuration or download an older kernel
+and relabel it as the configured release. See [setup and verification guidance](../docs/cloud-hypervisor.md).

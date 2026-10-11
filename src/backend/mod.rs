@@ -355,6 +355,22 @@ pub fn backend_capabilities(backend: BackendType) -> BackendCapabilities {
         };
     }
 
+    if backend == BackendType::CloudHypervisor {
+        return BackendCapabilities {
+            mount_cwd: false,
+            mount_home: false,
+            attach: false,
+            host_volumes: false,
+            ssh: false,
+            proxy_secret_bindings: false,
+            secret_files: true,
+            snapshots: false,
+            resume: false,
+            full_state_pause_resume: false,
+            full_state_fork: false,
+            endpoints: false,
+        };
+    }
     let full_state = backend == BackendType::Firecracker
         && cfg!(all(target_os = "linux", target_arch = "x86_64"));
     BackendCapabilities {
@@ -958,7 +974,7 @@ pub fn backend_available(backend: BackendType) -> bool {
         #[cfg(not(target_os = "macos"))]
         BackendType::Apple => false,
         BackendType::Hyperlight => hyperlight::hyperlight_available(),
-        BackendType::CloudHypervisor => false,
+        BackendType::CloudHypervisor => cloud_hypervisor::cloud_hypervisor_available(),
         // Kubernetes and Nomad are always "available" when compiled with the feature;
         // actual connectivity is checked at start() time.
         #[cfg(feature = "kubernetes")]
@@ -1258,11 +1274,7 @@ pub fn backend_readiness(backend: BackendType) -> BackendReadiness {
             };
             (configured, usable, reason)
         }
-        BackendType::CloudHypervisor => (
-            false,
-            false,
-            "Cloud Hypervisor backend is not yet implemented",
-        ),
+        BackendType::CloudHypervisor => return cloud_hypervisor::cloud_hypervisor_readiness(),
         #[cfg(target_os = "macos")]
         BackendType::Apple => {
             let configured = apple::apple_containers_available();
@@ -1402,7 +1414,7 @@ pub fn create_sandbox_with_state(
         #[cfg(not(target_os = "macos"))]
         BackendType::Apple => anyhow::bail!("Apple Containers only available on macOS"),
         BackendType::Hyperlight => Ok(Box::new(HyperlightSandbox::new(name))),
-        BackendType::CloudHypervisor => Ok(Box::new(CloudHypervisorSandbox::new(name))),
+        BackendType::CloudHypervisor => Ok(Box::new(CloudHypervisorSandbox::new(name)?)),
         #[cfg(feature = "kubernetes")]
         BackendType::Kubernetes => Ok(Box::new(KubernetesSandbox::new(name, orch_config))),
         #[cfg(not(feature = "kubernetes"))]
