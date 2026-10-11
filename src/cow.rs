@@ -2005,14 +2005,34 @@ mod tests {
         rootfs.preserve_for_snapshot().unwrap();
         rootfs.cleanup().unwrap();
 
-        assert_eq!(
-            store.reap_stale().unwrap(),
-            RootfsCowReapReport {
-                preserved_artifacts: 1,
-                ..RootfsCowReapReport::default()
+        // Parallel tests may fork while this lease is held. CLOEXEC closes an
+        // unrelated child's inherited descriptor only at exec, so the reaper
+        // can correctly report it active briefly after our owner is dropped.
+        // Wait only for that exact conservative state, without weakening the
+        // final preservation assertion or accepting any reclamation/errors.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let report = store.reap_stale().unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"snapshot rootfs");
+            if report
+                == (RootfsCowReapReport {
+                    active_artifacts: 1,
+                    ..RootfsCowReapReport::default()
+                })
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
             }
-        );
-        assert_eq!(fs::read(path).unwrap(), b"snapshot rootfs");
+            assert_eq!(
+                report,
+                RootfsCowReapReport {
+                    preserved_artifacts: 1,
+                    ..RootfsCowReapReport::default()
+                }
+            );
+            break;
+        }
     }
 
     #[test]
