@@ -748,26 +748,31 @@ mod tests {
                 let paths = captured.clone();
                 tokio::time::timeout(
                     Duration::from_secs(10),
-                    hyper::server::conn::http1::Builder::new().serve_connection(
-                        TokioIo::new(stream),
-                        service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-                            let path = req.uri().path().to_string();
-                            paths.lock().unwrap().push(path.clone());
-                            async move {
-                                let (status, body) = if path == "/api/v1/vmm.ping" {
-                                    (200, r#"{"version":"v53.0"}"#)
-                                } else {
-                                    (400, r#"{"error":"reject test VM"}"#)
-                                };
-                                Ok::<_, std::convert::Infallible>(
-                                    Response::builder()
-                                        .status(status)
-                                        .body(Full::new(Bytes::from(body)))
-                                        .unwrap(),
-                                )
-                            }
-                        }),
-                    ),
+                    hyper::server::conn::http1::Builder::new()
+                        .serve_connection(
+                            TokioIo::new(stream),
+                            service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                                let path = req.uri().path().to_string();
+                                paths.lock().unwrap().push(path.clone());
+                                async move {
+                                    let (status, body) = if path == "/api/v1/vmm.ping" {
+                                        (200, r#"{"version":"v53.0"}"#)
+                                    } else {
+                                        (400, r#"{"error":"reject test VM"}"#)
+                                    };
+                                    Ok::<_, std::convert::Infallible>(
+                                        Response::builder()
+                                            .status(status)
+                                            .body(Full::new(Bytes::from(body)))
+                                            .unwrap(),
+                                    )
+                                }
+                            }),
+                        )
+                        // The client closes each request connection. A redundant
+                        // shutdown on that disconnected Unix stream returns ENOTCONN
+                        // on macOS; this fixture only needs the completed exchange.
+                        .without_shutdown(),
                 )
                 .await
                 .expect("mock Cloud Hypervisor HTTP connection did not finish")
