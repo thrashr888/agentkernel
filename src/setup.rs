@@ -519,8 +519,31 @@ pub fn prompt_multi_select(
     Ok(selected)
 }
 
+fn validate_runtime(runtime: &str) -> Result<()> {
+    if !RUNTIMES.iter().any(|(name, _)| *name == runtime) {
+        bail!(
+            "Unsupported setup runtime '{runtime}'; choose one of: {}",
+            RUNTIMES
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    Ok(())
+}
+
 /// Run the interactive setup
 pub async fn run_setup(non_interactive: bool, runtimes: Option<Vec<String>>) -> Result<()> {
+    // Validate before installation checks, downloads, or privileged Docker work.
+    if let Some(requested) = &runtimes {
+        if requested.is_empty() {
+            bail!("At least one setup runtime must be supplied");
+        }
+        for runtime in requested {
+            validate_runtime(runtime)?;
+        }
+    }
     println!("=== Agentkernel Setup ===\n");
 
     let status = check_installation();
@@ -925,6 +948,7 @@ async fn build_guest_agent(data_dir: &Path) -> Result<()> {
 
 /// Build a rootfs image
 async fn build_rootfs(data_dir: &Path, runtime: &str) -> Result<()> {
+    validate_runtime(runtime)?;
     let rootfs_dir = data_dir.join("images/rootfs");
     std::fs::create_dir_all(&rootfs_dir)?;
 
@@ -1516,6 +1540,36 @@ async fn install_cloud_hypervisor_binary(data_dir: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn runtime_inputs_are_allowlisted_before_shell_interpolation() {
+        for (runtime, _) in super::RUNTIMES {
+            assert!(super::validate_runtime(runtime).is_ok());
+        }
+        for runtime in [
+            "",
+            "unknown",
+            "../base",
+            "base/other",
+            "$(touch /tmp/owned)",
+            "base; id",
+            "base\"",
+            " base",
+            "BASE",
+        ] {
+            assert!(
+                super::validate_runtime(runtime).is_err(),
+                "accepted {runtime:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn setup_rejects_bad_runtime_inputs_before_side_effects() {
+        for runtimes in [vec![], vec!["base".into(), "$(id)".into()]] {
+            assert!(super::run_setup(true, Some(runtimes)).await.is_err());
+        }
+    }
+
     use super::*;
 
     #[test]

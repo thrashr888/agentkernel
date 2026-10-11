@@ -1,5 +1,12 @@
 # Cloud Hypervisor backend (experimental)
 
+This backend is **disabled by default**. Set
+`AGENTKERNEL_EXPERIMENTAL_CLOUD_HYPERVISOR=1` only to explicitly evaluate it.
+Readiness and every public start path enforce this gate. Ordinary releases do
+not enable it merely because a binary, KVM, and kernel are present. Real hardware
+boot validation has not yet been completed; do not roll it out in production
+until the opt-in gate below passes on the target host.
+
 This backend currently targets **Linux x86_64 with writable `/dev/kvm`**, using
 Cloud Hypervisor's KVM backend. Hyper-V enlightenments are passed to KVM; this does
 not implement Microsoft Hypervisor/MSHV or native Windows support. macOS and
@@ -55,6 +62,7 @@ The real boot/exec/file-I/O/restart/read-only test is explicitly ignored by defa
 it does not return success when prerequisites are missing:
 
 ```sh
+AGENTKERNEL_EXPERIMENTAL_CLOUD_HYPERVISOR=1 \
 AGENTKERNEL_CH_SMOKE=1 \
 CLOUD_HYPERVISOR_BIN=/absolute/path/cloud-hypervisor \
 CLOUD_HYPERVISOR_KERNEL=/absolute/path/compatible-kernel \

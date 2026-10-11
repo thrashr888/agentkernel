@@ -4,7 +4,7 @@ use agentkernel::backend::{Sandbox, SandboxConfig};
 use anyhow::Result;
 
 #[tokio::test]
-#[ignore = "requires Linux x86_64/KVM, CLOUD_HYPERVISOR_BIN, CLOUD_HYPERVISOR_KERNEL and setup base rootfs"]
+#[ignore = "requires AGENTKERNEL_EXPERIMENTAL_CLOUD_HYPERVISOR=1, Linux x86_64/KVM, CLOUD_HYPERVISOR_BIN, CLOUD_HYPERVISOR_KERNEL and setup base rootfs"]
 async fn cloud_hypervisor_boot_exec_and_stop() -> Result<()> {
     assert_eq!(
         std::env::var("AGENTKERNEL_CH_SMOKE").as_deref(),

@@ -24,8 +24,18 @@ pub fn cloud_hypervisor_available() -> bool {
 }
 
 pub fn cloud_hypervisor_readiness() -> BackendReadiness {
+    cloud_hypervisor_readiness_with_opt_in(
+        std::env::var("AGENTKERNEL_EXPERIMENTAL_CLOUD_HYPERVISOR").as_deref() == Ok("1"),
+    )
+}
+
+fn cloud_hypervisor_readiness_with_opt_in(experimental_opt_in: bool) -> BackendReadiness {
     let configured = find_cloud_hypervisor().is_ok();
-    let reason = if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    let reason = if !experimental_opt_in {
+        Some(
+            "Cloud Hypervisor is experimental and disabled by default; set AGENTKERNEL_EXPERIMENTAL_CLOUD_HYPERVISOR=1 only for explicit validation",
+        )
+    } else if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         Some("Cloud Hypervisor requires Linux x86_64 with KVM")
     } else if !configured {
         Some("Cloud Hypervisor binary is not installed or executable")
@@ -512,6 +522,18 @@ mod tests {
             network: false,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn experimental_backend_is_unusable_without_explicit_opt_in() {
+        let readiness = cloud_hypervisor_readiness_with_opt_in(false);
+        assert!(!readiness.usable);
+        assert!(readiness.reason.contains("disabled by default"));
+        assert!(
+            readiness
+                .reason
+                .contains("AGENTKERNEL_EXPERIMENTAL_CLOUD_HYPERVISOR=1")
+        );
     }
 
     #[test]
