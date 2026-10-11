@@ -28,11 +28,14 @@
     "README.md"
   ],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.84.2 <1"
+    "@earendil-works/pi-coding-agent": ">=1.0.1 <2"
   },
   "pi": {
     "extensions": [
       "./index.ts"
     ]
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
   }
 }
