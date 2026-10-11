@@ -7,6 +7,8 @@ on:
       - Cargo.toml
       - Cargo.lock
       - src/backend/**
+      - src/cloud_hypervisor_client.rs
+      - src/setup.rs
       - src/docker_backend.rs
       - src/hyperlight_backend.rs
       - src/vmm.rs
@@ -41,6 +43,12 @@ jobs:
         run: cargo check --locked --all-targets
       - name: Check no-default backend surface
         run: cargo check --locked --no-default-features --all-targets
+      - name: Test Cloud Hypervisor policy and mock lifecycle (no KVM)
+        timeout-minutes: 10
+        run: cargo test --locked --lib cloud_hypervisor -- --nocapture
+      - name: Test setup provenance and input validation
+        timeout-minutes: 10
+        run: cargo test --locked --bin agentkernel setup::tests -- --nocapture
       - name: Check provider and bridge contracts with fake clients
         uses: actions/setup-node@v7
         with:

@@ -329,7 +329,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("unsupported test configuration"));
-        server.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("mock API response task did not finish")
+            .unwrap();
     }
 
     #[tokio::test]

@@ -741,10 +741,14 @@ mod tests {
         let captured = paths.clone();
         let server = tokio::spawn(async move {
             for _ in 0..2 {
-                let (stream, _) = listener.accept().await.unwrap();
+                let (stream, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+                    .await
+                    .expect("mock Cloud Hypervisor API connection was not received")
+                    .unwrap();
                 let paths = captured.clone();
-                hyper::server::conn::http1::Builder::new()
-                    .serve_connection(
+                tokio::time::timeout(
+                    Duration::from_secs(10),
+                    hyper::server::conn::http1::Builder::new().serve_connection(
                         TokioIo::new(stream),
                         service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                             let path = req.uri().path().to_string();
@@ -763,16 +767,21 @@ mod tests {
                                 )
                             }
                         }),
-                    )
-                    .await
-                    .unwrap();
+                    ),
+                )
+                .await
+                .expect("mock Cloud Hypervisor HTTP connection did not finish")
+                .unwrap();
             }
         });
         let result = sandbox
             .start_with_assets(&config(), &binary, Path::new("/kernel"), &base, &store)
             .await;
         assert!(result.unwrap_err().to_string().contains("reject test VM"));
-        server.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(25), server)
+            .await
+            .expect("mock Cloud Hypervisor API task did not finish")
+            .unwrap();
         assert_eq!(
             *paths.lock().unwrap(),
             ["/api/v1/vmm.ping", "/api/v1/vm.create"]
