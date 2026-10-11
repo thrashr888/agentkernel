@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn test_jsonwebtoken_rust_crypto_provider_roundtrip() {
+    fn test_jsonwebtoken_provider_roundtrip() {
         use jsonwebtoken::{
             Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode,
         };
@@ -391,6 +391,122 @@ mod tests {
 
         assert_eq!(decoded.claims.sub, claims.sub);
         assert_eq!(decoded.claims.roles, claims.roles);
+    }
+
+    // OpenSSL-signed vectors exercise the actual HTTP/JWKS verification path,
+    // independently of the selected jsonwebtoken signing implementation.
+    fn rsa_test_tokens() -> serde_json::Value {
+        serde_json::from_str(include_str!("testdata/rsa-tokens.json")).unwrap()
+    }
+
+    async fn validate_with_test_jwks(token: &str, jwks: &str) -> Result<JwtClaims> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = jwks.to_owned();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).await.unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let result = validate_jwt(token, &format!("http://{address}/jwks")).await;
+        // Missing/invalid headers may be rejected before fetching the JWKS.
+        server.abort();
+        result
+    }
+
+    #[tokio::test]
+    async fn test_validate_jwt_rsa_algorithms() {
+        let tokens = rsa_test_tokens();
+        for algorithm in ["RS256", "RS384", "RS512"] {
+            let claims = validate_with_test_jwks(
+                tokens[algorithm].as_str().unwrap(),
+                include_str!("testdata/rsa-jwks.json"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(claims.sub, "jwt-test-user", "{algorithm}");
+            assert_eq!(claims.org_id, "test-org");
+            assert_eq!(claims.roles, ["developer"]);
+            assert!(claims.mfa_verified);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_validate_jwt_rejects_invalid_claims_and_key_ids() {
+        let tokens = rsa_test_tokens();
+        for case in [
+            "expired",
+            "missing_exp",
+            "missing_sub",
+            "missing_kid",
+            "unknown_kid",
+        ] {
+            assert!(
+                validate_with_test_jwks(
+                    tokens[case].as_str().unwrap(),
+                    include_str!("testdata/rsa-jwks.json"),
+                )
+                .await
+                .is_err(),
+                "accepted {case}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_validate_jwt_rejects_tampering_and_wrong_key() {
+        let tokens = rsa_test_tokens();
+        let token = tokens["RS256"].as_str().unwrap();
+        let mut tampered = token.as_bytes().to_vec();
+        let signature_start = token.rfind('.').unwrap() + 1;
+        tampered[signature_start] = if tampered[signature_start] == b'A' {
+            b'B'
+        } else {
+            b'A'
+        };
+        assert!(
+            validate_with_test_jwks(
+                std::str::from_utf8(&tampered).unwrap(),
+                include_str!("testdata/rsa-jwks.json"),
+            )
+            .await
+            .is_err()
+        );
+
+        let mut wrong_key: serde_json::Value =
+            serde_json::from_str(include_str!("testdata/rsa-jwks.json")).unwrap();
+        wrong_key["keys"][0]["e"] = serde_json::json!("Aw");
+        assert!(
+            validate_with_test_jwks(token, &wrong_key.to_string())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_jwt_rejects_hmac_algorithm_confusion() {
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+
+        let mut header = Header::new(Algorithm::HS256);
+        header.kid = Some("test-key".to_owned());
+        let token = encode(
+            &header,
+            &serde_json::json!({"sub": "attacker", "exp": 4_102_444_800_u64}),
+            &EncodingKey::from_secret(b"not-an-rsa-key"),
+        )
+        .unwrap();
+        let error = validate_with_test_jwks(&token, include_str!("testdata/rsa-jwks.json"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Unsupported JWT algorithm"));
     }
 
     #[test]
