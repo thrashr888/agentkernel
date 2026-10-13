@@ -81,13 +81,14 @@ published `0.3.0` release or change the publication destinations.
 
 # 2. Run the pre-release checklist above
 
-# 3. Commit
-git add Cargo.toml
-git commit -m "release: v0.3.0"
+# 3. Set VERSION to the reviewed release version, without the v prefix.
+VERSION="<release-version>"
+# Stage the reviewed release files before committing.
+git commit -m "release: v${VERSION}"
 
-# 4. Tag and push
-git tag v0.3.0
-git push origin main v0.3.0
+# 4. Tag and push the verified release commit
+git tag "v${VERSION}"
+git push origin main "v${VERSION}"
 ```
 
 All three workflows trigger on the tag push.

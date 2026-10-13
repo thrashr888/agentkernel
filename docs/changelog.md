@@ -8,10 +8,9 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ## Unreleased
 
-### v0.21.0 (unreleased) — Task Orchestration and Sandbox Lifecycle
+## [v0.21.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.21.0) — Task Orchestration and Sandbox Lifecycle
 
-The following changes are on the release preparation baseline. Publication and
-final validation are pending; this section is not a release announcement.
+_October 13, 2026 (UTC)_
 
 ### Added
 
@@ -40,7 +39,6 @@ final validation are pending; this section is not a release announcement.
 - Added backend/provider compatibility lanes and extended the native KVM lifecycle gate
 - Expanded adoption and sandbox comparison guides, refreshed runtime guidance, and enabled strict documentation builds
 - The Cloud Hypervisor hardware gate passed on PR head 91612a1 after refreshing the guest rootfs, including restart and read-only behavior; this is specific to the tested configuration and is not a blanket Hyper-V/platform certification
-- Final integrated release CI and the disposition of the remaining braces security alert must be resolved before publication
 
 ## [v0.20.1](https://github.com/thrashr888/agentkernel/releases/tag/v0.20.1) — Packaging Roll-Forward
 
