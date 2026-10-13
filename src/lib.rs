@@ -6,6 +6,7 @@ pub mod asciicast;
 pub mod audit;
 pub mod backend;
 pub mod build;
+pub mod cloud_hypervisor_client;
 pub mod config;
 pub mod container_network;
 pub mod cow;

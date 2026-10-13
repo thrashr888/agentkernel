@@ -100,6 +100,7 @@ nav:
     - agentkernel.toml: config/toml.md
     - Security Profiles: config/security.md
     - Backends: config/backends.md
+    - Cloud Hypervisor (experimental): cloud-hypervisor.md
   - AI Agents:
     - Overview: agents/index.md
     - Claude Code: agents/claude.md

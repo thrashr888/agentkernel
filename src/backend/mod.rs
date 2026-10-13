@@ -12,6 +12,7 @@
 
 #[cfg(target_os = "macos")]
 pub mod apple;
+pub mod cloud_hypervisor;
 pub mod docker;
 pub mod firecracker;
 pub mod hyperlight;
@@ -42,6 +43,7 @@ pub use crate::container_network::{ManagedNetworkConfig, ManagedNetworkLease, Ne
 
 #[cfg(target_os = "macos")]
 pub use apple::AppleSandbox;
+pub use cloud_hypervisor::CloudHypervisorSandbox;
 pub use docker::{ContainerRuntime, DockerSandbox};
 pub use firecracker::FirecrackerSandbox;
 pub use hyperlight::HyperlightSandbox;
@@ -65,6 +67,8 @@ pub enum BackendType {
     Apple,
     /// Hyperlight WebAssembly
     Hyperlight,
+    /// Cloud Hypervisor microVM
+    CloudHypervisor,
     /// Kubernetes pods (requires --features kubernetes)
     Kubernetes,
     /// HashiCorp Nomad jobs (requires --features nomad)
@@ -89,6 +93,7 @@ impl fmt::Display for BackendType {
             BackendType::Firecracker => write!(f, "firecracker"),
             BackendType::Apple => write!(f, "apple"),
             BackendType::Hyperlight => write!(f, "hyperlight"),
+            BackendType::CloudHypervisor => write!(f, "cloudhypervisor"),
             BackendType::Kubernetes => write!(f, "kubernetes"),
             BackendType::Nomad => write!(f, "nomad"),
             BackendType::Daytona => write!(f, "daytona"),
@@ -110,6 +115,7 @@ impl std::str::FromStr for BackendType {
             "firecracker" => Ok(BackendType::Firecracker),
             "apple" => Ok(BackendType::Apple),
             "hyperlight" => Ok(BackendType::Hyperlight),
+            "cloudhypervisor" | "cloud-hypervisor" => Ok(BackendType::CloudHypervisor),
             "kubernetes" | "k8s" => Ok(BackendType::Kubernetes),
             "nomad" => Ok(BackendType::Nomad),
             "daytona" => Ok(BackendType::Daytona),
@@ -118,7 +124,7 @@ impl std::str::FromStr for BackendType {
             "modal" => Ok(BackendType::Modal),
             "agentcomputer" | "agent-computer" => Ok(BackendType::AgentComputer),
             _ => Err(format!(
-                "Unknown backend '{}'. Valid options: docker, podman, firecracker, apple, hyperlight, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer",
+                "Unknown backend '{}'. Valid options: docker, podman, firecracker, apple, hyperlight, cloudhypervisor, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer",
                 s
             )),
         }
@@ -128,13 +134,14 @@ impl std::str::FromStr for BackendType {
 impl BackendType {
     /// All backend identifiers exposed by the public API, in stable display
     /// order. Availability is reported separately by backend discovery.
-    pub const fn all() -> [Self; 12] {
+    pub const fn all() -> [Self; 13] {
         [
             Self::Docker,
             Self::Podman,
             Self::Firecracker,
             Self::Apple,
             Self::Hyperlight,
+            Self::CloudHypervisor,
             Self::Kubernetes,
             Self::Nomad,
             Self::Daytona,
@@ -348,12 +355,31 @@ pub fn backend_capabilities(backend: BackendType) -> BackendCapabilities {
         };
     }
 
+    if backend == BackendType::CloudHypervisor {
+        return BackendCapabilities {
+            mount_cwd: false,
+            mount_home: false,
+            attach: false,
+            host_volumes: false,
+            ssh: false,
+            proxy_secret_bindings: false,
+            secret_files: true,
+            snapshots: false,
+            resume: false,
+            full_state_pause_resume: false,
+            full_state_fork: false,
+            endpoints: false,
+        };
+    }
     let full_state = backend == BackendType::Firecracker
         && cfg!(all(target_os = "linux", target_arch = "x86_64"));
     BackendCapabilities {
         mount_cwd: true,
         mount_home: true,
-        attach: !matches!(backend, BackendType::Firecracker | BackendType::Hyperlight),
+        attach: !matches!(
+            backend,
+            BackendType::Firecracker | BackendType::Hyperlight | BackendType::CloudHypervisor
+        ),
         // Named persistent volumes are currently translated into Docker/Podman
         // `-v` arguments by the VMM. Other local backends must reject them
         // rather than advertising support and silently dropping the mounts.
@@ -948,6 +974,7 @@ pub fn backend_available(backend: BackendType) -> bool {
         #[cfg(not(target_os = "macos"))]
         BackendType::Apple => false,
         BackendType::Hyperlight => hyperlight::hyperlight_available(),
+        BackendType::CloudHypervisor => cloud_hypervisor::cloud_hypervisor_available(),
         // Kubernetes and Nomad are always "available" when compiled with the feature;
         // actual connectivity is checked at start() time.
         #[cfg(feature = "kubernetes")]
@@ -1247,6 +1274,7 @@ pub fn backend_readiness(backend: BackendType) -> BackendReadiness {
             };
             (configured, usable, reason)
         }
+        BackendType::CloudHypervisor => return cloud_hypervisor::cloud_hypervisor_readiness(),
         #[cfg(target_os = "macos")]
         BackendType::Apple => {
             let configured = apple::apple_containers_available();
@@ -1386,6 +1414,7 @@ pub fn create_sandbox_with_state(
         #[cfg(not(target_os = "macos"))]
         BackendType::Apple => anyhow::bail!("Apple Containers only available on macOS"),
         BackendType::Hyperlight => Ok(Box::new(HyperlightSandbox::new(name))),
+        BackendType::CloudHypervisor => Ok(Box::new(CloudHypervisorSandbox::new(name)?)),
         #[cfg(feature = "kubernetes")]
         BackendType::Kubernetes => Ok(Box::new(KubernetesSandbox::new(name, orch_config))),
         #[cfg(not(feature = "kubernetes"))]

@@ -15011,7 +15011,7 @@ max_total_sandboxes = 0
         let discovery = backend_discovery(Some(crate::backend::BackendType::Docker));
         let json = serde_json::to_value(discovery).unwrap();
         assert_eq!(json["default_backend"], "docker");
-        assert_eq!(json["backends"].as_array().unwrap().len(), 12);
+        assert_eq!(json["backends"].as_array().unwrap().len(), 13);
         assert!(json["backends"][0]["capabilities"]["mount_cwd"].is_boolean());
         assert!(json["backends"][0]["readiness_reason"].is_string());
     }
