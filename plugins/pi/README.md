@@ -2,6 +2,23 @@
 
 Route Pi coding agent commands through hardware-isolated microVM sandboxes via agentkernel.
 
+## Supported Pi host
+
+Use Pi >=1.0.1 <2; npm installations require Node.js >=22.19.0. Pi 0.x and 1.0.0
+are no longer supported. [Pi 1.0.1 fixes the vulnerable `brace-expansion` dependency](https://github.com/earendil-works/pi/releases/tag/v1.0.1).
+
+Updating the extension does not upgrade an existing Pi host. Update Pi using its
+original installer or package manager (`pi update` for managed installations).
+For a global npm installation, run:
+
+```bash
+npm install -g --ignore-scripts '@earendil-works/pi-coding-agent@^1.0.1'
+pi --version
+```
+
+Check that `pi --version` reports at least 1.0.1 and below 2 before loading the
+extension.
+
 ## Setup
 
 1. Install agentkernel:

@@ -42,7 +42,7 @@ import type {
   TakeSnapshotOptions,
 } from "./types.js";
 
-const SDK_VERSION = "0.3.0";
+const SDK_VERSION = "0.21.0";
 
 /**
  * Client for the agentkernel HTTP API.
