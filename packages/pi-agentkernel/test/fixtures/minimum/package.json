@@ -1,0 +1,13 @@
+{
+  "name": "agentkernel-pi-minimum-host-fixture",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.1"
+  },
+  "overrides": {
+    "@earendil-works/pi-coding-agent@1.0.1": {
+      "@earendil-works/pi-codemode": "1.0.1"
+    }
+  }
+}
