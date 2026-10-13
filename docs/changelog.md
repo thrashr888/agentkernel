@@ -8,7 +8,7 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ## Unreleased
 
-### Planned v0.21.0 — Task Orchestration and Sandbox Lifecycle
+### v0.21.0 (unreleased) — Task Orchestration and Sandbox Lifecycle
 
 The following changes are on the release preparation baseline. Publication and
 final validation are pending; this section is not a release announcement.
@@ -30,6 +30,7 @@ final validation are pending; this section is not a release announcement.
 - Bound checkpoints to sandbox UUIDs; hardened rootfs cleanup, Kubernetes resource identity, delegated manifest cleanup, and volume persistence
 - Refreshed rustls, wasmtime and quinn-proto dependencies and switched JWT verification to AWS-LC to remove the vulnerable Rust RSA dependency
 - Updated provider, desktop, Node SDK and Pi host dependencies; Pi integrations require host >=1.0.1 <2 and existing users must upgrade Pi separately
+- Made minimum Pi host compatibility reproducible with a coherent locked 1.0.1 fixture while retaining fresh resolution of current 1.x hosts; documented the scoped consumer workaround for upstream codemode incompatibility (#199)
 - Added a source-verifiable braces nesting-depth backport. Its upstream version remains 3.0.3, and Dependabot alert #225 remains open despite the tested mitigation; this is not a claim that every security alert is cleared
 - Restored verified kernel-source provenance and hardened Cloud Hypervisor startup, cleanup and guest file operations, building on @sangam14's original PR #183
 - Improved Docker build caching and cached VM manager configuration while checking configuration contents

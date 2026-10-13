@@ -60,6 +60,17 @@ two DMGs, two updater archives, two signatures, and latest.json), updater URLs,
 both CLI and SDK crates, npm, GitHub Packages, PyPI, Docker, Helm, and the Homebrew
 formula and cask. A GitHub Release alone is not proof that every channel succeeded.
 
+## SDK version alignment
+
+SDK releases already follow the `v*` release tag: Node.js, Python and Rust
+publication jobs derive their package version from it, and Swift uses Git tags.
+The checked-in SDK `0.3.0` values were stale source metadata; npm `agentkernel`,
+PyPI `agentkernel-sdk` and crates.io `agentkernel-sdk` each published `0.20.1`
+as verified on October 13, 2026. Synchronizing their source manifests, lockfile
+root records and User-Agent constants to `0.21.0` continues that existing
+release policy. It does not introduce an independent SDK version jump from the
+published `0.3.0` release or change the publication destinations.
+
 ## Cutting a Release
 
 ```bash
