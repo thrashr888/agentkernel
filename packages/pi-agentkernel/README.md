@@ -64,6 +64,40 @@ pi --version
 Verify the reported host version is at least 1.0.1 and below 2 before loading this
 extension. Managed installations can use `pi update` instead.
 
+## Known upstream 1.0.1 dependency incompatibility
+
+A fresh Pi 1.0.1 npm installation can select `pi-codemode@1.2.0`, which removed
+exports still imported by the 1.0.1 **unbundled library entry point**. This fails
+before extension code loads; it is not an AgentKernel API incompatibility. The
+published bundled `pi --version` entry point still works in that graph; this is
+not a claim that every bundled CLI operation has been exercised.
+
+Normal installations should use the current supported 1.x host (the upgrade
+command above), rather than pinning a new installation to 1.0.1. The minimum
+supported host remains 1.0.1 with a coherent dependency graph.
+
+If an application must embed exactly Pi 1.0.1, add this scoped override to the
+**consuming application's root** package.json, alongside its exact 1.0.1 host
+dependency. Merge it with any existing overrides; then generate/review and commit
+the application's lockfile and use `npm ci` for subsequent installations:
+
+```json
+{
+  "overrides": {
+    "@earendil-works/pi-coding-agent@1.0.1": {
+      "@earendil-works/pi-codemode": "1.0.1"
+    }
+  }
+}
+```
+
+Overrides in a published extension dependency do not propagate to consumers.
+This override targets only the affected old host, not current 1.x hosts. Our
+[locked minimum fixture](https://github.com/thrashr888/agentkernel/tree/main/packages/pi-agentkernel/test/fixtures/minimum)
+provides a reproducible example. Keep the existing security checks when updating
+its lockfile. Upstream source change:
+[24382bed](https://github.com/earendil-works/pi/commit/24382bedd03c61c0994628907a017b4491f8fa76).
+
 ## Development
 
 Install a supported host, then run the offline contract tests:
@@ -73,7 +107,15 @@ npm install --ignore-scripts --no-audit
 npm test
 ```
 
-CI checks the minimum patched host (1.0.1) and the current supported 1.x host. The
+CI checks a locked, coherent minimum host (1.0.1) and a freshly resolved current
+supported 1.x host. To reproduce the minimum lane from this directory:
+
+```bash
+npm ci --prefix test/fixtures/minimum --ignore-scripts --no-audit --no-fund
+PI_HOST_FIXTURE=test/fixtures/minimum npm test
+```
+
+The
 tests use Pi's public extension loader with an isolated configuration directory and
 mock the AgentKernel API; no credentials, live sandboxes, or registry audits are
 needed during test execution.

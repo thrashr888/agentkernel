@@ -4,18 +4,22 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
-
-import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const packageDir = fileURLToPath(new URL("../", import.meta.url));
 const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-const hostEntry = import.meta.resolve("@earendil-works/pi-coding-agent");
+// The minimum lane uses a locked upstream graph; the latest lane stays floating.
+const hostEntry = process.env.PI_HOST_FIXTURE
+  ? pathToFileURL(path.resolve(packageDir, process.env.PI_HOST_FIXTURE,
+      "node_modules/@earendil-works/pi-coding-agent/dist/index.js")).href
+  : import.meta.resolve("@earendil-works/pi-coding-agent");
+const { discoverAndLoadExtensions } = await import(hostEntry);
 const hostRequire = createRequire(hostEntry);
 const semver = hostRequire("semver");
 const host = JSON.parse(await readFile(new URL("../package.json", hostEntry), "utf8"));
 
 test("peer range and installed host exclude the vulnerable host releases", () => {
+  if (process.env.PI_HOST_FIXTURE) assert.equal(host.version, "1.0.1", "locked minimum host");
   const range = manifest.peerDependencies["@earendil-works/pi-coding-agent"];
   for (const version of ["0.84.2", "0.99.2", "1.0.0", "2.0.0"]) {
     assert.equal(semver.satisfies(version, range), false, `${version} must be excluded`);

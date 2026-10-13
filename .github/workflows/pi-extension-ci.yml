@@ -44,8 +44,17 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
-      - name: Install host fixture without lifecycle scripts
+      - name: Install locked minimum host without lifecycle scripts
+        if: matrix.pi-host == '1.0.1'
+        run: npm ci --prefix test/fixtures/minimum --ignore-scripts --no-audit --no-fund
+      - name: Install latest supported host without lifecycle scripts
+        if: matrix.pi-host != '1.0.1'
         run: npm install --ignore-scripts --no-audit --no-fund --no-save --package-lock=false "@earendil-works/pi-coding-agent@${{ matrix.pi-host }}"
-      - run: npm test
+      - name: Test locked minimum host
+        if: matrix.pi-host == '1.0.1'
+        run: PI_HOST_FIXTURE=test/fixtures/minimum npm test
+      - name: Test latest supported host
+        if: matrix.pi-host != '1.0.1'
+        run: npm test
       - name: Check extension package contents
         run: npm pack --dry-run --ignore-scripts

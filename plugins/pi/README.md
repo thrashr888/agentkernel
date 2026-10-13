@@ -63,3 +63,12 @@ Each sandbox runs in its own microVM with a dedicated Linux kernel.
 ## License
 
 MIT
+
+## Embedding the minimum Pi host
+
+Fresh Pi 1.0.1 installations have an upstream unbundled-library incompatibility
+with newer codemode dependencies. Prefer the current supported 1.x host for new
+installations. Applications that must embed 1.0.1 should use the documented
+[scoped root override and locked install recipe](https://github.com/thrashr888/agentkernel/tree/main/packages/pi-agentkernel#known-upstream-101-dependency-incompatibility).
+The bundled CLI version check still works; updating the AgentKernel extension
+does not upgrade an existing Pi host. The supported minimum remains 1.0.1.
