@@ -10,7 +10,7 @@ If a release has problems, fix the issue on `main` and cut a new patch version:
 
 ## Overview
 
-Pushing a `v*` tag triggers four workflows in parallel:
+Pushing a `v*` tag triggers three workflows in parallel:
 
 | Workflow | File | What it does |
 |----------|------|--------------|
@@ -43,24 +43,55 @@ gh run list --repo thrashr888/agentkernel --limit 5
 
 All checks must pass before tagging. Fix any failures and push before proceeding. Do not tag until CI is green — tags are immutable once pushed.
 
+## Distribution and security gates
+
+Use the final integrated commit for every pre-release check. Verify the dependency
+alert inventory separately from CI: an ignored cargo-audit advisory or a passing
+subset of package audits does not establish that all GitHub alerts are cleared.
+Inspect all supported dependency roots and the relevant native backend gates.
+Do not describe unexecuted hardware coverage as passing.
+
+The tag starts three independent publishing workflows. Some registries can finish
+before the desktop release fails, so do not use a release tag as a dry run. Keep
+all signing keys and tokens in their existing secret stores; never print them.
+
+After publication, verify all eleven expected GitHub assets (four CLI archives,
+two DMGs, two updater archives, two signatures, and latest.json), updater URLs,
+both CLI and SDK crates, npm, GitHub Packages, PyPI, Docker, Helm, and the Homebrew
+formula and cask. A GitHub Release alone is not proof that every channel succeeded.
+
+## SDK version alignment
+
+SDK releases already follow the `v*` release tag: Node.js, Python and Rust
+publication jobs derive their package version from it, and Swift uses Git tags.
+The checked-in SDK `0.3.0` values were stale source metadata; npm `agentkernel`,
+PyPI `agentkernel-sdk` and crates.io `agentkernel-sdk` each published `0.20.1`
+as verified on October 13, 2026. Synchronizing their source manifests, lockfile
+root records and User-Agent constants to `0.21.0` continues that existing
+release policy. It does not introduce an independent SDK version jump from the
+published `0.3.0` release or change the publication destinations.
+
 ## Cutting a Release
 
 ```bash
 # 1. Update version in Cargo.toml (CLI)
-#    SDK versions are set automatically from the tag.
+#    Also synchronize Cargo.lock, the Helm chart version/appVersion, desktop
+#    manifests/lockfiles, SDK manifests/lockfiles, and SDK User-Agent constants.
+#    Registry jobs inject SDK versions from the tag; binary and Helm builds do not.
 
 # 2. Run the pre-release checklist above
 
-# 3. Commit
-git add Cargo.toml
-git commit -m "release: v0.3.0"
+# 3. Set VERSION to the reviewed release version, without the v prefix.
+VERSION="<release-version>"
+# Stage the reviewed release files before committing.
+git commit -m "release: v${VERSION}"
 
-# 4. Tag and push
-git tag v0.3.0
-git push origin main v0.3.0
+# 4. Tag and push the verified release commit
+git tag "v${VERSION}"
+git push origin main "v${VERSION}"
 ```
 
-Both workflows trigger on the tag push.
+All three workflows trigger on the tag push.
 
 ## What Gets Published
 
@@ -73,7 +104,7 @@ Cross-compiled on native runners, uploaded to GitHub Releases as `.tar.gz`:
 | Linux x64 | `ubuntu-latest` | `agentkernel-linux-x64.tar.gz` |
 | Linux arm64 | `ubuntu-24.04-arm` | `agentkernel-linux-arm64.tar.gz` |
 | macOS arm64 | `macos-latest` | `agentkernel-darwin-arm64.tar.gz` |
-| macOS x64 | `macos-13` | `agentkernel-darwin-x64.tar.gz` |
+| macOS x64 | `macos-15-intel` | `agentkernel-darwin-x64.tar.gz` |
 
 ### Desktop App (release.yml)
 
@@ -103,7 +134,7 @@ All 4 jobs run in parallel:
 
 Version is extracted from the tag name (`v0.3.0` → `0.3.0`) and injected into each SDK's manifest before publishing.
 
-### Homebrew (manual)
+### Homebrew (automatic, with manual recovery)
 
 The release workflow updates the formula and cask automatically after the
 GitHub Release is created. For a manual correction or recovery:
@@ -115,9 +146,9 @@ for asset in agentkernel-{darwin-arm64,darwin-x64,linux-arm64,linux-x64}.tar.gz;
   shasum -a 256 "$asset"
 done
 
-# 2. Update the formula in homebrew-agentkernel repo
+# 2. Update the formula in homebrew-tap repo
 #    Update version and SHA256 hashes in Formula/agentkernel.rb
-#    Repo: https://github.com/thrashr888/homebrew-agentkernel
+#    Repo: https://github.com/thrashr888/homebrew-tap
 
 # 3. Users install/upgrade via:
 brew tap thrashr888/tap
@@ -231,12 +262,12 @@ sdk/
 
 After tagging, check:
 
-1. **GitHub Actions**: Both workflows should show green at https://github.com/thrashr888/agentkernel/actions
+1. **GitHub Actions**: All three workflows should show green at https://github.com/thrashr888/agentkernel/actions
 2. **GitHub Release**: Binary assets at https://github.com/thrashr888/agentkernel/releases
 3. **npm**: https://www.npmjs.com/package/agentkernel
 4. **PyPI**: https://pypi.org/project/agentkernel-sdk/
 5. **crates.io**: https://crates.io/crates/agentkernel-sdk
-6. **Homebrew**: `brew info thrashr888/agentkernel/agentkernel`
+6. **Homebrew**: `brew info thrashr888/tap/agentkernel`
 
 For the desktop app, also verify that the published DMG is stapled and that
 the installed app passes `codesign --verify --deep --strict` and Gatekeeper’s
@@ -259,4 +290,4 @@ assessment. The first fixed release must be a new patch version such as
 
 **crates.io publish fails**: `cargo publish` requires that `Cargo.toml` metadata is complete (description, license, repository). The SDK's `Cargo.toml` already has these fields.
 
-**Version mismatch**: SDK versions are injected from the Git tag. The `Cargo.toml` in the repo root (for the CLI) is the only version you update manually.
+**Version mismatch**: Registry jobs inject SDK versions from the tag, but CLI binary builds and Helm packaging use checked-in metadata. Synchronize the root Cargo manifest/lockfile, Helm chart version/appVersion, desktop manifests/lockfiles, SDK manifests/lockfiles, and hardcoded SDK User-Agent versions before tagging.

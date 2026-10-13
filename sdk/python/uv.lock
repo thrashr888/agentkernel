@@ -8,7 +8,7 @@ resolution-markers = [
 
 [[package]]
 name = "agentkernel-sdk"
-version = "0.3.0"
+version = "0.21.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

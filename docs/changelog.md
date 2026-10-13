@@ -8,6 +8,38 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ## Unreleased
 
+## [v0.21.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.21.0) — Task Orchestration and Sandbox Lifecycle
+
+_October 13, 2026 (UTC)_
+
+### Added
+
+- **Durable agent tasks** — task CRUD APIs, isolated worker sandboxes and Git worktrees, and a parallel task coordinator
+- **Scheduling** — workspace lifecycle policies and a daemon-integrated cron scheduler
+- **Desktop workflows** — benchmark history, parallel jobs, image cache controls, sandbox config import/export, asciicast session replay, managed SSH tunnels, local server lifecycle, and local Cedar policy activation
+- **Sandbox development** — agent Git identity, sandbox Git operations, per-sandbox backend selection, devcontainer support, and a VS Code remote extension
+- **Enterprise controls** — SCIM provisioning, resource quotas, tenant spend visibility, and model governance
+- **Firecracker lifecycle** — copy-on-write rootfs staging, full-state pause/resume/fork, writable disk lineage, checkpoint quotas, and garbage collection
+- **Networking and orchestration** — managed container bridges and sandbox service registration
+
+### Fixed and hardened
+
+- Bundled the CLI sidecar with the desktop app and improved local server recovery
+- Added a secure local control socket and routed Firecracker file operations through the server
+- Bound checkpoints to sandbox UUIDs; hardened rootfs cleanup, Kubernetes resource identity, delegated manifest cleanup, and volume persistence
+- Refreshed rustls, wasmtime and quinn-proto dependencies and switched JWT verification to AWS-LC to remove the vulnerable Rust RSA dependency
+- Updated provider, desktop, Node SDK and Pi host dependencies; Pi integrations require host >=1.0.1 <2 and existing users must upgrade Pi separately
+- Made minimum Pi host compatibility reproducible with a coherent locked 1.0.1 fixture while retaining fresh resolution of current 1.x hosts; documented the scoped consumer workaround for upstream codemode incompatibility (#199)
+- Added a source-verifiable braces nesting-depth backport. Its upstream version remains 3.0.3, and Dependabot alert #225 remains open despite the tested mitigation; this is not a claim that every security alert is cleared
+- Restored verified kernel-source provenance and hardened Cloud Hypervisor startup, cleanup and guest file operations, building on @sangam14's original PR #183
+- Improved Docker build caching and cached VM manager configuration while checking configuration contents
+
+### Documentation and verification
+
+- Added backend/provider compatibility lanes and extended the native KVM lifecycle gate
+- Expanded adoption and sandbox comparison guides, refreshed runtime guidance, and enabled strict documentation builds
+- The Cloud Hypervisor hardware gate passed on PR head 91612a1 after refreshing the guest rootfs, including restart and read-only behavior; this is specific to the tested configuration and is not a blanket Hyper-V/platform certification
+
 ## [v0.20.1](https://github.com/thrashr888/agentkernel/releases/tag/v0.20.1) — Packaging Roll-Forward
 
 _August 2026_
