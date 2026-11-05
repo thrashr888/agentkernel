@@ -225,6 +225,9 @@ mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 # Set hostname
 hostname agentkernel
 
+# The kernel leaves lo down; guest tools expect 127.0.0.1 to work.
+ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null || /bin/busybox ip link set lo up 2>/dev/null || true
+
 # Start guest agent in background
 /usr/bin/agent &
 AGENT_PID=$!
