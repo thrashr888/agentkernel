@@ -156,6 +156,9 @@ cat > "$MOUNT_DIR/init" << '\''INIT'\''
 # Set hostname
 /bin/busybox hostname agentkernel
 
+# Bring up guest loopback (lo starts DOWN without an init system)
+/bin/busybox ip link set lo up 2>/dev/null || /bin/busybox ifconfig lo 127.0.0.1 up 2>/dev/null || true
+
 # Start guest agent in background
 echo "Starting agentkernel guest agent..."
 /usr/bin/agent &
