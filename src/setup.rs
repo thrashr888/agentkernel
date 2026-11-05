@@ -946,6 +946,57 @@ async fn build_guest_agent(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Init script baked into a setup-built rootfs. It must bring up `lo`:
+/// the guest kernel leaves loopback down, and the KVM smoke gate pings
+/// 127.0.0.1 inside the guest.
+fn guest_init_script(runtime: &str) -> &'static str {
+    if runtime == "k8s-node" {
+        r#"#!/bin/sh
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+hostname agentkernel
+# The kernel leaves lo down; guest tools expect 127.0.0.1 to work.
+ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null || true
+
+# Start guest agent in background if available
+if [ -x /usr/bin/agent ]; then
+    /usr/bin/agent &
+    echo "Guest agent started"
+fi
+
+echo "Agentkernel guest ready, handing over to systemd..."
+exec /sbin/init
+"#
+    } else {
+        r#"#!/bin/busybox sh
+/bin/busybox mount -t proc proc /proc
+/bin/busybox mount -t sysfs sysfs /sys
+/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+/bin/busybox hostname agentkernel
+# The kernel leaves lo down; guest tools expect 127.0.0.1 to work.
+/bin/busybox ip link set lo up 2>/dev/null || /bin/busybox ifconfig lo 127.0.0.1 up 2>/dev/null || true
+
+# Start guest agent in background if available
+if [ -x /usr/bin/agent ]; then
+    /usr/bin/agent &
+    AGENT_PID=$!
+    echo "Guest agent started"
+fi
+
+echo "Agentkernel guest ready"
+if [ $# -gt 0 ]; then
+    exec "$@"
+elif [ -n "$AGENT_PID" ]; then
+    wait $AGENT_PID
+else
+    exec /bin/busybox sh
+fi
+"#
+    }
+}
+
 /// Build a rootfs image
 async fn build_rootfs(data_dir: &Path, runtime: &str) -> Result<()> {
     validate_runtime(runtime)?;
@@ -1041,51 +1092,7 @@ apk -X https://dl-cdn.alpinelinux.org/alpine/v3.24/main \
     };
 
     // Create init script
-    let init_script = if runtime == "k8s-node" {
-        r#"#!/bin/sh
-export PATH=/bin:/sbin:/usr/bin:/usr/sbin
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
-hostname agentkernel
-ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null || true
-
-# Start guest agent in background if available
-if [ -x /usr/bin/agent ]; then
-    /usr/bin/agent &
-    echo "Guest agent started"
-fi
-
-echo "Agentkernel guest ready, handing over to systemd..."
-exec /sbin/init
-"#
-    } else {
-        r#"#!/bin/busybox sh
-/bin/busybox mount -t proc proc /proc
-/bin/busybox mount -t sysfs sysfs /sys
-/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
-/bin/busybox hostname agentkernel
-
-# Bring up guest loopback (lo starts DOWN without an init system)
-/bin/busybox ip link set lo up 2>/dev/null || /bin/busybox ifconfig lo 127.0.0.1 up 2>/dev/null || true
-
-# Start guest agent in background if available
-if [ -x /usr/bin/agent ]; then
-    /usr/bin/agent &
-    AGENT_PID=$!
-    echo "Guest agent started"
-fi
-
-echo "Agentkernel guest ready"
-if [ $# -gt 0 ]; then
-    exec "$@"
-elif [ -n "$AGENT_PID" ]; then
-    wait $AGENT_PID
-else
-    exec /bin/busybox sh
-fi
-"#
-    };
+    let init_script = guest_init_script(runtime);
 
     let build_script = format!(
         r#"#!/bin/sh
@@ -1575,6 +1582,18 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn guest_init_scripts_bring_up_loopback_before_agent() {
+        for runtime in ["base", "python", "k8s-node"] {
+            let script = guest_init_script(runtime);
+            let lo = script
+                .find("link set lo up")
+                .unwrap_or_else(|| panic!("{runtime} init leaves lo down"));
+            let agent = script.find("/usr/bin/agent &").unwrap();
+            assert!(lo < agent, "{runtime} init starts agent before lo is up");
+        }
+    }
 
     #[test]
     fn cloud_hypervisor_setup_is_limited_to_supported_hosts() {
