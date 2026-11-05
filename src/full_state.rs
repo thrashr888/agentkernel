@@ -946,6 +946,19 @@ impl FullStateCheckpointStore {
     }
 
     pub(crate) fn acquire_store_lease(&self) -> Result<CheckpointStoreLease> {
+        self.acquire_store_lease_with(false)
+    }
+
+    /// Take the store lock only if it is free right now. Best-effort callers
+    /// (cleanup reconciliation) use this so they never block an async worker
+    /// while holding the manager lock: flock is per open file description, so
+    /// a blocking acquire while this same process already holds the lock
+    /// through a live staging object waits forever.
+    pub(crate) fn try_acquire_store_lease(&self) -> Result<CheckpointStoreLease> {
+        self.acquire_store_lease_with(true)
+    }
+
+    fn acquire_store_lease_with(&self, nonblocking: bool) -> Result<CheckpointStoreLease> {
         let path = self.root.join(STORE_LOCK_FILE);
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
@@ -975,7 +988,12 @@ impl FullStateCheckpointStore {
             {
                 bail!("checkpoint store lock must be current-user owned with mode 0600");
             }
-            if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            let operation = if nonblocking {
+                libc::LOCK_EX | libc::LOCK_NB
+            } else {
+                libc::LOCK_EX
+            };
+            if unsafe { libc::flock(lease.as_raw_fd(), operation) } != 0 {
                 return Err(std::io::Error::last_os_error())
                     .context("failed to lock checkpoint store");
             }
