@@ -96,6 +96,31 @@ impl Drop for ServerGuard {
     }
 }
 
+/// Port for the test's private API server. `AGENTKERNEL_KVM_SMOKE_PORT`
+/// pins one; otherwise the kernel picks a free loopback port. Either way the
+/// port must be free right now, so the CLI and HTTP calls below can never
+/// reach an unrelated agentkernel server that already listens on the host.
+fn smoke_server_port() -> Result<u16> {
+    let requested = match std::env::var("AGENTKERNEL_KVM_SMOKE_PORT") {
+        Ok(value) => {
+            let port: u16 = value
+                .parse()
+                .with_context(|| format!("AGENTKERNEL_KVM_SMOKE_PORT is not a port: {value}"))?;
+            if port == 0 {
+                bail!("AGENTKERNEL_KVM_SMOKE_PORT must be a fixed non-zero port");
+            }
+            port
+        }
+        Err(_) => 0,
+    };
+    let probe = std::net::TcpListener::bind(("127.0.0.1", requested)).with_context(|| {
+        format!(
+            "KVM smoke API port {requested} is already in use; set AGENTKERNEL_KVM_SMOKE_PORT to a free port"
+        )
+    })?;
+    Ok(probe.local_addr()?.port())
+}
+
 async fn start_server(port: u16) -> Result<ServerGuard> {
     let child = Command::new(agentkernel_binary())
         .args(["serve", "--host", "127.0.0.1", "--port", &port.to_string()])
@@ -120,6 +145,11 @@ async fn start_server(port: u16) -> Result<ServerGuard> {
             .await
             .is_ok_and(|response| response.status().is_success())
         {
+            // Only trust the health answer if our server is still the one
+            // running; it exits at once when it cannot bind the port.
+            if let Some(status) = child.try_wait().context("inspect API server")? {
+                bail!("agentkernel API server exited before becoming healthy: {status}");
+            }
             return Ok(ServerGuard { child });
         }
         sleep(Duration::from_millis(100)).await;
@@ -478,7 +508,8 @@ async fn direct_backend_lifecycle(kernel: PathBuf, rootfs: PathBuf) -> Result<()
 }
 
 async fn routed_lifecycle() -> Result<()> {
-    let port = 18_889;
+    let port = smoke_server_port()?;
+    eprintln!("[kvm-smoke] private API server on 127.0.0.1:{port}");
     unsafe { std::env::set_var("AGENTKERNEL_PORT", port.to_string()) };
     let _server = start_server(port).await?;
 
