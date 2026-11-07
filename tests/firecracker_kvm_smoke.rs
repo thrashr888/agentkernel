@@ -122,22 +122,66 @@ fn smoke_server_port() -> Result<u16> {
 }
 
 async fn start_server(port: u16) -> Result<ServerGuard> {
-    let child = Command::new(agentkernel_binary())
+    let mut child = Command::new(agentkernel_binary())
         .args(["serve", "--host", "127.0.0.1", "--port", &port.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .context("start agentkernel API server for native lifecycle routing")?;
+    match wait_for_owned_health(&mut child, port, 100).await {
+        Ok(()) => Ok(ServerGuard { child }),
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(error)
+        }
+    }
+}
+
+/// Who holds the listener(s) that would answer `127.0.0.1:port`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum ListenerOwnership {
+    /// Nothing listens yet: normal while the server is still starting.
+    Absent,
+    /// Every listener that can accept `127.0.0.1:port` belongs to the child.
+    Child,
+    /// At least one such listener belongs to another process.
+    Foreign,
+}
+
+/// Wait until our own server child answers health on `port`, failing closed.
+///
+/// `smoke_server_port()` has to release its probe before the server binds,
+/// and `serve` does scheduler and worker setup before it binds. In that gap
+/// another process could take the port and answer `/status`. So before any
+/// request is sent, the listener behind `127.0.0.1:port` must be a socket in
+/// the child's own fd table, and that is checked again after health
+/// succeeds. A foreign listener aborts at once; only "nothing listens yet" is
+/// waited out.
+///
+/// This guards against an accidental port collision. It does not defend
+/// against a hostile local process that replaces the child's PID or socket.
+async fn wait_for_owned_health(child: &mut Child, port: u16, attempts: usize) -> Result<()> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .build()
         .context("build loopback HTTP client")?;
     let url = format!("http://127.0.0.1:{port}/status");
-    let mut child = child;
-    for _ in 0..100 {
-        if let Some(status) = child.try_wait().context("inspect API server")? {
-            bail!("agentkernel API server exited before becoming healthy: {status}");
+    for _ in 0..attempts {
+        ensure_child_running(child)?;
+        match listener_ownership(child.id(), port)? {
+            ListenerOwnership::Absent => {
+                sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            ListenerOwnership::Foreign => {
+                bail!(
+                    "another process is listening on 127.0.0.1:{port}; refusing to send lifecycle requests to it"
+                );
+            }
+            ListenerOwnership::Child => {}
         }
         if client
             .get(&url)
@@ -145,18 +189,109 @@ async fn start_server(port: u16) -> Result<ServerGuard> {
             .await
             .is_ok_and(|response| response.status().is_success())
         {
-            // Only trust the health answer if our server is still the one
-            // running; it exits at once when it cannot bind the port.
-            if let Some(status) = child.try_wait().context("inspect API server")? {
-                bail!("agentkernel API server exited before becoming healthy: {status}");
+            // Readiness boundary: the child must still be alive and still
+            // the only owner of the listener that answered.
+            ensure_child_running(child)?;
+            if listener_ownership(child.id(), port)? != ListenerOwnership::Child {
+                bail!("listener on 127.0.0.1:{port} changed owner during the health check");
             }
-            return Ok(ServerGuard { child });
+            return Ok(());
         }
         sleep(Duration::from_millis(100)).await;
     }
-    let _ = child.kill();
-    let _ = child.wait();
     bail!("agentkernel API server did not become healthy at {url}")
+}
+
+fn ensure_child_running(child: &mut Child) -> Result<()> {
+    if let Some(status) = child.try_wait().context("inspect API server")? {
+        bail!("agentkernel API server exited before becoming healthy: {status}");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn listener_ownership(pid: u32, port: u16) -> Result<ListenerOwnership> {
+    let tcp = fs::read_to_string("/proc/net/tcp").context("read /proc/net/tcp")?;
+    // tcp6 is absent when IPv6 is disabled; then no IPv6 listener can exist.
+    let tcp6 = fs::read_to_string("/proc/net/tcp6").unwrap_or_default();
+    let listeners = loopback_v4_listener_inodes(&tcp, &tcp6, port);
+    if listeners.is_empty() {
+        return Ok(ListenerOwnership::Absent);
+    }
+    let owned = socket_inodes_of(pid)?;
+    Ok(if listeners.iter().all(|inode| owned.contains(inode)) {
+        ListenerOwnership::Child
+    } else {
+        ListenerOwnership::Foreign
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn listener_ownership(_pid: u32, _port: u16) -> Result<ListenerOwnership> {
+    bail!("listener ownership checks need Linux /proc; the native KVM gate is Linux-only")
+}
+
+/// Socket inodes of LISTEN entries that can accept a connection to
+/// `127.0.0.1:port`. On IPv4 that is a bind to 127.0.0.1 or 0.0.0.0. On IPv6
+/// it is `::`, which may be dual-stack (procfs does not expose IPV6_V6ONLY, so
+/// it counts), or a v4-mapped `::ffff:127.0.0.1` / `::ffff:0.0.0.0`. Other
+/// addresses such as `::1` cannot receive IPv4 traffic and are ignored.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn loopback_v4_listener_inodes(tcp: &str, tcp6: &str, port: u16) -> Vec<u64> {
+    const LISTEN: &str = "0A";
+    let port_hex = format!("{port:04X}");
+    let mut inodes = Vec::new();
+    for (table, accepts) in [
+        (tcp, &["0100007F", "00000000"][..]),
+        (
+            tcp6,
+            &[
+                "00000000000000000000000000000000",
+                "0000000000000000FFFF00000100007F",
+                "0000000000000000FFFF000000000000",
+            ][..],
+        ),
+    ] {
+        for line in table.lines().skip(1) {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 10 || fields[3] != LISTEN {
+                continue;
+            }
+            let Some((address, local_port)) = fields[1].split_once(':') else {
+                continue;
+            };
+            if !local_port.eq_ignore_ascii_case(&port_hex)
+                || !accepts.iter().any(|a| a.eq_ignore_ascii_case(address))
+            {
+                continue;
+            }
+            if let Ok(inode) = fields[9].parse::<u64>() {
+                inodes.push(inode);
+            }
+        }
+    }
+    inodes
+}
+
+#[cfg(target_os = "linux")]
+fn socket_inodes_of(pid: u32) -> Result<std::collections::HashSet<u64>> {
+    let mut inodes = std::collections::HashSet::new();
+    let dir = format!("/proc/{pid}/fd");
+    for entry in fs::read_dir(&dir).with_context(|| format!("read {dir}"))? {
+        // An fd can close between listing and readlink; skip it.
+        let Ok(target) = fs::read_link(entry?.path()) else {
+            continue;
+        };
+        if let Some(inode) = target
+            .to_str()
+            .and_then(|t| t.strip_prefix("socket:["))
+            .and_then(|t| t.strip_suffix(']'))
+            .and_then(|t| t.parse().ok())
+        {
+            inodes.insert(inode);
+        }
+    }
+    Ok(inodes)
 }
 
 async fn run_cli(args: &[&str]) -> Result<String> {
@@ -640,4 +775,107 @@ async fn firecracker_native_manager_routes_recovery_and_clone_safety() {
     routed_lifecycle()
         .await
         .expect("CLI/HTTP/MCP native routing gate");
+}
+
+// Regression coverage for the listener-ownership check. These run in normal
+// `cargo test` on Linux; they need no KVM.
+
+#[test]
+fn loopback_listener_inodes_cover_v4_and_dual_stack_only() {
+    let tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 111 1
+   1: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 112 1
+   2: 0200007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 113 1
+   3: 0100007F:1F91 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 114 1
+   4: 0100007F:1F90 0100007F:C350 01 00000000:00000000 00:00000000 00000000  1000        0 115 1
+";
+    let tcp6 = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 211 1
+   1: 00000000000000000000000001000000:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 212 1
+   2: 0000000000000000FFFF00000100007F:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 213 1
+";
+    let mut found = loopback_v4_listener_inodes(tcp, tcp6, 0x1F90);
+    found.sort_unstable();
+    // 127.0.0.1, 0.0.0.0, :: (maybe dual-stack) and ::ffff:127.0.0.1 count.
+    // 127.0.0.2, another port, a non-LISTEN row and ::1 do not.
+    assert_eq!(found, vec![111, 112, 211, 213]);
+    assert!(loopback_v4_listener_inodes(tcp, tcp6, 0x2000).is_empty());
+}
+
+#[cfg(target_os = "linux")]
+const OWNED_HEALTH_HELPER_PORT: &str = "AGENTKERNEL_SMOKE_OWNED_HEALTH_HELPER_PORT";
+
+/// Minimal HTTP responder that answers every request with 200 OK.
+#[cfg(target_os = "linux")]
+fn serve_ok(listener: std::net::TcpListener, hits: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{Read, Write};
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else { return };
+        hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut buffer = [0u8; 1024];
+        let _ = stream.read(&mut buffer);
+        let _ = stream
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok");
+    }
+}
+
+/// Re-executed by `owned_listener_is_accepted_after_startup_absence` as the
+/// "server" child. Without the env var it is a no-op.
+#[cfg(target_os = "linux")]
+#[test]
+fn owned_health_helper() {
+    let Ok(port) = std::env::var(OWNED_HEALTH_HELPER_PORT) else {
+        return;
+    };
+    // Start up "slowly" so the parent sees a normal not-yet-bound phase.
+    std::thread::sleep(Duration::from_millis(300));
+    let listener =
+        std::net::TcpListener::bind(("127.0.0.1", port.parse::<u16>().unwrap())).unwrap();
+    serve_ok(listener, Default::default());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn foreign_healthy_listener_fails_closed_before_any_request() {
+    let foreign = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = foreign.local_addr().unwrap().port();
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let server_hits = hits.clone();
+    std::thread::spawn(move || serve_ok(foreign, server_hits));
+
+    // The intended server is alive but never binds the port.
+    let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+    let result = wait_for_owned_health(&mut child, port, 20).await;
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let error = result.expect_err("a foreign healthy listener must be rejected");
+    assert!(
+        error.to_string().contains("another process is listening"),
+        "unexpected error: {error:#}"
+    );
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "no request may reach a listener the child does not own"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn owned_listener_is_accepted_after_startup_absence() {
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "owned_health_helper", "--nocapture"])
+        .env(OWNED_HEALTH_HELPER_PORT, port.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let result = wait_for_owned_health(&mut child, port, 100).await;
+    let _ = child.kill();
+    let _ = child.wait();
+    result.expect("the child's own listener must be accepted once it binds");
 }
