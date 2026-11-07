@@ -227,16 +227,34 @@ fn firecracker_binary_version(binary: &Path) -> Result<String> {
     parse_firecracker_version(&stdout)
 }
 
+/// Extracts the version from `firecracker --version` output.
+///
+/// Firecracker prints `Firecracker vX.Y.Z` and, on recent releases, a
+/// timestamped log line after it (`2026-11-06T12:44:11.29 [...] Firecracker
+/// exiting successfully`). Only a strict dotted-number token counts as a
+/// version, and the first one wins, so the log timestamp is never taken.
 fn parse_firecracker_version(output: &str) -> Result<String> {
     output
         .split_whitespace()
-        .rev()
         .find_map(|word| {
             let version = word.strip_prefix('v').unwrap_or(word);
-            (version.chars().next().is_some_and(|c| c.is_ascii_digit()) && version.contains('.'))
-                .then(|| version.to_string())
+            is_release_version(version).then(|| version.to_string())
         })
         .ok_or_else(|| anyhow::anyhow!("unrecognized Firecracker version output: {output:?}"))
+}
+
+/// `1.16.1` or `1.7.0-dev`: two or more dot-separated numbers, optionally
+/// followed by a `-suffix`.
+fn is_release_version(word: &str) -> bool {
+    let core = word.split_once('-').map_or(word, |(core, _)| core);
+    let mut parts = 0;
+    for part in core.split('.') {
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        parts += 1;
+    }
+    parts >= 2
 }
 
 fn ensure_checkpoint_artifact(checkpoint_dir: &Path, name: &str) -> Result<PathBuf> {
@@ -1525,6 +1543,20 @@ mod tests {
             SUPPORTED_FIRECRACKER_VERSION
         );
         assert!(parse_firecracker_version("Firecracker unknown").is_err());
+    }
+
+    #[test]
+    fn parse_firecracker_version_ignores_trailing_log_timestamp() {
+        // Firecracker 1.16 prints an exit log line after the version.
+        let output = "Firecracker v1.16.1\n\
+            2026-11-06T12:44:11.294402987 [anonymous-instance:main] \
+            Firecracker exiting successfully. exit_code=0\n";
+        assert_eq!(parse_firecracker_version(output).unwrap(), "1.16.1");
+        assert_eq!(
+            parse_firecracker_version("Firecracker v1.7.0-dev\n").unwrap(),
+            "1.7.0-dev"
+        );
+        assert!(parse_firecracker_version("2026-11-06T12:44:11.294402987 [main] exiting").is_err());
     }
 
     #[test]

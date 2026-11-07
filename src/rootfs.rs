@@ -225,6 +225,9 @@ mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 # Set hostname
 hostname agentkernel
 
+# Bring up guest loopback (lo starts DOWN without an init system)
+ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null || true
+
 # Start guest agent in background
 /usr/bin/agent &
 AGENT_PID=$!

@@ -1015,7 +1015,8 @@ impl VmManager {
         let Ok(store) = FullStateCheckpointStore::new(&self.data_dir) else {
             return;
         };
-        let Ok(lease) = store.acquire_store_lease() else {
+        // Best effort and retried later, so never wait for the lock here.
+        let Ok(lease) = store.try_acquire_store_lease() else {
             return;
         };
         let mut live_references = self.full_state_live_checkpoint_references();
@@ -3958,6 +3959,9 @@ impl VmManager {
                             }
                             self.running.insert(name.to_string(), sandbox);
                             self.sandboxes.insert(name.to_string(), running_state);
+                            // Release this staging's store lease first: reconcile takes the
+                            // same flock on a new descriptor and would block forever on it.
+                            drop(staging);
                             self.reconcile_full_state_cleanup();
                             return Err(error).context(
                                 "failed to create a complete checkpoint; source resumed on retry",
@@ -3996,6 +4000,9 @@ impl VmManager {
                 }
                 self.running.insert(name.to_string(), sandbox);
                 self.sandboxes.insert(name.to_string(), running_state);
+                // Release this staging's store lease first: reconcile takes the
+                // same flock on a new descriptor and would block forever on it.
+                drop(staging);
                 self.reconcile_full_state_cleanup();
                 return Err(error).context("failed to pause Firecracker sandbox");
             }
@@ -4058,6 +4065,9 @@ impl VmManager {
                         }
                         self.running.insert(name.to_string(), sandbox);
                         self.sandboxes.insert(name.to_string(), running_state);
+                        // Release this staging's store lease first: reconcile takes the
+                        // same flock on a new descriptor and would block forever on it.
+                        drop(staging);
                         self.reconcile_full_state_cleanup();
                         return Err(error).context(format!(
                             "failed to publish checkpoint{marker_context}; the source sandbox was resumed"
@@ -7555,6 +7565,40 @@ mod tests {
                 .full_state_cleanup_pending
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn pending_cleanup_does_not_block_while_this_process_holds_the_store_lock() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp_dir);
+        let store = FullStateCheckpointStore::new(&manager.data_dir).unwrap();
+        // `held` keeps the store lock for its lifetime, like a pause staging.
+        let held = store.begin().unwrap();
+
+        let mut state = lifecycle_state("cleanup-while-staging");
+        state.full_state_cleanup_pending = vec![held.id().to_string()];
+        manager.save_sandbox(&state).unwrap();
+        manager
+            .sandboxes
+            .insert("cleanup-while-staging".to_string(), state);
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            manager.reconcile_full_state_cleanup();
+            let _ = done_tx.send(manager);
+        });
+        let manager = done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("cleanup reconciliation blocked on a store lock this process already holds");
+        assert_eq!(
+            manager
+                .get_state("cleanup-while-staging")
+                .unwrap()
+                .full_state_cleanup_pending,
+            vec![held.id().to_string()],
+            "contended cleanup must be left pending for a later retry"
+        );
+        drop(held);
     }
 
     #[test]
