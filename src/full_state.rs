@@ -946,6 +946,19 @@ impl FullStateCheckpointStore {
     }
 
     pub(crate) fn acquire_store_lease(&self) -> Result<CheckpointStoreLease> {
+        self.acquire_store_lease_with(false)
+    }
+
+    /// Take the store lock only if it is free right now. Best-effort callers
+    /// (cleanup reconciliation) use this so they never block an async worker
+    /// while holding the manager lock: flock is per open file description, so
+    /// a blocking acquire while this same process already holds the lock
+    /// through a live staging object waits forever.
+    pub(crate) fn try_acquire_store_lease(&self) -> Result<CheckpointStoreLease> {
+        self.acquire_store_lease_with(true)
+    }
+
+    fn acquire_store_lease_with(&self, nonblocking: bool) -> Result<CheckpointStoreLease> {
         let path = self.root.join(STORE_LOCK_FILE);
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
@@ -975,7 +988,12 @@ impl FullStateCheckpointStore {
             {
                 bail!("checkpoint store lock must be current-user owned with mode 0600");
             }
-            if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            let operation = if nonblocking {
+                libc::LOCK_EX | libc::LOCK_NB
+            } else {
+                libc::LOCK_EX
+            };
+            if unsafe { libc::flock(lease.as_raw_fd(), operation) } != 0 {
                 return Err(std::io::Error::last_os_error())
                     .context("failed to lock checkpoint store");
             }
@@ -1424,10 +1442,16 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn wait_for_store_helper(root: &Path) {
+    fn wait_for_store_helper(root: &Path, helper: &mut std::process::Child) {
+        // The helper re-executes the whole test binary. On a loaded CI runner
+        // (macOS especially) that start-up alone can take several seconds, so
+        // allow a generous deadline but fail at once if the helper died.
         let ready = root.join(STORE_HELPER_READY);
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while !ready.is_file() {
+            if let Some(status) = helper.try_wait().unwrap() {
+                panic!("checkpoint store helper exited before acquiring its lease: {status}");
+            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "checkpoint store helper did not acquire its lease"
@@ -1441,7 +1465,7 @@ mod tests {
     fn cross_process_reservation_is_serialized_and_durable() {
         let temp = tempfile::tempdir().unwrap();
         let mut first = spawn_store_helper(temp.path(), false);
-        wait_for_store_helper(temp.path());
+        wait_for_store_helper(temp.path(), &mut first);
 
         let mut second = spawn_store_helper(temp.path(), true);
         std::thread::sleep(Duration::from_millis(150));
@@ -1476,7 +1500,7 @@ mod tests {
     fn gc_waits_for_cross_process_active_writer() {
         let temp = tempfile::tempdir().unwrap();
         let mut writer = spawn_store_helper(temp.path(), false);
-        wait_for_store_helper(temp.path());
+        wait_for_store_helper(temp.path(), &mut writer);
 
         let store = FullStateCheckpointStore::new(temp.path()).unwrap();
         let (result_tx, result_rx) = std::sync::mpsc::channel();
@@ -1505,7 +1529,7 @@ mod tests {
     fn direct_staging_delete_waits_for_cross_process_active_writer() {
         let temp = tempfile::tempdir().unwrap();
         let mut writer = spawn_store_helper(temp.path(), false);
-        wait_for_store_helper(temp.path());
+        wait_for_store_helper(temp.path(), &mut writer);
 
         let store = FullStateCheckpointStore::new(temp.path()).unwrap();
         let staging_path = store.staging_entries().unwrap()[0].1.clone();

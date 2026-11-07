@@ -522,8 +522,12 @@ async fn handle_connection(
 
         let len = u32::from_le_bytes(len_bytes) as usize;
         if len > 10 * 1024 * 1024 {
+            // The body is still in the stream, so the connection can't be
+            // resynchronized: answer once and close it.
             eprintln!("Request too large: {} bytes", len);
-            continue;
+            let response = AgentResponse::error("", &format!("Request too large: {} bytes", len));
+            write_response(&mut stream, &response).await?;
+            return Ok(());
         }
 
         // Read request body
@@ -533,27 +537,45 @@ async fn handle_connection(
             .await
             .context("Failed to read request")?;
 
-        // Parse request
-        let request: AgentRequest = match serde_json::from_slice(&request_bytes) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Failed to parse request: {}", e);
-                continue;
-            }
+        // Parse request. A request this agent can't parse (for example a
+        // request type added after this agent was built) still gets an error
+        // response, so the host fails fast instead of waiting out its read
+        // timeout.
+        let response = match parse_request(&request_bytes) {
+            Ok(request) => handle_request(request, session_manager.clone()).await,
+            Err(response) => *response,
         };
 
-        // Handle request
-        let response = handle_request(request, session_manager.clone()).await;
-
-        // Serialize response
-        let response_bytes = serde_json::to_vec(&response)?;
-
-        // Send length-prefixed response
-        let len = response_bytes.len() as u32;
-        stream.write_all(&len.to_le_bytes()).await?;
-        stream.write_all(&response_bytes).await?;
-        stream.flush().await?;
+        write_response(&mut stream, &response).await?;
     }
+}
+
+/// Parse a request body, or build the error response to send back.
+fn parse_request(request_bytes: &[u8]) -> Result<AgentRequest, Box<AgentResponse>> {
+    serde_json::from_slice(request_bytes).map_err(|e| {
+        eprintln!("Failed to parse request: {}", e);
+        let id = serde_json::from_slice::<serde_json::Value>(request_bytes)
+            .ok()
+            .and_then(|v| v.get("id").and_then(|id| id.as_str()).map(str::to_string))
+            .unwrap_or_default();
+        Box::new(AgentResponse::error(
+            &id,
+            &format!("Unsupported or invalid request: {}", e),
+        ))
+    })
+}
+
+/// Send a length-prefixed response.
+async fn write_response<S>(stream: &mut S, response: &AgentResponse) -> Result<()>
+where
+    S: AsyncWriteExt + Unpin,
+{
+    let response_bytes = serde_json::to_vec(response)?;
+    let len = response_bytes.len() as u32;
+    stream.write_all(&len.to_le_bytes()).await?;
+    stream.write_all(&response_bytes).await?;
+    stream.flush().await?;
+    Ok(())
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -591,6 +613,25 @@ async fn main() -> Result<()> {
 mod protocol_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn unknown_request_type_gets_an_error_response_with_its_id() {
+        let body = serde_json::to_vec(&json!({"id": "req-7", "type": "from_the_future"})).unwrap();
+        let response = parse_request(&body).expect_err("unknown type must not parse");
+        assert_eq!(response.id, "req-7");
+        assert!(response
+            .error
+            .unwrap()
+            .contains("Unsupported or invalid request"));
+        assert!(response.exit_code.is_none());
+    }
+
+    #[test]
+    fn malformed_request_gets_an_error_response() {
+        let response = parse_request(b"not json").expect_err("garbage must not parse");
+        assert_eq!(response.id, "");
+        assert!(response.error.is_some());
+    }
 
     #[test]
     fn shell_messages_keep_the_existing_wire_shape() {
