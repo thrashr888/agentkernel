@@ -1442,10 +1442,16 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn wait_for_store_helper(root: &Path) {
+    fn wait_for_store_helper(root: &Path, helper: &mut std::process::Child) {
+        // The helper re-executes the whole test binary. On a loaded CI runner
+        // (macOS especially) that start-up alone can take several seconds, so
+        // allow a generous deadline but fail at once if the helper died.
         let ready = root.join(STORE_HELPER_READY);
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while !ready.is_file() {
+            if let Some(status) = helper.try_wait().unwrap() {
+                panic!("checkpoint store helper exited before acquiring its lease: {status}");
+            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "checkpoint store helper did not acquire its lease"
@@ -1459,7 +1465,7 @@ mod tests {
     fn cross_process_reservation_is_serialized_and_durable() {
         let temp = tempfile::tempdir().unwrap();
         let mut first = spawn_store_helper(temp.path(), false);
-        wait_for_store_helper(temp.path());
+        wait_for_store_helper(temp.path(), &mut first);
 
         let mut second = spawn_store_helper(temp.path(), true);
         std::thread::sleep(Duration::from_millis(150));
@@ -1494,7 +1500,7 @@ mod tests {
     fn gc_waits_for_cross_process_active_writer() {
         let temp = tempfile::tempdir().unwrap();
         let mut writer = spawn_store_helper(temp.path(), false);
-        wait_for_store_helper(temp.path());
+        wait_for_store_helper(temp.path(), &mut writer);
 
         let store = FullStateCheckpointStore::new(temp.path()).unwrap();
         let (result_tx, result_rx) = std::sync::mpsc::channel();
@@ -1523,7 +1529,7 @@ mod tests {
     fn direct_staging_delete_waits_for_cross_process_active_writer() {
         let temp = tempfile::tempdir().unwrap();
         let mut writer = spawn_store_helper(temp.path(), false);
-        wait_for_store_helper(temp.path());
+        wait_for_store_helper(temp.path(), &mut writer);
 
         let store = FullStateCheckpointStore::new(temp.path()).unwrap();
         let staging_path = store.staging_entries().unwrap()[0].1.clone();
