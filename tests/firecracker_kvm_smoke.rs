@@ -391,8 +391,7 @@ async fn manager_lifecycle_and_corrupt_recovery() -> Result<()> {
             .is_empty()
     );
 
-    manager.remove("manager-fork-a").await?;
-    manager.remove("manager-fork-b").await?;
+    // Keep fork references alive while checking deferred checkpoint cleanup.
     manager.resume("manager-source").await?;
     assert!(manager.is_running("manager-source"));
     assert_eq!(
@@ -411,6 +410,12 @@ async fn manager_lifecycle_and_corrupt_recovery() -> Result<()> {
             .full_state_cleanup_pending
             .contains(&checkpoint_id)
     );
+    assert!(
+        checkpoint_dir.is_dir(),
+        "live forks must retain the checkpoint"
+    );
+    manager.remove("manager-fork-a").await?;
+    manager.remove("manager-fork-b").await?;
     manager.remove("manager-source").await?;
     assert!(
         !checkpoint_dir.exists(),
@@ -519,7 +524,8 @@ async fn routed_lifecycle() -> Result<()> {
         .await?;
     drop(publisher);
 
-    run_cli(&["sandbox", "start", "routed-source"]).await?;
+    let start = run_cli(&["sandbox", "start", "routed-source"]).await?;
+    assert!(start.contains("Starting Firecracker sandbox via API server"));
     let exec = run_cli(&["exec", "routed-source", "sh", "-c", "printf routed-state"]).await?;
     assert!(exec.contains("routed-state"));
     run_cli(&["sandbox", "pause", "routed-source"]).await?;
@@ -607,8 +613,19 @@ async fn routed_lifecycle() -> Result<()> {
 #[tokio::test]
 #[ignore = "requires an explicitly approved native x86_64 KVM runner"]
 async fn firecracker_native_manager_routes_recovery_and_clone_safety() {
-    let (_firecracker, kernel, rootfs) = native_prerequisites();
+    let (firecracker, kernel, rootfs) = native_prerequisites();
     let home = tempfile::tempdir().expect("create isolated HOME");
+    // CLI readiness checks inspect the installation tree, not the backend's
+    // explicit KVM asset overrides. Stage the same verified assets privately.
+    let images = home.path().join(".local/share/agentkernel/images");
+    let bin = home.path().join(".local/share/agentkernel/bin");
+    fs::create_dir_all(&bin).expect("create private binary directory");
+    fs::copy(&firecracker, bin.join("firecracker")).expect("stage private Firecracker");
+    fs::create_dir_all(images.join("kernel")).expect("create private kernel directory");
+    fs::create_dir_all(images.join("rootfs")).expect("create private rootfs directory");
+    fs::copy(&kernel, images.join("kernel/vmlinux-6.18.45-agentkernel"))
+        .expect("stage private verified kernel");
+    fs::copy(&rootfs, images.join("rootfs/base.ext4")).expect("stage private verified rootfs");
     unsafe {
         std::env::set_var("HOME", home.path());
         std::env::set_var("AGENTKERNEL_KVM_SMOKE", "1");
