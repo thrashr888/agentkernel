@@ -578,9 +578,63 @@ where
     Ok(())
 }
 
+/// Bring the loopback interface up if it is down.
+///
+/// Images converted from minimal containers may ship neither `ip` nor
+/// `ifconfig`, so `/init` cannot raise `lo` and 127.0.0.1 is unreachable.
+/// The agent runs as root under PID 1, so it sets `IFF_UP` on `lo` with
+/// `SIOCGIFFLAGS`/`SIOCSIFFLAGS`; the kernel then assigns 127.0.0.1/8.
+/// Returns `Ok(true)` when the interface was raised, `Ok(false)` when it was
+/// already up.
+#[cfg(target_os = "linux")]
+fn bring_up_loopback() -> std::io::Result<bool> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    // SAFETY: plain socket(2) call; the returned descriptor is owned below.
+    let raw = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if raw < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `raw` is a freshly created, valid descriptor that nothing else owns.
+    let socket = unsafe { OwnedFd::from_raw_fd(raw) };
+
+    // SAFETY: ifreq is plain old data; all-zero is a valid value.
+    let mut request: libc::ifreq = unsafe { std::mem::zeroed() };
+    for (slot, byte) in request.ifr_name.iter_mut().zip(b"lo\0") {
+        *slot = *byte as libc::c_char;
+    }
+
+    // SAFETY: SIOCGIFFLAGS reads into the ifreq we own.
+    if unsafe { libc::ioctl(socket.as_raw_fd(), libc::SIOCGIFFLAGS as _, &mut request) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: SIOCGIFFLAGS filled the flags member of the union.
+    let flags = unsafe { request.ifr_ifru.ifru_flags };
+    let up = libc::IFF_UP as libc::c_short;
+    if flags & up != 0 {
+        return Ok(false);
+    }
+    request.ifr_ifru.ifru_flags = flags | up;
+    // SAFETY: SIOCSIFFLAGS reads the ifreq we own.
+    if unsafe { libc::ioctl(socket.as_raw_fd(), libc::SIOCSIFFLAGS as _, &request) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(true)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bring_up_loopback() -> std::io::Result<bool> {
+    Ok(false)
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     eprintln!("Agentkernel guest agent starting...");
+    match bring_up_loopback() {
+        Ok(true) => eprintln!("Loopback interface lo was down; brought it up"),
+        Ok(false) => {}
+        Err(e) => eprintln!("Could not bring up loopback interface lo: {}", e),
+    }
     eprintln!("Listening on vsock port {}", AGENT_PORT);
 
     // Create the session manager for PTY sessions
@@ -659,5 +713,69 @@ mod protocol_tests {
                 "shell_event": "output"
             })
         );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod loopback_tests {
+    use super::bring_up_loopback;
+
+    /// Reads `lo` flags with SIOCGIFFLAGS, which sees the calling thread's
+    /// network namespace (sysfs would show the mount namespace's instead).
+    fn lo_is_up() -> bool {
+        // SAFETY: test-only socket and ioctl on an ifreq we own.
+        unsafe {
+            let fd = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+            assert!(fd >= 0, "socket: {}", std::io::Error::last_os_error());
+            let mut request: libc::ifreq = std::mem::zeroed();
+            for (slot, byte) in request.ifr_name.iter_mut().zip(b"lo\0") {
+                *slot = *byte as libc::c_char;
+            }
+            let rc = libc::ioctl(fd, libc::SIOCGIFFLAGS as _, &mut request);
+            let err = std::io::Error::last_os_error();
+            libc::close(fd);
+            assert!(rc >= 0, "SIOCGIFFLAGS: {err}");
+            request.ifr_ifru.ifru_flags & libc::IFF_UP as libc::c_short != 0
+        }
+    }
+
+    /// In a fresh network namespace `lo` starts down, like a guest without an
+    /// init system. Needs CAP_SYS_ADMIN for unshare; skipped otherwise.
+    #[test]
+    fn brings_down_loopback_up_in_fresh_network_namespace() {
+        std::thread::spawn(|| {
+            // SAFETY: unshare only affects this short-lived thread.
+            if unsafe { libc::unshare(libc::CLONE_NEWNET) } != 0 {
+                eprintln!(
+                    "skipping: unshare(CLONE_NEWNET) failed: {}",
+                    std::io::Error::last_os_error()
+                );
+                return;
+            }
+            assert!(
+                !lo_is_up(),
+                "lo should start down in a new network namespace"
+            );
+            // With lo down, nothing on 127.0.0.1 is reachable.
+            let reachable = std::net::TcpListener::bind("127.0.0.1:0")
+                .and_then(|l| std::net::TcpStream::connect(l.local_addr()?))
+                .is_ok();
+            assert!(
+                !reachable,
+                "127.0.0.1 should be unreachable while lo is down"
+            );
+
+            assert!(bring_up_loopback().expect("bring lo up"));
+            assert!(lo_is_up());
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1");
+            std::net::TcpStream::connect(listener.local_addr().unwrap()).expect("connect over lo");
+
+            assert!(
+                !bring_up_loopback().expect("second call"),
+                "already up is a no-op"
+            );
+        })
+        .join()
+        .expect("namespace thread");
     }
 }
