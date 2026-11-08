@@ -16,6 +16,9 @@
     "modal": "^0.9.0"
   },
   "overrides": {
+    "@runloop/api-client": {
+      "zod": "^4.6.6"
+    },
     "braces": "$braces"
   }
 }
