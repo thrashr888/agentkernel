@@ -8,6 +8,27 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ## Unreleased
 
+## [v0.21.1](https://github.com/thrashr888/agentkernel/releases/tag/v0.21.1) — Firecracker Fixes and Dependency Refresh
+
+_November 8, 2026 (UTC)_
+
+### Fixed
+
+- **Firecracker** — read the version from the version line, so Firecracker 1.16's timestamped exit log no longer breaks version detection
+- **VMM** — pause error paths no longer deadlock on the checkpoint store lock
+- **Guest agent** — answer unparseable requests with an error instead of dropping them, and bring up the loopback interface in guest init scripts
+- **Build** — the guest agent builder uses rust:1.89-alpine
+
+### Dependencies
+
+- Bumped locked Rust crates to clear the open cargo audit advisories (including rustls 0.23.46 and wasmtime 36.0.20), and refreshed rustls in the desktop app and Rust SDK
+- Updated undici and follow-redirects in scripts, vite in the desktop app, vitest and vite in the Node SDK, and certifi in the Python SDK
+
+### Verification
+
+- The native Firecracker KVM smoke gate now keeps checkpoints alive under live forks, stages CLI assets in a private home, runs the routed leg on a private API port, and requires the server it starts to own the health listener
+- The full-state store-lease test gives its helper time to start on loaded runners
+
 ## [v0.21.0](https://github.com/thrashr888/agentkernel/releases/tag/v0.21.0) — Task Orchestration and Sandbox Lifecycle
 
 _October 13, 2026 (UTC)_
