@@ -190,7 +190,7 @@ agentkernel sandbox create my-sandbox --backend modal
 - persisted sandboxes reconnect by provider `remote_id`
 
 **Requirements:**
-- Node.js 20+ available on the host
+- Node.js 22.19+ available on the host
 - `scripts/remote-bridge.mjs` present, or `AGENTKERNEL_REMOTE_BRIDGE` set
 - provider bridge dependencies installed with `npm install --prefix scripts`
 - provider credentials exported in the environment

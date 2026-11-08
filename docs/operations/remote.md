@@ -17,7 +17,7 @@ The commands below assume a repository checkout containing `scripts/`. A standal
 
 ```bash
 npm install --prefix scripts
-node --version   # Node.js 20+
+node --version   # Node.js 22.19+
 ```
 
 Provider credentials can come from exported environment variables or from `api_key_env` / `token_*_env` names in `agentkernel.toml`.

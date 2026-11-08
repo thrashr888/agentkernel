@@ -1,17 +1,19 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 
-const [major, minor] = process.versions.node.split(".").map(Number);
-const supportsUndici8 = major > 22 || (major === 22 && minor >= 19);
-
-// E2B prefers this optional alias on Node >=22.19. Older supported runtimes
-// retain the SDK's undici 7 fallback and cannot load undici 8.
-test("E2B's patched undici8 alias supports requests and cancellation", {
-  skip: !supportsUndici8,
-}, async (t) => {
-  const { Agent, fetch } = await import("undici8");
+// E2B >=2.63 depends on undici 8 directly (no optional undici8 alias), which
+// requires Node.js >=22.19. Check that the copy E2B resolves supports
+// requests and cancellation.
+test("E2B's undici 8 dependency supports requests and cancellation", async (t) => {
+  const e2bRequire = createRequire(import.meta.resolve("e2b"));
+  const undiciEntry = e2bRequire.resolve("undici");
+  const { Agent, fetch } = await import(pathToFileURL(undiciEntry).href);
+  const { version } = e2bRequire("undici/package.json");
+  assert.equal(Number(version.split(".")[0]), 8);
   const server = http.createServer((request, response) => {
     if (request.url === "/wait") return;
     response.setHeader("content-type", "application/json");
