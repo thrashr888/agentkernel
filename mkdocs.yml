@@ -131,6 +131,7 @@ nav:
     - Remote Backends: operations/remote.md
     - Copy-on-write Root Filesystems: operations/cow-rootfs.md
     - Firecracker full-state: operations/firecracker-full-state.md
+    - Firecracker troubleshooting: operations/firecracker-troubleshooting.md
     - Kubernetes: operations/kubernetes.md
     - Nomad: operations/nomad.md
     - Deployment: operations/deploy.md
