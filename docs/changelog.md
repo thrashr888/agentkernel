@@ -8,6 +8,28 @@ See [GitHub Releases](https://github.com/thrashr888/agentkernel/releases) for do
 
 ## Unreleased
 
+## [v0.21.2](https://github.com/thrashr888/agentkernel/releases/tag/v0.21.2) — Security Fixes and Guest Loopback
+
+_November 8, 2026 (UTC)_
+
+### Security
+
+- **Desktop app** — updated the Tauri updater plugin to 2.14.1, which uses zip 9 and fixes the zip extraction advisories (RUSTSEC-2026-0367, -0368, -0369, -0429), and moved the app to Tauri 2.12. The desktop app now builds with Rust 1.90
+- **Remote bridge** — the Runloop SDK now uses zod 4.6.7, which fixes GHSA-mrhx-c7xc-m3w5
+- Refreshed rustls-webpki and webpki-root-certs in the desktop app (RUSTSEC-2026-0382, -0383)
+
+### Fixed
+
+- **Guest agent** — brings up the loopback interface at startup, so images converted without `ip` or `ifconfig` can reach 127.0.0.1 (#215)
+
+### Changed
+
+- **Remote bridge** — updated E2B to 2.63 (with glob 14 and minimatch 11). E2B and undici 8 require Node.js 22.19 or later, so the bridge no longer supports Node.js 20
+
+### Documentation
+
+- Added a Firecracker troubleshooting guide for the misleading "Sandbox not found" start error
+
 ## [v0.21.1](https://github.com/thrashr888/agentkernel/releases/tag/v0.21.1) — Firecracker Fixes and Dependency Refresh
 
 _November 8, 2026 (UTC)_
