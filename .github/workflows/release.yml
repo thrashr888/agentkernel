@@ -9,6 +9,8 @@ env:
   CARGO_TERM_COLOR: always
   # Rust 1.89+ required for cedar-policy 4.8 (edition 2024 + let-chains)
   RUST_VERSION: "1.89"
+  # Tauri 2.12 (desktop app) requires Rust 1.90+
+  DESKTOP_RUST_VERSION: "1.90"
 
 permissions:
   contents: write
@@ -92,7 +94,7 @@ jobs:
           cache-dependency-path: app/package-lock.json
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ env.RUST_VERSION }}
+          toolchain: ${{ env.DESKTOP_RUST_VERSION }}
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:

@@ -5,7 +5,7 @@ description = "Desktop control plane for agentkernel"
 authors = ["Paul Thrasher <thrashr888@gmail.com>"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.90"
 
 [lib]
 name = "agentkernel_desktop_lib"
