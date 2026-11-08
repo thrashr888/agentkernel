@@ -1915,7 +1915,7 @@ mod tests {
 
         assert!(store.adopt(&reference).is_err());
         child.wait().unwrap();
-        let adopted = store.adopt(&reference).unwrap();
+        let adopted = adopt_after_forked_leases_close(&store, &reference);
         adopted.discard_persisted().unwrap();
     }
 
@@ -2035,6 +2035,26 @@ mod tests {
         }
     }
 
+    /// Parallel tests may fork while a lease is held. CLOEXEC closes an
+    /// unrelated child's inherited descriptor only at exec, so on a loaded
+    /// runner the lease can stay locked briefly after our owner is dropped.
+    /// Wait up to 2s, retrying only the "already in use" error.
+    fn adopt_after_forked_leases_close(store: &RootfsCowStore, reference: &str) -> RootfsCow {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match store.adopt(reference) {
+                Ok(adopted) => return adopted,
+                Err(error)
+                    if error.to_string().ends_with("is already in use")
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => panic!("adopt {reference}: {error:#}"),
+            }
+        }
+    }
+
     #[test]
     fn durable_lineage_can_be_reopened_after_owner_drop_and_discarded() {
         let (tmp, store) = store();
@@ -2046,7 +2066,7 @@ mod tests {
         let path = rootfs.path().to_path_buf();
         drop(rootfs);
 
-        let adopted = store.adopt(&reference).unwrap();
+        let adopted = adopt_after_forked_leases_close(&store, &reference);
         assert_eq!(adopted.strategy(), RootfsCowStrategy::Existing);
         assert_eq!(adopted.reference(), reference);
         assert_eq!(
