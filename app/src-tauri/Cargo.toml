@@ -5,7 +5,7 @@ description = "Desktop control plane for agentkernel"
 authors = ["Paul Thrasher <thrashr888@gmail.com>"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.90"
 
 [lib]
 name = "agentkernel_desktop_lib"
@@ -30,7 +30,7 @@ toml = "1.1"
 url = "2"
 which = "8"
 cedar-policy = "4"
-tauri-plugin-updater = "2.10.1"
+tauri-plugin-updater = "2.14.1"
 tauri-plugin-debug-bridge = { version = "0.5.1", optional = true }
 
 [features]
