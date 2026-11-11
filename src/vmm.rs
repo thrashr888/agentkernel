@@ -380,9 +380,7 @@ impl SandboxState {
     fn orchestrator_config(&self) -> Result<crate::config::OrchestratorConfig> {
         let mut config = self.load_orchestrator_config()?;
         if self.backend == Some(BackendType::Kubernetes)
-            && self
-                .remote_metadata
-                .contains_key("kubernetes_start_attempted")
+            && self.remote_metadata.contains_key("kubernetes_owner_bound")
         {
             config.kubernetes_owner_id = Some(self.uuid.clone());
         }
@@ -862,7 +860,7 @@ impl VmManager {
                                 == labels.get("agentkernel/sandbox").map(String::as_str)
                                 && (!self.sandboxes[&name]
                                     .remote_metadata
-                                    .contains_key("kubernetes_start_attempted")
+                                    .contains_key("kubernetes_owner_bound")
                                     || pod["metadata"]["labels"]["agentkernel/owner"].as_str()
                                         == Some(self.sandboxes[&name].uuid.as_str()))
                         }) {
@@ -1608,7 +1606,10 @@ impl VmManager {
             remote_id: None,
             remote_namespace: None,
             remote_metadata: if backend == BackendType::Kubernetes {
-                HashMap::from([("kubernetes_start_attempted".into(), "false".into())])
+                HashMap::from([
+                    ("kubernetes_start_attempted".into(), "false".into()),
+                    ("kubernetes_owner_bound".into(), "true".into()),
+                ])
             } else {
                 HashMap::new()
             },
@@ -5800,6 +5801,9 @@ mod tests {
         state.backend = Some(BackendType::Kubernetes);
         state
             .remote_metadata
+            .insert("kubernetes_owner_bound".into(), "true".into());
+        state
+            .remote_metadata
             .insert("kubernetes_start_attempted".into(), "false".into());
         manager.insert_state_for_tests(state);
         let path = temp.path().join("cluster.toml");
@@ -5897,6 +5901,50 @@ mount_path = "/workspace"
         manager.stop("unbound").await.unwrap();
         manager.remove("unbound").await.unwrap();
         assert!(!manager.sandboxes.contains_key("unbound"));
+    }
+
+    #[tokio::test]
+    async fn kubernetes_legacy_start_preserves_ownerless_binding_after_reload() {
+        let temp = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp);
+        let mut state = lifecycle_state("legacy-kubernetes");
+        state.backend = Some(BackendType::Kubernetes);
+        assert!(
+            state
+                .orchestrator_config()
+                .unwrap()
+                .kubernetes_owner_id
+                .is_none()
+        );
+        manager.insert_state_for_tests(state);
+        manager.set_backend_factory_for_tests(Arc::new(|name, _| {
+            Ok(Box::new(TestSandbox {
+                name: name.into(),
+                running: false,
+            }))
+        }));
+        manager
+            .start_with_permissions("legacy-kubernetes", &Permissions::default())
+            .await
+            .unwrap();
+        let loaded = VmManager::load_sandboxes(&temp.path().join("sandboxes")).unwrap();
+        let state = &loaded["legacy-kubernetes"];
+        assert_eq!(
+            state
+                .remote_metadata
+                .get("kubernetes_start_attempted")
+                .map(String::as_str),
+            Some("true")
+        );
+        assert!(!state.remote_metadata.contains_key("kubernetes_owner_bound"));
+        assert!(
+            state
+                .orchestrator_config()
+                .unwrap()
+                .kubernetes_owner_id
+                .is_none()
+        );
+        manager.stop("legacy-kubernetes").await.unwrap();
     }
 
     struct KubernetesConflictSandbox(String);
