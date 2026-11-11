@@ -90,7 +90,12 @@ change the runtime, namespace, storage, or cluster, remove the old sandbox and
 create a new one. The kubeconfig file is still read for credentials and context
 resolution: do not remap the saved context to another cluster. This is a pinned
 path/context selection, not an immutable cluster identity or a credential copy.
-Legacy non-Nitro configurations may still use ambient kubeconfig selection.
+Legacy sandbox records created before this integration retain the old default
+namespace and ambient kubeconfig selection. The previous manager ignored their
+project's orchestrator settings, so reading those settings during an upgrade
+could redirect cleanup to the wrong cluster. Remove the old sandbox using its
+original ambient context, then create a new sandbox to enable Nitro or custom
+target settings.
 New manager-created sandboxes also carry a UUID ownership label, so cleanup
 cannot adopt a same-named Pod belonging to a different sandbox record.
 

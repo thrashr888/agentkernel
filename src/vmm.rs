@@ -376,7 +376,8 @@ impl SandboxState {
     }
 
     /// Use the pinned Kubernetes target for every lifecycle operation. Legacy
-    /// states may load their original config, but never substitute the CWD.
+    /// managers ignored project settings, so unbound legacy states retain the
+    /// default target they actually used rather than loading an unrelated file.
     fn orchestrator_config(&self) -> Result<crate::config::OrchestratorConfig> {
         let mut config = self.load_orchestrator_config()?;
         if self.backend == Some(BackendType::Kubernetes)
@@ -396,6 +397,12 @@ impl SandboxState {
                 serde_json::from_str(json).context("Invalid persisted Kubernetes configuration")?;
             config.validate_kubernetes_target()?;
             return Ok(config);
+        }
+        if !self.remote_metadata.contains_key("kubernetes_owner_bound") {
+            // Before config propagation was implemented, the manager always
+            // constructed KubernetesSandbox with defaults. A legacy config_path
+            // is not evidence that its configured cluster ever owned this Pod.
+            return Ok(crate::config::OrchestratorConfig::default());
         }
         let Some(path) = self.config_path.as_ref() else {
             return Ok(crate::config::OrchestratorConfig::default());
@@ -5882,6 +5889,9 @@ mount_path = "/workspace"
         state.backend = Some(BackendType::Kubernetes);
         state
             .remote_metadata
+            .insert("kubernetes_owner_bound".into(), "true".into());
+        state
+            .remote_metadata
             .insert("kubernetes_start_attempted".into(), "false".into());
         manager.insert_state_for_tests(state);
         let path = temp.path().join("invalid.toml");
@@ -5909,6 +5919,26 @@ mount_path = "/workspace"
         let mut manager = new_test_manager(&temp);
         let mut state = lifecycle_state("legacy-kubernetes");
         state.backend = Some(BackendType::Kubernetes);
+        let ignored_config = temp.path().join("previously-ignored.toml");
+        std::fs::write(
+            &ignored_config,
+            r#"
+[sandbox]
+name = "legacy-kubernetes"
+[orchestrator]
+namespace = "not-the-original-namespace"
+kubeconfig = "/not-the-original/kubeconfig"
+context = "not-the-original-cluster"
+runtime_class = "isolated-sandbox"
+"#,
+        )
+        .unwrap();
+        state.config_path = Some(ignored_config.to_string_lossy().into_owned());
+        let legacy_config = state.orchestrator_config().unwrap();
+        assert_eq!(legacy_config.namespace, "agentkernel");
+        assert!(legacy_config.context.is_none());
+        assert!(legacy_config.kubeconfig.is_none());
+        assert!(legacy_config.runtime_class.is_none());
         assert!(
             state
                 .orchestrator_config()
@@ -5937,6 +5967,11 @@ mount_path = "/workspace"
             Some("true")
         );
         assert!(!state.remote_metadata.contains_key("kubernetes_owner_bound"));
+        assert_eq!(
+            state.orchestrator_config().unwrap().namespace,
+            "agentkernel"
+        );
+        assert!(state.orchestrator_config().unwrap().context.is_none());
         assert!(
             state
                 .orchestrator_config()
@@ -5991,6 +6026,9 @@ mount_path = "/workspace"
         state.backend = Some(BackendType::Kubernetes);
         state
             .remote_metadata
+            .insert("kubernetes_owner_bound".into(), "true".into());
+        state
+            .remote_metadata
             .insert("kubernetes_start_attempted".into(), "false".into());
         manager.insert_state_for_tests(state);
         manager.set_config_path("conflict", None).unwrap();
@@ -6017,6 +6055,9 @@ mount_path = "/workspace"
         let mut manager = new_test_manager(&temp);
         let mut state = lifecycle_state("nitro-save");
         state.backend = Some(BackendType::Kubernetes);
+        state
+            .remote_metadata
+            .insert("kubernetes_owner_bound".into(), "true".into());
         manager.insert_state_for_tests(state);
         manager.fail_next_state_save_for_tests();
         assert!(manager.set_config_path("nitro-save", None).is_err());

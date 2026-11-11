@@ -790,15 +790,61 @@ impl KubernetesSandbox {
     }
 
     /// Create a NetworkPolicy that denies all ingress/egress for this pod
-    async fn create_network_policy(&self, client: &Client) -> Result<()> {
+    async fn create_network_policy(&mut self, client: &Client, attempt: &str) -> Result<()> {
         let np_api: Api<NetworkPolicy> = Api::namespaced(client.clone(), &self.namespace);
-        let np = self.build_network_policy();
-
-        np_api
-            .create(&PostParams::default(), &np)
-            .await
-            .context("Failed to create NetworkPolicy")?;
-
+        let mut policy = self.build_network_policy();
+        policy
+            .metadata
+            .annotations
+            .get_or_insert_with(BTreeMap::new)
+            .insert("agentkernel/start-attempt".into(), attempt.to_string());
+        let name = policy.metadata.name.as_deref().expect("policy name");
+        if let Err(error) = np_api.create(&PostParams::default(), &policy).await {
+            // A confirmed conflict belongs to another attempt. Do not adopt it.
+            if matches!(&error, kube::Error::Api(status) if status.code == 409) {
+                return Err(error).context("Failed to create NetworkPolicy");
+            }
+            match np_api.get_opt(name).await {
+                Ok(Some(created))
+                    if created
+                        .metadata
+                        .annotations
+                        .as_ref()
+                        .and_then(|annotations| annotations.get("agentkernel/start-attempt"))
+                        .map(String::as_str)
+                        == Some(attempt) =>
+                {
+                    // Policy creation succeeded despite the response failure.
+                    // No Pod was submitted: rollback only this policy, never a
+                    // same-named existing Pod. Retain ownership until confirmed.
+                    self.client = Some(client.clone());
+                    self.network_policy_created = true;
+                    self.running = true;
+                    let params = DeleteParams {
+                        preconditions: Some(kube::api::Preconditions {
+                            uid: created.metadata.uid,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    };
+                    ignore_not_found(np_api.delete(name, &params).await)
+                        .with_context(|| format!("NetworkPolicy creation failed: {error}; rollback failed. Retry stop for sandbox '{}'", self.name))?;
+                    self.network_policy_created = false;
+                    self.running = false;
+                }
+                Err(reconcile) => {
+                    self.client = Some(client.clone());
+                    self.network_policy_created = true;
+                    self.running = true;
+                    bail!(
+                        "NetworkPolicy creation outcome is uncertain: {error}; reconciliation failed: {reconcile}. Retry stop for sandbox '{}' before starting again",
+                        self.name
+                    );
+                }
+                _ => {}
+            }
+            return Err(error).context("Failed to create NetworkPolicy");
+        }
         Ok(())
     }
 
@@ -861,7 +907,7 @@ impl KubernetesSandbox {
         // Install deny-all before a workload can execute, not after Pod creation.
         self.network_disabled = !config.network;
         if !config.network {
-            self.create_network_policy(&client).await?;
+            self.create_network_policy(&client, &attempt).await?;
             self.network_policy_created = true;
         }
 
@@ -1656,6 +1702,48 @@ mod tests {
             .position(|call| call.starts_with("POST") && call.ends_with("/pods"))
             .unwrap();
         assert!(policy < pod);
+    }
+
+    #[tokio::test]
+    async fn uncertain_policy_creation_is_reconciled_without_creating_a_pod() {
+        use std::sync::{Arc, Mutex};
+        for deletion_denied in [false, true] {
+            let created = Arc::new(Mutex::new(None::<serde_json::Value>));
+            let server_created = created.clone();
+            let mock = mock_api(move |method, path, mut body| {
+                assert!(!path.contains("/pods"), "policy failure must precede Pod submission");
+                if method == "POST" && path.ends_with("/networkpolicies") {
+                    body["metadata"]["uid"] = "policy-uid".into();
+                    *server_created.lock().unwrap() = Some(body);
+                    return api_error(500);
+                }
+                if path.contains("/networkpolicies/") {
+                    if method == "DELETE" {
+                        assert_eq!(body["preconditions"]["uid"], "policy-uid");
+                        if deletion_denied { return api_error(403); }
+                        *server_created.lock().unwrap() = None;
+                        return (200, serde_json::json!({"kind":"Status","apiVersion":"v1","status":"Success","code":200}));
+                    }
+                    return server_created.lock().unwrap().clone().map(|policy| (200, policy)).unwrap_or_else(|| api_error(404));
+                }
+                (200, serde_json::json!({"metadata":{}}))
+            }).await;
+            let mut sandbox =
+                KubernetesSandbox::new("policy-uncertain", &OrchestratorConfig::default());
+            let result = sandbox
+                .start_with_client(
+                    &SandboxConfig {
+                        network: false,
+                        ..Default::default()
+                    },
+                    mock.client.clone(),
+                )
+                .await;
+            assert!(result.is_err());
+            assert_eq!(sandbox.running, deletion_denied);
+            assert_eq!(created.lock().unwrap().is_some(), deletion_denied);
+            assert_eq!(sandbox.network_policy_created, deletion_denied);
+        }
     }
 
     #[tokio::test]
