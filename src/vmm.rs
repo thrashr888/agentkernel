@@ -366,6 +366,56 @@ impl SandboxState {
         self.dormant_at.as_deref().and_then(Self::parse_rfc3339)
     }
 
+    fn kubernetes_never_started(&self) -> bool {
+        self.backend == Some(BackendType::Kubernetes)
+            && self
+                .remote_metadata
+                .get("kubernetes_start_attempted")
+                .map(String::as_str)
+                == Some("false")
+    }
+
+    /// Use the pinned Kubernetes target for every lifecycle operation. Legacy
+    /// states may load their original config, but never substitute the CWD.
+    fn orchestrator_config(&self) -> Result<crate::config::OrchestratorConfig> {
+        if self.backend != Some(BackendType::Kubernetes) {
+            return Ok(crate::config::OrchestratorConfig::default());
+        }
+        if let Some(json) = self.remote_metadata.get("kubernetes_config") {
+            let config: crate::config::OrchestratorConfig =
+                serde_json::from_str(json).context("Invalid persisted Kubernetes configuration")?;
+            config.validate_kubernetes_target()?;
+            return Ok(config);
+        }
+        let Some(path) = self.config_path.as_ref() else {
+            return Ok(crate::config::OrchestratorConfig::default());
+        };
+        if matches!(
+            Path::new(path).extension().and_then(|ext| ext.to_str()),
+            Some("json" | "jsonc")
+        ) {
+            return Ok(crate::config::OrchestratorConfig::default());
+        }
+        let mut config = Config::from_file_cached(Path::new(path))?.orchestrator;
+        // Persist only Kubernetes settings, never an unrelated Nomad credential.
+        config.nomad_addr = None;
+        config.nomad_token = None;
+        config.nomad_datacenter = None;
+        if let Some(path) = config.kubeconfig.as_ref() {
+            let expanded = if let Some(rest) = path.strip_prefix("~/") {
+                dirs::home_dir()
+                    .context("Cannot expand Kubernetes kubeconfig path")?
+                    .join(rest)
+            } else {
+                PathBuf::from(path)
+            };
+            config.kubeconfig =
+                normalize_persisted_path(Some(expanded.to_string_lossy().into_owned()))?;
+        }
+        config.validate_kubernetes_target()?;
+        Ok(config)
+    }
+
     fn remote_context(&self) -> RemoteSandboxContext {
         RemoteSandboxContext {
             remote_id: self.remote_id.clone(),
@@ -748,23 +798,62 @@ impl VmManager {
             match_active(&podman_names, &active, &mut running_set);
         }
 
-        // Batch Kubernetes: one `kubectl get pods` call
-        if let Ok(output) = batch_cmd(
-            &k8s_names,
-            "kubectl",
-            &[
-                "get",
-                "pods",
-                "-n",
-                "agentkernel",
-                "--field-selector=status.phase=Running",
-                "-o",
-                "jsonpath={.items[*].metadata.name}",
-            ],
-        ) {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let active: HashSet<&str> = stdout.split_whitespace().collect();
-            match_active(&k8s_names, &active, &mut running_set);
+        // Query each configured Kubernetes target independently. A sandbox on
+        // another cluster/namespace must never be adopted by name alone.
+        #[cfg(feature = "kubernetes")]
+        {
+            let mut groups: HashMap<(Option<String>, Option<String>, String), Vec<String>> =
+                HashMap::new();
+            for name in &k8s_names {
+                if self.sandboxes[name].kubernetes_never_started() {
+                    continue;
+                }
+                match self.sandboxes[name].orchestrator_config() {
+                    Ok(config) => groups
+                        .entry((config.kubeconfig, config.context, config.namespace))
+                        .or_default()
+                        .push(name.clone()),
+                    Err(error) => {
+                        eprintln!("Failed to inspect Kubernetes sandbox '{name}': {error:#}")
+                    }
+                }
+            }
+            for ((kubeconfig, context, namespace), names) in groups {
+                let mut args = vec![
+                    "get".to_string(),
+                    "pods".to_string(),
+                    "--namespace".to_string(),
+                    namespace,
+                    "--field-selector=status.phase=Running".to_string(),
+                    "--selector=agentkernel/managed-by=agentkernel".to_string(),
+                    "--request-timeout=10s".to_string(),
+                    "-o".to_string(),
+                    "json".to_string(),
+                ];
+                if let Some(path) = kubeconfig {
+                    args.extend(["--kubeconfig".into(), path]);
+                }
+                if let Some(context) = context {
+                    args.extend(["--context".into(), context]);
+                }
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                if let Ok(output) = batch_cmd(&names, "kubectl", &args)
+                    && output.status.success()
+                    && let Ok(pods) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                    && let Some(items) = pods["items"].as_array()
+                {
+                    for name in names {
+                        let labels =
+                            crate::backend::kubernetes::KubernetesSandbox::pod_labels(&name);
+                        if items.iter().any(|pod| {
+                            pod["metadata"]["labels"]["agentkernel/sandbox"].as_str()
+                                == labels.get("agentkernel/sandbox").map(String::as_str)
+                        }) {
+                            running_set.insert(name);
+                        }
+                    }
+                }
+            }
         }
 
         // Batch Nomad: one `nomad job status` call
@@ -794,10 +883,17 @@ impl VmManager {
                 continue;
             };
             let backend = state.backend.unwrap_or(self.backend);
+            let orchestrator = match state.orchestrator_config() {
+                Ok(config) => config,
+                Err(error) => {
+                    eprintln!("Failed to reconnect sandbox '{name}': {error:#}");
+                    continue;
+                }
+            };
             if let Ok(mut sandbox) = create_sandbox_with_state(
                 backend,
                 &name,
-                &crate::config::OrchestratorConfig::default(),
+                &orchestrator,
                 backend.is_remote().then(|| state.remote_context()),
             ) {
                 if let Some(network) = state.managed_network.as_ref()
@@ -1213,7 +1309,7 @@ impl VmManager {
         let sandbox = create_sandbox_with_state(
             backend,
             name,
-            &crate::config::OrchestratorConfig::default(),
+            &state.orchestrator_config()?,
             Some(state.remote_context()),
         )?;
         self.running.insert(name.to_string(), sandbox);
@@ -1494,7 +1590,11 @@ impl VmManager {
             backend: Some(backend),
             remote_id: None,
             remote_namespace: None,
-            remote_metadata: HashMap::new(),
+            remote_metadata: if backend == BackendType::Kubernetes {
+                HashMap::from([("kubernetes_start_attempted".into(), "false".into())])
+            } else {
+                HashMap::new()
+            },
             workspace_revision: None,
             endpoints: Vec::new(),
             work_dir: None,
@@ -1782,18 +1882,33 @@ impl VmManager {
 
     pub fn set_config_path(&mut self, name: &str, config_path: Option<String>) -> Result<()> {
         let config_path = normalize_persisted_path(config_path)?;
-        {
-            let state = self
-                .sandboxes
-                .get_mut(name)
-                .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
-            state.config_path = config_path;
-        }
-        let state = self
+        let mut state = self
             .sandboxes
             .get(name)
-            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
-        self.save_sandbox(state)?;
+            .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?
+            .clone();
+        if state.backend == Some(BackendType::Kubernetes) && self.running.contains_key(name) {
+            bail!("Cannot change Kubernetes configuration while sandbox '{name}' is running");
+        }
+        let already_bound = state.remote_metadata.contains_key("kubernetes_config");
+        if state.backend == Some(BackendType::Kubernetes)
+            && already_bound
+            && state.config_path != config_path
+        {
+            bail!(
+                "Kubernetes sandbox '{name}' is bound to its original configuration; remove it and create a new sandbox to change the target"
+            );
+        }
+        state.config_path = config_path;
+        if state.backend == Some(BackendType::Kubernetes) && !already_bound {
+            let config = state.orchestrator_config()?;
+            state.remote_metadata.insert(
+                "kubernetes_config".to_string(),
+                serde_json::to_string(&config)?,
+            );
+        }
+        self.save_sandbox(&state)?;
+        self.sandboxes.insert(name.to_string(), state);
         Ok(())
     }
 
@@ -2534,6 +2649,19 @@ impl VmManager {
             return Ok(());
         }
 
+        // Freeze legacy Kubernetes configuration before any remote mutation.
+        if backend == BackendType::Kubernetes
+            && !state.remote_metadata.contains_key("kubernetes_config")
+        {
+            let mut pinned = state.clone();
+            pinned.remote_metadata.insert(
+                "kubernetes_config".into(),
+                serde_json::to_string(&state.orchestrator_config()?)?,
+            );
+            self.save_sandbox(&pinned)?;
+            self.sandboxes.insert(name.to_string(), pinned);
+        }
+
         // Create sandbox using unified factory
         let mut sandbox = {
             #[cfg(test)]
@@ -2543,7 +2671,7 @@ impl VmManager {
                 create_sandbox_with_state(
                     backend,
                     name,
-                    &crate::config::OrchestratorConfig::default(),
+                    &state.orchestrator_config()?,
                     backend.is_remote().then(|| state.remote_context()),
                 )?
             }
@@ -2552,7 +2680,7 @@ impl VmManager {
                 create_sandbox_with_state(
                     backend,
                     name,
-                    &crate::config::OrchestratorConfig::default(),
+                    &state.orchestrator_config()?,
                     backend.is_remote().then(|| state.remote_context()),
                 )?
             }
@@ -2952,12 +3080,29 @@ impl VmManager {
             volumes: volume_args,
         };
 
+        if backend == BackendType::Kubernetes {
+            let mut attempted = self.sandboxes[name].clone();
+            attempted
+                .remote_metadata
+                .insert("kubernetes_start_attempted".into(), "true".into());
+            self.save_sandbox(&attempted)?;
+            self.sandboxes.insert(name.to_string(), attempted);
+        }
+
         if let Err(error) = sandbox.start(&config).await {
             if runtime_may_survive_failed_stop(&error, sandbox.is_running()) {
                 self.running.insert(name.to_string(), sandbox);
                 return Err(error).context(format!(
                     "sandbox '{name}' failed to start cleanly, but its runtime may still exist and remains under manager ownership; remove it before retrying"
                 ));
+            }
+            if backend == BackendType::Kubernetes && state.kubernetes_never_started() {
+                let mut cleaned = self.sandboxes[name].clone();
+                cleaned
+                    .remote_metadata
+                    .insert("kubernetes_start_attempted".into(), "false".into());
+                self.save_sandbox(&cleaned)?;
+                self.sandboxes.insert(name.to_string(), cleaned);
             }
             return Err(error);
         }
@@ -4727,6 +4872,22 @@ impl VmManager {
                 name, e
             );
         }
+        if self
+            .sandboxes
+            .get(name)
+            .is_some_and(SandboxState::kubernetes_never_started)
+        {
+            return Ok(());
+        }
+        if backend == BackendType::Kubernetes
+            && !self.running.contains_key(name)
+            && let Some(state) = self.sandboxes.get(name)
+        {
+            self.running.insert(
+                name.to_string(),
+                create_sandbox_with_state(backend, name, &state.orchestrator_config()?, None)?,
+            );
+        }
         // Shut down the proxy if running
         if let Some(handle) = PROXY_HANDLES.write().await.remove(name) {
             let _ = handle.shutdown_tx.send(());
@@ -4739,7 +4900,9 @@ impl VmManager {
         }
         if let Some(mut sandbox) = self.running.remove(name) {
             if let Err(error) = sandbox.stop().await {
-                if runtime_may_survive_failed_stop(&error, sandbox.is_running()) {
+                if backend == BackendType::Kubernetes
+                    || runtime_may_survive_failed_stop(&error, sandbox.is_running())
+                {
                     self.running.insert(name.to_string(), sandbox);
                 }
                 return Err(error).with_context(|| format!("failed to stop sandbox '{name}'"));
@@ -4802,6 +4965,11 @@ impl VmManager {
         let bypass_backend_runtime = self.bypass_backend_runtime;
         #[cfg(not(test))]
         let bypass_backend_runtime = false;
+        let bypass_backend_runtime = bypass_backend_runtime
+            || self
+                .sandboxes
+                .get(name)
+                .is_some_and(SandboxState::kubernetes_never_started);
 
         if let Some(mut recovery) = self.pause_recovery.remove(name) {
             if let Some(mut sandbox) = recovery.sandbox.take()
@@ -4827,7 +4995,7 @@ impl VmManager {
                     create_sandbox_with_state(
                         backend,
                         name,
-                        &crate::config::OrchestratorConfig::default(),
+                        &state.orchestrator_config()?,
                         backend.is_remote().then(|| state.remote_context()),
                     )?
                 }
@@ -4836,7 +5004,7 @@ impl VmManager {
                     create_sandbox_with_state(
                         backend,
                         name,
-                        &crate::config::OrchestratorConfig::default(),
+                        &state.orchestrator_config()?,
                         backend.is_remote().then(|| state.remote_context()),
                     )?
                 }
@@ -5605,6 +5773,121 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
+
+    #[test]
+    fn kubernetes_target_is_persisted_and_not_reloaded_from_changed_file() {
+        let temp = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp);
+        let mut state = lifecycle_state("nitro-config");
+        state.backend = Some(BackendType::Kubernetes);
+        manager.insert_state_for_tests(state);
+        let path = temp.path().join("cluster.toml");
+        std::fs::write(
+            &path,
+            r#"
+[sandbox]
+name = "nitro-config"
+[orchestrator]
+namespace = "chosen-namespace"
+kubeconfig = "/chosen/kubeconfig"
+context = "chosen-context"
+runtime_class = "isolated-sandbox"
+startup_timeout_secs = 600
+nomad_token = "do-not-persist"
+[[orchestrator.persistent_volume_claims]]
+claim_name = "existing-workspace"
+mount_path = "/workspace"
+"#,
+        )
+        .unwrap();
+        manager
+            .set_config_path("nitro-config", Some(path.to_string_lossy().into_owned()))
+            .unwrap();
+        let original =
+            manager.sandboxes["nitro-config"].remote_metadata["kubernetes_config"].clone();
+        assert!(!original.contains("do-not-persist"));
+        std::fs::write(
+            &path,
+            "[sandbox]\nname = 'changed'\n[orchestrator]\ncontext = 'wrong-cluster'",
+        )
+        .unwrap();
+        manager
+            .set_config_path("nitro-config", Some(path.to_string_lossy().into_owned()))
+            .unwrap();
+        assert_eq!(
+            manager.sandboxes["nitro-config"].remote_metadata["kubernetes_config"],
+            original
+        );
+        let loaded = VmManager::load_sandboxes(&temp.path().join("sandboxes")).unwrap();
+        let config = loaded["nitro-config"].orchestrator_config().unwrap();
+        assert_eq!(config.namespace, "chosen-namespace");
+        assert_eq!(config.context.as_deref(), Some("chosen-context"));
+        assert_eq!(config.runtime_class.as_deref(), Some("isolated-sandbox"));
+        assert_eq!(config.startup_timeout_secs, 600);
+        assert_eq!(
+            config.persistent_volume_claims[0].claim_name,
+            "existing-workspace"
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            loaded["nitro-config"]
+                .orchestrator_config()
+                .unwrap()
+                .context,
+            config.context
+        );
+        assert!(manager.set_config_path("nitro-config", None).is_err());
+        let mut corrupt = loaded["nitro-config"].clone();
+        corrupt
+            .remote_metadata
+            .insert("kubernetes_config".into(), "invalid".into());
+        assert!(corrupt.orchestrator_config().is_err());
+    }
+
+    #[tokio::test]
+    async fn kubernetes_failed_initial_binding_removes_only_local_state() {
+        let temp = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp);
+        let mut state = lifecycle_state("unbound");
+        state.backend = Some(BackendType::Kubernetes);
+        state
+            .remote_metadata
+            .insert("kubernetes_start_attempted".into(), "false".into());
+        manager.insert_state_for_tests(state);
+        let path = temp.path().join("invalid.toml");
+        std::fs::write(
+            &path,
+            "[sandbox]\nname = 'unbound'\n[orchestrator]\nruntime_class = 'isolated-sandbox'",
+        )
+        .unwrap();
+        assert!(
+            manager
+                .set_config_path("unbound", Some(path.to_string_lossy().into_owned()))
+                .is_err()
+        );
+        manager.set_backend_factory_for_tests(Arc::new(|_, _| {
+            panic!("must not contact a Kubernetes target before the first start")
+        }));
+        manager.stop("unbound").await.unwrap();
+        manager.remove("unbound").await.unwrap();
+        assert!(!manager.sandboxes.contains_key("unbound"));
+    }
+
+    #[test]
+    fn kubernetes_config_save_failure_does_not_change_live_state() {
+        let temp = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp);
+        let mut state = lifecycle_state("nitro-save");
+        state.backend = Some(BackendType::Kubernetes);
+        manager.insert_state_for_tests(state);
+        manager.fail_next_state_save_for_tests();
+        assert!(manager.set_config_path("nitro-save", None).is_err());
+        assert!(
+            !manager.sandboxes["nitro-save"]
+                .remote_metadata
+                .contains_key("kubernetes_config")
+        );
+    }
 
     #[test]
     fn test_sandbox_state_serialize() {
