@@ -378,6 +378,18 @@ impl SandboxState {
     /// Use the pinned Kubernetes target for every lifecycle operation. Legacy
     /// states may load their original config, but never substitute the CWD.
     fn orchestrator_config(&self) -> Result<crate::config::OrchestratorConfig> {
+        let mut config = self.load_orchestrator_config()?;
+        if self.backend == Some(BackendType::Kubernetes)
+            && self
+                .remote_metadata
+                .contains_key("kubernetes_start_attempted")
+        {
+            config.kubernetes_owner_id = Some(self.uuid.clone());
+        }
+        Ok(config)
+    }
+
+    fn load_orchestrator_config(&self) -> Result<crate::config::OrchestratorConfig> {
         if self.backend != Some(BackendType::Kubernetes) {
             return Ok(crate::config::OrchestratorConfig::default());
         }
@@ -848,6 +860,11 @@ impl VmManager {
                         if items.iter().any(|pod| {
                             pod["metadata"]["labels"]["agentkernel/sandbox"].as_str()
                                 == labels.get("agentkernel/sandbox").map(String::as_str)
+                                && (!self.sandboxes[&name]
+                                    .remote_metadata
+                                    .contains_key("kubernetes_start_attempted")
+                                    || pod["metadata"]["labels"]["agentkernel/owner"].as_str()
+                                        == Some(self.sandboxes[&name].uuid.as_str()))
                         }) {
                             running_set.insert(name);
                         }
@@ -3101,8 +3118,9 @@ impl VmManager {
                 cleaned
                     .remote_metadata
                     .insert("kubernetes_start_attempted".into(), "false".into());
-                self.save_sandbox(&cleaned)?;
+                let save_result = self.save_sandbox(&cleaned);
                 self.sandboxes.insert(name.to_string(), cleaned);
+                save_result?;
             }
             return Err(error);
         }
@@ -5780,6 +5798,9 @@ mod tests {
         let mut manager = new_test_manager(&temp);
         let mut state = lifecycle_state("nitro-config");
         state.backend = Some(BackendType::Kubernetes);
+        state
+            .remote_metadata
+            .insert("kubernetes_start_attempted".into(), "false".into());
         manager.insert_state_for_tests(state);
         let path = temp.path().join("cluster.toml");
         std::fs::write(
@@ -5820,6 +5841,11 @@ mount_path = "/workspace"
         );
         let loaded = VmManager::load_sandboxes(&temp.path().join("sandboxes")).unwrap();
         let config = loaded["nitro-config"].orchestrator_config().unwrap();
+        assert_eq!(
+            config.kubernetes_owner_id.as_deref(),
+            Some(loaded["nitro-config"].uuid.as_str())
+        );
+        assert!(!original.contains("kubernetes_owner_id"));
         assert_eq!(config.namespace, "chosen-namespace");
         assert_eq!(config.context.as_deref(), Some("chosen-context"));
         assert_eq!(config.runtime_class.as_deref(), Some("isolated-sandbox"));
@@ -5871,6 +5897,70 @@ mount_path = "/workspace"
         manager.stop("unbound").await.unwrap();
         manager.remove("unbound").await.unwrap();
         assert!(!manager.sandboxes.contains_key("unbound"));
+    }
+
+    struct KubernetesConflictSandbox(String);
+
+    #[async_trait]
+    impl Sandbox for KubernetesConflictSandbox {
+        async fn start(&mut self, _: &SandboxConfig) -> Result<()> {
+            bail!("409 Pod already exists")
+        }
+        async fn exec(&mut self, _: &[&str]) -> Result<ExecResult> {
+            unreachable!()
+        }
+        async fn stop(&mut self) -> Result<()> {
+            panic!("must not clean up a conflicting Pod")
+        }
+        fn name(&self) -> &str {
+            &self.0
+        }
+        fn backend_type(&self) -> BackendType {
+            BackendType::Kubernetes
+        }
+        fn is_running(&self) -> bool {
+            false
+        }
+        async fn write_file_unchecked(&mut self, _: &str, _: &[u8]) -> Result<()> {
+            unreachable!()
+        }
+        async fn read_file_unchecked(&mut self, _: &str) -> Result<Vec<u8>> {
+            unreachable!()
+        }
+        async fn remove_file_unchecked(&mut self, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        async fn mkdir_unchecked(&mut self, _: &str, _: bool) -> Result<()> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn kubernetes_conflict_outer_cleanup_never_deletes_existing_runtime() {
+        let temp = TempDir::new().unwrap();
+        let mut manager = new_test_manager(&temp);
+        let mut state = lifecycle_state("conflict");
+        state.backend = Some(BackendType::Kubernetes);
+        state
+            .remote_metadata
+            .insert("kubernetes_start_attempted".into(), "false".into());
+        manager.insert_state_for_tests(state);
+        manager.set_config_path("conflict", None).unwrap();
+        let constructions = Arc::new(AtomicUsize::new(0));
+        let factory_count = constructions.clone();
+        manager.set_backend_factory_for_tests(Arc::new(move |name, _| {
+            factory_count.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(KubernetesConflictSandbox(name.into())))
+        }));
+        assert!(
+            manager
+                .start_with_permissions("conflict", &Permissions::default())
+                .await
+                .is_err()
+        );
+        assert!(manager.sandboxes["conflict"].kubernetes_never_started());
+        manager.remove("conflict").await.unwrap();
+        assert_eq!(constructions.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -173,6 +173,10 @@ pub struct OrchestratorConfig {
     /// Optional group ownership for writable Kubernetes volumes.
     #[serde(default)]
     pub fs_group: Option<i64>,
+    /// Internal manager identity; never accepted from or written to TOML/JSON.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub kubernetes_owner_id: Option<String>,
     /// Nomad server address (e.g., "http://127.0.0.1:4646")
     #[serde(default)]
     pub nomad_addr: Option<String>,
@@ -250,6 +254,7 @@ impl Default for OrchestratorConfig {
             startup_timeout_secs: default_startup_timeout_secs(),
             persistent_volume_claims: Vec::new(),
             fs_group: None,
+            kubernetes_owner_id: None,
             nomad_addr: None,
             nomad_token: None,
             nomad_driver: default_nomad_driver(),

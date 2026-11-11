@@ -23,7 +23,7 @@ As documented by AWS on November 11, 2026:
 - **Managed/self-managed nodes:** a custom sandbox-enabled AMI, a supported
   instance type, and `EnclaveOptions.Enabled=true` in the node launch template.
   Merely choosing an instance type that supports Nitro Enclaves is insufficient.
-- Kubernetes credentials with Pod create/get/list/delete and Pod exec permissions
+- `kubectl` for CLI running-sandbox discovery, plus Kubernetes credentials with Pod create/get/list/delete and Pod exec permissions
   in the intended namespace. Service and NetworkPolicy permissions are also
   required for cleanup and for their respective features.
 - A sandbox image with `sh` and `sleep infinity`, usable by non-root UID 1000.
@@ -91,6 +91,8 @@ create a new one. The kubeconfig file is still read for credentials and context
 resolution: do not remap the saved context to another cluster. This is a pinned
 path/context selection, not an immutable cluster identity or a credential copy.
 Legacy non-Nitro configurations may still use ambient kubeconfig selection.
+New manager-created sandboxes also carry a UUID ownership label, so cleanup
+cannot adopt a same-named Pod belonging to a different sandbox record.
 
 ## Start, stop, and recreate
 

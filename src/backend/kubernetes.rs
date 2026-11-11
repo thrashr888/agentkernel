@@ -208,6 +208,7 @@ pub struct KubernetesSandbox {
     startup_timeout_secs: u64,
     persistent_volume_claims: Vec<KubernetesVolumeClaim>,
     fs_group: Option<i64>,
+    owner_id: Option<String>,
     /// Optional runtime class (e.g., "gvisor", "kata", "isolated-sandbox")
     runtime_class: Option<String>,
     /// Optional service account for the pod
@@ -236,6 +237,7 @@ impl KubernetesSandbox {
             startup_timeout_secs: config.startup_timeout_secs,
             persistent_volume_claims: config.persistent_volume_claims.clone(),
             fs_group: config.fs_group,
+            owner_id: config.kubernetes_owner_id.clone(),
             runtime_class: config.runtime_class.clone(),
             service_account: config.service_account.clone(),
             node_selector: config.node_selector.clone(),
@@ -390,6 +392,31 @@ impl KubernetesSandbox {
         })
     }
 
+    fn owns_labels(&self, labels: Option<&BTreeMap<String, String>>, allow_legacy: bool) -> bool {
+        Self::owned_labels(labels, &self.name, allow_legacy)
+            && self.owner_id.as_ref().is_none_or(|owner| {
+                labels.and_then(|labels| labels.get("agentkernel/owner")) == Some(owner)
+            })
+    }
+
+    fn owns_network_policy(&self, policy: &NetworkPolicy) -> bool {
+        Self::network_policy_owned(policy, &self.name)
+            && self.owner_id.as_ref().is_none_or(|owner| {
+                policy
+                    .metadata
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels.get("agentkernel/owner"))
+                    == Some(owner)
+            })
+    }
+
+    fn add_owner_label(&self, labels: &mut BTreeMap<String, String>) {
+        if let Some(owner) = &self.owner_id {
+            labels.insert("agentkernel/owner".into(), owner.clone());
+        }
+    }
+
     fn network_policy_owned(policy: &NetworkPolicy, sandbox_name: &str) -> bool {
         let Some(selector) = policy
             .spec
@@ -413,7 +440,7 @@ impl KubernetesSandbox {
         let identity = self.identity();
         for candidate in identity.pod_names() {
             if let Ok(pod) = pods.get(candidate).await
-                && Self::owned_labels(pod.metadata.labels.as_ref(), &self.name, true)
+                && self.owns_labels(pod.metadata.labels.as_ref(), true)
             {
                 return Ok(candidate.to_string());
             }
@@ -432,7 +459,7 @@ impl KubernetesSandbox {
                 .get_opt(name)
                 .await
                 .context("Failed to inspect K8s pod for cleanup")?
-                && Self::owned_labels(pod.metadata.labels.as_ref(), &self.name, true)
+                && self.owns_labels(pod.metadata.labels.as_ref(), true)
             {
                 let params = DeleteParams {
                     preconditions: Some(kube::api::Preconditions {
@@ -500,6 +527,7 @@ impl KubernetesSandbox {
             identity.sandbox_label.clone(),
         );
 
+        self.add_owner_label(&mut labels);
         Service {
             metadata: ObjectMeta {
                 name: Some(Self::service_name_for(&self.name)),
@@ -513,6 +541,7 @@ impl KubernetesSandbox {
                 selector: Some({
                     let mut selector = BTreeMap::new();
                     selector.insert("agentkernel/sandbox".to_string(), identity.sandbox_label);
+                    self.add_owner_label(&mut selector);
                     selector
                 }),
                 ..Default::default()
@@ -543,7 +572,7 @@ impl KubernetesSandbox {
                 .get_opt(name)
                 .await
                 .context("Failed to inspect K8s Service for cleanup")?
-                && Self::owned_labels(service.metadata.labels.as_ref(), &self.name, true)
+                && self.owns_labels(service.metadata.labels.as_ref(), true)
             {
                 let params = DeleteParams {
                     preconditions: Some(kube::api::Preconditions {
@@ -562,7 +591,8 @@ impl KubernetesSandbox {
     /// Build the Pod spec for this sandbox
     fn build_pod_spec(&self, config: &SandboxConfig) -> Pod {
         let pod_name = Self::pod_name_for(&self.name);
-        let labels = Self::pod_labels(&self.name);
+        let mut labels = Self::pod_labels(&self.name);
+        self.add_owner_label(&mut labels);
 
         // Build container security context
         let mut security_context = k8s_openapi::api::core::v1::SecurityContext {
@@ -730,6 +760,7 @@ impl KubernetesSandbox {
             "agentkernel/sandbox".to_string(),
             identity.sandbox_label.clone(),
         );
+        self.add_owner_label(&mut match_labels);
         let mut labels = BTreeMap::new();
         labels.insert(
             "agentkernel/managed-by".to_string(),
@@ -737,6 +768,7 @@ impl KubernetesSandbox {
         );
         labels.insert("agentkernel/sandbox".to_string(), identity.sandbox_label);
 
+        self.add_owner_label(&mut labels);
         NetworkPolicy {
             metadata: ObjectMeta {
                 name: Some(identity.network_policy_name),
@@ -779,7 +811,7 @@ impl KubernetesSandbox {
                 .get_opt(name)
                 .await
                 .context("Failed to inspect NetworkPolicy for cleanup")?
-                && Self::network_policy_owned(&policy, &self.name)
+                && self.owns_network_policy(&policy)
             {
                 let params = DeleteParams {
                     preconditions: Some(kube::api::Preconditions {
@@ -868,9 +900,14 @@ impl KubernetesSandbox {
                 }
             }
             if self.network_policy_created {
-                self.delete_network_policy(&client).await.with_context(|| {
-                    format!("Pod creation failed: {error}; NetworkPolicy cleanup also failed")
-                })?;
+                if let Err(cleanup) = self.delete_network_policy(&client).await {
+                    self.client = Some(client.clone());
+                    self.running = true;
+                    return Err(anyhow::anyhow!(
+                        "Pod creation failed: {error}; NetworkPolicy cleanup also failed: {cleanup:#}. Retry stop for sandbox '{}'",
+                        self.name
+                    ));
+                }
                 self.network_policy_created = false;
             }
             return Err(error).context("Failed to create K8s pod");
@@ -1289,6 +1326,21 @@ mod tests {
     }
 
     #[test]
+    fn caller_config_cannot_override_manager_owner_identity() {
+        let config: OrchestratorConfig = toml::from_str("kubernetes_owner_id = 'forged'").unwrap();
+        assert!(config.kubernetes_owner_id.is_none());
+        let config = OrchestratorConfig {
+            kubernetes_owner_id: Some("internal".into()),
+            ..Default::default()
+        };
+        assert!(
+            !serde_json::to_string(&config)
+                .unwrap()
+                .contains("kubernetes_owner_id")
+        );
+    }
+
+    #[test]
     fn old_kubernetes_config_defaults_are_compatible() {
         let config: OrchestratorConfig = toml::from_str("namespace = 'old-cluster'").unwrap();
         assert_eq!(config.startup_timeout_secs, 120);
@@ -1657,6 +1709,94 @@ mod tests {
         );
         assert!(created.lock().unwrap().is_none());
         assert!(!sandbox.running);
+    }
+
+    #[tokio::test]
+    async fn manager_owner_binding_protects_same_named_resources() {
+        let config = OrchestratorConfig {
+            kubernetes_owner_id: Some("new-owner".into()),
+            ..Default::default()
+        };
+        let mut sandbox = KubernetesSandbox::new("same-name", &config);
+        for labels in [
+            sandbox
+                .build_pod_spec(&SandboxConfig::default())
+                .metadata
+                .labels,
+            sandbox
+                .build_service(&SandboxConfig::default())
+                .metadata
+                .labels,
+            sandbox.build_network_policy().metadata.labels,
+        ] {
+            assert_eq!(
+                labels.unwrap().get("agentkernel/owner").map(String::as_str),
+                Some("new-owner")
+            );
+        }
+        assert_eq!(
+            sandbox
+                .build_service(&SandboxConfig::default())
+                .spec
+                .unwrap()
+                .selector
+                .unwrap()
+                .get("agentkernel/owner")
+                .map(String::as_str),
+            Some("new-owner")
+        );
+        assert_eq!(
+            sandbox
+                .build_network_policy()
+                .spec
+                .unwrap()
+                .pod_selector
+                .unwrap()
+                .match_labels
+                .unwrap()
+                .get("agentkernel/owner")
+                .map(String::as_str),
+            Some("new-owner")
+        );
+        let mut old_pod = sandbox.build_pod_spec(&SandboxConfig::default());
+        old_pod
+            .metadata
+            .labels
+            .as_mut()
+            .unwrap()
+            .insert("agentkernel/owner".into(), "old-owner".into());
+        let mut old_policy = sandbox.build_network_policy();
+        old_policy
+            .metadata
+            .labels
+            .as_mut()
+            .unwrap()
+            .insert("agentkernel/owner".into(), "old-owner".into());
+        assert!(!sandbox.owns_labels(old_pod.metadata.labels.as_ref(), true));
+        assert!(!sandbox.owns_network_policy(&old_policy));
+        let mut old_service = sandbox.build_service(&SandboxConfig::default());
+        old_service
+            .metadata
+            .labels
+            .as_mut()
+            .unwrap()
+            .insert("agentkernel/owner".into(), "old-owner".into());
+        let mock = mock_api(move |method, path, _| {
+            assert_eq!(
+                method, "GET",
+                "must not delete a different manager's resource"
+            );
+            if path.contains("/services/") {
+                return (200, serde_json::to_value(&old_service).unwrap());
+            }
+            if path.contains("/networkpolicies/") {
+                return (200, serde_json::to_value(&old_policy).unwrap());
+            }
+            (200, serde_json::to_value(&old_pod).unwrap())
+        })
+        .await;
+        sandbox.client = Some(mock.client.clone());
+        sandbox.stop().await.unwrap();
     }
 
     #[tokio::test]
