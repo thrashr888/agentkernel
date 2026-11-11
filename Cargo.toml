@@ -18,6 +18,7 @@ include = [
   "/images/build/Dockerfile.kernel-builder",
   "/images/kernel/microvm.config",
   "/examples/agents/tested-versions.json",
+  "/examples/aws-nitro/agentkernel.toml",
   "/docker/Dockerfile.kvm-host",
   "/templates/*.toml",
   "/Cargo.toml",
