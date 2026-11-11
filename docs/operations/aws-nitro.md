@@ -124,7 +124,9 @@ kubectl --kubeconfig ~/.kube/config --context your-eks-context \
 
 The Pod is deleted on stop. AgentKernel waits for disappearance (up to 120
 seconds) rather than equating a delete acknowledgement with termination. API or
-delete failures are reported and can be retried. It retains ownership when
+delete failures are reported and can be retried. Service and NetworkPolicy
+deletion is also checked: if an object remains, stop reports pending cleanup and
+retains ownership for retry after its finalizers clear. It retains ownership when
 startup rollback fails. A fresh start creates a new Pod using the same claim;
 file data persists, but processes, connections, and RAM do not. This is **not**
 AgentKernel full-state pause/resume or fork, and those capabilities remain

@@ -576,13 +576,23 @@ impl KubernetesSandbox {
             {
                 let params = DeleteParams {
                     preconditions: Some(kube::api::Preconditions {
-                        uid: service.metadata.uid,
+                        uid: service.metadata.uid.clone(),
                         ..Default::default()
                     }),
                     ..Default::default()
                 };
                 ignore_not_found(services.delete(name, &params).await)
                     .context("Failed to delete K8s Service")?;
+                if services
+                    .get_opt(name)
+                    .await
+                    .context("Failed to confirm K8s Service deletion; stop can be retried")?
+                    .is_some_and(|current| current.metadata.uid == service.metadata.uid)
+                {
+                    bail!(
+                        "K8s Service '{name}' deletion is pending; retry stop after its finalizers clear"
+                    );
+                }
             }
         }
         Ok(())
@@ -822,13 +832,23 @@ impl KubernetesSandbox {
                     self.running = true;
                     let params = DeleteParams {
                         preconditions: Some(kube::api::Preconditions {
-                            uid: created.metadata.uid,
+                            uid: created.metadata.uid.clone(),
                             ..Default::default()
                         }),
                         ..Default::default()
                     };
                     ignore_not_found(np_api.delete(name, &params).await)
                         .with_context(|| format!("NetworkPolicy creation failed: {error}; rollback failed. Retry stop for sandbox '{}'", self.name))?;
+                    if np_api
+                        .get_opt(name)
+                        .await
+                        .context("Failed to confirm NetworkPolicy rollback; retry stop")?
+                        .is_some_and(|current| current.metadata.uid == created.metadata.uid)
+                    {
+                        bail!(
+                            "NetworkPolicy '{name}' rollback is pending; retry stop after its finalizers clear"
+                        );
+                    }
                     self.network_policy_created = false;
                     self.running = false;
                 }
@@ -868,6 +888,16 @@ impl KubernetesSandbox {
                 };
                 ignore_not_found(np_api.delete(name, &params).await)
                     .context("Failed to delete NetworkPolicy")?;
+                if np_api
+                    .get_opt(name)
+                    .await
+                    .context("Failed to confirm NetworkPolicy deletion; stop can be retried")?
+                    .is_some_and(|current| current.metadata.uid == policy.metadata.uid)
+                {
+                    bail!(
+                        "NetworkPolicy '{name}' deletion is pending; retry stop after its finalizers clear"
+                    );
+                }
             }
         }
         Ok(())
@@ -1707,7 +1737,7 @@ mod tests {
     #[tokio::test]
     async fn uncertain_policy_creation_is_reconciled_without_creating_a_pod() {
         use std::sync::{Arc, Mutex};
-        for deletion_denied in [false, true] {
+        for (deletion_denied, deletion_pending) in [(false, false), (true, false), (false, true)] {
             let created = Arc::new(Mutex::new(None::<serde_json::Value>));
             let server_created = created.clone();
             let mock = mock_api(move |method, path, mut body| {
@@ -1721,7 +1751,7 @@ mod tests {
                     if method == "DELETE" {
                         assert_eq!(body["preconditions"]["uid"], "policy-uid");
                         if deletion_denied { return api_error(403); }
-                        *server_created.lock().unwrap() = None;
+                        if !deletion_pending { *server_created.lock().unwrap() = None; }
                         return (200, serde_json::json!({"kind":"Status","apiVersion":"v1","status":"Success","code":200}));
                     }
                     return server_created.lock().unwrap().clone().map(|policy| (200, policy)).unwrap_or_else(|| api_error(404));
@@ -1740,9 +1770,50 @@ mod tests {
                 )
                 .await;
             assert!(result.is_err());
-            assert_eq!(sandbox.running, deletion_denied);
-            assert_eq!(created.lock().unwrap().is_some(), deletion_denied);
-            assert_eq!(sandbox.network_policy_created, deletion_denied);
+            let cleanup_pending = deletion_denied || deletion_pending;
+            assert_eq!(sandbox.running, cleanup_pending);
+            assert_eq!(created.lock().unwrap().is_some(), cleanup_pending);
+            assert_eq!(sandbox.network_policy_created, cleanup_pending);
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_retains_ownership_when_auxiliary_deletion_is_pending() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        for resource in ["services", "networkpolicies"] {
+            let gone = Arc::new(AtomicBool::new(false));
+            let server_gone = gone.clone();
+            let mut sandbox =
+                KubernetesSandbox::new("aux-finalizer", &OrchestratorConfig::default());
+            let mut object = if resource == "services" {
+                serde_json::to_value(sandbox.build_service(&SandboxConfig::default())).unwrap()
+            } else {
+                serde_json::to_value(sandbox.build_network_policy()).unwrap()
+            };
+            object["metadata"]["uid"] = "retained-uid".into();
+            object["metadata"]["finalizers"] = serde_json::json!(["test.example/finalizer"]);
+            let name = object["metadata"]["name"].as_str().unwrap().to_string();
+            let mock = mock_api(move |method, path, body| {
+                if path.ends_with(&format!("/{resource}/{name}")) {
+                    if method == "DELETE" {
+                        assert_eq!(body["preconditions"]["uid"], "retained-uid");
+                        return (200, serde_json::json!({"kind":"Status","apiVersion":"v1","status":"Success","code":200}));
+                    }
+                    if !server_gone.load(Ordering::SeqCst) { return (200, object.clone()); }
+                }
+                api_error(404)
+            }).await;
+            sandbox.client = Some(mock.client.clone());
+            sandbox.running = true;
+            let error = sandbox.stop().await.unwrap_err();
+            assert!(error.to_string().contains("deletion is pending"));
+            assert!(sandbox.running);
+            gone.store(true, Ordering::SeqCst);
+            sandbox.stop().await.unwrap();
+            assert!(!sandbox.running);
         }
     }
 
