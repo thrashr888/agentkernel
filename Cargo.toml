@@ -51,7 +51,7 @@ toml = "1"
 uuid = { version = "1.0", features = ["v4", "v7"] }
 chrono = { version = "0.4", features = ["serde"] }
 redis = "1.6"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 tokio-postgres = { version = "0.7.18", features = ["with-serde_json-1"] }
 mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "rustls-tls", "aws-lc-rs", "tls12"] }
 sha2 = "0.11"
