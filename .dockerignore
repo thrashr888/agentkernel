@@ -17,6 +17,8 @@
 !examples/
 !examples/agents/
 !examples/agents/tested-versions.json
+!examples/aws-nitro/
+!examples/aws-nitro/agentkernel.toml
 !images/
 !images/build/
 !images/build/**

@@ -3,6 +3,8 @@
 
 Run sandboxes as Kubernetes Pods on any cluster. Each sandbox is a Pod running `sleep infinity` that accepts commands via the K8s exec API.
 
+For AWS hardware-isolated pods, see [AWS Nitro Sandboxes on EKS](aws-nitro.md).
+
 ## Quick Start
 
 ```bash
@@ -38,7 +40,10 @@ max_pool_size = 50                  # Maximum total pods (default: 50)
 | `namespace` | string | `agentkernel` | Kubernetes namespace for sandbox pods |
 | `kubeconfig` | string | auto-detected | Path to kubeconfig file |
 | `context` | string | current context | Kubeconfig context to use |
-| `runtime_class` | string | none | RuntimeClass for stronger isolation |
+| `runtime_class` | string | none | RuntimeClass for stronger isolation, including `isolated-sandbox` on EKS |
+| `startup_timeout_secs` | int | 120 | Pod startup deadline, including node provisioning (1–86400 seconds) |
+| `persistent_volume_claims` | array | empty | Existing namespace-local PVCs: `claim_name`, `mount_path`, `read_only` |
+| `fs_group` | int | none | Optional group ownership for writable PVCs |
 | `service_account` | string | none | Service account for sandbox pods |
 | `warm_pool_size` | int | 10 | Number of pre-warmed idle pods |
 | `max_pool_size` | int | 50 | Maximum concurrent pods |
@@ -47,10 +52,15 @@ max_pool_size = 50                  # Maximum total pods (default: 50)
 
 The Kubernetes backend resolves credentials in order:
 
-1. In-cluster service account (when running inside K8s)
-2. `kubeconfig` path from config
+1. Explicit `kubeconfig` and/or `context` selection, when configured
+2. In-cluster service account (when no explicit selection is configured)
 3. `KUBECONFIG` environment variable
 4. `~/.kube/config`
+
+The manager preserves Kubernetes configuration with the sandbox for subsequent
+lifecycle operations. PVCs are never deleted by stop or remove. Use a dedicated
+configuration/claim per sandbox unless shared storage is intentional. Nitro mode
+requires explicit kubeconfig and context; see its guide for binding limitations.
 
 ## Security
 

@@ -309,6 +309,9 @@ max_sandboxes = 200                  # Hard cap on total sandboxes
 | `context` | string | current | Kubeconfig context |
 | `runtime_class` | string | none | K8s RuntimeClass (gvisor, kata) |
 | `service_account` | string | none | K8s service account |
+| `startup_timeout_secs` | int | 120 | K8s Pod startup deadline (1–86400 seconds) |
+| `persistent_volume_claims` | array | empty | Existing K8s PVC mounts (`claim_name`, `mount_path`, `read_only`, default false) |
+| `fs_group` | int | none | Optional K8s volume ownership group |
 | `nomad_addr` | string | `NOMAD_ADDR` env | Nomad API address |
 | `nomad_token` | string | `NOMAD_TOKEN` env | Nomad ACL token |
 | `nomad_driver` | string | `docker` | Nomad task driver |

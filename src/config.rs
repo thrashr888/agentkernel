@@ -129,6 +129,17 @@ pub struct GitConfig {
     pub worktree: bool,
 }
 
+/// An existing, namespace-local Kubernetes PVC mounted into a sandbox.
+/// AgentKernel never creates or deletes the claim.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KubernetesVolumeClaim {
+    pub claim_name: String,
+    pub mount_path: String,
+    #[serde(default)]
+    pub read_only: bool,
+}
+
 /// Configuration for Kubernetes/Nomad orchestration backends
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestratorConfig {
@@ -153,6 +164,19 @@ pub struct OrchestratorConfig {
     /// Node selector labels for pod scheduling
     #[serde(default)]
     pub node_selector: std::collections::HashMap<String, String>,
+    /// Maximum time to wait for a Kubernetes pod, including node provisioning.
+    #[serde(default = "default_startup_timeout_secs")]
+    pub startup_timeout_secs: u64,
+    /// Existing Kubernetes claims. Shared by all sandboxes using this config.
+    #[serde(default)]
+    pub persistent_volume_claims: Vec<KubernetesVolumeClaim>,
+    /// Optional group ownership for writable Kubernetes volumes.
+    #[serde(default)]
+    pub fs_group: Option<i64>,
+    /// Internal manager identity; never accepted from or written to TOML/JSON.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub kubernetes_owner_id: Option<String>,
     /// Nomad server address (e.g., "http://127.0.0.1:4646")
     #[serde(default)]
     pub nomad_addr: Option<String>,
@@ -179,6 +203,10 @@ pub struct OrchestratorConfig {
     pub max_sandboxes: usize,
 }
 
+fn default_startup_timeout_secs() -> u64 {
+    120
+}
+
 fn default_namespace() -> String {
     "agentkernel".to_string()
 }
@@ -199,6 +227,20 @@ fn default_max_sandboxes() -> usize {
     200
 }
 
+impl OrchestratorConfig {
+    pub(crate) fn validate_kubernetes_target(&self) -> Result<()> {
+        if self.runtime_class.as_deref() == Some("isolated-sandbox")
+            && (self.kubeconfig.as_deref().is_none_or(str::is_empty)
+                || self.context.as_deref().is_none_or(str::is_empty))
+        {
+            anyhow::bail!(
+                "Nitro Sandboxes require explicit orchestrator.kubeconfig and context to keep lifecycle operations on the intended EKS cluster"
+            );
+        }
+        Ok(())
+    }
+}
+
 impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
@@ -209,6 +251,10 @@ impl Default for OrchestratorConfig {
             runtime_class: None,
             service_account: None,
             node_selector: std::collections::HashMap::new(),
+            startup_timeout_secs: default_startup_timeout_secs(),
+            persistent_volume_claims: Vec::new(),
+            fs_group: None,
+            kubernetes_owner_id: None,
             nomad_addr: None,
             nomad_token: None,
             nomad_driver: default_nomad_driver(),
