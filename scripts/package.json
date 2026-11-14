@@ -9,7 +9,7 @@
     "test": "node --check remote-bridge.mjs && node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@daytona/sdk": "^0.205.1",
+    "@daytona/sdk": "^0.231.1",
     "@runloop/api-client": "^1.29.0",
     "braces": "file:vendor/braces",
     "e2b": "^2.63.0",
