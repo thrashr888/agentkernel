@@ -126,6 +126,27 @@ async fn test_kubernetes_exec_with_env() {
         result.stdout
     );
 
+    // Exercise real Kubernetes remote-command status frames, independently of output.
+    for (command, stdout, stderr, exit_code) in [
+        ("printf stdout", "stdout", "", 0),
+        ("printf progress >&2; exit 0", "", "progress", 0),
+        ("exit 7", "", "", 7),
+        (
+            "printf partial; printf error >&2; exit 23",
+            "partial",
+            "error",
+            23,
+        ),
+    ] {
+        let result = sandbox
+            .exec(&["sh", "-c", command])
+            .await
+            .expect("Exec transport failed");
+        assert_eq!(result.exit_code, exit_code, "command: {command}");
+        assert_eq!(result.stdout, stdout, "command: {command}");
+        assert_eq!(result.stderr, stderr, "command: {command}");
+    }
+
     sandbox.stop().await.expect("Failed to stop sandbox");
 }
 
