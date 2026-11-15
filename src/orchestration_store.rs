@@ -703,11 +703,7 @@ LIMIT ?1 OFFSET ?2
         let mut stmt = conn
             .prepare(sql)
             .with_context(|| format!("failed preparing store query for store {}", store.id))?;
-        let column_names: Vec<String> = stmt
-            .column_names()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        let column_names: Vec<String> = stmt.column_names().map(str::to_string).collect();
         let sql_params: Vec<rusqlite::types::Value> =
             params.into_iter().map(Self::json_to_sql_value).collect();
         let mut rows = stmt

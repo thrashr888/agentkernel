@@ -2716,6 +2716,7 @@ memory_mb = 512
 
             // Fast path: use container pool for ephemeral runs
             if fast {
+                validate_fast_run_backend(backend.as_deref())?;
                 if devcontainer_configured {
                     bail!(
                         "--fast cannot apply devcontainer environment, mounts, or postCreateCommand; omit --fast"
@@ -2771,7 +2772,11 @@ memory_mb = 512
 
             // Daemon path: try daemon VM pool first (single round-trip)
             // Skip is_available() check - just try and fall back on error
-            if !keep && !devcontainer_configured && !build_image {
+            if !keep
+                && !devcontainer_configured
+                && !build_image
+                && implicit_run_pool_allowed(backend.as_deref(), config.as_deref())
+            {
                 let daemon_client = daemon::DaemonClient::new();
 
                 // Determine runtime from image/config
@@ -2973,7 +2978,10 @@ memory_mb = 512
             // - Docker: single `docker run --rm` command
             // - Apple containers: single `container run --rm` (~940ms vs ~2200ms)
             // Only used when --keep is not specified
-            if !keep && !devcontainer_configured {
+            if !keep
+                && !devcontainer_configured
+                && selected_backend != crate::backend::BackendType::Kubernetes
+            {
                 match VmManager::run_ephemeral_with_backend(
                     selected_backend,
                     &docker_image,
@@ -3156,6 +3164,19 @@ memory_mb = 512
             manager
                 .create_with_ttl(&sandbox_name, &docker_image, 1, 512, ttl_secs)
                 .await?;
+
+            if selected_backend == crate::backend::BackendType::Kubernetes
+                && !devcontainer_configured
+            {
+                let path = config.clone().or_else(|| {
+                    let default = PathBuf::from("agentkernel.toml");
+                    default.exists().then_some(default)
+                });
+                manager.set_config_path(
+                    &sandbox_name,
+                    path.map(|path| path.to_string_lossy().into_owned()),
+                )?;
+            }
 
             if let Some(ref dc) = devcontainer_config {
                 let mounts = dc.supported_mounts()?;
@@ -6080,6 +6101,21 @@ fn firecracker_server_required(operation: &str, port: u16) -> anyhow::Error {
     }
 }
 
+// An explicit backend or config must never be silently replaced by a local
+// daemon pool, even when that daemon happens to be available.
+fn implicit_run_pool_allowed(backend: Option<&str>, config: Option<&Path>) -> bool {
+    backend.is_none() && config.is_none()
+}
+
+fn validate_fast_run_backend(backend: Option<&str>) -> Result<()> {
+    if let Some(backend) = backend {
+        bail!(
+            "--fast uses a local container pool and cannot honor --backend {backend}; omit --fast"
+        );
+    }
+    Ok(())
+}
+
 fn resolve_requested_backend(
     requested: Option<crate::backend::BackendType>,
 ) -> Result<crate::backend::BackendType> {
@@ -6688,6 +6724,18 @@ fn delegated_exec_output(response: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn explicit_run_backend_never_uses_local_pool() {
+        assert!(!super::implicit_run_pool_allowed(Some("kubernetes"), None));
+        assert!(!super::implicit_run_pool_allowed(
+            None,
+            Some(std::path::Path::new("nitro.toml"))
+        ));
+        assert!(super::implicit_run_pool_allowed(None, None));
+        assert!(super::validate_fast_run_backend(Some("kubernetes")).is_err());
+        assert!(super::validate_fast_run_backend(None).is_ok());
+    }
+
     use super::{
         Cli, Commands, DelegatedHttpError, SandboxAction, config_has_build_settings,
         delegate_exec_to_server, delegate_request_uri_to_server_with_authorization,

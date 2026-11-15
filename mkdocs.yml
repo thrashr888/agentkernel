@@ -133,6 +133,7 @@ nav:
     - Firecracker full-state: operations/firecracker-full-state.md
     - Firecracker troubleshooting: operations/firecracker-troubleshooting.md
     - Kubernetes: operations/kubernetes.md
+    - AWS Nitro Sandboxes: operations/aws-nitro.md
     - Nomad: operations/nomad.md
     - Deployment: operations/deploy.md
   - Contributing to Docs: contributing-docs.md

@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{Container, Pod, PodSpec, Service, ServicePort, ServiceSpec};
 use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicySpec};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, Status};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, DeleteParams, PostParams};
 use kube::config::{KubeConfigOptions, Kubeconfig};
@@ -19,10 +19,42 @@ use std::collections::{BTreeMap, HashMap};
 use tokio::io::AsyncReadExt;
 
 use super::{BackendType, ExecResult, Sandbox, SandboxConfig};
-use crate::config::OrchestratorConfig;
+use crate::config::{KubernetesVolumeClaim, OrchestratorConfig};
 
 const KUBERNETES_NAME_MAX_LEN: usize = 63;
 const KUBERNETES_HASH_LEN: usize = 12;
+
+/// Decode the remote-command status channel, never the command's output streams.
+fn exec_exit_code(status: Option<Status>) -> Result<i32> {
+    let status = status.context("Kubernetes exec completed without a remote command status")?;
+    if status.status.as_deref() == Some("Success") {
+        return Ok(0);
+    }
+    if status.status.as_deref() == Some("Failure")
+        && status.reason.as_deref() == Some("NonZeroExitCode")
+    {
+        let causes = status
+            .details
+            .as_ref()
+            .and_then(|details| details.causes.as_ref());
+        let mut exit_codes = causes
+            .into_iter()
+            .flatten()
+            .filter(|cause| cause.reason.as_deref() == Some("ExitCode"));
+        let code = exit_codes
+            .next()
+            .and_then(|cause| cause.message.as_deref())
+            .and_then(|message| message.parse::<i32>().ok())
+            // Match client-go's v4 decoder: ExitCode is an unsigned 8-bit value.
+            .filter(|code| (1..=255).contains(code));
+        if let Some(code) = code
+            && exit_codes.next().is_none()
+        {
+            return Ok(code);
+        }
+    }
+    bail!("Invalid or unsuccessful Kubernetes exec status: {status:?}")
+}
 
 /// Names and labels used to identify all resources belonging to one sandbox.
 ///
@@ -202,7 +234,14 @@ pub struct KubernetesSandbox {
     running: bool,
     /// Kubernetes API client (initialized lazily on start())
     client: Option<Client>,
-    /// Optional runtime class (e.g., "gvisor", "kata")
+    /// Preserve the explicitly selected cluster across start/exec/stop.
+    kubeconfig: Option<String>,
+    context: Option<String>,
+    startup_timeout_secs: u64,
+    persistent_volume_claims: Vec<KubernetesVolumeClaim>,
+    fs_group: Option<i64>,
+    owner_id: Option<String>,
+    /// Optional runtime class (e.g., "gvisor", "kata", "isolated-sandbox")
     runtime_class: Option<String>,
     /// Optional service account for the pod
     service_account: Option<String>,
@@ -225,12 +264,71 @@ impl KubernetesSandbox {
             pod_name: None,
             running: false,
             client: None,
+            kubeconfig: config.kubeconfig.clone(),
+            context: config.context.clone(),
+            startup_timeout_secs: config.startup_timeout_secs,
+            persistent_volume_claims: config.persistent_volume_claims.clone(),
+            fs_group: config.fs_group,
+            owner_id: config.kubernetes_owner_id.clone(),
             runtime_class: config.runtime_class.clone(),
             service_account: config.service_account.clone(),
             node_selector: config.node_selector.clone(),
             network_policy_created: false,
             service_created: false,
             network_disabled: false,
+        }
+    }
+
+    fn client_config(&self) -> OrchestratorConfig {
+        OrchestratorConfig {
+            namespace: self.namespace.clone(),
+            kubeconfig: self.kubeconfig.clone(),
+            context: self.context.clone(),
+            runtime_class: self.runtime_class.clone(),
+            ..Default::default()
+        }
+    }
+
+    fn validate_configuration(&self) -> Result<()> {
+        self.client_config().validate_kubernetes_target()?;
+        if self.startup_timeout_secs == 0 || self.startup_timeout_secs > 86_400 {
+            bail!("Kubernetes startup_timeout_secs must be between 1 and 86400");
+        }
+        if self.fs_group.is_some_and(|group| group < 0) {
+            bail!("Kubernetes fs_group must not be negative");
+        }
+        let mut paths = std::collections::HashSet::new();
+        for claim in &self.persistent_volume_claims {
+            if claim.claim_name.len() > 253 || !claim.claim_name.split('.').all(is_dns_label) {
+                bail!("Invalid Kubernetes PVC name: '{}'", claim.claim_name);
+            }
+            let path = &claim.mount_path;
+            if !path.starts_with('/')
+                || path == "/"
+                || path.contains('\0')
+                || path
+                    .split('/')
+                    .skip(1)
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+            {
+                bail!(
+                    "PVC mount_path must be an absolute non-root path without empty, '.' or '..' components: '{path}'"
+                );
+            }
+            if !paths.insert(path) {
+                bail!("Duplicate Kubernetes PVC mount_path: '{path}'");
+            }
+        }
+        Ok(())
+    }
+
+    async fn rollback_start(&mut self, error: anyhow::Error) -> anyhow::Error {
+        match self.stop().await {
+            Ok(()) => error,
+            Err(cleanup) => anyhow::anyhow!(
+                "{error:#}; Kubernetes rollback failed: {cleanup:#}. Retry stop for sandbox '{}'",
+                self.name
+            ),
         }
     }
 
@@ -245,13 +343,17 @@ impl KubernetesSandbox {
 
     /// Build the Kubernetes API client
     async fn build_client(config: &OrchestratorConfig) -> Result<Client> {
+        config.validate_kubernetes_target()?;
         // Multiple optional dependencies enable different rustls providers. Select the
         // provider AgentKernel uses before kube builds its HTTPS client so binaries
         // with those feature combinations cannot panic during client construction.
         let _ = rustls::crypto::ring::default_provider().install_default();
 
-        // Try in-cluster config first (when running inside K8s)
-        if let Ok(config) = KubeConfig::incluster() {
+        // Explicit cluster selection must not silently target the hosting cluster.
+        if config.kubeconfig.is_none()
+            && config.context.is_none()
+            && let Ok(config) = KubeConfig::incluster()
+        {
             return Client::try_from(config).context("Failed to create in-cluster K8s client");
         }
 
@@ -281,7 +383,7 @@ impl KubernetesSandbox {
     }
 
     /// Standard labels for all agentkernel-managed pods
-    fn pod_labels(sandbox_name: &str) -> BTreeMap<String, String> {
+    pub(crate) fn pod_labels(sandbox_name: &str) -> BTreeMap<String, String> {
         let mut labels = BTreeMap::new();
         labels.insert(
             "agentkernel/sandbox".to_string(),
@@ -322,6 +424,31 @@ impl KubernetesSandbox {
         })
     }
 
+    fn owns_labels(&self, labels: Option<&BTreeMap<String, String>>, allow_legacy: bool) -> bool {
+        Self::owned_labels(labels, &self.name, allow_legacy)
+            && self.owner_id.as_ref().is_none_or(|owner| {
+                labels.and_then(|labels| labels.get("agentkernel/owner")) == Some(owner)
+            })
+    }
+
+    fn owns_network_policy(&self, policy: &NetworkPolicy) -> bool {
+        Self::network_policy_owned(policy, &self.name)
+            && self.owner_id.as_ref().is_none_or(|owner| {
+                policy
+                    .metadata
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels.get("agentkernel/owner"))
+                    == Some(owner)
+            })
+    }
+
+    fn add_owner_label(&self, labels: &mut BTreeMap<String, String>) {
+        if let Some(owner) = &self.owner_id {
+            labels.insert("agentkernel/owner".into(), owner.clone());
+        }
+    }
+
     fn network_policy_owned(policy: &NetworkPolicy, sandbox_name: &str) -> bool {
         let Some(selector) = policy
             .spec
@@ -345,7 +472,7 @@ impl KubernetesSandbox {
         let identity = self.identity();
         for candidate in identity.pod_names() {
             if let Ok(pod) = pods.get(candidate).await
-                && Self::owned_labels(pod.metadata.labels.as_ref(), &self.name, true)
+                && self.owns_labels(pod.metadata.labels.as_ref(), true)
             {
                 return Ok(candidate.to_string());
             }
@@ -356,16 +483,43 @@ impl KubernetesSandbox {
         )
     }
 
-    async fn delete_owned_pods(&self, client: &Client) {
+    async fn delete_owned_pods(&self, client: &Client) -> Result<()> {
         let pods: Api<Pod> = Api::namespaced(client.clone(), &self.namespace);
         let identity = self.identity();
         for name in identity.pod_names() {
-            if let Ok(pod) = pods.get(name).await
-                && Self::owned_labels(pod.metadata.labels.as_ref(), &self.name, true)
+            if let Some(pod) = pods
+                .get_opt(name)
+                .await
+                .context("Failed to inspect K8s pod for cleanup")?
+                && self.owns_labels(pod.metadata.labels.as_ref(), true)
             {
-                let _ = pods.delete(name, &DeleteParams::default()).await;
+                let params = DeleteParams {
+                    preconditions: Some(kube::api::Preconditions {
+                        uid: pod.metadata.uid.clone(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+                ignore_not_found(pods.delete(name, &params).await)
+                    .context("Failed to delete K8s pod")?;
+                // Delete acknowledgement is not termination. Do not report stopped
+                // while a finalizer or graceful shutdown still retains the pod.
+                tokio::time::timeout(std::time::Duration::from_secs(120), async {
+                    loop {
+                        match pods.get_opt(name).await? {
+                            None => return Ok::<(), kube::Error>(()),
+                            Some(current) if current.metadata.uid != pod.metadata.uid => {
+                                return Ok(());
+                            }
+                            _ => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+                        }
+                    }
+                })
+                .await
+                .context("Timed out waiting for Kubernetes pod deletion; stop can be retried")??;
             }
         }
+        Ok(())
     }
 
     /// Build the internal ClusterIP Service for the sandbox's declared ports.
@@ -405,6 +559,7 @@ impl KubernetesSandbox {
             identity.sandbox_label.clone(),
         );
 
+        self.add_owner_label(&mut labels);
         Service {
             metadata: ObjectMeta {
                 name: Some(Self::service_name_for(&self.name)),
@@ -418,6 +573,7 @@ impl KubernetesSandbox {
                 selector: Some({
                     let mut selector = BTreeMap::new();
                     selector.insert("agentkernel/sandbox".to_string(), identity.sandbox_label);
+                    self.add_owner_label(&mut selector);
                     selector
                 }),
                 ..Default::default()
@@ -444,10 +600,31 @@ impl KubernetesSandbox {
             // Reconnects do not retain service_created. Only delete resources
             // carrying AgentKernel ownership labels, never a colliding
             // user-owned Service with the same deterministic name.
-            if let Ok(service) = services.get(name).await
-                && Self::owned_labels(service.metadata.labels.as_ref(), &self.name, true)
+            if let Some(service) = services
+                .get_opt(name)
+                .await
+                .context("Failed to inspect K8s Service for cleanup")?
+                && self.owns_labels(service.metadata.labels.as_ref(), true)
             {
-                let _ = services.delete(name, &DeleteParams::default()).await;
+                let params = DeleteParams {
+                    preconditions: Some(kube::api::Preconditions {
+                        uid: service.metadata.uid.clone(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+                ignore_not_found(services.delete(name, &params).await)
+                    .context("Failed to delete K8s Service")?;
+                if services
+                    .get_opt(name)
+                    .await
+                    .context("Failed to confirm K8s Service deletion; stop can be retried")?
+                    .is_some_and(|current| current.metadata.uid == service.metadata.uid)
+                {
+                    bail!(
+                        "K8s Service '{name}' deletion is pending; retry stop after its finalizers clear"
+                    );
+                }
             }
         }
         Ok(())
@@ -456,7 +633,8 @@ impl KubernetesSandbox {
     /// Build the Pod spec for this sandbox
     fn build_pod_spec(&self, config: &SandboxConfig) -> Pod {
         let pod_name = Self::pod_name_for(&self.name);
-        let labels = Self::pod_labels(&self.name);
+        let mut labels = Self::pod_labels(&self.name);
+        self.add_owner_label(&mut labels);
 
         // Build container security context
         let mut security_context = k8s_openapi::api::core::v1::SecurityContext {
@@ -491,7 +669,8 @@ impl KubernetesSandbox {
             )),
         );
 
-        let resource_requests = BTreeMap::new();
+        // Explicit requests let the scheduler/autoscaler size a cold node correctly.
+        let resource_requests = resource_limits.clone();
 
         let resources = k8s_openapi::api::core::v1::ResourceRequirements {
             limits: Some(resource_limits),
@@ -532,6 +711,18 @@ impl KubernetesSandbox {
             security_context: Some(security_context),
             resources: Some(resources),
             ports: container_ports,
+            volume_mounts: (!self.persistent_volume_claims.is_empty()).then(|| {
+                self.persistent_volume_claims
+                    .iter()
+                    .enumerate()
+                    .map(|(index, claim)| k8s_openapi::api::core::v1::VolumeMount {
+                        name: format!("workspace-{index}"),
+                        mount_path: claim.mount_path.clone(),
+                        read_only: Some(claim.read_only),
+                        ..Default::default()
+                    })
+                    .collect()
+            }),
             stdin: Some(true),
             tty: Some(true),
             ..Default::default()
@@ -557,6 +748,28 @@ impl KubernetesSandbox {
             runtime_class_name: self.runtime_class.clone(),
             service_account_name: self.service_account.clone(),
             node_selector,
+            security_context: self.fs_group.map(|group| {
+                k8s_openapi::api::core::v1::PodSecurityContext {
+                    fs_group: Some(group),
+                    ..Default::default()
+                }
+            }),
+            volumes: (!self.persistent_volume_claims.is_empty()).then(|| {
+                self.persistent_volume_claims
+                    .iter()
+                    .enumerate()
+                    .map(|(index, claim)| k8s_openapi::api::core::v1::Volume {
+                        name: format!("workspace-{index}"),
+                        persistent_volume_claim: Some(
+                            k8s_openapi::api::core::v1::PersistentVolumeClaimVolumeSource {
+                                claim_name: claim.claim_name.clone(),
+                                read_only: Some(claim.read_only),
+                            },
+                        ),
+                        ..Default::default()
+                    })
+                    .collect()
+            }),
             ..Default::default()
         };
 
@@ -589,6 +802,7 @@ impl KubernetesSandbox {
             "agentkernel/sandbox".to_string(),
             identity.sandbox_label.clone(),
         );
+        self.add_owner_label(&mut match_labels);
         let mut labels = BTreeMap::new();
         labels.insert(
             "agentkernel/managed-by".to_string(),
@@ -596,6 +810,7 @@ impl KubernetesSandbox {
         );
         labels.insert("agentkernel/sandbox".to_string(), identity.sandbox_label);
 
+        self.add_owner_label(&mut labels);
         NetworkPolicy {
             metadata: ObjectMeta {
                 name: Some(identity.network_policy_name),
@@ -617,15 +832,71 @@ impl KubernetesSandbox {
     }
 
     /// Create a NetworkPolicy that denies all ingress/egress for this pod
-    async fn create_network_policy(&self, client: &Client) -> Result<()> {
+    async fn create_network_policy(&mut self, client: &Client, attempt: &str) -> Result<()> {
         let np_api: Api<NetworkPolicy> = Api::namespaced(client.clone(), &self.namespace);
-        let np = self.build_network_policy();
-
-        np_api
-            .create(&PostParams::default(), &np)
-            .await
-            .context("Failed to create NetworkPolicy")?;
-
+        let mut policy = self.build_network_policy();
+        policy
+            .metadata
+            .annotations
+            .get_or_insert_with(BTreeMap::new)
+            .insert("agentkernel/start-attempt".into(), attempt.to_string());
+        let name = policy.metadata.name.as_deref().expect("policy name");
+        if let Err(error) = np_api.create(&PostParams::default(), &policy).await {
+            // A confirmed conflict belongs to another attempt. Do not adopt it.
+            if matches!(&error, kube::Error::Api(status) if status.code == 409) {
+                return Err(error).context("Failed to create NetworkPolicy");
+            }
+            match np_api.get_opt(name).await {
+                Ok(Some(created))
+                    if created
+                        .metadata
+                        .annotations
+                        .as_ref()
+                        .and_then(|annotations| annotations.get("agentkernel/start-attempt"))
+                        .map(String::as_str)
+                        == Some(attempt) =>
+                {
+                    // Policy creation succeeded despite the response failure.
+                    // No Pod was submitted: rollback only this policy, never a
+                    // same-named existing Pod. Retain ownership until confirmed.
+                    self.client = Some(client.clone());
+                    self.network_policy_created = true;
+                    self.running = true;
+                    let params = DeleteParams {
+                        preconditions: Some(kube::api::Preconditions {
+                            uid: created.metadata.uid.clone(),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    };
+                    ignore_not_found(np_api.delete(name, &params).await)
+                        .with_context(|| format!("NetworkPolicy creation failed: {error}; rollback failed. Retry stop for sandbox '{}'", self.name))?;
+                    if np_api
+                        .get_opt(name)
+                        .await
+                        .context("Failed to confirm NetworkPolicy rollback; retry stop")?
+                        .is_some_and(|current| current.metadata.uid == created.metadata.uid)
+                    {
+                        bail!(
+                            "NetworkPolicy '{name}' rollback is pending; retry stop after its finalizers clear"
+                        );
+                    }
+                    self.network_policy_created = false;
+                    self.running = false;
+                }
+                Err(reconcile) => {
+                    self.client = Some(client.clone());
+                    self.network_policy_created = true;
+                    self.running = true;
+                    bail!(
+                        "NetworkPolicy creation outcome is uncertain: {error}; reconciliation failed: {reconcile}. Retry stop for sandbox '{}' before starting again",
+                        self.name
+                    );
+                }
+                _ => {}
+            }
+            return Err(error).context("Failed to create NetworkPolicy");
+        }
         Ok(())
     }
 
@@ -634,58 +905,37 @@ impl KubernetesSandbox {
         let np_api: Api<NetworkPolicy> = Api::namespaced(client.clone(), &self.namespace);
         let identity = self.identity();
         for name in identity.network_policy_names() {
-            if let Ok(policy) = np_api.get(name).await
-                && Self::network_policy_owned(&policy, &self.name)
+            if let Some(policy) = np_api
+                .get_opt(name)
+                .await
+                .context("Failed to inspect NetworkPolicy for cleanup")?
+                && self.owns_network_policy(&policy)
             {
-                let _ = np_api.delete(name, &DeleteParams::default()).await;
+                let params = DeleteParams {
+                    preconditions: Some(kube::api::Preconditions {
+                        uid: policy.metadata.uid.clone(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+                ignore_not_found(np_api.delete(name, &params).await)
+                    .context("Failed to delete NetworkPolicy")?;
+                if np_api
+                    .get_opt(name)
+                    .await
+                    .context("Failed to confirm NetworkPolicy deletion; stop can be retried")?
+                    .is_some_and(|current| current.metadata.uid == policy.metadata.uid)
+                {
+                    bail!(
+                        "NetworkPolicy '{name}' deletion is pending; retry stop after its finalizers clear"
+                    );
+                }
             }
         }
         Ok(())
     }
 
-    /// Wait for the pod to reach the Running phase.
-    /// Uses exponential backoff: 50ms → 100ms → 200ms → 500ms (capped).
-    async fn wait_for_running(&self, client: &Client, pod_name: &str) -> Result<()> {
-        let pods: Api<Pod> = Api::namespaced(client.clone(), &self.namespace);
-        let mut delay_ms: u64 = 50;
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
-
-        loop {
-            let pod = pods.get(pod_name).await?;
-            if let Some(status) = &pod.status
-                && let Some(phase) = &status.phase
-            {
-                match phase.as_str() {
-                    "Running" => return Ok(()),
-                    "Failed" | "Succeeded" => {
-                        bail!("Pod entered unexpected phase: {}", phase);
-                    }
-                    _ => {} // Pending, etc.
-                }
-            }
-
-            if tokio::time::Instant::now() >= deadline {
-                bail!("Timed out waiting for pod '{}' to start", pod_name);
-            }
-
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-            delay_ms = (delay_ms * 2).min(500);
-        }
-    }
-}
-
-#[async_trait]
-impl Sandbox for KubernetesSandbox {
-    async fn start(&mut self, config: &SandboxConfig) -> Result<()> {
-        Self::validate_ports(config)?;
-
-        // Build K8s client
-        let orch_config = OrchestratorConfig {
-            namespace: self.namespace.clone(),
-            ..Default::default()
-        };
-        let client = Self::build_client(&orch_config).await?;
-
+    async fn start_with_client(&mut self, config: &SandboxConfig, client: Client) -> Result<()> {
         // Ensure namespace exists (only create if missing)
         let ns_api: Api<k8s_openapi::api::core::v1::Namespace> = Api::all(client.clone());
         if ns_api.get(&self.namespace).await.is_err() {
@@ -704,56 +954,91 @@ impl Sandbox for KubernetesSandbox {
         }
 
         // Build and create the pod
-        let pod = self.build_pod_spec(config);
+        let mut pod = self.build_pod_spec(config);
+        let attempt = uuid::Uuid::new_v4().to_string();
+        pod.metadata
+            .annotations
+            .get_or_insert_with(BTreeMap::new)
+            .insert("agentkernel/start-attempt".into(), attempt.clone());
         let pod_name = pod
             .metadata
             .name
             .clone()
             .unwrap_or_else(|| Self::pod_name_for(&self.name));
 
-        let pods: Api<Pod> = Api::namespaced(client.clone(), &self.namespace);
-        pods.create(&PostParams::default(), &pod)
-            .await
-            .context("Failed to create K8s pod")?;
-
-        // Create NetworkPolicy if network is disabled
+        // Install deny-all before a workload can execute, not after Pod creation.
         self.network_disabled = !config.network;
         if !config.network {
-            if let Err(error) = self.create_network_policy(&client).await {
-                let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
-                return Err(error);
-            }
+            self.create_network_policy(&client, &attempt).await?;
             self.network_policy_created = true;
         }
+
+        let pods: Api<Pod> = Api::namespaced(client.clone(), &self.namespace);
+        if let Err(error) = pods.create(&PostParams::default(), &pod).await {
+            // A transport error may occur after creation. Reconcile only this
+            // attempt; never roll back a pre-existing Pod after a name conflict.
+            let conflict = matches!(&error, kube::Error::Api(status) if status.code == 409);
+            if !conflict {
+                match pods.get_opt(&pod_name).await {
+                    Ok(Some(created))
+                        if created
+                            .metadata
+                            .annotations
+                            .as_ref()
+                            .and_then(|annotations| {
+                                annotations.get("agentkernel/start-attempt")
+                            })
+                            == Some(&attempt) =>
+                    {
+                        self.client = Some(client.clone());
+                        self.pod_name = Some(pod_name.clone());
+                        self.running = true;
+                        return Err(self.rollback_start(error.into()).await);
+                    }
+                    Err(reconcile) => {
+                        self.client = Some(client.clone());
+                        self.pod_name = Some(pod_name.clone());
+                        self.running = true;
+                        return Err(anyhow::anyhow!(
+                            "Pod creation outcome is uncertain: {error}; reconciliation failed: {reconcile}. Retry stop for sandbox '{}' before starting again",
+                            self.name
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            if self.network_policy_created {
+                if let Err(cleanup) = self.delete_network_policy(&client).await {
+                    self.client = Some(client.clone());
+                    self.running = true;
+                    return Err(anyhow::anyhow!(
+                        "Pod creation failed: {error}; NetworkPolicy cleanup also failed: {cleanup:#}. Retry stop for sandbox '{}'",
+                        self.name
+                    ));
+                }
+                self.network_policy_created = false;
+            }
+            return Err(error).context("Failed to create K8s pod");
+        }
+        self.client = Some(client.clone());
+        self.pod_name = Some(pod_name.clone());
+        // Pending pods consume provisioned capacity too. Keep manager ownership
+        // if startup and rollback both fail, even before the Running phase.
+        self.running = true;
 
         // Create the per-sandbox internal Service after the pod and policy. If
         // this fails, roll back every resource created by this start attempt.
         if !config.ports.is_empty() {
             let service = self.build_service(config);
             if let Err(error) = self.create_service(&client, &service).await {
-                let _ = self.delete_service(&client).await;
-                if self.network_policy_created {
-                    let _ = self.delete_network_policy(&client).await;
-                    self.network_policy_created = false;
-                }
-                let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
-                return Err(error);
+                return Err(self.rollback_start(error).await);
             }
             self.service_created = true;
         }
 
         // Wait for the pod to be running
         if let Err(error) = self.wait_for_running(&client, &pod_name).await {
-            if self.service_created {
-                let _ = self.delete_service(&client).await;
-                self.service_created = false;
-            }
-            if self.network_policy_created {
-                let _ = self.delete_network_policy(&client).await;
-                self.network_policy_created = false;
-            }
-            let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
-            return Err(error);
+            return Err(self.rollback_start(error).await);
         }
 
         self.pod_name = Some(pod_name);
@@ -761,6 +1046,67 @@ impl Sandbox for KubernetesSandbox {
         self.running = true;
 
         Ok(())
+    }
+
+    /// Wait for the pod to reach the Running phase.
+    /// Uses exponential backoff: 50ms → 100ms → 200ms → 500ms (capped).
+    async fn wait_for_running(&self, client: &Client, pod_name: &str) -> Result<()> {
+        let pods: Api<Pod> = Api::namespaced(client.clone(), &self.namespace);
+        let mut delay_ms: u64 = 50;
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(self.startup_timeout_secs);
+        let mut last_status = "no pod status received".to_string();
+
+        loop {
+            let pod = tokio::time::timeout_at(deadline, pods.get(pod_name))
+                .await
+                .with_context(|| {
+                    format!(
+                        "Timed out after {}s waiting for pod '{pod_name}': {last_status}",
+                        self.startup_timeout_secs
+                    )
+                })??;
+            last_status = pod
+                .status
+                .as_ref()
+                .map(|status| format!("{status:?}"))
+                .unwrap_or_else(|| "no pod status received".to_string());
+            if let Some(status) = &pod.status
+                && let Some(phase) = &status.phase
+            {
+                match phase.as_str() {
+                    "Running" => return Ok(()),
+                    "Failed" | "Succeeded" => {
+                        bail!("Pod entered unexpected phase: {}", phase);
+                    }
+                    _ => {} // Pending, etc.
+                }
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                bail!(
+                    "Timed out after {}s waiting for pod '{pod_name}': {last_status}",
+                    self.startup_timeout_secs
+                );
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            delay_ms = (delay_ms * 2).min(500);
+        }
+    }
+}
+
+#[async_trait]
+impl Sandbox for KubernetesSandbox {
+    async fn start(&mut self, config: &SandboxConfig) -> Result<()> {
+        Self::validate_ports(config)?;
+        self.validate_configuration()?;
+
+        // Build K8s client
+        let orch_config = self.client_config();
+        let client = Self::build_client(&orch_config).await?;
+
+        self.start_with_client(config, client).await
     }
 
     async fn exec(&mut self, cmd: &[&str]) -> Result<ExecResult> {
@@ -771,10 +1117,7 @@ impl Sandbox for KubernetesSandbox {
         // Lazily initialize the client and resolve the canonical or legacy pod
         // (e.g., reconnecting to a running pod after an upgrade).
         if self.client.is_none() {
-            let orch_config = OrchestratorConfig {
-                namespace: self.namespace.clone(),
-                ..Default::default()
-            };
+            let orch_config = self.client_config();
             let client = Self::build_client(&orch_config).await?;
             self.client = Some(client);
         }
@@ -812,6 +1155,10 @@ impl Sandbox for KubernetesSandbox {
             )
             .await
             .context("Failed to exec in K8s pod")?;
+        // Retain the receiver before join(), which otherwise drops it.
+        let status = attached
+            .take_status()
+            .context("Kubernetes exec status channel is unavailable")?;
 
         // Read stdout and stderr concurrently
         let mut stdout_reader = attached
@@ -835,9 +1182,12 @@ impl Sandbox for KubernetesSandbox {
         let stdout = String::from_utf8_lossy(&stdout_buf).to_string();
         let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
 
-        // Wait for the process to complete; infer exit code from stderr
-        let _ = attached.join().await;
-        let exit_code = if stderr.is_empty() { 0 } else { 1 };
+        // A broken transport must not turn partial output into a successful exec.
+        attached
+            .join()
+            .await
+            .context("Kubernetes exec transport failed")?;
+        let exit_code = exec_exit_code(status.await)?;
 
         Ok(ExecResult {
             exit_code,
@@ -847,34 +1197,17 @@ impl Sandbox for KubernetesSandbox {
     }
 
     async fn stop(&mut self) -> Result<()> {
-        // Lazily initialize the client. Resource lookup below verifies
-        // ownership before acting on either canonical or legacy names.
+        // A failed lookup/delete is not a successful stop. Preserve state so
+        // callers can retry rather than losing a still-billable sandbox.
         if self.client.is_none() {
-            let orch_config = OrchestratorConfig {
-                namespace: self.namespace.clone(),
-                ..Default::default()
-            };
-            if let Ok(client) = Self::build_client(&orch_config).await {
-                self.client = Some(client);
-            }
+            self.client = Some(Self::build_client(&self.client_config()).await?);
         }
-
-        if let Some(client) = self.client.clone() {
-            // Delete every matching AgentKernel-owned pod. This also cleans
-            // up both names if a migration left canonical and legacy pods.
-            self.delete_owned_pods(&client).await;
-
-            // Clean up the NetworkPolicy, including after reconnecting in a
-            // new process where the in-memory creation flag is unavailable.
-            let _ = self.delete_network_policy(&client).await;
-            self.network_policy_created = false;
-
-            // Clean up the internal Service, including after reconnecting in a
-            // new process where the in-memory creation flag is unavailable.
-            let _ = self.delete_service(&client).await;
-            self.service_created = false;
-        }
-
+        let client = self.client.clone().expect("client initialized");
+        self.delete_owned_pods(&client).await?;
+        self.delete_network_policy(&client).await?;
+        self.network_policy_created = false;
+        self.delete_service(&client).await?;
+        self.service_created = false;
         self.running = false;
         self.pod_name = None;
         Ok(())
@@ -1018,6 +1351,15 @@ impl Sandbox for KubernetesSandbox {
     }
 }
 
+/// Missing resources are already cleaned up; every other API error is actionable.
+fn ignore_not_found<T>(result: std::result::Result<T, kube::Error>) -> Result<()> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(kube::Error::Api(error)) if error.code == 404 => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Expand tilde (~) to home directory in paths
 fn tilde_expand(path: &str) -> String {
     if path.starts_with("~/")
@@ -1031,6 +1373,830 @@ fn tilde_expand(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn remote_exec(
+        stdout: &[u8],
+        stderr: &[u8],
+        status: Option<&[u8]>,
+        abrupt_disconnect: bool,
+    ) -> Result<ExecResult> {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::{
+            Message,
+            handshake::server::{ErrorResponse, Request, Response},
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let stdout = stdout.to_vec();
+        let stderr = stderr.to_vec();
+        let status = status.map(<[u8]>::to_vec);
+        #[expect(
+            clippy::result_large_err,
+            reason = "WebSocket callback requires an HTTP response error"
+        )]
+        fn handshake(
+            request: &Request,
+            mut response: Response,
+        ) -> std::result::Result<Response, ErrorResponse> {
+            assert!(
+                request
+                    .uri()
+                    .path()
+                    .ends_with("/pods/agentkernel-exec-test/exec")
+            );
+            response.headers_mut().insert(
+                "sec-websocket-protocol",
+                "v4.channel.k8s.io".parse().unwrap(),
+            );
+            Ok(response)
+        }
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(stream, handshake)
+                .await
+                .unwrap();
+            for (channel, data) in [(1, stdout), (2, stderr)] {
+                let mut frame = vec![channel];
+                frame.extend(data);
+                socket.send(Message::Binary(frame.into())).await.unwrap();
+            }
+            if let Some(status) = status {
+                let mut frame = vec![3];
+                frame.extend(status);
+                socket.send(Message::Binary(frame.into())).await.unwrap();
+            } else if !abrupt_disconnect {
+                socket.close(None).await.unwrap();
+            }
+        });
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = Client::try_from(KubeConfig::new(format!("http://{address}").parse()?))?;
+        let mut sandbox = KubernetesSandbox::new("exec-test", &OrchestratorConfig::default());
+        sandbox.client = Some(client);
+        sandbox.pod_name = Some("agentkernel-exec-test".into());
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            sandbox.exec(&["test-command"]),
+        )
+        .await
+        .context("exec regression test hung")?;
+        server.await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn exec_preserves_output_and_remote_exit_code() {
+        let success = br#"{"status":"Success"}"#;
+        let failure = br#"{"status":"Failure","reason":"NonZeroExitCode","details":{"causes":[{"reason":"ExitCode","message":"7"}]}}"#;
+        for (stdout, stderr, status, expected) in [
+            (&b"stdout\n"[..], &b""[..], &success[..], 0),
+            (&b""[..], &b"progress\n"[..], &success[..], 0),
+            (&b"stdout\n"[..], &b"progress\n"[..], &success[..], 0),
+            (&b""[..], &b""[..], &failure[..], 7),
+            (&b"partial\n"[..], &b"error\n"[..], &failure[..], 7),
+        ] {
+            let result = remote_exec(stdout, stderr, Some(status), false)
+                .await
+                .unwrap();
+            assert_eq!(result.exit_code, expected);
+            assert_eq!(result.stdout.as_bytes(), stdout);
+            assert_eq!(result.stderr.as_bytes(), stderr);
+        }
+    }
+
+    #[tokio::test]
+    async fn exec_rejects_missing_or_malformed_remote_status() {
+        for status in [
+            None,
+            Some(&b"not-json"[..]),
+            Some(&b"{}"[..]),
+            Some(&b"{\"status\":\"Failure\",\"reason\":\"Forbidden\"}"[..]),
+        ] {
+            assert!(remote_exec(b"partial", b"", status, false).await.is_err());
+        }
+        for code in [
+            None,
+            Some(""),
+            Some("invalid"),
+            Some("0"),
+            Some("-1"),
+            Some("256"),
+            Some("2147483648"),
+        ] {
+            let status = serde_json::json!({"status":"Failure","reason":"NonZeroExitCode","details":{"causes":[{"reason":"ExitCode","message":code}]}}).to_string();
+            assert!(
+                remote_exec(b"", b"", Some(status.as_bytes()), false)
+                    .await
+                    .is_err(),
+                "code: {code:?}"
+            );
+        }
+        let status = br#"{"status":"Failure","reason":"NonZeroExitCode","details":{"causes":[{"reason":"ExitCode","message":"7"},{"reason":"ExitCode","message":"8"}]}}"#;
+        assert!(remote_exec(b"", b"", Some(status), false).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_reports_transport_failure_after_partial_output() {
+        let error = remote_exec(b"partial output", b"", None, true)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("transport failed"));
+    }
+
+    #[test]
+    fn nitro_config_builds_isolated_pod_with_retained_storage() {
+        let config: crate::config::Config =
+            toml::from_str(include_str!("../../examples/aws-nitro/agentkernel.toml")).unwrap();
+        let sandbox = KubernetesSandbox::new("nitro-demo", &config.orchestrator);
+        sandbox.validate_configuration().unwrap();
+        assert_eq!(sandbox.startup_timeout_secs, 600);
+        assert_eq!(config.orchestrator.warm_pool_size, 0);
+        let pod = sandbox.build_pod_spec(&SandboxConfig::default());
+        let spec = pod.spec.unwrap();
+        assert_eq!(spec.runtime_class_name.as_deref(), Some("isolated-sandbox"));
+        assert_eq!(spec.automount_service_account_token, Some(false));
+        assert!(spec.host_network.is_none());
+        assert!(spec.host_users.is_none());
+        let volume = &spec.volumes.as_ref().unwrap()[0];
+        let claim = volume.persistent_volume_claim.as_ref().unwrap();
+        assert_eq!(claim.claim_name, "nitro-demo-workspace");
+        assert_eq!(claim.read_only, Some(false));
+        let mount = &spec.containers[0].volume_mounts.as_ref().unwrap()[0];
+        assert_eq!(mount.name, volume.name);
+        assert_eq!(mount.mount_path, "/workspace");
+        assert_eq!(spec.security_context.unwrap().fs_group, Some(1000));
+        let resources = spec.containers[0].resources.as_ref().unwrap();
+        assert_eq!(resources.requests, resources.limits);
+    }
+
+    #[test]
+    fn nitro_requires_explicit_target_before_api_access() {
+        for (kubeconfig, context) in [
+            (None, None),
+            (Some("/chosen/config"), None),
+            (None, Some("eks")),
+        ] {
+            let config = OrchestratorConfig {
+                runtime_class: Some("isolated-sandbox".into()),
+                kubeconfig: kubeconfig.map(str::to_string),
+                context: context.map(str::to_string),
+                ..Default::default()
+            };
+            let error = KubernetesSandbox::new("nitro", &config)
+                .validate_configuration()
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("explicit orchestrator.kubeconfig and context")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_start_rollback_keeps_runtime_owned() {
+        let mock = mock_api(|_, _, _| api_error(403)).await;
+        let mut sandbox = KubernetesSandbox::new("pending", &OrchestratorConfig::default());
+        sandbox.client = Some(mock.client.clone());
+        sandbox.pod_name = Some("agentkernel-pending".into());
+        sandbox.running = true;
+        let error = sandbox
+            .rollback_start(anyhow::anyhow!("cold start timeout"))
+            .await;
+        assert!(error.to_string().contains("rollback failed"));
+        assert!(error.to_string().contains("Retry stop"));
+        assert!(sandbox.running);
+        assert!(sandbox.pod_name.is_some());
+    }
+
+    #[test]
+    fn caller_config_cannot_override_manager_owner_identity() {
+        let config: OrchestratorConfig = toml::from_str("kubernetes_owner_id = 'forged'").unwrap();
+        assert!(config.kubernetes_owner_id.is_none());
+        let config = OrchestratorConfig {
+            kubernetes_owner_id: Some("internal".into()),
+            ..Default::default()
+        };
+        assert!(
+            !serde_json::to_string(&config)
+                .unwrap()
+                .contains("kubernetes_owner_id")
+        );
+    }
+
+    #[test]
+    fn old_kubernetes_config_defaults_are_compatible() {
+        let config: OrchestratorConfig = toml::from_str("namespace = 'old-cluster'").unwrap();
+        assert_eq!(config.startup_timeout_secs, 120);
+        assert!(config.persistent_volume_claims.is_empty());
+        let sandbox = KubernetesSandbox::new("legacy", &config);
+        sandbox.validate_configuration().unwrap();
+        let pod = sandbox.build_pod_spec(&SandboxConfig::default());
+        let spec = pod.spec.unwrap();
+        assert!(spec.volumes.is_none());
+        assert!(spec.security_context.is_none());
+        assert!(spec.runtime_class_name.is_none());
+    }
+
+    #[test]
+    fn kubeconfig_context_and_node_selection_survive_construction() {
+        let config = OrchestratorConfig {
+            kubeconfig: Some("/chosen/config".into()),
+            context: Some("chosen-cluster".into()),
+            node_selector: HashMap::from([("team".into(), "sandbox".into())]),
+            ..Default::default()
+        };
+        let sandbox = KubernetesSandbox::new("cluster", &config);
+        assert_eq!(sandbox.client_config().kubeconfig, config.kubeconfig);
+        assert_eq!(sandbox.client_config().context, config.context);
+        assert_eq!(
+            sandbox
+                .build_pod_spec(&SandboxConfig::default())
+                .spec
+                .unwrap()
+                .node_selector,
+            Some(BTreeMap::from([("team".into(), "sandbox".into())]))
+        );
+    }
+
+    #[test]
+    fn pvc_settings_validate_before_api_access() {
+        for name in ["", "../claim", "UPPER", "bad_name"] {
+            let config = OrchestratorConfig {
+                persistent_volume_claims: vec![KubernetesVolumeClaim {
+                    claim_name: name.into(),
+                    mount_path: "/workspace".into(),
+                    read_only: false,
+                }],
+                ..Default::default()
+            };
+            assert!(
+                KubernetesSandbox::new("bad", &config)
+                    .validate_configuration()
+                    .is_err()
+            );
+        }
+        for path in [
+            "relative",
+            "/",
+            "/workspace/../etc",
+            "/workspace/",
+            "/workspace//a",
+            "/workspace/./a",
+        ] {
+            let config = OrchestratorConfig {
+                persistent_volume_claims: vec![KubernetesVolumeClaim {
+                    claim_name: "existing-claim".into(),
+                    mount_path: path.into(),
+                    read_only: true,
+                }],
+                ..Default::default()
+            };
+            assert!(
+                KubernetesSandbox::new("bad", &config)
+                    .validate_configuration()
+                    .is_err()
+            );
+        }
+        for timeout in [0, 86_401, u64::MAX] {
+            let config = OrchestratorConfig {
+                startup_timeout_secs: timeout,
+                ..Default::default()
+            };
+            assert!(
+                KubernetesSandbox::new("bad", &config)
+                    .validate_configuration()
+                    .is_err()
+            );
+        }
+        let claim = KubernetesVolumeClaim {
+            claim_name: "existing".into(),
+            mount_path: "/workspace".into(),
+            read_only: true,
+        };
+        let config = OrchestratorConfig {
+            persistent_volume_claims: vec![claim.clone(), claim],
+            ..Default::default()
+        };
+        assert!(
+            KubernetesSandbox::new("bad", &config)
+                .validate_configuration()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn readonly_claim_is_readonly_in_both_volume_and_mount() {
+        let config = OrchestratorConfig {
+            persistent_volume_claims: vec![KubernetesVolumeClaim {
+                claim_name: "read-only".into(),
+                mount_path: "/data".into(),
+                read_only: true,
+            }],
+            ..Default::default()
+        };
+        let spec = KubernetesSandbox::new("readonly", &config)
+            .build_pod_spec(&SandboxConfig::default())
+            .spec
+            .unwrap();
+        assert_eq!(
+            spec.volumes.unwrap()[0]
+                .persistent_volume_claim
+                .as_ref()
+                .unwrap()
+                .read_only,
+            Some(true)
+        );
+        assert_eq!(
+            spec.containers[0].volume_mounts.as_ref().unwrap()[0].read_only,
+            Some(true)
+        );
+    }
+
+    struct MockApi {
+        client: Client,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for MockApi {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn mock_api(
+        handler: impl Fn(String, String, serde_json::Value) -> (u16, serde_json::Value)
+        + Send
+        + Sync
+        + 'static,
+    ) -> MockApi {
+        use http_body_util::{BodyExt, Full};
+        use hyper::{Response, service::service_fn};
+        use hyper_util::rt::TokioIo;
+        use std::{convert::Infallible, sync::Arc};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let handler = Arc::new(handler);
+        let task = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let handler = handler.clone();
+                tokio::spawn(async move {
+                    let service =
+                        service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
+                            let handler = handler.clone();
+                            async move {
+                                let method = request.method().to_string();
+                                let path = request.uri().path().to_string();
+                                let bytes = request.into_body().collect().await.unwrap().to_bytes();
+                                let body = serde_json::from_slice(&bytes)
+                                    .unwrap_or(serde_json::Value::Null);
+                                let (status, response) = handler(method, path, body);
+                                Ok::<_, Infallible>(
+                                    Response::builder()
+                                        .status(status)
+                                        .header("content-type", "application/json")
+                                        .body(Full::new(bytes::Bytes::from(response.to_string())))
+                                        .unwrap(),
+                                )
+                            }
+                        });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = Client::try_from(KubeConfig::new(
+            format!("http://{address}").parse().unwrap(),
+        ))
+        .unwrap();
+        MockApi { client, task }
+    }
+
+    fn api_error(code: u16) -> (u16, serde_json::Value) {
+        (
+            code,
+            serde_json::json!({"apiVersion":"v1", "kind":"Status", "status":"Failure", "message":"mock error", "reason":if code == 404 { "NotFound" } else { "Forbidden" }, "code":code}),
+        )
+    }
+
+    #[tokio::test]
+    async fn stop_reports_delete_failure_and_remains_retryable() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let phase = Arc::new(AtomicUsize::new(0));
+        let server_phase = phase.clone();
+        let mock = mock_api(move |method, path, body| {
+            assert!(!path.contains("persistentvolumeclaims"), "stop must retain storage");
+            if path.ends_with("/pods/agentkernel-retry") {
+                if method == "DELETE" {
+                    assert_eq!(body["preconditions"]["uid"], "pod-uid");
+                    if server_phase.load(Ordering::SeqCst) == 0 { return api_error(403); }
+                    server_phase.store(2, Ordering::SeqCst);
+                    return (200, serde_json::json!({"apiVersion":"v1","kind":"Status","status":"Success","code":200}));
+                }
+                if server_phase.load(Ordering::SeqCst) < 2 {
+                    return (200, serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"agentkernel-retry","uid":"pod-uid","labels":{"agentkernel/managed-by":"agentkernel","agentkernel/sandbox":"retry"}}}));
+                }
+            }
+            api_error(404)
+        }).await;
+        let mut sandbox = KubernetesSandbox::new("retry", &OrchestratorConfig::default());
+        sandbox.client = Some(mock.client.clone());
+        sandbox.running = true;
+        sandbox.pod_name = Some("agentkernel-retry".into());
+        assert!(
+            sandbox
+                .stop()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("delete K8s pod")
+        );
+        assert!(sandbox.running);
+        assert!(sandbox.pod_name.is_some());
+        phase.store(1, Ordering::SeqCst);
+        sandbox.stop().await.unwrap();
+        assert!(!sandbox.running);
+        assert!(sandbox.pod_name.is_none());
+        sandbox.stop().await.unwrap(); // Already absent is idempotent.
+    }
+
+    #[tokio::test]
+    async fn stop_waits_for_pod_disappearance_after_delete_acknowledgement() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+        let deleted = Arc::new(AtomicBool::new(false));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let server_deleted = deleted.clone();
+        let server_polls = polls.clone();
+        let mock = mock_api(move |method, path, _| {
+            if path.ends_with("/pods/agentkernel-finalizer") {
+                if method == "DELETE" {
+                    server_deleted.store(true, Ordering::SeqCst);
+                    return (200, serde_json::json!({"apiVersion":"v1","kind":"Status","status":"Success","code":200}));
+                }
+                if !server_deleted.load(Ordering::SeqCst) || server_polls.fetch_add(1, Ordering::SeqCst) < 2 {
+                    return (200, serde_json::json!({"metadata":{"name":"agentkernel-finalizer","uid":"pod-uid","labels":{"agentkernel/managed-by":"agentkernel","agentkernel/sandbox":"finalizer"}}}));
+                }
+            }
+            api_error(404)
+        }).await;
+        let mut sandbox = KubernetesSandbox::new("finalizer", &OrchestratorConfig::default());
+        sandbox.client = Some(mock.client.clone());
+        sandbox.running = true;
+        sandbox.stop().await.unwrap();
+        assert!(deleted.load(Ordering::SeqCst));
+        assert_eq!(polls.load(Ordering::SeqCst), 3);
+        assert!(!sandbox.running);
+    }
+
+    #[tokio::test]
+    async fn network_policy_is_created_before_sandbox_pod() {
+        use std::sync::{Arc, Mutex};
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let server_calls = calls.clone();
+        let mock = mock_api(move |method, path, body| {
+            server_calls
+                .lock()
+                .unwrap()
+                .push(format!("{method} {path}"));
+            if method == "POST" {
+                return (201, body);
+            }
+            if path.contains("/pods/") {
+                return (
+                    200,
+                    serde_json::json!({"metadata":{},"status":{"phase":"Running"}}),
+                );
+            }
+            (200, serde_json::json!({"metadata":{}}))
+        })
+        .await;
+        let mut sandbox = KubernetesSandbox::new("ordered", &OrchestratorConfig::default());
+        sandbox
+            .start_with_client(
+                &SandboxConfig {
+                    network: false,
+                    ..Default::default()
+                },
+                mock.client.clone(),
+            )
+            .await
+            .unwrap();
+        let calls = calls.lock().unwrap();
+        let policy = calls
+            .iter()
+            .position(|call| call.starts_with("POST") && call.ends_with("/networkpolicies"))
+            .unwrap();
+        let pod = calls
+            .iter()
+            .position(|call| call.starts_with("POST") && call.ends_with("/pods"))
+            .unwrap();
+        assert!(policy < pod);
+    }
+
+    #[tokio::test]
+    async fn uncertain_policy_creation_is_reconciled_without_creating_a_pod() {
+        use std::sync::{Arc, Mutex};
+        for (deletion_denied, deletion_pending) in [(false, false), (true, false), (false, true)] {
+            let created = Arc::new(Mutex::new(None::<serde_json::Value>));
+            let server_created = created.clone();
+            let mock = mock_api(move |method, path, mut body| {
+                assert!(!path.contains("/pods"), "policy failure must precede Pod submission");
+                if method == "POST" && path.ends_with("/networkpolicies") {
+                    body["metadata"]["uid"] = "policy-uid".into();
+                    *server_created.lock().unwrap() = Some(body);
+                    return api_error(500);
+                }
+                if path.contains("/networkpolicies/") {
+                    if method == "DELETE" {
+                        assert_eq!(body["preconditions"]["uid"], "policy-uid");
+                        if deletion_denied { return api_error(403); }
+                        if !deletion_pending { *server_created.lock().unwrap() = None; }
+                        return (200, serde_json::json!({"kind":"Status","apiVersion":"v1","status":"Success","code":200}));
+                    }
+                    return server_created.lock().unwrap().clone().map(|policy| (200, policy)).unwrap_or_else(|| api_error(404));
+                }
+                (200, serde_json::json!({"metadata":{}}))
+            }).await;
+            let mut sandbox =
+                KubernetesSandbox::new("policy-uncertain", &OrchestratorConfig::default());
+            let result = sandbox
+                .start_with_client(
+                    &SandboxConfig {
+                        network: false,
+                        ..Default::default()
+                    },
+                    mock.client.clone(),
+                )
+                .await;
+            assert!(result.is_err());
+            let cleanup_pending = deletion_denied || deletion_pending;
+            assert_eq!(sandbox.running, cleanup_pending);
+            assert_eq!(created.lock().unwrap().is_some(), cleanup_pending);
+            assert_eq!(sandbox.network_policy_created, cleanup_pending);
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_retains_ownership_when_auxiliary_deletion_is_pending() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        for resource in ["services", "networkpolicies"] {
+            let gone = Arc::new(AtomicBool::new(false));
+            let server_gone = gone.clone();
+            let mut sandbox =
+                KubernetesSandbox::new("aux-finalizer", &OrchestratorConfig::default());
+            let mut object = if resource == "services" {
+                serde_json::to_value(sandbox.build_service(&SandboxConfig::default())).unwrap()
+            } else {
+                serde_json::to_value(sandbox.build_network_policy()).unwrap()
+            };
+            object["metadata"]["uid"] = "retained-uid".into();
+            object["metadata"]["finalizers"] = serde_json::json!(["test.example/finalizer"]);
+            let name = object["metadata"]["name"].as_str().unwrap().to_string();
+            let mock = mock_api(move |method, path, body| {
+                if path.ends_with(&format!("/{resource}/{name}")) {
+                    if method == "DELETE" {
+                        assert_eq!(body["preconditions"]["uid"], "retained-uid");
+                        return (200, serde_json::json!({"kind":"Status","apiVersion":"v1","status":"Success","code":200}));
+                    }
+                    if !server_gone.load(Ordering::SeqCst) { return (200, object.clone()); }
+                }
+                api_error(404)
+            }).await;
+            sandbox.client = Some(mock.client.clone());
+            sandbox.running = true;
+            let error = sandbox.stop().await.unwrap_err();
+            assert!(error.to_string().contains("deletion is pending"));
+            assert!(sandbox.running);
+            gone.store(true, Ordering::SeqCst);
+            sandbox.stop().await.unwrap();
+            assert!(!sandbox.running);
+        }
+    }
+
+    #[tokio::test]
+    async fn create_conflict_never_deletes_preexisting_pod() {
+        let mock = mock_api(|method, path, _| {
+            assert_ne!(method, "DELETE");
+            if path.ends_with("/pods") {
+                return api_error(409);
+            }
+            (200, serde_json::json!({"metadata":{}}))
+        })
+        .await;
+        let mut sandbox = KubernetesSandbox::new("conflict", &OrchestratorConfig::default());
+        assert!(
+            sandbox
+                .start_with_client(&SandboxConfig::default(), mock.client.clone())
+                .await
+                .is_err()
+        );
+        assert!(!sandbox.running);
+    }
+
+    #[tokio::test]
+    async fn uncertain_creation_reconciles_only_current_attempt_before_rollback() {
+        use std::sync::{Arc, Mutex};
+        let created = Arc::new(Mutex::new(None::<serde_json::Value>));
+        let server_created = created.clone();
+        let mock = mock_api(move |method, path, mut body| {
+            if method == "POST" && path.ends_with("/pods") {
+                body["metadata"]["uid"] = "created-uid".into();
+                *server_created.lock().unwrap() = Some(body);
+                return api_error(500);
+            }
+            if path.contains("/pods/") {
+                if method == "DELETE" {
+                    assert_eq!(body["preconditions"]["uid"], "created-uid");
+                    *server_created.lock().unwrap() = None;
+                    return (200, serde_json::json!({"kind":"Status","apiVersion":"v1","status":"Success","code":200}));
+                }
+                return server_created.lock().unwrap().clone().map(|pod| (200, pod)).unwrap_or_else(|| api_error(404));
+            }
+            if path == "/api/v1/namespaces/agentkernel" { return (200, serde_json::json!({"metadata":{}})); }
+            api_error(404)
+        }).await;
+        let mut sandbox = KubernetesSandbox::new("uncertain", &OrchestratorConfig::default());
+        assert!(
+            sandbox
+                .start_with_client(&SandboxConfig::default(), mock.client.clone())
+                .await
+                .is_err()
+        );
+        assert!(created.lock().unwrap().is_none());
+        assert!(!sandbox.running);
+    }
+
+    #[tokio::test]
+    async fn manager_owner_binding_protects_same_named_resources() {
+        let config = OrchestratorConfig {
+            kubernetes_owner_id: Some("new-owner".into()),
+            ..Default::default()
+        };
+        let mut sandbox = KubernetesSandbox::new("same-name", &config);
+        for labels in [
+            sandbox
+                .build_pod_spec(&SandboxConfig::default())
+                .metadata
+                .labels,
+            sandbox
+                .build_service(&SandboxConfig::default())
+                .metadata
+                .labels,
+            sandbox.build_network_policy().metadata.labels,
+        ] {
+            assert_eq!(
+                labels.unwrap().get("agentkernel/owner").map(String::as_str),
+                Some("new-owner")
+            );
+        }
+        assert_eq!(
+            sandbox
+                .build_service(&SandboxConfig::default())
+                .spec
+                .unwrap()
+                .selector
+                .unwrap()
+                .get("agentkernel/owner")
+                .map(String::as_str),
+            Some("new-owner")
+        );
+        assert_eq!(
+            sandbox
+                .build_network_policy()
+                .spec
+                .unwrap()
+                .pod_selector
+                .unwrap()
+                .match_labels
+                .unwrap()
+                .get("agentkernel/owner")
+                .map(String::as_str),
+            Some("new-owner")
+        );
+        let mut old_pod = sandbox.build_pod_spec(&SandboxConfig::default());
+        old_pod
+            .metadata
+            .labels
+            .as_mut()
+            .unwrap()
+            .insert("agentkernel/owner".into(), "old-owner".into());
+        let mut old_policy = sandbox.build_network_policy();
+        old_policy
+            .metadata
+            .labels
+            .as_mut()
+            .unwrap()
+            .insert("agentkernel/owner".into(), "old-owner".into());
+        assert!(!sandbox.owns_labels(old_pod.metadata.labels.as_ref(), true));
+        assert!(!sandbox.owns_network_policy(&old_policy));
+        let mut old_service = sandbox.build_service(&SandboxConfig::default());
+        old_service
+            .metadata
+            .labels
+            .as_mut()
+            .unwrap()
+            .insert("agentkernel/owner".into(), "old-owner".into());
+        let mock = mock_api(move |method, path, _| {
+            assert_eq!(
+                method, "GET",
+                "must not delete a different manager's resource"
+            );
+            if path.contains("/services/") {
+                return (200, serde_json::to_value(&old_service).unwrap());
+            }
+            if path.contains("/networkpolicies/") {
+                return (200, serde_json::to_value(&old_policy).unwrap());
+            }
+            (200, serde_json::to_value(&old_pod).unwrap())
+        })
+        .await;
+        sandbox.client = Some(mock.client.clone());
+        sandbox.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_nitro_target_cannot_fall_back_during_cleanup() {
+        let mut sandbox = KubernetesSandbox::new(
+            "nitro",
+            &OrchestratorConfig {
+                runtime_class: Some("isolated-sandbox".into()),
+                ..Default::default()
+            },
+        );
+        let error = sandbox.stop().await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("explicit orchestrator.kubeconfig and context")
+        );
+        assert!(sandbox.client.is_none());
+    }
+
+    #[tokio::test]
+    async fn stop_reports_lookup_and_auxiliary_cleanup_errors() {
+        for blocked_resource in ["/pods/", "/networkpolicies/", "/services/"] {
+            let mock = mock_api(move |method, path, _| {
+                assert_eq!(method, "GET");
+                if path.contains(blocked_resource) {
+                    api_error(403)
+                } else {
+                    api_error(404)
+                }
+            })
+            .await;
+            let mut sandbox = KubernetesSandbox::new("blocked", &OrchestratorConfig::default());
+            sandbox.client = Some(mock.client.clone());
+            sandbox.running = true;
+            assert!(sandbox.stop().await.is_err());
+            assert!(sandbox.running);
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_never_deletes_unowned_resources() {
+        let mock = mock_api(|method, _, _| {
+            assert_eq!(method, "GET");
+            (
+                200,
+                serde_json::json!({"metadata":{"name":"agentkernel-unowned"}}),
+            )
+        })
+        .await;
+        let mut sandbox = KubernetesSandbox::new("unowned", &OrchestratorConfig::default());
+        sandbox.client = Some(mock.client.clone());
+        sandbox.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cold_start_deadline_includes_pending_diagnostics() {
+        let mock = mock_api(|_, _, _| (200, serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{},"status":{"phase":"Pending","conditions":[{"type":"PodScheduled","status":"False","reason":"Unschedulable","message":"waiting for Nitro capacity"}]}}))).await;
+        let sandbox = KubernetesSandbox::new(
+            "cold",
+            &OrchestratorConfig {
+                startup_timeout_secs: 1,
+                ..Default::default()
+            },
+        );
+        let error = sandbox
+            .wait_for_running(&mock.client, "agentkernel-cold")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("after 1s"));
+        assert!(error.contains("Unschedulable"));
+        assert!(error.contains("waiting for Nitro capacity"));
+    }
 
     #[test]
     fn deny_all_policy_targets_only_the_sandbox() {

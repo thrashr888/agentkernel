@@ -1,0 +1,32 @@
+# Requires an existing EKS 1.36+ cluster prepared for Nitro Sandboxes.
+# See docs/operations/aws-nitro.md. This file does not provision infrastructure.
+[sandbox]
+name = "nitro-demo"
+base_image = "alpine:3.24"
+
+[resources]
+vcpus = 1
+memory_mb = 512
+
+[security]
+profile = "moderate"
+
+[orchestrator]
+provider = "kubernetes"
+namespace = "agentkernel"
+# Replace this context with the intended EKS context before use.
+# Nitro requires both fields; there is no ambient-cluster fallback.
+kubeconfig = "~/.kube/config"
+context = "your-eks-context"
+runtime_class = "isolated-sandbox"
+startup_timeout_secs = 600
+warm_pool_size = 0
+fs_group = 1000
+
+# Pre-create this claim in the same namespace using a compatible EBS CSI
+# StorageClass and ReadWriteOncePod. Use a dedicated claim/config per sandbox.
+# Remove this block and fs_group above for an ephemeral sandbox.
+[[orchestrator.persistent_volume_claims]]
+claim_name = "nitro-demo-workspace"
+mount_path = "/workspace"
+read_only = false
