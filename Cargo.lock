@@ -60,6 +60,7 @@ dependencies = [
  "tokio-postgres",
  "tokio-rustls",
  "tokio-stream",
+ "tokio-tungstenite",
  "tokio-vsock",
  "toml",
  "urlencoding",

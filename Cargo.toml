@@ -114,6 +114,7 @@ libc = "0.2"
 hyperlight-wasm = { version = "0.14", default-features = false, features = ["kvm"], optional = true }
 
 [dev-dependencies]
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 tempfile = "3.0"
 tokio = { version = "1.0", features = ["rt-multi-thread", "macros"] }
 serde = { version = "1.0", features = ["derive"] }

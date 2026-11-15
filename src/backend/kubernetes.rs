@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{Container, Pod, PodSpec, Service, ServicePort, ServiceSpec};
 use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicySpec};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, Status};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, DeleteParams, PostParams};
 use kube::config::{KubeConfigOptions, Kubeconfig};
@@ -23,6 +23,38 @@ use crate::config::{KubernetesVolumeClaim, OrchestratorConfig};
 
 const KUBERNETES_NAME_MAX_LEN: usize = 63;
 const KUBERNETES_HASH_LEN: usize = 12;
+
+/// Decode the remote-command status channel, never the command's output streams.
+fn exec_exit_code(status: Option<Status>) -> Result<i32> {
+    let status = status.context("Kubernetes exec completed without a remote command status")?;
+    if status.status.as_deref() == Some("Success") {
+        return Ok(0);
+    }
+    if status.status.as_deref() == Some("Failure")
+        && status.reason.as_deref() == Some("NonZeroExitCode")
+    {
+        let causes = status
+            .details
+            .as_ref()
+            .and_then(|details| details.causes.as_ref());
+        let mut exit_codes = causes
+            .into_iter()
+            .flatten()
+            .filter(|cause| cause.reason.as_deref() == Some("ExitCode"));
+        let code = exit_codes
+            .next()
+            .and_then(|cause| cause.message.as_deref())
+            .and_then(|message| message.parse::<i32>().ok())
+            // Match client-go's v4 decoder: ExitCode is an unsigned 8-bit value.
+            .filter(|code| (1..=255).contains(code));
+        if let Some(code) = code
+            && exit_codes.next().is_none()
+        {
+            return Ok(code);
+        }
+    }
+    bail!("Invalid or unsuccessful Kubernetes exec status: {status:?}")
+}
 
 /// Names and labels used to identify all resources belonging to one sandbox.
 ///
@@ -1123,6 +1155,10 @@ impl Sandbox for KubernetesSandbox {
             )
             .await
             .context("Failed to exec in K8s pod")?;
+        // Retain the receiver before join(), which otherwise drops it.
+        let status = attached
+            .take_status()
+            .context("Kubernetes exec status channel is unavailable")?;
 
         // Read stdout and stderr concurrently
         let mut stdout_reader = attached
@@ -1146,9 +1182,12 @@ impl Sandbox for KubernetesSandbox {
         let stdout = String::from_utf8_lossy(&stdout_buf).to_string();
         let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
 
-        // Wait for the process to complete; infer exit code from stderr
-        let _ = attached.join().await;
-        let exit_code = if stderr.is_empty() { 0 } else { 1 };
+        // A broken transport must not turn partial output into a successful exec.
+        attached
+            .join()
+            .await
+            .context("Kubernetes exec transport failed")?;
+        let exit_code = exec_exit_code(status.await)?;
 
         Ok(ExecResult {
             exit_code,
@@ -1334,6 +1373,134 @@ fn tilde_expand(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn remote_exec(
+        stdout: &[u8],
+        stderr: &[u8],
+        status: Option<&[u8]>,
+        abrupt_disconnect: bool,
+    ) -> Result<ExecResult> {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::{
+            Message,
+            handshake::server::{ErrorResponse, Request, Response},
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let stdout = stdout.to_vec();
+        let stderr = stderr.to_vec();
+        let status = status.map(<[u8]>::to_vec);
+        #[expect(
+            clippy::result_large_err,
+            reason = "WebSocket callback requires an HTTP response error"
+        )]
+        fn handshake(
+            request: &Request,
+            mut response: Response,
+        ) -> std::result::Result<Response, ErrorResponse> {
+            assert!(
+                request
+                    .uri()
+                    .path()
+                    .ends_with("/pods/agentkernel-exec-test/exec")
+            );
+            response.headers_mut().insert(
+                "sec-websocket-protocol",
+                "v4.channel.k8s.io".parse().unwrap(),
+            );
+            Ok(response)
+        }
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(stream, handshake)
+                .await
+                .unwrap();
+            for (channel, data) in [(1, stdout), (2, stderr)] {
+                let mut frame = vec![channel];
+                frame.extend(data);
+                socket.send(Message::Binary(frame.into())).await.unwrap();
+            }
+            if let Some(status) = status {
+                let mut frame = vec![3];
+                frame.extend(status);
+                socket.send(Message::Binary(frame.into())).await.unwrap();
+            } else if !abrupt_disconnect {
+                socket.close(None).await.unwrap();
+            }
+        });
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = Client::try_from(KubeConfig::new(format!("http://{address}").parse()?))?;
+        let mut sandbox = KubernetesSandbox::new("exec-test", &OrchestratorConfig::default());
+        sandbox.client = Some(client);
+        sandbox.pod_name = Some("agentkernel-exec-test".into());
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            sandbox.exec(&["test-command"]),
+        )
+        .await
+        .context("exec regression test hung")?;
+        server.await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn exec_preserves_output_and_remote_exit_code() {
+        let success = br#"{"status":"Success"}"#;
+        let failure = br#"{"status":"Failure","reason":"NonZeroExitCode","details":{"causes":[{"reason":"ExitCode","message":"7"}]}}"#;
+        for (stdout, stderr, status, expected) in [
+            (&b"stdout\n"[..], &b""[..], &success[..], 0),
+            (&b""[..], &b"progress\n"[..], &success[..], 0),
+            (&b"stdout\n"[..], &b"progress\n"[..], &success[..], 0),
+            (&b""[..], &b""[..], &failure[..], 7),
+            (&b"partial\n"[..], &b"error\n"[..], &failure[..], 7),
+        ] {
+            let result = remote_exec(stdout, stderr, Some(status), false)
+                .await
+                .unwrap();
+            assert_eq!(result.exit_code, expected);
+            assert_eq!(result.stdout.as_bytes(), stdout);
+            assert_eq!(result.stderr.as_bytes(), stderr);
+        }
+    }
+
+    #[tokio::test]
+    async fn exec_rejects_missing_or_malformed_remote_status() {
+        for status in [
+            None,
+            Some(&b"not-json"[..]),
+            Some(&b"{}"[..]),
+            Some(&b"{\"status\":\"Failure\",\"reason\":\"Forbidden\"}"[..]),
+        ] {
+            assert!(remote_exec(b"partial", b"", status, false).await.is_err());
+        }
+        for code in [
+            None,
+            Some(""),
+            Some("invalid"),
+            Some("0"),
+            Some("-1"),
+            Some("256"),
+            Some("2147483648"),
+        ] {
+            let status = serde_json::json!({"status":"Failure","reason":"NonZeroExitCode","details":{"causes":[{"reason":"ExitCode","message":code}]}}).to_string();
+            assert!(
+                remote_exec(b"", b"", Some(status.as_bytes()), false)
+                    .await
+                    .is_err(),
+                "code: {code:?}"
+            );
+        }
+        let status = br#"{"status":"Failure","reason":"NonZeroExitCode","details":{"causes":[{"reason":"ExitCode","message":"7"},{"reason":"ExitCode","message":"8"}]}}"#;
+        assert!(remote_exec(b"", b"", Some(status), false).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_reports_transport_failure_after_partial_output() {
+        let error = remote_exec(b"partial output", b"", None, true)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("transport failed"));
+    }
 
     #[test]
     fn nitro_config_builds_isolated_pod_with_retained_storage() {
