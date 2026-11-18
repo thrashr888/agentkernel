@@ -887,8 +887,8 @@ async fn owned_listener_is_accepted_after_startup_absence() {
 async fn firecracker_read_only_root_rejects_write_and_remount() -> Result<()> {
     let (_binary, kernel, rootfs) = native_prerequisites();
     let mut sandbox = FirecrackerSandbox::new(&format!("readonly-{}", uuid::Uuid::new_v4()))?
-        .with_kernel(kernel)
-        .with_rootfs(rootfs);
+        .with_kernel(kernel.clone())
+        .with_rootfs(rootfs.clone());
     let config = SandboxConfig {
         image: "base".into(),
         network: false,
@@ -913,6 +913,12 @@ async fn firecracker_read_only_root_rejects_write_and_remount() -> Result<()> {
     stopped?;
     assert_eq!(control.exit_code, 0, "{}", control.stderr);
 
+    drop(sandbox);
+    // stop() tears down the private runtime directory; use a new instance
+    // rather than relying on unsupported reuse of a stopped runtime.
+    let mut sandbox = FirecrackerSandbox::new(&format!("readonly-{}", uuid::Uuid::new_v4()))?
+        .with_kernel(kernel)
+        .with_rootfs(rootfs);
     sandbox.start(&config).await?;
     let check = sandbox.exec(&[
         "/bin/sh", "-c",
