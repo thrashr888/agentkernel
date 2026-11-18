@@ -100,3 +100,9 @@ The opt-in `firecracker_read_only_root_rejects_write_and_remount` native KVM tes
 checks a writable positive control, then block-device read-only state, root write
 denial and remount denial. Unit tests validate generated API configuration only;
 passing them is not evidence that the native guest test has run.
+
+The prepared ext4 image must have a clean journal before a read-only boot. An
+image with `needs_recovery` may boot in writable mode yet fail to mount when the
+block device correctly rejects writes. Check and repair a disposable copy of the
+image offline; do not weaken the read-only policy to accommodate pending journal
+replay, and do not repair a mounted or live image.
