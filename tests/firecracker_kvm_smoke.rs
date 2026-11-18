@@ -932,6 +932,22 @@ async fn firecracker_read_only_root_rejects_write_and_remount() -> Result<()> {
     Ok(())
 }
 
+fn require_snapshot_test_stop(
+    stopped: Result<()>,
+    checkpoint: tempfile::TempDir,
+) -> Result<tempfile::TempDir> {
+    if let Err(error) = stopped {
+        let retained = checkpoint.keep();
+        return Err(error).with_context(|| {
+            format!(
+                "uncertain test runtime cleanup; retained checkpoint {}",
+                retained.display()
+            )
+        });
+    }
+    Ok(checkpoint)
+}
+
 async fn snapshot_root_policy(kernel: &Path, rootfs: &Path, read_only: bool) -> Result<()> {
     let mut source = FirecrackerSandbox::new(&format!("snapshot-policy-{}", uuid::Uuid::new_v4()))?
         .with_kernel(kernel.to_path_buf())
@@ -943,18 +959,22 @@ async fn snapshot_root_policy(kernel: &Path, rootfs: &Path, read_only: bool) -> 
         memory_mb: 256,
         ..Default::default()
     };
-    source.start(&config).await?;
     let checkpoint = tempfile::tempdir()?;
+    source.start(&config).await?;
     let saved = source.pause_to(checkpoint.path()).await;
     // A failed pause can resume the source. Always stop before returning.
     let stopped = source.stop().await;
+    let checkpoint = require_snapshot_test_stop(stopped, checkpoint)?;
     let saved = saved?;
-    stopped?;
     assert!(!source.is_running());
 
     let mut restored =
         FirecrackerSandbox::new(&format!("restored-policy-{}", uuid::Uuid::new_v4()))?;
-    restored.restore_from(checkpoint.path(), &saved).await?;
+    if let Err(error) = restored.restore_from(checkpoint.path(), &saved).await {
+        let stopped = restored.stop().await;
+        require_snapshot_test_stop(stopped, checkpoint)?;
+        return Err(error);
+    }
     let script = if read_only {
         "test -r /init || exit 20; test \"$(/bin/busybox id -u)\" = 0 || exit 22; test \"$(/bin/busybox cat /sys/block/vda/ro)\" = 1 || exit 23; /bin/busybox mount > /dev/null || exit 24; if echo denied > /restored-policy; then exit 17; fi; if /bin/busybox mount -o remount,rw /; then exit 18; fi; test ! -e /restored-policy"
     } else {
@@ -962,8 +982,8 @@ async fn snapshot_root_policy(kernel: &Path, rootfs: &Path, read_only: bool) -> 
     };
     let check = restored.exec(&["/bin/sh", "-c", script]).await;
     let stopped = restored.stop().await;
+    let _checkpoint = require_snapshot_test_stop(stopped, checkpoint)?;
     let result = check?;
-    stopped?;
     assert_eq!(
         result.exit_code, 0,
         "readonly={read_only}: {}",
