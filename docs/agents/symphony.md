@@ -11,7 +11,7 @@ Symphony is an orchestration daemon that monitors issue trackers (Linear), spawn
 
 ```bash
 # Option 1: Use the built-in template
-agentkernel run --template symphony-sandbox -- elixir --version
+agentkernel run --config templates/symphony-sandbox.toml -- elixir --version
 
 # Option 2: Use the Dockerfile example
 agentkernel sandbox create symphony-dev --config examples/agents/symphony/agentkernel.toml
