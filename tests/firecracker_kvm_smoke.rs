@@ -879,3 +879,49 @@ async fn owned_listener_is_accepted_after_startup_absence() {
     let _ = child.wait();
     result.expect("the child's own listener must be accepted once it binds");
 }
+
+/// Deny writes at the virtual block device, not merely the initial mount flag.
+/// This test is intentionally not a passing substitute for an unavailable KVM host.
+#[tokio::test]
+#[ignore = "requires explicit AGENTKERNEL_KVM_SMOKE=1 and prepared native KVM assets"]
+async fn firecracker_read_only_root_rejects_write_and_remount() -> Result<()> {
+    let (_binary, kernel, rootfs) = native_prerequisites();
+    let mut sandbox = FirecrackerSandbox::new(&format!("readonly-{}", uuid::Uuid::new_v4()))?
+        .with_kernel(kernel)
+        .with_rootfs(rootfs);
+    let config = SandboxConfig {
+        image: "base".into(),
+        network: false,
+        read_only: true,
+        memory_mb: 256,
+        ..Default::default()
+    };
+    // Positive control proves the same prepared guest can write and remount
+    // when the block device is deliberately writable.
+    sandbox
+        .start(&SandboxConfig {
+            read_only: false,
+            ..config.clone()
+        })
+        .await?;
+    let control = sandbox.exec(&[
+        "/bin/sh", "-c",
+        "test -r /init || exit 20; /bin/busybox mount -o remount,rw / || exit 24; echo writable > /readonly-control && test -s /readonly-control",
+    ]).await;
+    let stopped = sandbox.stop().await;
+    let control = control?;
+    stopped?;
+    assert_eq!(control.exit_code, 0, "{}", control.stderr);
+
+    sandbox.start(&config).await?;
+    let check = sandbox.exec(&[
+        "/bin/sh", "-c",
+        "test -r /init || exit 20; test -x /bin/busybox || exit 21; test \"$(/bin/busybox id -u)\" = 0 || exit 22; test \"$(/bin/busybox cat /sys/block/vda/ro)\" = 1 || exit 23; /bin/busybox mount > /dev/null || exit 24; if echo denied > /readonly-probe; then exit 17; fi; if /bin/busybox mount -o remount,rw /; then exit 18; fi; test ! -e /readonly-probe",
+    ]).await;
+    let stopped = sandbox.stop().await;
+    let result = check?;
+    stopped?;
+    assert_eq!(result.exit_code, 0, "{}", result.stderr);
+    assert!(!sandbox.is_running());
+    Ok(())
+}

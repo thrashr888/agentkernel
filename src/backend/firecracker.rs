@@ -25,6 +25,28 @@ use crate::vsock::VsockClient;
 const SUPPORTED_FIRECRACKER_VERSION: &str = "1.16.1";
 const SUPPORTED_GUEST_KERNEL_RELEASE: &str = "6.18.45-agentkernel";
 
+// Keep the guest mount policy and the hypervisor block-device policy aligned.
+// The block device is authoritative even if guest root attempts a remount.
+fn root_boot_source(kernel_path: &Path, read_only: bool) -> BootSource {
+    let mount_mode = if read_only { "ro" } else { "rw" };
+    BootSource {
+        kernel_image_path: kernel_path.to_string_lossy().to_string(),
+        boot_args: format!(
+            "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda {mount_mode} init=/init quiet loglevel=4 i8042.nokbd i8042.noaux"
+        ),
+    }
+}
+
+fn root_drive(read_only: bool) -> Drive {
+    Drive {
+        drive_id: "rootfs".to_string(),
+        // Stable relative path is required by the full-state snapshot contract.
+        path_on_host: ROOTFS_FILE.to_string(),
+        is_root_device: true,
+        is_read_only: read_only,
+    }
+}
+
 fn canonical_firecracker_binary(path: impl AsRef<Path>) -> Result<PathBuf> {
     let path = path.as_ref();
     fs::canonicalize(path)
@@ -671,23 +693,9 @@ impl FirecrackerSandbox {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Rootfs path not set"))?;
 
-        // Set boot source with optimized boot args
-        let boot_source = BootSource {
-            kernel_image_path: kernel_path.to_string_lossy().to_string(),
-            boot_args: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/init quiet loglevel=4 i8042.nokbd i8042.noaux".to_string(),
-        };
+        let boot_source = root_boot_source(&kernel_path, config.read_only);
         client.set_boot_source(&boot_source).await?;
-
-        // Set root drive
-        let drive = Drive {
-            drive_id: "rootfs".to_string(),
-            // This relative path is part of the snapshot compatibility
-            // contract.  Every restored fork runs from its own RootfsCow
-            // artifact directory containing a private `rootfs.ext4`.
-            path_on_host: ROOTFS_FILE.to_string(),
-            is_root_device: true,
-            is_read_only: false,
-        };
+        let drive = root_drive(config.read_only);
         client.set_drive("rootfs", &drive).await?;
 
         // Set machine config
@@ -1488,6 +1496,30 @@ impl Drop for FirecrackerSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_policy_honors_read_only_at_boot_and_block_device() {
+        for read_only in [true, false] {
+            let boot = root_boot_source(Path::new("/fixture/kernel"), read_only);
+            let drive = root_drive(read_only);
+            let tokens: Vec<_> = boot.boot_args.split_whitespace().collect();
+            assert_eq!(tokens.contains(&"ro"), read_only);
+            assert_eq!(tokens.contains(&"rw"), !read_only);
+            assert_eq!(
+                tokens
+                    .iter()
+                    .filter(|arg| **arg == "ro" || **arg == "rw")
+                    .count(),
+                1
+            );
+            let serialized = serde_json::to_value(&drive).unwrap();
+            assert_eq!(serialized["is_read_only"], read_only);
+            assert_eq!(serialized["is_root_device"], true);
+            assert_eq!(serialized["path_on_host"], ROOTFS_FILE);
+            assert_eq!(serialized["drive_id"], "rootfs");
+            assert_eq!(boot.kernel_image_path, "/fixture/kernel");
+        }
+    }
 
     #[test]
     fn runtime_socket_paths_are_unique_per_instance() {
