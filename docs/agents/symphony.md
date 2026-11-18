@@ -185,3 +185,7 @@ RUN npm install -g your-custom-tools
 
 WORKDIR /workspace
 ```
+
+Migration: `--template symphony-sandbox` no longer resolves as a built-in name.
+Existing users must explicitly reference `--config templates/symphony-sandbox.toml`
+from a checkout, or save a local custom template before upgrading.

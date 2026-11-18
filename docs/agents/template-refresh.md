@@ -44,3 +44,7 @@ manifests. No model credentials were used. No Antigravity inference claim is mad
 Native agent images, language/service base image tags, and transitive package
 versions need their own compatibility/build verification; a major OS/runtime
 upgrade should not be bundled into an agent lineup change without that evidence.
+
+Migration: `--template symphony-sandbox` no longer resolves as a built-in name.
+Existing users must explicitly reference `--config templates/symphony-sandbox.toml`
+from a checkout, or save a local custom template before upgrading.
