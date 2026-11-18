@@ -1,3 +1,5 @@
+> Deprecated: no longer part of the supported built-in template catalog. This page remains for existing configurations.
+
 
 # Symphony
 
