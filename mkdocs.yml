@@ -112,6 +112,8 @@ nav:
     - Pi: agents/pi.md
     - Hermes: agents/hermes.md
     - Antigravity CLI: agents/antigravity.md
+    - Template release audit: agents/template-refresh.md
+    - Symphony (deprecated): agents/symphony.md
   - API:
     - Overview: api/index.md
     - HTTP API: api/http.md

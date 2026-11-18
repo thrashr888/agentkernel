@@ -117,7 +117,7 @@ test(`Pi ${host.version} loads and runs the extension contract without live serv
   assert.match(notifications.at(-1)[0], /No active sandbox/);
 });
 
-test("sandbox installers and documented images use the minimum patched host", async () => {
+test("sandbox installers use supported patched hosts; historical images retain their tested minimum", async () => {
   const repoDir = fileURLToPath(new URL("../../../", import.meta.url));
   const read = (name) => readFile(path.join(repoDir, name), "utf8");
   const minimum = semver.minVersion(manifest.peerDependencies["@earendil-works/pi-coding-agent"]).version;
@@ -125,7 +125,10 @@ test("sandbox installers and documented images use the minimum patched host", as
   for (const name of ["src/vmm.rs", "templates/pi-sandbox.toml", "docs/agents/pi.md"]) {
     const pins = [...(await read(name)).matchAll(pinPattern)].map((match) => match[1]);
     assert.ok(pins.length > 0, `${name} must include its pinned Pi installer`);
-    assert.ok(pins.every((version) => version === minimum), `${name}: ${pins.join(", ")}`);
+    const range = name === "templates/pi-sandbox.toml"
+      ? manifest.peerDependencies["@earendil-works/pi-coding-agent"]
+      : minimum;
+    assert.ok(pins.every((version) => semver.satisfies(version, range)), `${name}: ${pins.join(", ")}`);
   }
   const dockerfile = await read("examples/agents/pi/Dockerfile");
   assert.equal(dockerfile.match(/^ARG PI_VERSION=(.+)$/m)?.[1], minimum);
