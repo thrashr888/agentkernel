@@ -106,3 +106,9 @@ image with `needs_recovery` may boot in writable mode yet fail to mount when the
 block device correctly rejects writes. Check and repair a disposable copy of the
 image offline; do not weaken the read-only policy to accommodate pending journal
 replay, and do not repair a mounted or live image.
+
+The separate opt-in `firecracker_snapshot_preserves_root_block_policy` native
+gate pauses and restores both writable and read-only sources into new instances.
+It checks that each restored block device retains its original policy, with
+write/remount positive and negative controls. This verifies preservation, not
+conversion: restoring a writable checkpoint does not make it read-only.
