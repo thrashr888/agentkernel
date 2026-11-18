@@ -931,3 +931,55 @@ async fn firecracker_read_only_root_rejects_write_and_remount() -> Result<()> {
     assert!(!sandbox.is_running());
     Ok(())
 }
+
+async fn snapshot_root_policy(kernel: &Path, rootfs: &Path, read_only: bool) -> Result<()> {
+    let mut source = FirecrackerSandbox::new(&format!("snapshot-policy-{}", uuid::Uuid::new_v4()))?
+        .with_kernel(kernel.to_path_buf())
+        .with_rootfs(rootfs.to_path_buf());
+    let config = SandboxConfig {
+        image: "base".into(),
+        network: false,
+        read_only,
+        memory_mb: 256,
+        ..Default::default()
+    };
+    source.start(&config).await?;
+    let checkpoint = tempfile::tempdir()?;
+    let saved = source.pause_to(checkpoint.path()).await;
+    // A failed pause can resume the source. Always stop before returning.
+    let stopped = source.stop().await;
+    let saved = saved?;
+    stopped?;
+    assert!(!source.is_running());
+
+    let mut restored =
+        FirecrackerSandbox::new(&format!("restored-policy-{}", uuid::Uuid::new_v4()))?;
+    restored.restore_from(checkpoint.path(), &saved).await?;
+    let script = if read_only {
+        "test -r /init || exit 20; test \"$(/bin/busybox id -u)\" = 0 || exit 22; test \"$(/bin/busybox cat /sys/block/vda/ro)\" = 1 || exit 23; /bin/busybox mount > /dev/null || exit 24; if echo denied > /restored-policy; then exit 17; fi; if /bin/busybox mount -o remount,rw /; then exit 18; fi; test ! -e /restored-policy"
+    } else {
+        "test \"$(/bin/busybox cat /sys/block/vda/ro)\" = 0 || exit 23; /bin/busybox mount -o remount,rw / || exit 24; echo writable > /restored-policy && test -s /restored-policy"
+    };
+    let check = restored.exec(&["/bin/sh", "-c", script]).await;
+    let stopped = restored.stop().await;
+    let result = check?;
+    stopped?;
+    assert_eq!(
+        result.exit_code, 0,
+        "readonly={read_only}: {}",
+        result.stderr
+    );
+    assert!(!restored.is_running());
+    Ok(())
+}
+
+/// Restore must retain saved device policy; it does not reinterpret new config.
+#[tokio::test]
+#[ignore = "requires explicit AGENTKERNEL_KVM_SMOKE=1 and prepared native KVM assets"]
+async fn firecracker_snapshot_preserves_root_block_policy() -> Result<()> {
+    let (_binary, kernel, rootfs) = native_prerequisites();
+    for read_only in [false, true] {
+        snapshot_root_policy(&kernel, &rootfs, read_only).await?;
+    }
+    Ok(())
+}
