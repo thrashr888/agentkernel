@@ -65,6 +65,7 @@ nav:
     - AgentKernel vs Docker: comparisons/docker.md
   - Use Cases:
     - AI Coding Agents: use-cases/coding-agents.md
+    - Rex remote hosts: use-cases/rex.md
   - Features:
     - Overview: features/index.md
     - Secrets: features/secrets.md
