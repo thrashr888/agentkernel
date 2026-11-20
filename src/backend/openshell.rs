@@ -21,6 +21,14 @@ const GATEWAY: &str = "AGENTKERNEL_OPENSHELL_GATEWAY";
 const WORKSPACE: &str = "AGENTKERNEL_OPENSHELL_WORKSPACE";
 const OWNER_LABEL: &str = "agentkernel.dev/owner";
 
+// NVIDIA OpenShell v0.1.9 rejects sandbox names longer than 19 bytes.
+// The compact name is only a route, never an ownership check: keep the
+// full UUID label and pinned provider ID for that.
+fn provider_name(owner: Uuid) -> String {
+    let hex = owner.simple().to_string();
+    format!("ak-{}", &hex[..16])
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Target {
     gateway: String,
@@ -118,10 +126,10 @@ impl OpenShellSandbox {
                 .context("Missing OpenShell ownership binding")?
                 .clone();
             let nonce = Uuid::parse_str(&owner).context("Invalid OpenShell ownership binding")?;
-            (owner, format!("agentkernel-{}", nonce.simple()))
+            (owner, provider_name(nonce))
         } else {
             let nonce = Uuid::new_v4();
-            (nonce.to_string(), format!("agentkernel-{}", nonce.simple()))
+            (nonce.to_string(), provider_name(nonce))
         };
         Ok(Self {
             name: name.to_string(),
@@ -455,6 +463,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn provider_name_fits_the_vendor_dns_label_limit() {
+        let owner = Uuid::parse_str("12345678-abcd-42ef-aaaa-123456789abc").unwrap();
+        let name = provider_name(owner);
+        assert_eq!(name, "ak-12345678abcd42ef");
+        assert_eq!(name.len(), 19);
+        assert!(
+            name.bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        );
+    }
+
+    #[test]
     fn validates_target_and_rejects_unsupported_constraints() {
         assert!(Target::new("test-gateway".into(), "sandbox-workspace".into()).is_ok());
         for value in ["", "--insecure", "two words", "name/other"] {
@@ -501,7 +521,7 @@ op="$1"
 shift
 echo "$op" >> calls
 owner=12345678-abcd-42ef-aaaa-123456789abc
-target=agentkernel-12345678abcd42efaaaa123456789abc
+target=ak-12345678abcd42ef
 info() {
     printf '{"id":"%s","name":"%s","workspace":"test-workspace","phase":"%s","labels":{"agentkernel.dev/owner":"%s"}}' "$(cat id)" "$target" "$(cat phase)" "$owner"
 }
@@ -546,7 +566,9 @@ esac
         let mut backend = OpenShellSandbox {
             name: "test".into(),
             target: Target::new("test-gateway".into(), "test-workspace".into()).unwrap(),
-            remote_name: "agentkernel-12345678abcd42efaaaa123456789abc".into(),
+            remote_name: provider_name(
+                Uuid::parse_str("12345678-abcd-42ef-aaaa-123456789abc").unwrap(),
+            ),
             owner: "12345678-abcd-42ef-aaaa-123456789abc".into(),
             id: None,
             running: false,
