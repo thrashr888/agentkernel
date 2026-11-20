@@ -15011,9 +15011,30 @@ max_total_sandboxes = 0
         let discovery = backend_discovery(Some(crate::backend::BackendType::Docker));
         let json = serde_json::to_value(discovery).unwrap();
         assert_eq!(json["default_backend"], "docker");
-        assert_eq!(json["backends"].as_array().unwrap().len(), 13);
-        assert!(json["backends"][0]["capabilities"]["mount_cwd"].is_boolean());
-        assert!(json["backends"][0]["readiness_reason"].is_string());
+        let rows = json["backends"].as_array().unwrap();
+        let expected: Vec<_> = crate::backend::BackendType::all()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let actual: Vec<_> = rows
+            .iter()
+            .map(|row| row["backend"].as_str().unwrap())
+            .collect();
+        assert_eq!(actual, expected);
+        for row in rows {
+            assert!(row["capabilities"]["mount_cwd"].is_boolean());
+            assert!(row["readiness_reason"].is_string());
+        }
+
+        let openshell = rows
+            .iter()
+            .find(|row| row["backend"] == "openshell")
+            .unwrap();
+        let capabilities = &openshell["capabilities"];
+        assert_eq!(capabilities["mount_cwd"], false);
+        assert_eq!(capabilities["secret_files"], false);
+        assert_eq!(capabilities["attach"], false);
+        assert_eq!(capabilities["snapshots"], false);
     }
 
     #[test]

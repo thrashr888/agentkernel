@@ -1536,6 +1536,9 @@ impl VmManager {
         ports: Vec<PortMapping>,
         agent: Option<String>,
     ) -> Result<()> {
+        if self.backend == BackendType::OpenShell {
+            bail!("OpenShell is experimental; specify it explicitly for sandbox creation");
+        }
         self.create_with_backend_options(
             self.backend,
             name,
@@ -2687,6 +2690,26 @@ impl VmManager {
             self.sandboxes.insert(name.to_string(), pinned);
         }
 
+        if backend == BackendType::OpenShell {
+            let org_keys = Path::new("agentkernel.toml").exists()
+                && Config::from_file_cached(Path::new("agentkernel.toml"))
+                    .is_ok_and(|config| !config.llm_keys.is_empty());
+            if model_governance.is_some() || org_keys || !state.secret_files.is_empty() {
+                bail!(
+                    "OpenShell cannot translate AgentKernel model governance or secret injection"
+                );
+            }
+            if effective_perms
+                .seccomp
+                .as_deref()
+                .is_some_and(|profile| profile != "moderate")
+            {
+                bail!(
+                    "OpenShell cannot translate AgentKernel seccomp overrides; the gateway enforces its own sandbox policy"
+                );
+            }
+        }
+
         // Create sandbox using unified factory
         let mut sandbox = {
             #[cfg(test)]
@@ -3112,6 +3135,19 @@ impl VmManager {
                 .insert("kubernetes_start_attempted".into(), "true".into());
             self.save_sandbox(&attempted)?;
             self.sandboxes.insert(name.to_string(), attempted);
+        }
+
+        if backend == BackendType::OpenShell {
+            // Save the target and unpredictable ownership marker before
+            // provisioning. A process crash must not strand an owned sandbox
+            // with no way to reconcile it on reopen.
+            let binding = sandbox
+                .runtime_metadata()
+                .context("OpenShell ownership binding missing")?;
+            let mut pending = self.sandboxes[name].clone();
+            Self::apply_runtime_metadata(&mut pending, &binding);
+            self.save_sandbox(&pending)?;
+            self.sandboxes.insert(name.to_string(), pending);
         }
 
         if let Err(error) = sandbox.start(&config).await {
@@ -4914,6 +4950,21 @@ impl VmManager {
                 create_sandbox_with_state(backend, name, &state.orchestrator_config()?, None)?,
             );
         }
+        if backend == BackendType::OpenShell
+            && !self.running.contains_key(name)
+            && let Some(state) = self.sandboxes.get(name)
+            && state.remote_metadata.contains_key("openshell_owner")
+        {
+            self.running.insert(
+                name.to_string(),
+                create_sandbox_with_state(
+                    backend,
+                    name,
+                    &state.orchestrator_config()?,
+                    Some(state.remote_context()),
+                )?,
+            );
+        }
         // Shut down the proxy if running
         if let Some(handle) = PROXY_HANDLES.write().await.remove(name) {
             let _ = handle.shutdown_tx.send(());
@@ -4995,7 +5046,12 @@ impl VmManager {
             || self
                 .sandboxes
                 .get(name)
-                .is_some_and(SandboxState::kubernetes_never_started);
+                .is_some_and(SandboxState::kubernetes_never_started)
+            || (backend == BackendType::OpenShell
+                && self.sandboxes.get(name).is_some_and(|state| {
+                    !state.remote_metadata.contains_key("openshell_owner")
+                        && state.remote_id.is_none()
+                }));
 
         if let Some(mut recovery) = self.pause_recovery.remove(name) {
             if let Some(mut sandbox) = recovery.sandbox.take()
@@ -5544,6 +5600,9 @@ impl VmManager {
         perms: &Permissions,
         files: &[FileInjection],
     ) -> Result<String> {
+        if backend == BackendType::OpenShell {
+            bail!("Ephemeral mode not supported by OpenShell; use an explicitly named sandbox");
+        }
         Self::enforce_command_policy(cmd)?;
         let work_dir = if perms.mount_cwd {
             std::env::current_dir()

@@ -26,6 +26,7 @@ pub mod kubernetes_pool;
 pub mod nomad;
 #[cfg(feature = "nomad")]
 pub mod nomad_pool;
+pub mod openshell;
 pub mod remote;
 
 use anyhow::Result;
@@ -83,6 +84,8 @@ pub enum BackendType {
     Modal,
     /// Agent Computer hosted machines
     AgentComputer,
+    /// Exclusive workspace on an existing NVIDIA OpenShell gateway (experimental).
+    OpenShell,
 }
 
 impl fmt::Display for BackendType {
@@ -101,6 +104,7 @@ impl fmt::Display for BackendType {
             BackendType::E2B => write!(f, "e2b"),
             BackendType::Modal => write!(f, "modal"),
             BackendType::AgentComputer => write!(f, "agentcomputer"),
+            BackendType::OpenShell => write!(f, "openshell"),
         }
     }
 }
@@ -123,8 +127,9 @@ impl std::str::FromStr for BackendType {
             "e2b" => Ok(BackendType::E2B),
             "modal" => Ok(BackendType::Modal),
             "agentcomputer" | "agent-computer" => Ok(BackendType::AgentComputer),
+            "openshell" | "open-shell" => Ok(BackendType::OpenShell),
             _ => Err(format!(
-                "Unknown backend '{}'. Valid options: docker, podman, firecracker, apple, hyperlight, cloudhypervisor, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer",
+                "Unknown backend '{}'. Valid options: docker, podman, firecracker, apple, hyperlight, cloudhypervisor, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer, openshell",
                 s
             )),
         }
@@ -134,7 +139,7 @@ impl std::str::FromStr for BackendType {
 impl BackendType {
     /// All backend identifiers exposed by the public API, in stable display
     /// order. Availability is reported separately by backend discovery.
-    pub const fn all() -> [Self; 13] {
+    pub const fn all() -> [Self; 14] {
         [
             Self::Docker,
             Self::Podman,
@@ -149,6 +154,7 @@ impl BackendType {
             Self::E2B,
             Self::Modal,
             Self::AgentComputer,
+            Self::OpenShell,
         ]
     }
 
@@ -160,6 +166,7 @@ impl BackendType {
                 | BackendType::E2B
                 | BackendType::Modal
                 | BackendType::AgentComputer
+                | BackendType::OpenShell
         )
     }
 }
@@ -338,6 +345,23 @@ pub struct BackendCapabilities {
 }
 
 pub fn backend_capabilities(backend: BackendType) -> BackendCapabilities {
+    if backend == BackendType::OpenShell {
+        return BackendCapabilities {
+            mount_cwd: false,
+            mount_home: false,
+            attach: false,
+            host_volumes: false,
+            ssh: false,
+            proxy_secret_bindings: false,
+            secret_files: false,
+            snapshots: false,
+            resume: true,
+            full_state_pause_resume: false,
+            full_state_fork: false,
+            endpoints: false,
+        };
+    }
+
     if backend.is_remote() {
         return BackendCapabilities {
             mount_cwd: true,
@@ -992,6 +1016,7 @@ pub fn backend_available(backend: BackendType) -> bool {
         | BackendType::E2B
         | BackendType::Modal
         | BackendType::AgentComputer => remote_bridge_available(),
+        BackendType::OpenShell => openshell::available(),
     }
 }
 
@@ -1334,6 +1359,16 @@ pub fn backend_readiness(backend: BackendType) -> BackendReadiness {
             };
             (configured, usable, reason)
         }
+        BackendType::OpenShell => {
+            let configured = openshell::target_configured();
+            let usable = configured && openshell::available();
+            let reason = if usable {
+                "experimental; existing gateway is checked at sandbox start"
+            } else {
+                "install the OpenShell CLI and set AGENTKERNEL_OPENSHELL_GATEWAY and AGENTKERNEL_OPENSHELL_WORKSPACE"
+            };
+            (configured, usable, reason)
+        }
         BackendType::Daytona
         | BackendType::Runloop
         | BackendType::E2B
@@ -1449,6 +1484,10 @@ pub fn create_sandbox_with_state(
             name,
             remote.unwrap_or_default(),
         ))),
+        BackendType::OpenShell => Ok(Box::new(openshell::OpenShellSandbox::new(
+            name,
+            remote.unwrap_or_default(),
+        )?)),
         BackendType::AgentComputer => Ok(Box::new(RemoteSandbox::new(
             RemoteProvider::AgentComputer,
             name,
