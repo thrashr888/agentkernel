@@ -12,8 +12,7 @@ agentkernel exec google-worker -- agy --version
 ```
 
 This is an **experimental executable template**, not yet a native AgentKernel
-AgentType or plugin. Run `agy` explicitly. Installation and inference have not
-yet been smoke-tested in every backend. The client can self-update, so pinning
+AgentType or plugin. Run `agy` explicitly. The ARM64 archive checksum and executable member were verified. Installing and running Antigravity inside an AgentKernel sandbox still needs a smoke test. The client can self-update, so pinning
 the initial archive alone does not establish immutable execution.
 
 Google documents `GEMINI_API_KEY` for headless API-key use. Explicitly supply it
