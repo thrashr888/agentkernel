@@ -17,6 +17,12 @@ use crate::vmm::VmManager;
 /// Keeps head + tail and inserts a marker so agents see the start (install progress)
 /// and end (actual results) without blowing up context windows.
 const MAX_OUTPUT_BYTES: usize = 16_000;
+const LEGACY_PROTOCOL_VERSION: &str = "2024-11-05";
+const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
+const PROTOCOL_VERSION_META: &str = "io.modelcontextprotocol/protocolVersion";
+const CLIENT_CAPABILITIES_META: &str = "io.modelcontextprotocol/clientCapabilities";
+const CLIENT_INFO_META: &str = "io.modelcontextprotocol/clientInfo";
+const SERVER_INFO_META: &str = "io.modelcontextprotocol/serverInfo";
 
 /// Truncate output to keep head and tail, inserting a marker in the middle.
 fn truncate_output(output: &str) -> String {
@@ -53,12 +59,27 @@ pub struct McpServer {
 // JSON-RPC 2.0 types
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
-    #[allow(dead_code)]
     jsonrpc: String,
+    // Distinguish JSON-RPC notifications from requests with an invalid null ID.
+    #[serde(default, deserialize_with = "deserialize_id")]
     id: Option<Value>,
     method: String,
     #[serde(default)]
     params: Value,
+}
+
+fn deserialize_id<'de, D>(d: D) -> std::result::Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Value::deserialize(d).map(Some)
+}
+
+fn server_info() -> Value {
+    json!({
+        "name": "agentkernel",
+        "version": env!("CARGO_PKG_VERSION")
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +98,32 @@ struct JsonRpcError {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<Value>,
+}
+
+impl JsonRpcResponse {
+    fn rpc_error(id: Value, code: i32, message: impl Into<String>, data: Option<Value>) -> Self {
+        Self {
+            jsonrpc: "2.0",
+            id,
+            result: None,
+            error: Some(JsonRpcError {
+                code,
+                message: message.into(),
+                data,
+            }),
+        }
+    }
+}
+
+fn is_legacy_permission_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "permission_grant" | "permission_list" | "permission_revoke"
+    )
+}
+
+fn method_not_found(id: Value, method: &str) -> JsonRpcResponse {
+    JsonRpcResponse::rpc_error(id, -32601, format!("Method not found: {method}"), None)
 }
 
 fn reject_fresh_manager_firecracker(
@@ -154,9 +201,44 @@ impl McpServer {
     fn handle_request(&mut self, request: &JsonRpcRequest) -> JsonRpcResponse {
         let id = request.id.clone().unwrap_or(Value::Null);
 
+        let meta = request.params.get("_meta");
+        let is_modern = request.method == "server/discover"
+            || meta.is_some_and(|meta| {
+                [
+                    PROTOCOL_VERSION_META,
+                    CLIENT_CAPABILITIES_META,
+                    CLIENT_INFO_META,
+                ]
+                .iter()
+                .any(|key| meta.get(key).is_some())
+            });
+
+        // Shared request framing validation happens before tool dispatch. Never
+        // execute a request-style method as a notification (legacy or modern).
+        if request.jsonrpc != "2.0"
+            || request
+                .id
+                .as_ref()
+                .is_some_and(|id| !id.is_string() && !id.is_i64() && !id.is_u64())
+        {
+            return JsonRpcResponse::rpc_error(Value::Null, -32600, "Invalid request", None);
+        }
+        if request.id.is_none()
+            && !matches!(
+                request.method.as_str(),
+                "initialized" | "notifications/initialized"
+            )
+        {
+            return JsonRpcResponse::rpc_error(id, -32600, "Invalid request", None);
+        }
+
+        if is_modern {
+            return self.handle_modern_request(id, request, meta);
+        }
+
         match request.method.as_str() {
             "initialize" => self.handle_initialize(id, &request.params),
-            "initialized" => {
+            "initialized" | "notifications/initialized" => {
                 // Notification, no response needed
                 JsonRpcResponse {
                     jsonrpc: "2.0",
@@ -165,8 +247,14 @@ impl McpServer {
                     error: None,
                 }
             }
-            "tools/list" => self.handle_tools_list(id),
-            "tools/call" => self.handle_tools_call(id, &request.params),
+            "tools/list" if self.initialized => self.handle_tools_list(id),
+            "tools/call" if self.initialized => self.handle_tools_call(id, &request.params),
+            "tools/list" | "tools/call" => JsonRpcResponse::rpc_error(
+                id,
+                -32602,
+                "Send per-request MCP version and client capabilities, or initialize a legacy client",
+                None,
+            ),
             "shutdown" => {
                 self.initialized = false;
                 JsonRpcResponse {
@@ -176,17 +264,92 @@ impl McpServer {
                     error: None,
                 }
             }
-            _ => JsonRpcResponse {
+            _ => method_not_found(id, &request.method),
+        }
+    }
+
+    fn handle_modern_request(
+        &self,
+        id: Value,
+        request: &JsonRpcRequest,
+        meta: Option<&Value>,
+    ) -> JsonRpcResponse {
+        let version = meta
+            .and_then(|meta| meta.get(PROTOCOL_VERSION_META))
+            .and_then(Value::as_str);
+        let has_capabilities = meta
+            .and_then(|meta| meta.get(CLIENT_CAPABILITIES_META))
+            .is_some_and(Value::is_object);
+        let Some(version) = version.filter(|_| has_capabilities) else {
+            return JsonRpcResponse::rpc_error(
+                id,
+                -32602,
+                "MCP requests require protocolVersion (string) and clientCapabilities (object) in params._meta",
+                None,
+            );
+        };
+        if version != MODERN_PROTOCOL_VERSION {
+            return JsonRpcResponse::rpc_error(
+                id,
+                -32022,
+                "Unsupported protocol version",
+                Some(json!({
+                    "supported": [MODERN_PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION],
+                    "requested": version
+                })),
+            );
+        }
+
+        // Versioning and capabilities are per-request only. The metadata does
+        // not authenticate the caller or change the existing tool permissions.
+        let cacheable = matches!(request.method.as_str(), "server/discover" | "tools/list");
+        let mut response = match request.method.as_str() {
+            "server/discover" => JsonRpcResponse {
                 jsonrpc: "2.0",
                 id,
-                result: None,
-                error: Some(JsonRpcError {
-                    code: -32601,
-                    message: format!("Method not found: {}", request.method),
-                    data: None,
-                }),
+                result: Some(json!({
+                    "supportedVersions": [MODERN_PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION],
+                    "capabilities": {"tools": {}}
+                })),
+                error: None,
             },
+            "tools/list" => {
+                let mut response = self.handle_tools_list(id);
+                if let Some(tools) = response
+                    .result
+                    .as_mut()
+                    .and_then(|result| result.get_mut("tools"))
+                    .and_then(Value::as_array_mut)
+                {
+                    tools.retain(|tool| {
+                        !tool["name"].as_str().is_some_and(is_legacy_permission_tool)
+                    });
+                }
+                response
+            }
+            "tools/call" => {
+                // Resolve the OS user's persisted policy on this request;
+                // never pick up process-local Once/Session grants from legacy.
+                let per_request = Self {
+                    initialized: false,
+                    permission_store: self.permission_store.persisted_only(),
+                };
+                per_request.handle_tools_call_for_era(id, &request.params, true)
+            }
+            _ => method_not_found(id, &request.method),
+        };
+
+        if let Some(result) = response.result.as_mut().and_then(Value::as_object_mut) {
+            result.insert("resultType".into(), json!("complete"));
+            result.insert("_meta".into(), json!({(SERVER_INFO_META): server_info()}));
+            if cacheable {
+                // No change notifications or permission-aware caching in
+                // this transport. Always revalidate, never share the result.
+                result.insert("ttlMs".into(), json!(0));
+                result.insert("cacheScope".into(), json!("private"));
+            }
         }
+        response
     }
 
     fn handle_initialize(&mut self, id: Value, _params: &Value) -> JsonRpcResponse {
@@ -196,14 +359,11 @@ impl McpServer {
             jsonrpc: "2.0",
             id,
             result: Some(json!({
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": LEGACY_PROTOCOL_VERSION,
                 "capabilities": {
                     "tools": {}
                 },
-                "serverInfo": {
-                    "name": "agentkernel",
-                    "version": env!("CARGO_PKG_VERSION")
-                }
+                "serverInfo": server_info()
             })),
             error: None,
         }
@@ -967,8 +1127,29 @@ impl McpServer {
     }
 
     fn handle_tools_call(&self, id: Value, params: &Value) -> JsonRpcResponse {
-        let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+        self.handle_tools_call_for_era(id, params, false)
+    }
+
+    fn handle_tools_call_for_era(
+        &self,
+        id: Value,
+        params: &Value,
+        modern: bool,
+    ) -> JsonRpcResponse {
+        let tool_name = params.get("name").and_then(Value::as_str).unwrap_or("");
+        let arguments = params.get("arguments");
+        if modern && (tool_name.is_empty() || arguments.is_some_and(|args| !args.is_object())) {
+            return JsonRpcResponse::rpc_error(id, -32602, "Invalid tool call parameters", None);
+        }
+        if modern && is_legacy_permission_tool(tool_name) {
+            return JsonRpcResponse::rpc_error(
+                id,
+                -32602,
+                format!("Unknown tool: {tool_name}"),
+                None,
+            );
+        }
+        let arguments = arguments.cloned().unwrap_or_else(|| json!({}));
 
         let result: Result<ToolOutput> = match tool_name {
             "sandbox_run" => self.tool_sandbox_run(&arguments).map(ToolOutput::Text),
@@ -1034,6 +1215,14 @@ impl McpServer {
             "permission_revoke" => self
                 .tool_permission_revoke(&arguments)
                 .map(ToolOutput::Text),
+            _ if modern => {
+                return JsonRpcResponse::rpc_error(
+                    id,
+                    -32602,
+                    format!("Unknown tool: {tool_name}"),
+                    None,
+                );
+            }
             _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
         };
 
@@ -2821,6 +3010,223 @@ mod tests {
 
         let response = server.handle_request(&request);
         assert!(response.error.is_none());
+    }
+
+    fn dispatch_fixture(server: &mut McpServer, request: Value) -> Value {
+        let request = serde_json::from_value(request).unwrap();
+        serde_json::to_value(server.handle_request(&request)).unwrap()
+    }
+
+    fn modern_fixture(method: &str, params: Value) -> Value {
+        let mut request = json!({
+            "jsonrpc": "2.0",
+            "id": "fixture",
+            "method": method,
+            "params": params
+        });
+        request["params"]["_meta"] = json!({
+            (PROTOCOL_VERSION_META): MODERN_PROTOCOL_VERSION,
+            (CLIENT_CAPABILITIES_META): {}
+        });
+        request
+    }
+
+    #[test]
+    fn test_modern_discovery_and_tools_without_handshake() {
+        let mut server = McpServer::new();
+        let list_request = modern_fixture("tools/list", json!({}));
+        let list = dispatch_fixture(&mut server, list_request.clone());
+        let discover = dispatch_fixture(&mut server, modern_fixture("server/discover", json!({})));
+        assert_eq!(discover["id"], "fixture");
+        assert_eq!(
+            discover["result"]["supportedVersions"],
+            json!([MODERN_PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION])
+        );
+        assert_eq!(discover["result"]["capabilities"], json!({"tools": {}}));
+        for response in [&discover, &list] {
+            assert_eq!(response["result"]["resultType"], "complete");
+            assert_eq!(response["result"]["_meta"][SERVER_INFO_META], server_info());
+            assert_eq!(response["result"]["ttlMs"], 0);
+            assert_eq!(response["result"]["cacheScope"], "private");
+        }
+        assert!(!list["result"]["tools"].as_array().unwrap().is_empty());
+        assert_eq!(list, dispatch_fixture(&mut server, list_request));
+        assert!(!server.initialized);
+    }
+
+    #[test]
+    fn test_protocol_envelopes_can_be_interleaved() {
+        let mut server = McpServer::new();
+        let legacy = dispatch_fixture(
+            &mut server,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                   "params": {"protocolVersion": LEGACY_PROTOCOL_VERSION}}),
+        );
+        assert_eq!(
+            legacy["result"],
+            json!({"protocolVersion": LEGACY_PROTOCOL_VERSION,
+                   "serverInfo": server_info(), "capabilities": {"tools": {}}})
+        );
+        let modern = dispatch_fixture(&mut server, modern_fixture("tools/list", json!({})));
+        let legacy_list = dispatch_fixture(
+            &mut server,
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        );
+        let mut legacy_tools = legacy_list["result"]["tools"].as_array().unwrap().clone();
+        let legacy_count = legacy_tools.len();
+        legacy_tools.retain(|tool| !tool["name"].as_str().is_some_and(is_legacy_permission_tool));
+        assert_eq!(legacy_count - legacy_tools.len(), 3);
+        assert_eq!(modern["result"]["tools"], json!(legacy_tools));
+        let no_tasks = dispatch_fixture(
+            &mut server,
+            modern_fixture("tasks/get", json!({"taskId": "unimplemented"})),
+        );
+        assert_eq!(no_tasks["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn test_modern_errors_do_not_fall_through_to_legacy() {
+        let mut server = McpServer::new();
+        let _ = dispatch_fixture(
+            &mut server,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
+        );
+        let call = modern_fixture("tools/call", json!({"name": "not_a_real_tool"}));
+        let mut bad_version = call.clone();
+        bad_version["params"]["_meta"][PROTOCOL_VERSION_META] = json!("1900-01-01");
+        let rejected = dispatch_fixture(&mut server, bad_version);
+        assert_eq!(rejected["error"]["code"], -32022);
+        assert_eq!(rejected["error"]["data"]["requested"], "1900-01-01");
+        assert_eq!(
+            rejected["error"]["data"]["supported"],
+            json!([MODERN_PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION])
+        );
+        for missing in [PROTOCOL_VERSION_META, CLIENT_CAPABILITIES_META] {
+            let mut malformed = call.clone();
+            malformed["params"]["_meta"]
+                .as_object_mut()
+                .unwrap()
+                .remove(missing);
+            let rejected = dispatch_fixture(&mut server, malformed);
+            assert_eq!(rejected["error"]["code"], -32602);
+            assert!(rejected.get("result").is_none());
+        }
+        let unknown = dispatch_fixture(&mut server, call);
+        assert_eq!(unknown["error"]["code"], -32602);
+        assert!(unknown.get("result").is_none());
+        let mut bad_id = modern_fixture("tools/call", json!({"name": "sandbox_run"}));
+        bad_id["id"] = Value::Null;
+        assert_eq!(
+            dispatch_fixture(&mut server, bad_id)["error"]["code"],
+            -32600
+        );
+    }
+
+    #[test]
+    fn test_modern_refuses_permission_grant_tools_and_bad_frames() {
+        let mut server = McpServer::new();
+        let call = modern_fixture(
+            "tools/call",
+            json!({"name": "permission_grant", "arguments": {
+                "kind": "sandbox_create", "granted": true, "scope": "session",
+                "sandbox": "per-request-fixture"
+            }}),
+        );
+        let before = server.permission_store.list().len();
+        let rejected = dispatch_fixture(&mut server, call.clone());
+        assert_eq!(rejected["error"]["code"], -32602);
+        assert_eq!(server.permission_store.list().len(), before);
+
+        let mut notification = call;
+        notification.as_object_mut().unwrap().remove("id");
+        let rejected = dispatch_fixture(&mut server, notification);
+        assert_eq!(rejected["error"]["code"], -32600);
+        assert_eq!(server.permission_store.list().len(), before);
+
+        let rejected = dispatch_fixture(
+            &mut server,
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        );
+        assert_eq!(rejected["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn test_modern_calls_neither_borrow_nor_consume_legacy_grants() {
+        use crate::interactive_permissions::{GrantScope, PermissionKind, PermissionStore};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut server = McpServer {
+            initialized: false,
+            permission_store: PermissionStore::from_persistent_path(
+                tmp.path().join("permissions.json"),
+            ),
+        };
+        let _ = dispatch_fixture(
+            &mut server,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
+        );
+        let once = server.permission_store.grant(
+            PermissionKind::SandboxCreate,
+            GrantScope::Once,
+            Some("legacy-once".into()),
+            "test-fixture",
+        );
+        let session = server.permission_store.grant(
+            PermissionKind::SandboxCreate,
+            GrantScope::Session,
+            Some("legacy-session".into()),
+            "test-fixture",
+        );
+        let _always = server.permission_store.grant(
+            PermissionKind::SandboxCreate,
+            GrantScope::Always,
+            Some("operator-policy".into()),
+            "test-fixture",
+        );
+
+        // The intentionally invalid port fails before runtime work even when
+        // a persisted operator permission allows the call to pass its gate.
+        for (name, allowed) in [
+            ("legacy-once", false),
+            ("legacy-session", false),
+            ("operator-policy", true),
+            ("not-approved", false),
+        ] {
+            let response = dispatch_fixture(
+                &mut server,
+                modern_fixture(
+                    "tools/call",
+                    json!({"name": "sandbox_create",
+                        "arguments": {"name": name, "ports": ["not-a-port"]}
+                    }),
+                ),
+            );
+            assert_eq!(response["result"]["isError"], true);
+            let message = response["result"]["content"][0]["text"].as_str().unwrap();
+            assert_eq!(!message.contains("Permission required"), allowed);
+        }
+
+        let legacy_grants = server.permission_store.list();
+        assert!(legacy_grants.iter().any(|grant| grant.id == once));
+        assert!(legacy_grants.iter().any(|grant| grant.id == session));
+    }
+
+    #[test]
+    fn test_modern_tool_results_keep_existing_content_and_error_flag() {
+        let mut server = McpServer::new();
+        let result = dispatch_fixture(
+            &mut server,
+            modern_fixture("tools/call", json!({"name": "sandbox_run"})),
+        );
+        assert_eq!(result["result"]["resultType"], "complete");
+        assert_eq!(result["result"]["isError"], true);
+        assert!(
+            result["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("command is required")
+        );
+        assert!(result["result"].get("cacheScope").is_none());
     }
 
     // === Tool parameter validation tests ===

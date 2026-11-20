@@ -126,8 +126,16 @@ impl PermissionStore {
             .join("agentkernel")
             .join("permissions.json");
 
-        let grants = Self::load_from_disk(&persistent_path).unwrap_or_default();
+        Self::from_persistent_path(persistent_path)
+    }
 
+    /// Reload persistent operator grants without inheriting process-local grants.
+    pub fn persisted_only(&self) -> Self {
+        Self::from_persistent_path(self.persistent_path.clone())
+    }
+
+    pub(crate) fn from_persistent_path(persistent_path: PathBuf) -> Self {
+        let grants = Self::load_from_disk(&persistent_path).unwrap_or_default();
         Self {
             grants: Mutex::new(grants),
             persistent_path,
