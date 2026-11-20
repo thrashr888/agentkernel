@@ -473,12 +473,13 @@ With MCP configured, you can have conversations like:
 
 ## Protocol Details
 
-The MCP server implements:
+`agentkernel mcp-server` uses stdio. Existing clients can keep the
+`2024-11-05` initialization handshake. Clients using `2026-07-28` can call
+`server/discover` and send version and capability metadata with each request.
 
-- JSON-RPC 2.0 over stdio
-- MCP protocol version 2024-11-05
-- Tool calling with structured arguments
-- Error responses for invalid operations
+Modern requests use saved operator policy. They do not inherit temporary
+permissions from legacy sessions. MCP Tasks and Streamable HTTP are not
+supported by this server.
 
 ## Choose your next step
 
