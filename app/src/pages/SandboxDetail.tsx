@@ -19,7 +19,9 @@ import {
   Pencil,
   Tag,
 } from "lucide-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSettings } from "@/lib/hooks/use-settings";
+import { isLocalServer } from "@/lib/server-version";
 import { useSandbox } from "@/lib/hooks/use-sandbox";
 import { useExec } from "@/lib/hooks/use-exec";
 import { useLlmUsageBySandbox } from "@/lib/hooks/use-llm-usage";
@@ -62,6 +64,77 @@ interface ParsedPort {
   protocol: string;
 }
 
+function SandboxSshUrl({ name }: { name: string }) {
+  const active = useRef(false);
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+    };
+  }, []);
+  const lookup = useMutation({
+    mutationFn: () => api.getSandboxSshUrl(name),
+  });
+
+  if (lookup.data) {
+    const url = lookup.data;
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <code className="break-all">{url}</code>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+              toast.error("Clipboard unavailable. Select the URL to copy it manually.");
+              return;
+            }
+            // Invoke clipboard.write from the click gesture for WebKit, but
+            // populate it from a fresh lookup so restarts cannot copy old ports.
+            const address = lookup.mutateAsync().then((currentUrl) => {
+              if (!active.current) throw new Error("Sandbox selection changed");
+              return new Blob([currentUrl], { type: "text/plain" });
+            });
+            void navigator.clipboard.write([new ClipboardItem({ "text/plain": address })]).then(
+              () => {
+                if (active.current) toast.success("SSH URL copied");
+              },
+              () => {
+                if (active.current) toast.error("Couldn’t copy the SSH URL.");
+              },
+            );
+          }}
+        >
+          <Copy className="h-3 w-3" />
+          Copy SSH URL
+        </Button>
+        <span className="text-xs text-muted-foreground">Authentication is separate.</span>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        disabled={lookup.isPending}
+        onClick={() => lookup.mutate()}
+      >
+        {lookup.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+        Show SSH URL
+      </Button>
+      {lookup.isError && (
+        <p role="alert" className="mt-2 text-xs text-muted-foreground">
+          {lookup.error instanceof Error ? lookup.error.message : String(lookup.error)}
+        </p>
+      )}
+    </>
+  );
+}
+
 function parsePortBinding(binding: string): ParsedPort {
   const [portsPart, protoPart] = binding.split("/");
   const protocol = (protoPart || "tcp").toLowerCase();
@@ -87,6 +160,17 @@ export function SandboxDetail() {
   const { data: sandbox, isLoading, error } = useSandbox(name ?? "");
   const { data: llmUsage } = useLlmUsageBySandbox(name ?? "");
   const execMutation = useExec();
+  const { settings } = useSettings();
+  const isSavingSettings = useIsMutating({ mutationKey: ["save-settings"] }) > 0;
+  const activeServer = settings?.servers.find((entry) => entry.name === settings.active_server);
+  const localSshServer =
+    activeServer &&
+    !isSavingSettings &&
+    (activeServer.managed ?? activeServer.name.toLowerCase() === "local") &&
+    !activeServer.ssh_tunnel?.enabled &&
+    isLocalServer(activeServer.url)
+      ? activeServer
+      : undefined;
 
   const [commandInput, setCommandInput] = useState("");
   const [history, setHistory] = useState<CommandEntry[]>([]);
@@ -654,6 +738,17 @@ export function SandboxDetail() {
                     <SandboxStatusBadge status={sandbox.status} />
                   </td>
                 </tr>
+                {isRunning && localSshServer && sandbox.backend.toLowerCase() === "docker" && (
+                  <tr className="border-b">
+                    <td className="px-4 py-2.5 text-muted-foreground">SSH URL</td>
+                    <td className="px-4 py-2.5">
+                      <SandboxSshUrl
+                        key={JSON.stringify([localSshServer.name, localSshServer.url, localSshServer.config_path, sandbox.uuid ?? sandbox.name])}
+                        name={sandbox.name}
+                      />
+                    </td>
+                  </tr>
+                )}
                 {sandbox.description && (
                   <tr className="border-b">
                     <td className="px-4 py-2.5 text-muted-foreground">

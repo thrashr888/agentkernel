@@ -91,6 +91,12 @@ Entries marked as external or remote in Settings are never started or stopped
 by the app. This keeps a separately managed local daemon and remote servers
 available for development, team, and enterprise deployments.
 
+### Copy a sandbox SSH URL
+
+On the app-managed local server, open **Inspect → SSH URL** to copy the SSH
+address for a running Docker sandbox created with `--ssh`. The URL contains no
+credentials. Use `ak ssh connect <sandbox>` for certificate authentication.
+
 ### Private SSH tunnels
 
 Remote server entries can opt into **Manage tunnel** in Settings. Configure the

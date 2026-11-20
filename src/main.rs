@@ -237,7 +237,7 @@ enum Commands {
         #[command(subcommand)]
         action: Box<SandboxAction>,
     },
-    /// SSH access (connect, config, proxy)
+    /// SSH access (connect, url, config, proxy)
     Ssh {
         #[command(subcommand)]
         action: SshAction,
@@ -718,6 +718,11 @@ enum SshAction {
         /// Command to execute (instead of interactive shell)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
+    },
+    /// Print the SSH URL for a running, SSH-enabled local Docker sandbox
+    Url {
+        /// Name of the sandbox
+        name: String,
     },
     /// Generate SSH config for IDE integration (VS Code Remote SSH, JetBrains, Cursor)
     Config {
@@ -3632,6 +3637,9 @@ memory_mb = 512
                     }
                 }
             }
+            SshAction::Url { name } => {
+                println!("{}", sandbox_ssh_url(&name)?);
+            }
             SshAction::Config { name, all } => {
                 if name.is_none() && !all {
                     bail!("Specify a sandbox name or use --all");
@@ -6055,6 +6063,12 @@ fn format_ttl(secs: u64) -> String {
     }
 }
 
+fn sandbox_ssh_url(name: &str) -> Result<String> {
+    let state = VmManager::read_sandbox_state(name)?
+        .ok_or_else(|| anyhow::anyhow!("Sandbox '{name}' not found"))?;
+    ssh::sandbox_ssh_url_for_state(&state)
+}
+
 fn sandbox_connection_command(name: &str, firecracker: bool, ssh_enabled: bool) -> String {
     if ssh_enabled {
         format!("agentkernel ssh {name}")
@@ -6750,6 +6764,15 @@ mod tests {
     use crate::config::Config;
     use clap::Parser;
     use tempfile::TempDir;
+
+    #[test]
+    fn ssh_url_parses_sandbox_name() {
+        let cli = Cli::try_parse_from(["agentkernel", "ssh", "url", "rex-demo"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ssh { action: super::SshAction::Url { name } } if name == "rex-demo"
+        ));
+    }
 
     fn project_with_dockerfile() -> TempDir {
         let temp_dir = TempDir::new().unwrap();

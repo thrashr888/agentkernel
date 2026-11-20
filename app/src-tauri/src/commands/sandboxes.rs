@@ -17,6 +17,35 @@ pub async fn get_sandbox(name: String, state: State<'_, AppState>) -> Result<San
     client.get_sandbox(&name).await.map_err(|e| e.to_string())
 }
 
+/// Resolve a sandbox's managed SSH URL on the machine running this app.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_sandbox_ssh_url(
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let client = {
+        let settings = state.settings.lock().map_err(|e| e.to_string())?;
+        let local = settings.active().is_some_and(|entry| {
+            super::server::owns_local_server(entry)
+                && !entry
+                    .ssh_tunnel
+                    .as_ref()
+                    .is_some_and(|tunnel| tunnel.enabled)
+        });
+        if !local {
+            return Err(
+                "SSH URL copying is only available on the app-managed local server.".into(),
+            );
+        }
+        // Build from the same settings snapshot used for the locality check.
+        AppState::client_from_settings(&settings)
+    };
+    client
+        .get_sandbox_ssh_url(&name)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Create a new sandbox.
 ///
 /// Resolves `secret_mappings` (env_var → host) from host environment variables

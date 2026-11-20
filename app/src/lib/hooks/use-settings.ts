@@ -12,8 +12,10 @@ export function useSettings(options?: { onSaved?: () => void }) {
   });
 
   const mutation = useMutation({
+    mutationKey: ["save-settings"],
     mutationFn: (settings: Settings) => api.saveSettings(settings),
-    onSuccess: () => {
+    onSuccess: (_result, savedSettings) => {
+      queryClient.setQueryData(["settings"], savedSettings);
       queryClient.invalidateQueries({ queryKey: ["settings"] });
       options?.onSaved?.();
     },

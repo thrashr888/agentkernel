@@ -64,6 +64,8 @@ export const api = {
   // Sandboxes
   listSandboxes: () => invoke<SandboxInfo[]>("list_sandboxes"),
   getSandbox: (name: string) => invoke<SandboxInfo>("get_sandbox", { name }),
+  getSandboxSshUrl: (name: string) =>
+    invoke<string>("get_sandbox_ssh_url", { name }),
   createSandbox: (req: CreateSandboxRequest) =>
     invoke<SandboxInfo>("create_sandbox", { req }),
   removeSandbox: (name: string) => invoke<void>("remove_sandbox", { name }),
