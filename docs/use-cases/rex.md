@@ -5,10 +5,11 @@ terminals inside the sandbox, not on the Mac running AgentKernel.
 
 ## 1. Start a sandbox with SSH
 
-This example runs Docker and Rex on the same Mac. Before creating the sandbox,
-make sure your existing Docker setup publishes ports only to loopback. Docker
-can [publish ports on all interfaces](https://docs.docker.com/engine/network/port-publishing/)
-by default. Do not expose the sandbox port to the internet.
+This example runs Docker Engine 28 or later and Rex on the same Mac. Before
+creating the sandbox, verify that its Docker network
+[defaults published ports to loopback](https://docs.docker.com/engine/network/port-publishing/#setting-the-default-bind-address-for-containers).
+If you can't verify that, stop. Docker can otherwise publish ports on all
+interfaces.
 
 Prepare a Linux image with OpenSSH server and Superlogical's Rex binary at
 `/usr/bin/rex`. Follow [Rex's Linux installation guide](https://www.superlogical.com/rex/docs/linux/installation)
