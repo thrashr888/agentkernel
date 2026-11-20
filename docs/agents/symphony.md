@@ -1,3 +1,5 @@
+> Deprecated: no longer part of the supported built-in template catalog. This page remains for existing configurations.
+
 
 # Symphony
 
@@ -9,7 +11,7 @@ Symphony is an orchestration daemon that monitors issue trackers (Linear), spawn
 
 ```bash
 # Option 1: Use the built-in template
-agentkernel run --template symphony-sandbox -- elixir --version
+agentkernel run --config templates/symphony-sandbox.toml -- elixir --version
 
 # Option 2: Use the Dockerfile example
 agentkernel sandbox create symphony-dev --config examples/agents/symphony/agentkernel.toml
@@ -183,3 +185,7 @@ RUN npm install -g your-custom-tools
 
 WORKDIR /workspace
 ```
+
+Migration: `--template symphony-sandbox` no longer resolves as a built-in name.
+Existing users must explicitly reference `--config templates/symphony-sandbox.toml`
+from a checkout, or save a local custom template before upgrading.

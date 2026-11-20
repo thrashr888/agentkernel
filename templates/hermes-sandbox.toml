@@ -9,7 +9,7 @@ init_script = """
 set -e
 apt-get update && apt-get install -y --no-install-recommends git curl bash jq && rm -rf /var/lib/apt/lists/*
 pip install --no-cache-dir litellm openai anthropic python-dotenv fire httpx rich tenacity pyyaml requests jinja2 pydantic prompt_toolkit firecrawl-py edge-tts typer platformdirs
-git clone --depth 1 https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent
+git clone --depth 1 --branch v0.23.2 https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent
 cd /opt/hermes-agent
 git submodule update --init --depth 1
 pip install --no-cache-dir -e ".[all]"

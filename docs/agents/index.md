@@ -9,13 +9,15 @@ agentkernel provides pre-configured Docker images for popular AI coding agents. 
 |-------|-------------|------------------|
 | [Claude Code](claude.md) | `claude` | `ANTHROPIC_API_KEY` |
 | [OpenAI Codex](codex.md) | `codex` | `OPENAI_API_KEY` |
-| [Google Gemini](gemini.md) | `gemini` | `GEMINI_API_KEY` |
+| [Gemini CLI (legacy)](gemini.md) | `gemini` | `GEMINI_API_KEY` |
 | [GitHub Copilot](copilot.md) | `copilot` | `GITHUB_TOKEN` |
 | [Amp](amp.md) | `amp` | `ANTHROPIC_API_KEY` |
 | [Pi](pi.md) | `pi` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
 | [OpenCode](opencode.md) | `opencode` | Provider-specific |
 | [Hermes Agent](hermes.md) | `hermes` | `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` |
-| [Symphony](symphony.md) | `symphony` | `LINEAR_API_KEY` + `OPENAI_API_KEY` |
+| [Antigravity CLI (experimental template)](antigravity.md) | `agy` | `GEMINI_API_KEY` |
+
+Symphony is retired from the built-in template catalog. Existing explicit configurations remain readable.
 
 ## Quick Start
 

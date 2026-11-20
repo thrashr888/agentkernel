@@ -6,7 +6,7 @@ name = "claude-sandbox"
 base_image = "node:24-alpine3.24"
 init_script = """
 set -e
-npm install -g @anthropic-ai/claude-code@2.1.239
+npm install -g @anthropic-ai/claude-code@2.1.327
 """
 
 [agent]
