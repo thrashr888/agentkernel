@@ -101,6 +101,7 @@ nav:
     - Security Profiles: config/security.md
     - Backends: config/backends.md
     - Cloud Hypervisor (experimental): cloud-hypervisor.md
+    - NVIDIA OpenShell (experimental): openshell.md
   - AI Agents:
     - Overview: agents/index.md
     - Claude Code: agents/claude.md

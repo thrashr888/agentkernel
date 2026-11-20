@@ -140,7 +140,7 @@ enum Commands {
         /// Use container pool for faster execution (skips create/destroy overhead)
         #[arg(short = 'F', long)]
         fast: bool,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight, cloudhypervisor, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, cloudhypervisor, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer, openshell (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
         /// Template to use (built-in name, local name, github:owner/repo/path, or file path)
@@ -512,7 +512,7 @@ enum SandboxAction {
         /// Create an AgentKernel-managed Git worktree for the mounted project
         #[arg(long)]
         git_worktree: bool,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight, cloudhypervisor, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, cloudhypervisor, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer, openshell (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
         /// Template to use (built-in name, local name, github:owner/repo/path, or file path)
@@ -574,7 +574,7 @@ enum SandboxAction {
     Start {
         /// Name of the sandbox to start
         name: String,
-        /// Backend to use: docker, podman, firecracker, apple, hyperlight, cloudhypervisor, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer (default: auto-detect)
+        /// Backend to use: docker, podman, firecracker, apple, hyperlight, cloudhypervisor, kubernetes, nomad, daytona, runloop, e2b, modal, agentcomputer, openshell (default: auto-detect)
         #[arg(short = 'B', long)]
         backend: Option<String>,
     },
@@ -1345,6 +1345,40 @@ memory_mb = 512
                 };
 
                 let mut manager = VmManager::with_backend(backend_type)?;
+                let openshell = manager.backend() == crate::backend::BackendType::OpenShell;
+                if openshell {
+                    if backend_type.is_none() {
+                        bail!(
+                            "OpenShell is experimental; select it explicitly with --backend openshell"
+                        );
+                    }
+                    if !secret_bindings_raw.is_empty()
+                        || !secret_file_keys.is_empty()
+                        || !cfg.secrets.is_empty()
+                        || ssh_flag
+                        || cfg.security.transport.ssh
+                        || !publish.is_empty()
+                        || cfg
+                            .network
+                            .port_mappings()
+                            .is_ok_and(|ports| !ports.is_empty())
+                        || !volumes.is_empty()
+                        || start_perms.mount_cwd
+                        || start_perms.mount_home
+                        || start_perms.pass_env
+                        || !start_perms.network
+                        || start_perms.read_only_root
+                        || !start_files.is_empty()
+                        || cfg.sandbox.init_script.is_some()
+                        || governance_tenant.is_some()
+                        || source.is_some()
+                        || devcontainer_config.is_some()
+                    {
+                        bail!(
+                            "OpenShell supports image-only named sandboxes without mount, file, or credential injection and uses the gateway's isolation policy"
+                        );
+                    }
+                }
                 if manager.backend() == crate::backend::BackendType::Firecracker {
                     let api_port = local_api_port();
                     if !try_server_health("127.0.0.1", api_port).await {
@@ -1464,13 +1498,15 @@ memory_mb = 512
                 }
 
                 manager
-                    .create_with_options(
+                    .create_with_backend_options(
+                        manager.backend(),
                         &name,
                         &docker_image,
                         cfg.resources.vcpus,
                         cfg.resources.memory_mb,
                         ttl_secs,
                         ports,
+                        None,
                     )
                     .await?;
                 let stored_config_path = stored_config_path.or_else(|| {
@@ -1748,7 +1784,11 @@ memory_mb = 512
                         println!("To connect:");
                         println!(
                             "  {}",
-                            sandbox_connection_command(&name, firecracker, enable_ssh)
+                            if openshell {
+                                format!("agentkernel exec {} -- /bin/sh -c 'echo ready'", name)
+                            } else {
+                                sandbox_connection_command(&name, firecracker, enable_ssh)
+                            }
                         );
                     }
                 } else {
@@ -1757,7 +1797,11 @@ memory_mb = 512
                     println!("  1. agentkernel sandbox start {}", name);
                     println!(
                         "  2. {}",
-                        sandbox_connection_command(&name, firecracker, enable_ssh)
+                        if openshell {
+                            format!("agentkernel exec {} -- /bin/sh -c 'echo ready'", name)
+                        } else {
+                            sandbox_connection_command(&name, firecracker, enable_ssh)
+                        }
                     );
                 }
             }
@@ -1892,7 +1936,12 @@ memory_mb = 512
                     .start_with_permissions_and_files(&name, &start_perms, &start_files)
                     .await?;
                 println!("Sandbox '{}' started.", name);
-                if manager
+                if effective_backend == crate::backend::BackendType::OpenShell {
+                    println!(
+                        "\nTo run a command: agentkernel exec {} -- /bin/sh -c 'echo ready'",
+                        name
+                    );
+                } else if manager
                     .get_sandbox_state(&name)
                     .is_some_and(|s| s.ssh_enabled)
                 {
@@ -2972,6 +3021,11 @@ memory_mb = 512
                 None
             };
             let selected_backend = resolve_requested_backend(backend_type)?;
+            if selected_backend == crate::backend::BackendType::OpenShell {
+                bail!(
+                    "OpenShell supports explicitly named sandboxes; use agentkernel sandbox create --backend openshell, then agentkernel exec"
+                );
+            }
 
             // Optimized path: use run_ephemeral for single-operation execution
             // This is faster than create→start→exec→stop→remove cycle:
