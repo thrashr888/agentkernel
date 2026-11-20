@@ -44,8 +44,8 @@ const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
         include_str!("../templates/hermes-sandbox.toml"),
     ),
     (
-        "symphony-sandbox",
-        include_str!("../templates/symphony-sandbox.toml"),
+        "antigravity-sandbox",
+        include_str!("../templates/antigravity-sandbox.toml"),
     ),
     // Language runtimes
     ("bash", include_str!("../templates/bash.toml")),
@@ -412,6 +412,32 @@ mod tests {
         assert_eq!(t.source, TemplateSource::BuiltIn);
         let cfg = t.parse().unwrap();
         assert_eq!(cfg.agent.preferred, "claude");
+    }
+
+    #[test]
+    fn test_refreshed_agent_catalog() {
+        let cfg = resolve("antigravity-sandbox").unwrap().parse().unwrap();
+        assert_eq!(
+            cfg.sandbox.base_image.as_deref(),
+            Some("debian:bookworm-slim")
+        );
+        let script = cfg.sandbox.init_script.as_deref().unwrap();
+        assert!(script.contains("sha512sum -c -"));
+        assert!(script.contains("1.5.10-5253791805734912"));
+        assert!(
+            !BUILTIN_TEMPLATES
+                .iter()
+                .any(|(name, _)| *name == "symphony-sandbox")
+        );
+        assert!(resolve("gemini-sandbox").is_ok());
+        let copilot = resolve("copilot-sandbox").unwrap().parse().unwrap();
+        assert!(
+            copilot
+                .sandbox
+                .init_script
+                .unwrap()
+                .contains("@github/copilot@1.0.114")
+        );
     }
 
     #[test]

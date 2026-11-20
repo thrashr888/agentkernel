@@ -1,3 +1,4 @@
+# Legacy compatibility template. New Google workflows should use antigravity-sandbox.
 # Gemini CLI sandbox template
 # Pre-configured for running Gemini CLI inside an isolated sandbox
 
@@ -6,7 +7,7 @@ name = "gemini-sandbox"
 base_image = "node:24-alpine3.24"
 init_script = """
 set -e
-npm install -g @google/gemini-cli@0.56.0
+npm install -g @google/gemini-cli@0.68.0
 """
 
 [agent]

@@ -82,3 +82,33 @@ that existed before the fix should still be listed.
 - Run the pool daemon under a service manager (for example a systemd user
   unit) so it survives reboots. `nohup` survives a disconnect, not a reboot,
   so without a service this failure can recur silently.
+
+## Read-only root filesystem
+
+Fresh Firecracker starts honor `SandboxConfig.read_only` in both the guest's
+`ro` kernel boot argument and the Firecracker root block device's `is_read_only`
+setting. A read-only block device prevents guest root from making the root disk
+writable by remounting it. Writable mode remains explicit and unchanged.
+
+This does not supply writable scratch mounts or make every harness usable on a
+read-only root. Prepare an appropriate guest image and test its startup behavior.
+It also does not retrofit existing snapshots: full-state restore loads saved
+block-device state and does not repeat fresh-boot configuration. Never treat a
+previously writable snapshot as newly read-only because a setting was changed.
+
+The opt-in `firecracker_read_only_root_rejects_write_and_remount` native KVM test
+checks a writable positive control, then block-device read-only state, root write
+denial and remount denial. Unit tests validate generated API configuration only;
+passing them is not evidence that the native guest test has run.
+
+The prepared ext4 image must have a clean journal before a read-only boot. An
+image with `needs_recovery` may boot in writable mode yet fail to mount when the
+block device correctly rejects writes. Check and repair a disposable copy of the
+image offline; do not weaken the read-only policy to accommodate pending journal
+replay, and do not repair a mounted or live image.
+
+The separate opt-in `firecracker_snapshot_preserves_root_block_policy` native
+gate pauses and restores both writable and read-only sources into new instances.
+It checks that each restored block device retains its original policy, with
+write/remount positive and negative controls. This verifies preservation, not
+conversion: restoring a writable checkpoint does not make it read-only.

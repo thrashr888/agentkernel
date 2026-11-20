@@ -1,0 +1,49 @@
+# Antigravity CLI 1.5.10. Native glibc builds; no host login/keychain import.
+# Release URLs and SHA-512 hashes from Google's updater manifests, 2026-11-18.
+[sandbox]
+name = "antigravity-sandbox"
+base_image = "debian:bookworm-slim"
+init_script = """
+set -eu
+apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+case "$(uname -m)" in
+  x86_64)
+    url=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.10-5253791805734912/linux-x64/cli_linux_x64.tar.gz
+    sha=713ae840845d74736e2d4a96f5d84e3353d614e73a875793ddf500997ccee09595448cebfd8e94fdd90ce2a0fa97707bd1cc29763dcfe01c945d80c92234378f ;;
+  aarch64|arm64)
+    url=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.10-5253791805734912/linux-arm/cli_linux_arm64.tar.gz
+    sha=f9f5c7ebc47a8b8de536acca8116b1f5a43dca614cde94008fe5a510517b23535fb281d85416930d76e76478858bf3dc66ea6d1b0c9b6eeadcfabe4d8ef2a807 ;;
+  *) echo 'Unsupported Antigravity architecture' >&2; exit 1 ;;
+esac
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+curl -fsSL "$url" -o "$stage/agy.tar.gz"
+printf '%s  %s\n' "$sha" "$stage/agy.tar.gz" | sha512sum -c -
+tar -xzf "$stage/agy.tar.gz" -C "$stage" antigravity
+install -m 755 "$stage/antigravity" /usr/local/bin/agy
+"""
+
+[resources]
+vcpus = 2
+memory_mb = 2048
+
+[secrets]
+GEMINI_API_KEY = "generativelanguage.googleapis.com"
+
+[security]
+profile = "moderate"
+
+[security.domains]
+allow = ["generativelanguage.googleapis.com"]
+
+[template]
+description = "Google Antigravity CLI (experimental native sandbox)"
+category = "Agent Sandboxes"
+help_text = """
+Invoke agy explicitly with agentkernel exec; a native AgentType/plugin is not yet provided.
+Smoke command: agy --version
+Model access: explicitly supply GEMINI_API_KEY; do not import a host keyring or OAuth profile.
+The Google client can self-update; the initial payload is pinned, not a guarantee of immutable runtime.
+Installation and live inference must be smoke-tested for your backend before production use.
+Docs: https://antigravity.google/docs/install/
+"""

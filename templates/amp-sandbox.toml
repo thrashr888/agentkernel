@@ -6,7 +6,7 @@ name = "amp-sandbox"
 base_image = "node:24-bookworm-slim"
 init_script = """
 set -e
-npm install -g --allow-scripts=@ampcode/cli @ampcode/cli@0.0.1787342526-gc11bfb
+npm install -g --allow-scripts=@ampcode/cli @ampcode/cli@0.0.1794974444-g035056
 """
 
 [agent]

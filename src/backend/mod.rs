@@ -936,7 +936,7 @@ pub fn detect_best_backend() -> Option<BackendType> {
     // On macOS 26+, check for Apple Containers
     #[cfg(target_os = "macos")]
     {
-        if apple::apple_containers_available() {
+        if backend_available(BackendType::Apple) {
             return Some(BackendType::Apple);
         }
     }
@@ -970,7 +970,9 @@ pub fn backend_available(backend: BackendType) -> bool {
         BackendType::Podman => docker::podman_available(),
         BackendType::Firecracker => firecracker::firecracker_available(),
         #[cfg(target_os = "macos")]
-        BackendType::Apple => apple::apple_containers_available(),
+        BackendType::Apple => {
+            apple::macos_version_supported() && apple::apple_containers_available()
+        }
         #[cfg(not(target_os = "macos"))]
         BackendType::Apple => false,
         BackendType::Hyperlight => hyperlight::hyperlight_available(),

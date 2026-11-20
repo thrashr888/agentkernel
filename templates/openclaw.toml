@@ -5,13 +5,13 @@
 
 [sandbox]
 name = "openclaw"
-base_image = "node:22-slim"
+base_image = "node:24-bookworm-slim"
 init_script = """
 set -e
 apt-get update -qq && apt-get install -y -qq git curl >/dev/null
 corepack enable
-corepack prepare pnpm@latest --activate
-npm install -g openclaw@latest
+corepack prepare pnpm@12.21.0 --activate
+npm install -g openclaw@2026.11.5
 """
 
 [resources]

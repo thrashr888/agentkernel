@@ -1,3 +1,4 @@
+# Deprecated: retained for existing explicit configs; not in the built-in catalog.
 # Symphony sandbox template
 # Pre-configured for running OpenAI Symphony orchestration daemon inside an isolated sandbox
 # https://github.com/openai/symphony
@@ -10,7 +11,7 @@ set -e
 apt-get update && apt-get install -y --no-install-recommends git curl bash ca-certificates gnupg && rm -rf /var/lib/apt/lists/*
 curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
 apt-get install -y --no-install-recommends nodejs && rm -rf /var/lib/apt/lists/*
-npm install -g @openai/codex@0.149.0
+npm install -g @openai/codex@0.170.0
 git init /opt/symphony
 git -C /opt/symphony remote add origin https://github.com/openai/symphony.git
 git -C /opt/symphony fetch --depth 1 origin 8001b52e3062495a16e520e4ceaf8f9de868c4d0

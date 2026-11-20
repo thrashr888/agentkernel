@@ -7,12 +7,8 @@
 
 use std::process::{Command, Output};
 
-fn agentkernel_bin() -> String {
-    format!("{}/target/debug/agentkernel", env!("CARGO_MANIFEST_DIR"))
-}
-
 fn run_agentkernel(args: &[&str]) -> Output {
-    Command::new(agentkernel_bin())
+    Command::new(env!("CARGO_BIN_EXE_agentkernel"))
         .args(args)
         .output()
         .expect("failed to execute agentkernel")
@@ -94,5 +90,18 @@ fn apple_container_lifecycle_smoke() {
     assert_eq!(
         String::from_utf8_lossy(&executed.stdout).trim(),
         "apple-smoke"
+    );
+
+    let stopped = run_agentkernel(&["sandbox", "stop", &name]);
+    assert!(
+        stopped.status.success(),
+        "stop failed: {}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    let removed = run_agentkernel(&["sandbox", "remove", &name]);
+    assert!(
+        removed.status.success(),
+        "remove failed: {}",
+        String::from_utf8_lossy(&removed.stderr)
     );
 }

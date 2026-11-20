@@ -879,3 +879,127 @@ async fn owned_listener_is_accepted_after_startup_absence() {
     let _ = child.wait();
     result.expect("the child's own listener must be accepted once it binds");
 }
+
+/// Deny writes at the virtual block device, not merely the initial mount flag.
+/// This test is intentionally not a passing substitute for an unavailable KVM host.
+#[tokio::test]
+#[ignore = "requires explicit AGENTKERNEL_KVM_SMOKE=1 and prepared native KVM assets"]
+async fn firecracker_read_only_root_rejects_write_and_remount() -> Result<()> {
+    let (_binary, kernel, rootfs) = native_prerequisites();
+    let mut sandbox = FirecrackerSandbox::new(&format!("readonly-{}", uuid::Uuid::new_v4()))?
+        .with_kernel(kernel.clone())
+        .with_rootfs(rootfs.clone());
+    let config = SandboxConfig {
+        image: "base".into(),
+        network: false,
+        read_only: true,
+        memory_mb: 256,
+        ..Default::default()
+    };
+    // Positive control proves the same prepared guest can write and remount
+    // when the block device is deliberately writable.
+    sandbox
+        .start(&SandboxConfig {
+            read_only: false,
+            ..config.clone()
+        })
+        .await?;
+    let control = sandbox.exec(&[
+        "/bin/sh", "-c",
+        "test -r /init || exit 20; /bin/busybox mount -o remount,rw / || exit 24; echo writable > /readonly-control && test -s /readonly-control",
+    ]).await;
+    let stopped = sandbox.stop().await;
+    let control = control?;
+    stopped?;
+    assert_eq!(control.exit_code, 0, "{}", control.stderr);
+
+    drop(sandbox);
+    // stop() tears down the private runtime directory; use a new instance
+    // rather than relying on unsupported reuse of a stopped runtime.
+    let mut sandbox = FirecrackerSandbox::new(&format!("readonly-{}", uuid::Uuid::new_v4()))?
+        .with_kernel(kernel)
+        .with_rootfs(rootfs);
+    sandbox.start(&config).await?;
+    let check = sandbox.exec(&[
+        "/bin/sh", "-c",
+        "test -r /init || exit 20; test -x /bin/busybox || exit 21; test \"$(/bin/busybox id -u)\" = 0 || exit 22; test \"$(/bin/busybox cat /sys/block/vda/ro)\" = 1 || exit 23; /bin/busybox mount > /dev/null || exit 24; if echo denied > /readonly-probe; then exit 17; fi; if /bin/busybox mount -o remount,rw /; then exit 18; fi; test ! -e /readonly-probe",
+    ]).await;
+    let stopped = sandbox.stop().await;
+    let result = check?;
+    stopped?;
+    assert_eq!(result.exit_code, 0, "{}", result.stderr);
+    assert!(!sandbox.is_running());
+    Ok(())
+}
+
+fn require_snapshot_test_stop(
+    stopped: Result<()>,
+    checkpoint: tempfile::TempDir,
+) -> Result<tempfile::TempDir> {
+    if let Err(error) = stopped {
+        let retained = checkpoint.keep();
+        return Err(error).with_context(|| {
+            format!(
+                "uncertain test runtime cleanup; retained checkpoint {}",
+                retained.display()
+            )
+        });
+    }
+    Ok(checkpoint)
+}
+
+async fn snapshot_root_policy(kernel: &Path, rootfs: &Path, read_only: bool) -> Result<()> {
+    let mut source = FirecrackerSandbox::new(&format!("snapshot-policy-{}", uuid::Uuid::new_v4()))?
+        .with_kernel(kernel.to_path_buf())
+        .with_rootfs(rootfs.to_path_buf());
+    let config = SandboxConfig {
+        image: "base".into(),
+        network: false,
+        read_only,
+        memory_mb: 256,
+        ..Default::default()
+    };
+    let checkpoint = tempfile::tempdir()?;
+    source.start(&config).await?;
+    let saved = source.pause_to(checkpoint.path()).await;
+    // A failed pause can resume the source. Always stop before returning.
+    let stopped = source.stop().await;
+    let checkpoint = require_snapshot_test_stop(stopped, checkpoint)?;
+    let saved = saved?;
+    assert!(!source.is_running());
+
+    let mut restored =
+        FirecrackerSandbox::new(&format!("restored-policy-{}", uuid::Uuid::new_v4()))?;
+    if let Err(error) = restored.restore_from(checkpoint.path(), &saved).await {
+        let stopped = restored.stop().await;
+        require_snapshot_test_stop(stopped, checkpoint)?;
+        return Err(error);
+    }
+    let script = if read_only {
+        "test -r /init || exit 20; test \"$(/bin/busybox id -u)\" = 0 || exit 22; test \"$(/bin/busybox cat /sys/block/vda/ro)\" = 1 || exit 23; /bin/busybox mount > /dev/null || exit 24; if echo denied > /restored-policy; then exit 17; fi; if /bin/busybox mount -o remount,rw /; then exit 18; fi; test ! -e /restored-policy"
+    } else {
+        "test \"$(/bin/busybox cat /sys/block/vda/ro)\" = 0 || exit 23; /bin/busybox mount -o remount,rw / || exit 24; echo writable > /restored-policy && test -s /restored-policy"
+    };
+    let check = restored.exec(&["/bin/sh", "-c", script]).await;
+    let stopped = restored.stop().await;
+    let _checkpoint = require_snapshot_test_stop(stopped, checkpoint)?;
+    let result = check?;
+    assert_eq!(
+        result.exit_code, 0,
+        "readonly={read_only}: {}",
+        result.stderr
+    );
+    assert!(!restored.is_running());
+    Ok(())
+}
+
+/// Restore must retain saved device policy; it does not reinterpret new config.
+#[tokio::test]
+#[ignore = "requires explicit AGENTKERNEL_KVM_SMOKE=1 and prepared native KVM assets"]
+async fn firecracker_snapshot_preserves_root_block_policy() -> Result<()> {
+    let (_binary, kernel, rootfs) = native_prerequisites();
+    for read_only in [false, true] {
+        snapshot_root_policy(&kernel, &rootfs, read_only).await?;
+    }
+    Ok(())
+}

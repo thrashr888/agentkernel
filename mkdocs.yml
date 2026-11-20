@@ -111,7 +111,9 @@ nav:
     - GitHub Copilot: agents/copilot.md
     - Pi: agents/pi.md
     - Hermes: agents/hermes.md
-    - Symphony: agents/symphony.md
+    - Antigravity CLI: agents/antigravity.md
+    - Template release audit: agents/template-refresh.md
+    - Symphony (deprecated): agents/symphony.md
   - API:
     - Overview: api/index.md
     - HTTP API: api/http.md

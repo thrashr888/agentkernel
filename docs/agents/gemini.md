@@ -1,3 +1,5 @@
+> Legacy compatibility integration. For new Google workflows, see [Antigravity CLI](antigravity.md). This is not an npm package rename; existing Gemini configuration is not automatically migrated.
+
 
 # Google Gemini CLI
 
