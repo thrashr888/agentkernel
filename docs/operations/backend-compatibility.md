@@ -11,7 +11,7 @@ a schedule or by explicit dispatch.
 | --- | --- | --- | --- | --- | --- |
 | Docker | Current GitHub-hosted Docker | `backend-compatibility.yml`, `container_backend_smoke` | Pull request and weekly | Runtime maintainers (@thrashr888) | Blocking |
 | Podman | Current Ubuntu Podman | `backend-compatibility.yml`, `container_backend_smoke` | Pull request and weekly | Runtime maintainers (@thrashr888) | Blocking |
-| Apple Containers | macOS 26+, Apple silicon, pinned 1.2.2 CLI | `apple-container-compatibility.yml` | Pull request, weekly, and approved live dispatch | macOS backend maintainer (@thrashr888) | Hosted contract blocking; live lifecycle dedicated-host gate |
+| Apple Containers | macOS 26+, Apple silicon, pinned 1.7.1 CLI | `apple-container-compatibility.yml` | Pull request, weekly, and approved live dispatch | macOS backend maintainer (@thrashr888) | Hosted contract blocking; live lifecycle dedicated-host gate |
 | Firecracker | 1.16.1 with the 6.18.45 guest kernel | `firecracker-kvm-smoke.yml` | Weekly and approved dispatch | Runtime maintainers (@thrashr888) | Dedicated-host gate |
 | Hyperlight | `hyperlight-wasm` 0.14, Linux x86_64 KVM | `hyperlight.yml` | Pull request and weekly | Runtime maintainers (@thrashr888) | Blocking |
 | Kubernetes | 1.34 and 1.35; automatic 1.36 probe | `kubernetes-compatibility.yml` | Pull request and weekly | Orchestrator maintainers (@thrashr888) | 1.34/1.35 blocking; 1.36 activates when published |
@@ -80,12 +80,12 @@ workflow timeout and cleanup procedure before enabling it.
 ## Explicit non-blocking boundaries
 
 GitHub-hosted Apple-silicon runners do not expose nested virtualization, so the
-blocking pull-request lane installs Apple's signed 1.2.2 package, verifies the
-macOS/architecture contract, runs structured-output tests, and compiles the
-lifecycle smoke. The real lifecycle is an opt-in dispatch on the access-controlled
+blocking pull-request lane installs Apple's signed 1.7.1 package, verifies the
+macOS and architecture requirements, checks the exact CLI version, runs
+structured-output tests, and compiles the lifecycle smoke. The real lifecycle is an opt-in dispatch on the access-controlled
 `agentkernel-apple-containers` self-hosted runner. The macOS backend maintainer
-(@thrashr888) owns that runner and must run the live lane before releases that
-change the Apple backend.
+(@thrashr888) owns that runner. The live lane expects the same CLI version and
+must pass before releases that change the Apple backend.
 
 Kubernetes 1.36 does not yet have a published `kindest/node:v1.36.0` image. The
 matrix probes that exact target on every run and automatically executes the full
