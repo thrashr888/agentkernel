@@ -84,6 +84,9 @@ impl ContainerSandbox {
 
     /// Start the container with the specified image and permissions
     pub async fn start_with_permissions(&mut self, image: &str, perms: &Permissions) -> Result<()> {
+        if self.runtime == ContainerRuntime::Docker {
+            crate::backend::docker::require_linux_docker_engine()?;
+        }
         let cmd = self.runtime.cmd();
 
         // Optimized: Use --rm to auto-remove on stop, avoiding separate cleanup
@@ -212,6 +215,9 @@ impl ContainerSandbox {
         cmd: &[String],
         perms: &Permissions,
     ) -> Result<(i32, String, String)> {
+        if runtime == ContainerRuntime::Docker {
+            crate::backend::docker::require_linux_docker_engine()?;
+        }
         let runtime_cmd = runtime.cmd();
 
         let mut args = vec![
@@ -298,13 +304,9 @@ impl ContainerSandbox {
     }
 }
 
-/// Check if Docker is available
+/// Check if the selected Docker engine can run AgentKernel's Linux containers.
 pub fn docker_available() -> bool {
-    Command::new("docker")
-        .arg("version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    crate::backend::docker::docker_available()
 }
 
 /// Check if Podman is available

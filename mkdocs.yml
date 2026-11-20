@@ -131,6 +131,7 @@ nav:
   - Operations:
     - Overview: operations/index.md
     - Backend compatibility: operations/backend-compatibility.md
+    - Native Windows containers: windows-containers.md
     - Dependency compatibility: operations/dependency-compatibility.md
     - Remote Backends: operations/remote.md
     - Copy-on-write Root Filesystems: operations/cow-rootfs.md

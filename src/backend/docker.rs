@@ -39,13 +39,59 @@ impl ContainerRuntime {
     }
 }
 
-/// Check if Docker is available
-pub fn docker_available() -> bool {
-    Command::new("docker")
-        .arg("version")
+/// OS of the Docker server, not the host running this CLI. Docker Desktop and
+/// remote contexts can target different OSes from the CLI host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DockerEngine {
+    Linux,
+    Windows,
+    Unknown,
+    Unavailable,
+}
+
+impl DockerEngine {
+    pub(super) const fn readiness_reason(self) -> &'static str {
+        match self {
+            Self::Linux => "ready",
+            Self::Windows => {
+                "Docker is using a Windows container engine; AgentKernel's Docker backend requires a Linux container engine"
+            }
+            Self::Unknown => "Docker server did not report a supported container OS",
+            Self::Unavailable => "Docker CLI is installed but the daemon is unavailable",
+        }
+    }
+}
+
+fn parse_docker_engine(stdout: &[u8]) -> DockerEngine {
+    match String::from_utf8_lossy(stdout).trim() {
+        "linux" => DockerEngine::Linux,
+        "windows" => DockerEngine::Windows,
+        _ => DockerEngine::Unknown,
+    }
+}
+
+pub(super) fn docker_engine() -> DockerEngine {
+    match Command::new("docker")
+        .args(["version", "--format", "{{.Server.Os}}"])
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    {
+        Ok(output) if output.status.success() => parse_docker_engine(&output.stdout),
+        _ => DockerEngine::Unavailable,
+    }
+}
+
+/// Check if AgentKernel can use the selected Docker engine.
+pub fn docker_available() -> bool {
+    docker_engine() == DockerEngine::Linux
+}
+
+/// Check before a launch path can mutate an incompatible engine.
+pub(crate) fn require_linux_docker_engine() -> Result<()> {
+    let engine = docker_engine();
+    if engine != DockerEngine::Linux {
+        bail!("{}", engine.readiness_reason());
+    }
+    Ok(())
 }
 
 /// Check if Podman is available
@@ -520,6 +566,9 @@ impl Sandbox for DockerSandbox {
     }
 
     async fn start(&mut self, config: &SandboxConfig) -> Result<()> {
+        if self.runtime == ContainerRuntime::Docker {
+            require_linux_docker_engine()?;
+        }
         let cmd = self.runtime.cmd();
         let container_name = self.container_name();
 
@@ -999,6 +1048,27 @@ impl Drop for DockerSandbox {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn only_a_linux_docker_server_is_usable_for_linux_sandboxes() {
+        assert_eq!(parse_docker_engine(b"linux\n"), DockerEngine::Linux);
+        let windows = parse_docker_engine(b"windows\r\n");
+        assert_eq!(windows, DockerEngine::Windows);
+        assert!(
+            windows
+                .readiness_reason()
+                .contains("requires a Linux container engine")
+        );
+        for unexpected in [
+            b"".as_slice(),
+            b"freebsd",
+            b"linux windows",
+            b"<no value>",
+            b"\xff",
+        ] {
+            assert_eq!(parse_docker_engine(unexpected), DockerEngine::Unknown);
+        }
+    }
 
     const DOCKER_NETWORK_INSPECT: &str = r#"[
       {

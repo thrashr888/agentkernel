@@ -1264,13 +1264,14 @@ pub fn backend_readiness(backend: BackendType) -> BackendReadiness {
     let (configured, usable, reason) = match backend {
         BackendType::Docker => {
             let configured = command_available("docker");
-            let usable = backend_available(backend);
-            let reason = if usable {
-                "ready"
-            } else if configured {
-                "Docker CLI is installed but the daemon is unavailable"
+            let (usable, reason) = if configured {
+                let engine = docker::docker_engine();
+                (
+                    engine == docker::DockerEngine::Linux,
+                    engine.readiness_reason(),
+                )
             } else {
-                "Docker CLI is not installed"
+                (false, "Docker CLI is not installed")
             };
             (configured, usable, reason)
         }
