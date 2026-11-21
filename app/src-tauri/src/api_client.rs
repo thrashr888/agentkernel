@@ -117,7 +117,7 @@ impl ApiClient {
             || url.username() != "sandbox"
             || url.password().is_some()
             || !matches!(url.host_str(), Some("127.0.0.1" | "[::1]"))
-            || !url.port().is_some_and(|port| port != 0)
+            || url.port().is_none_or(|port| port == 0)
             || !url.path().is_empty()
             || url.query().is_some()
             || url.fragment().is_some()
