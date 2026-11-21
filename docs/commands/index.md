@@ -40,8 +40,12 @@ agentkernel provides a Docker-like CLI for managing sandboxes.
 | Command | Description |
 |---------|-------------|
 | `ssh connect` | SSH into a sandbox (certificate-authenticated) |
+| `ssh url <sandbox>` | Print the SSH address for a running local Docker sandbox created with `--ssh` |
 | `ssh config` | Generate SSH config entry for IDE integration |
 | `ssh proxy` | ProxyCommand helper for SSH |
+
+The URL requires a confirmed port mapping on a local Docker socket and contains
+no credentials. Use `ak ssh connect <sandbox>` for certificate authentication.
 
 ### Templates & Configuration
 

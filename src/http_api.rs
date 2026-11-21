@@ -2484,6 +2484,11 @@ async fn handle_request(
         // Get sandbox info
         (Method::GET, ["sandboxes", name]) => handle_get_sandbox(req, name, state).await,
 
+        // Report a managed SSH address without signing a key or connecting.
+        (Method::GET, ["sandboxes", name, "ssh-url"]) => {
+            handle_get_sandbox_ssh_url(req, name, state).await
+        }
+
         // Execute in a sandbox
         (Method::POST, ["sandboxes", name, "exec"]) => handle_exec_sandbox(req, name, state).await,
 
@@ -5093,6 +5098,69 @@ async fn handle_get_sandbox(
         StatusCode::NOT_FOUND,
         &ApiResponse::<()>::error("Sandbox not found"),
     )
+}
+
+async fn handle_get_sandbox_ssh_url(
+    req: Request<Incoming>,
+    name: &str,
+    state: Arc<AppState>,
+) -> Response<BoxBody> {
+    if let Err(error) = validation::validate_sandbox_name(name) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(error.to_string()),
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    let identity = extract_identity(&req, &state).await;
+    #[cfg(not(feature = "enterprise"))]
+    let _ = &req;
+
+    let sandbox = {
+        let mut manager = match state.get_manager().await {
+            Ok(manager) => manager,
+            Err(_) => {
+                return json_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &ApiResponse::<()>::error("Sandbox manager is unavailable"),
+                );
+            }
+        };
+        if let Err(response) = refresh_sandbox_state(&mut manager, name) {
+            return response;
+        }
+        let Some(sandbox) = manager.get_state(name) else {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error("Sandbox not found"),
+            );
+        };
+        // Recheck once the state is loaded, including newly discovered sandboxes.
+        #[cfg(feature = "enterprise")]
+        if let Err(response) = require_sandbox_access(&state, &identity, sandbox) {
+            return response;
+        }
+        sandbox.clone()
+    };
+
+    #[cfg(feature = "enterprise")]
+    if let Err(response) = enforce_policy(&state, &identity, crate::policy::Action::SSH, name).await
+    {
+        return response;
+    }
+
+    // Docker/Podman inspection is synchronous; release the manager lock first.
+    match tokio::task::spawn_blocking(move || crate::ssh::sandbox_ssh_url_for_state(&sandbox)).await
+    {
+        Ok(Ok(url)) => json_response(StatusCode::OK, &ApiResponse::success(url)),
+        _ => json_response(
+            StatusCode::CONFLICT,
+            &ApiResponse::<()>::error(
+                "No managed SSH URL is available. Use a running local Docker sandbox created with --ssh.",
+            ),
+        ),
+    }
 }
 
 async fn handle_get_sandbox_by_uuid(
@@ -13118,6 +13186,63 @@ mod tests {
         assert_eq!(body["data"]["status"], "stopped");
         assert_eq!(body["data"]["backend"], "firecracker");
         task.await.unwrap();
+    }
+
+    async fn probe_ssh_url_route(owner: &str) -> (StatusCode, serde_json::Value) {
+        let temp = tempfile::tempdir().unwrap();
+        let mut manager = VmManager::for_tests(temp.path()).unwrap();
+        let mut sandbox = start_test_sandbox("manual-ssh", "manual-ssh-uuid");
+        sandbox.owner_user_id = Some(owner.to_string());
+        sandbox.owner_org_id = Some("default".to_string());
+        sandbox.ssh_enabled = false;
+        sandbox.ssh_host_port = Some(2222);
+        manager.insert_state_for_tests(sandbox);
+        let state = AppState::with_api_keys(vec![]);
+        assert!(
+            state
+                .vm_manager
+                .set(Arc::new(tokio::sync::RwLock::new(manager)))
+                .is_ok()
+        );
+        let state = Arc::new(state);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            http1::Builder::new()
+                .serve_connection(
+                    TokioIo::new(stream),
+                    service_fn(move |request| handle_request(request, state.clone())),
+                )
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}/sandboxes/manual-ssh/ssh-url"))
+            .header("connection", "close")
+            .send()
+            .await
+            .unwrap();
+        let result = (response.status(), response.json().await.unwrap());
+        task.await.unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn ssh_url_route_does_not_advertise_manually_configured_guest_ssh() {
+        let (status, body) = probe_ssh_url_route("anonymous").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["success"], false);
+        assert!(body.get("data").is_none_or(serde_json::Value::is_null));
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[tokio::test]
+    async fn ssh_url_route_denies_access_to_another_owners_sandbox() {
+        let (status, body) = probe_ssh_url_route("someone-else").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.get("data").is_none_or(serde_json::Value::is_null));
     }
 
     #[tokio::test]

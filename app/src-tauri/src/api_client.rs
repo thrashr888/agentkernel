@@ -95,6 +95,38 @@ impl ApiClient {
         .await
     }
 
+    /// Resolve the server-host-local SSH address without minting credentials.
+    pub async fn get_sandbox_ssh_url(&self, name: &str) -> anyhow::Result<String> {
+        // Sandbox names are sent as a path segment, never as arbitrary URLs.
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+        {
+            anyhow::bail!("Invalid sandbox name.");
+        }
+        let address: String = self
+            .request(
+                reqwest::Method::GET,
+                &format!("/sandboxes/{name}/ssh-url"),
+                None::<&()>,
+            )
+            .await?;
+        let url = url::Url::parse(&address)?;
+        if url.scheme() != "ssh"
+            || url.username() != "sandbox"
+            || url.password().is_some()
+            || !matches!(url.host_str(), Some("127.0.0.1" | "[::1]"))
+            || url.port().is_none_or(|port| port == 0)
+            || !url.path().is_empty()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            anyhow::bail!("Server did not return a valid local sandbox SSH URL.");
+        }
+        Ok(address)
+    }
+
     /// Create a new sandbox.
     pub async fn create_sandbox(&self, req: &CreateSandboxRequest) -> anyhow::Result<SandboxInfo> {
         self.request(reqwest::Method::POST, "/sandboxes", Some(req))

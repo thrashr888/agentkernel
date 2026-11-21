@@ -45,6 +45,123 @@ impl Default for SshConfig {
     }
 }
 
+/// Report a managed Docker sandbox's SSH URL on this host. Does not connect
+/// to the SSH endpoint or issue credentials.
+pub fn sandbox_ssh_url_for_state(state: &crate::vmm::SandboxState) -> Result<String> {
+    use crate::backend::BackendType;
+
+    let name = &state.name;
+    crate::validation::validate_sandbox_name(name)?;
+    if !state.ssh_enabled {
+        bail!("SSH is not enabled on sandbox '{name}'. Recreate it with --ssh.");
+    }
+    if state.backend != Some(BackendType::Docker) {
+        bail!("SSH URL lookup currently supports local Docker sandboxes only.");
+    }
+    let expected_port = state
+        .ssh_host_port
+        .filter(|&port| port != 0)
+        .context("No managed SSH host port has been recorded for this sandbox.")?;
+    let endpoint = local_docker_endpoint()?;
+    // Pin the inspection to the endpoint we validated, even if the configured
+    // context changes between commands.
+    let output = std::process::Command::new("docker")
+        .env_remove("DOCKER_CONTEXT")
+        .env_remove("DOCKER_HOST")
+        .args([
+            "--host",
+            &endpoint,
+            "inspect",
+            "--type",
+            "container",
+            "--format",
+            r#"{{if and .State.Running (not .State.Paused)}}{{json (index .NetworkSettings.Ports "22/tcp")}}{{end}}"#,
+            &format!("agentkernel-{name}"),
+        ])
+        .output()
+        .with_context(|| format!("Could not inspect sandbox '{name}' with Docker"))?;
+    if !output.status.success() {
+        bail!("Could not inspect sandbox '{name}' with Docker; check that it is running.");
+    }
+    let bindings = String::from_utf8_lossy(&output.stdout);
+    if bindings.trim().is_empty() {
+        bail!("Sandbox '{name}' is stopped or paused.");
+    }
+    local_ssh_url_from_bindings(&bindings, expected_port)?.ok_or_else(|| {
+        anyhow::anyhow!("No local SSH binding matches the recorded port for sandbox '{name}'.")
+    })
+}
+
+fn local_docker_endpoint() -> Result<String> {
+    // DOCKER_CONTEXT wins over DOCKER_HOST. Without an override, inspect the
+    // effective context's endpoint without contacting the daemon.
+    let docker_context = std::env::var_os("DOCKER_CONTEXT").filter(|v| !v.is_empty());
+    let endpoint = match std::env::var_os("DOCKER_HOST").filter(|v| !v.is_empty()) {
+        Some(host) if docker_context.is_none() => host
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("Docker host is not valid UTF-8"))?,
+        _ => {
+            let mut command = std::process::Command::new("docker");
+            command.args([
+                "context",
+                "inspect",
+                "--format",
+                "{{.Endpoints.docker.Host}}",
+            ]);
+            if let Some(context) = docker_context {
+                command.arg("--").arg(context);
+            }
+            let output = command
+                .output()
+                .context("Could not read the effective Docker context")?;
+            if !output.status.success() {
+                bail!("Could not determine the effective Docker endpoint");
+            }
+            String::from_utf8(output.stdout)
+                .context("Docker endpoint is not valid UTF-8")?
+                .trim()
+                .to_owned()
+        }
+    };
+    if !is_local_docker_endpoint(&endpoint) {
+        bail!(
+            "SSH URL lookup requires a local Docker Unix socket; remote Docker contexts are not supported."
+        );
+    }
+    Ok(endpoint)
+}
+
+fn is_local_docker_endpoint(endpoint: &str) -> bool {
+    endpoint
+        .strip_prefix("unix://")
+        .is_some_and(|path| path.starts_with('/') && !path.starts_with("//") && path.len() > 1)
+}
+
+fn local_ssh_url_from_bindings(bindings: &str, expected_port: u16) -> Result<Option<String>> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct PortBinding {
+        #[serde(rename = "HostIp")]
+        host_ip: String,
+        host_port: String,
+    }
+    let bindings: Option<Vec<PortBinding>> =
+        serde_json::from_str(bindings).context("Could not read published SSH port metadata")?;
+    Ok(bindings.into_iter().flatten().find_map(|binding| {
+        let port = binding
+            .host_port
+            .parse::<u16>()
+            .ok()
+            .filter(|&port| port != 0 && port == expected_port)?;
+        let host = match binding.host_ip.as_str() {
+            "" | "0.0.0.0" | "127.0.0.1" => "127.0.0.1",
+            "::" | "::1" => "[::1]",
+            _ => return None,
+        };
+        Some(format!("ssh://sandbox@{host}:{port}"))
+    }))
+}
+
 /// Generate an sshd_config string for certificate-only authentication.
 pub fn generate_sshd_config(config: &SshConfig) -> String {
     format!(
@@ -522,6 +639,47 @@ pub async fn sign_client_key_vault(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ssh_url_rejects_remote_and_ambiguous_docker_endpoints() {
+        assert!(is_local_docker_endpoint("unix:///var/run/docker.sock"));
+        for endpoint in [
+            "ssh://build.example.com",
+            "tcp://127.0.0.1:2375",
+            "https://build.example.com:2376",
+            "unix://build.example.com/run/docker.sock",
+            "unix:relative",
+            "",
+        ] {
+            assert!(!is_local_docker_endpoint(endpoint), "{endpoint}");
+        }
+    }
+
+    #[test]
+    fn ssh_url_formats_only_local_tcp_bindings() {
+        assert_eq!(
+            local_ssh_url_from_bindings(r#"[{"HostIp":"0.0.0.0","HostPort":"32768"}]"#, 32768)
+                .unwrap()
+                .as_deref(),
+            Some("ssh://sandbox@127.0.0.1:32768")
+        );
+        assert_eq!(
+            local_ssh_url_from_bindings(r#"[{"HostIp":"::","HostPort":"2200"}]"#, 2200)
+                .unwrap()
+                .as_deref(),
+            Some("ssh://sandbox@[::1]:2200")
+        );
+        for input in [
+            "null",
+            "[]",
+            r#"[{"HostIp":"127.0.0.1","HostPort":"0"}]"#,
+            r#"[{"HostIp":"0.0.0.0","HostPort":"65536"}]"#,
+            r#"[{"HostIp":"192.0.2.1","HostPort":"2200"}]"#,
+            r#"[{"HostIp":"127.0.0.1","HostPort":"2201"}]"#,
+        ] {
+            assert_eq!(local_ssh_url_from_bindings(input, 2200).unwrap(), None);
+        }
+    }
+
     use super::*;
 
     #[test]

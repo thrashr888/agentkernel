@@ -5401,7 +5401,7 @@ impl VmManager {
             return Ok(false);
         }
 
-        let Some(mut state) = self.read_persisted_sandbox(name)? else {
+        let Some(mut state) = Self::read_persisted_sandbox(&self.data_dir, name)? else {
             return Ok(false);
         };
         if state.uuid.is_empty() {
@@ -5427,7 +5427,7 @@ impl VmManager {
                 name
             );
         }
-        let Some(state) = self.read_persisted_sandbox(name)? else {
+        let Some(state) = Self::read_persisted_sandbox(&self.data_dir, name)? else {
             return Ok(false);
         };
         if state.uuid.is_empty() {
@@ -5447,8 +5447,14 @@ impl VmManager {
         Ok(true)
     }
 
-    fn read_persisted_sandbox(&self, name: &str) -> Result<Option<SandboxState>> {
-        let path = self.data_dir.join("sandboxes").join(format!("{name}.json"));
+    /// Look up a single sandbox without manager initialization or state repair.
+    pub(crate) fn read_sandbox_state(name: &str) -> Result<Option<SandboxState>> {
+        validation::validate_sandbox_name(name)?;
+        Self::read_persisted_sandbox(&Self::data_dir(), name)
+    }
+
+    fn read_persisted_sandbox(data_dir: &Path, name: &str) -> Result<Option<SandboxState>> {
+        let path = data_dir.join("sandboxes").join(format!("{name}.json"));
         let contents = match std::fs::read_to_string(&path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),

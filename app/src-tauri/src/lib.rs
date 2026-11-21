@@ -437,6 +437,7 @@ pub fn run() {
             // sandboxes
             commands::sandboxes::list_sandboxes,
             commands::sandboxes::get_sandbox,
+            commands::sandboxes::get_sandbox_ssh_url,
             commands::sandboxes::create_sandbox,
             commands::sandboxes::remove_sandbox,
             commands::sandboxes::start_sandbox,
