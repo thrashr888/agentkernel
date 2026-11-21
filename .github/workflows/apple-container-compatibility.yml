@@ -60,8 +60,8 @@ jobs:
           test "$(printf '%s\n' "$version" | awk '{print $4}')" = "$APPLE_CONTAINER_VERSION"
       - name: Run structured-output unit tests
         run: cargo test --locked --lib backend::apple
-      - name: Compile lifecycle compatibility smoke
-        run: cargo test --locked --test apple_container_smoke --no-run
+      - name: Run lifecycle smoke contract tests
+        run: cargo test --locked --test apple_container_smoke
 
   live-lifecycle:
     name: Apple Containers live lifecycle
