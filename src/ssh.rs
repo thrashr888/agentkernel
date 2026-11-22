@@ -62,9 +62,10 @@ pub fn sandbox_ssh_url_for_state(state: &crate::vmm::SandboxState) -> Result<Str
         .ssh_host_port
         .filter(|&port| port != 0)
         .context("No managed SSH host port has been recorded for this sandbox.")?;
-    let expected = state.docker_ssh_launch.as_ref().context(
-        "No verified managed Docker SSH launch has been recorded for this sandbox.",
-    )?;
+    let expected = state
+        .docker_ssh_launch
+        .as_ref()
+        .context("No verified managed Docker SSH launch has been recorded for this sandbox.")?;
     if expected.port != expected_port {
         bail!("The saved port does not match the managed Docker SSH launch.");
     }
@@ -82,7 +83,10 @@ pub struct DockerSshLaunch {
 }
 
 fn full_docker_id(id: &str) -> bool {
-    id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    id.len() == 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 pub(crate) fn pinned_docker_command(endpoint: &str) -> std::process::Command {
@@ -108,7 +112,10 @@ impl DockerSshLaunch {
             ])
             .output()
             .context("Could not inspect exact Docker SSH container")?;
-        anyhow::ensure!(output.status.success(), "Exact Docker SSH container is not available");
+        anyhow::ensure!(
+            output.status.success(),
+            "Exact Docker SSH container is not available"
+        );
         Self::parse(endpoint, name, id, &String::from_utf8_lossy(&output.stdout))
     }
 
@@ -119,44 +126,70 @@ impl DockerSshLaunch {
         let observed_name = parts.next().context("Missing Docker container name")?;
         let bindings = parts.next().context("Missing Docker SSH binding")?;
         anyhow::ensure!(
-            full_docker_id(id) && id == observed_id && observed_name == format!("/agentkernel-{name}"),
+            full_docker_id(id)
+                && id == observed_id
+                && observed_name == format!("/agentkernel-{name}"),
             "Docker SSH container identity or name does not match",
         );
         let start_time = chrono::DateTime::parse_from_rfc3339(started)
             .context("Invalid Docker start generation")?;
-        anyhow::ensure!(start_time.timestamp() > 0, "Docker container has no valid start");
+        anyhow::ensure!(
+            start_time.timestamp() > 0,
+            "Docker container has no valid start"
+        );
         let raw: serde_json::Value = serde_json::from_str(bindings)?;
-        let port = raw.as_array().and_then(|bindings| bindings.first())
+        let port = raw
+            .as_array()
+            .and_then(|bindings| bindings.first())
             .and_then(|binding| binding.get("HostPort"))
             .and_then(serde_json::Value::as_str)
-            .and_then(|port| port.parse::<u16>().ok()).context("Missing Docker SSH host port")?;
-        anyhow::ensure!(port != 0 && private_docker_ssh_url_from_bindings(bindings, port)?.is_some(),
-            "Docker SSH route is not exclusively bound to loopback");
-        Ok(Self { id: id.into(), started_at: started.into(), endpoint: endpoint.into(), port })
+            .and_then(|port| port.parse::<u16>().ok())
+            .context("Missing Docker SSH host port")?;
+        anyhow::ensure!(
+            port != 0 && private_docker_ssh_url_from_bindings(bindings, port)?.is_some(),
+            "Docker SSH route is not exclusively bound to loopback"
+        );
+        Ok(Self {
+            id: id.into(),
+            started_at: started.into(),
+            endpoint: endpoint.into(),
+            port,
+        })
     }
 
-    #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "docker-rex-local"))]
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "docker-rex-local"
+    ))]
     pub(crate) fn rex_owner_identity(&self) -> (&str, &str, &str) {
         (&self.id, &self.started_at, &self.endpoint)
     }
 
     fn require_same(&self, observed: &Self) -> Result<()> {
-        anyhow::ensure!(self == observed, "Docker SSH container generation or route changed");
+        anyhow::ensure!(
+            self == observed,
+            "Docker SSH container generation or route changed"
+        );
         Ok(())
     }
 
     pub(crate) fn verify_ready(&self, endpoint: &str, name: &str) -> Result<()> {
-        self.verify_ready_with(endpoint, |id| Self::observe(endpoint, name, id), |id| {
-            let status = pinned_docker_command(endpoint)
-                .args(["exec", id, "sh", "-c", DOCKER_SSHD_READY])
-                .output()
-                .context("Could not verify Docker SSH readiness")?;
-            anyhow::ensure!(
-                status.status.success(),
-                "Docker sandbox '{name}' has no ready managed SSH process."
-            );
-            Ok(())
-        })
+        self.verify_ready_with(
+            endpoint,
+            |id| Self::observe(endpoint, name, id),
+            |id| {
+                let status = pinned_docker_command(endpoint)
+                    .args(["exec", id, "sh", "-c", DOCKER_SSHD_READY])
+                    .output()
+                    .context("Could not verify Docker SSH readiness")?;
+                anyhow::ensure!(
+                    status.status.success(),
+                    "Docker sandbox '{name}' has no ready managed SSH process."
+                );
+                Ok(())
+            },
+        )
     }
 
     fn verify_ready_with(
@@ -165,13 +198,15 @@ impl DockerSshLaunch {
         mut observe: impl FnMut(&str) -> Result<Self>,
         check_listener: impl FnOnce(&str) -> Result<()>,
     ) -> Result<()> {
-        anyhow::ensure!(self.endpoint == endpoint, "The local Docker SSH endpoint changed");
+        anyhow::ensure!(
+            self.endpoint == endpoint,
+            "The local Docker SSH endpoint changed"
+        );
         self.require_same(&observe(&self.id)?)?;
         check_listener(&self.id)?;
         // Detect a restart, rename or remap during the guest observation.
         self.require_same(&observe(&self.id)?)
     }
-
 }
 
 pub(crate) fn local_docker_endpoint() -> Result<String> {
@@ -1004,37 +1039,49 @@ mod tests {
         const ENDPOINT: &str = "unix:///private/tmp/test.sock";
         let id = "a".repeat(64);
         let newcomer = "b".repeat(64);
-        let row = |id: &str, stamp: &str| format!(
-            r#"{id} {stamp} /agentkernel-test [{{"HostIp":"127.0.0.1","HostPort":"42022"}}]"#
-        );
+        let row = |id: &str, stamp: &str| {
+            format!(
+                r#"{id} {stamp} /agentkernel-test [{{"HostIp":"127.0.0.1","HostPort":"42022"}}]"#
+            )
+        };
         let old_stamp = "2026-11-22T01:00:00.012345678Z";
         let new_stamp = "2026-11-22T01:00:00.012345679Z";
         let old = DockerSshLaunch::parse(ENDPOINT, "test", &id, &row(&id, old_stamp)).unwrap();
-        let restarted = DockerSshLaunch::parse(ENDPOINT, "test", &id, &row(&id, new_stamp)).unwrap();
-        let replacement = DockerSshLaunch::parse(
-            ENDPOINT, "test", &newcomer, &row(&newcomer, old_stamp)
-        ).unwrap();
-        assert!(DockerSshLaunch::parse(
-            ENDPOINT, "test", &id, &row(&newcomer, old_stamp)
-        ).is_err());
+        let restarted =
+            DockerSshLaunch::parse(ENDPOINT, "test", &id, &row(&id, new_stamp)).unwrap();
+        let replacement =
+            DockerSshLaunch::parse(ENDPOINT, "test", &newcomer, &row(&newcomer, old_stamp))
+                .unwrap();
+        assert!(DockerSshLaunch::parse(ENDPOINT, "test", &id, &row(&newcomer, old_stamp)).is_err());
         for candidate in [&restarted, &replacement] {
-            assert!(old.verify_ready_with(
-                ENDPOINT,
-                |requested| {
-                    assert_eq!(requested, id);
-                    Ok(candidate.clone())
-                },
-                |_| panic!("must not probe an altered or unowned launch"),
-            ).is_err());
+            assert!(
+                old.verify_ready_with(
+                    ENDPOINT,
+                    |requested| {
+                        assert_eq!(requested, id);
+                        Ok(candidate.clone())
+                    },
+                    |_| panic!("must not probe an altered or unowned launch"),
+                )
+                .is_err()
+            );
         }
         let mut observations = [old.clone(), restarted].into_iter();
-        assert!(old.verify_ready_with(
-            ENDPOINT, |_| Ok(observations.next().unwrap()), |_| Ok(())
-        ).is_err());
-        assert!(old.verify_ready_with(
-            ENDPOINT, |_| Ok(old.clone()),
-            |requested| { assert_eq!(requested, id); Ok(()) }
-        ).is_ok());
+        assert!(
+            old.verify_ready_with(ENDPOINT, |_| Ok(observations.next().unwrap()), |_| Ok(()))
+                .is_err()
+        );
+        assert!(
+            old.verify_ready_with(
+                ENDPOINT,
+                |_| Ok(old.clone()),
+                |requested| {
+                    assert_eq!(requested, id);
+                    Ok(())
+                }
+            )
+            .is_ok()
+        );
     }
 
     #[test]

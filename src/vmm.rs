@@ -1804,6 +1804,9 @@ impl VmManager {
         target_arch = "aarch64",
         feature = "docker-rex-local"
     ))]
+    // Kept for explicit owner-only callers with an existing managed SSH capture.
+    // The shipped prepared-guest route intentionally has no SSH listener.
+    #[allow(dead_code)]
     pub async fn register_owner_local_rex(
         &mut self,
         name: &str,

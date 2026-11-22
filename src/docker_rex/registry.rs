@@ -1002,7 +1002,7 @@ impl OwnerLocalRex {
     /// Normal app startup discovers only this separate platform config file.
     /// An explicit override is authoritative (including an invalid or missing
     /// override) so a test configuration cannot activate normal owner state.
-    pub(crate) fn discover_owner_manifest(
+    pub fn discover_owner_manifest(
         explicit: Option<&std::ffi::OsStr>,
         config_dir: Option<&Path>,
     ) -> io::Result<Option<Self>> {
@@ -1035,7 +1035,7 @@ impl OwnerLocalRex {
     /// Optional opt-in provided only by the owner who launches the local
     /// control server. The dedicated manifest must be owner-only and is never
     /// created by this program or accepted over HTTP.
-    pub(crate) fn from_owner_manifest(path: &Path) -> io::Result<Self> {
+    fn from_owner_manifest(path: &Path) -> io::Result<Self> {
         if !path.is_absolute() {
             return Err(denied());
         }

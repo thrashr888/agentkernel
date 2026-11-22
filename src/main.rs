@@ -22,7 +22,7 @@ mod docker_backend;
     target_arch = "aarch64",
     feature = "docker-rex-local"
 ))]
-mod docker_rex;
+pub mod docker_rex;
 mod durable_storage;
 mod events;
 mod firecracker_client;

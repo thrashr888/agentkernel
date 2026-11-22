@@ -514,13 +514,15 @@ impl DockerSandbox {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "/".to_string());
 
-        let _ = self.container_command()
+        let _ = self
+            .container_command()
             .args(["exec", target, "mkdir", "-p", &parent])
             .output();
 
         // Copy file into container
         let dest = format!("{}:{}", target, path);
-        let output = self.container_command()
+        let output = self
+            .container_command()
             .args(["cp", temp_file.to_str().unwrap(), &dest])
             .output()
             .context("Failed to copy file to container")?;
@@ -537,7 +539,9 @@ impl DockerSandbox {
     }
 
     fn docker_ssh_target(&self) -> Option<&str> {
-        self.docker_ssh_endpoint.as_ref().and(self.container_id.as_deref())
+        self.docker_ssh_endpoint
+            .as_ref()
+            .and(self.container_id.as_deref())
     }
 
     fn container_command(&self) -> Command {
@@ -799,7 +803,11 @@ impl Sandbox for DockerSandbox {
             args.push(e.clone());
         }
 
-        args.push(self.docker_ssh_target().unwrap_or(&container_name).to_string());
+        args.push(
+            self.docker_ssh_target()
+                .unwrap_or(&container_name)
+                .to_string(),
+        );
         args.extend(cmd.iter().map(|s| s.to_string()));
 
         let mut command = tokio::process::Command::from(self.container_command());

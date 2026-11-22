@@ -467,7 +467,10 @@ impl Engine for DesktopEofEngine {
     }
 }
 
+// Existing CLI contract fixtures stay grouped separately from the dedicated
+// prepared-launch methods below.
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
