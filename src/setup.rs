@@ -812,12 +812,13 @@ CMD ["__AGENTKERNEL_DEFAULT_KERNEL__"]
 const GUEST_AGENT_MAIN_SOURCE: &str = include_str!("embedded/guest_agent_main.rs");
 const GUEST_AGENT_PTY_SOURCE: &str = include_str!("embedded/guest_agent_pty.rs");
 const GUEST_AGENT_CARGO_SOURCE: &str = include_str!("embedded/guest_agent_cargo.toml");
-// The canonical optional Docker gate sources are packaged alongside the guest
-// crate but are not built by the ordinary Firecracker setup.
+// Keep the canonical optional Docker gate in the outer CLI crate: Cargo
+// omits nested crates from the CLI package. The guest crate uses these same
+// sources, but the ordinary Firecracker setup does not build the gate.
 const GUEST_AGENT_REX_GATE_MAIN_SOURCE: &str =
-    include_str!("../guest-agent/src/docker_rex_gate/main.rs");
+    include_str!("embedded/docker_rex_gate/main.rs");
 const GUEST_AGENT_REX_GATE_SUPERVISOR_SOURCE: &str =
-    include_str!("../guest-agent/src/docker_rex_gate/supervisor.rs");
+    include_str!("embedded/docker_rex_gate/supervisor.rs");
 
 // Keep the build image at least as new as the declared guest MSRV.
 const GUEST_AGENT_DOCKERFILE: &str = r#"

@@ -16,7 +16,7 @@ docker-rex-gate = []
 
 [[bin]]
 name = "rex-eof-guest"
-path = "src/docker_rex_gate/main.rs"
+path = "../src/embedded/docker_rex_gate/main.rs"
 required-features = ["docker-rex-gate"]
 
 [dependencies]
