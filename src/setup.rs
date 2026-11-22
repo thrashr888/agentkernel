@@ -812,12 +812,12 @@ CMD ["__AGENTKERNEL_DEFAULT_KERNEL__"]
 const GUEST_AGENT_MAIN_SOURCE: &str = include_str!("embedded/guest_agent_main.rs");
 const GUEST_AGENT_PTY_SOURCE: &str = include_str!("embedded/guest_agent_pty.rs");
 const GUEST_AGENT_CARGO_SOURCE: &str = include_str!("embedded/guest_agent_cargo.toml");
-// The canonical optional Docker gate sources are packaged alongside the guest
-// crate but are not built by the ordinary Firecracker setup.
-const GUEST_AGENT_REX_GATE_MAIN_SOURCE: &str =
-    include_str!("../guest-agent/src/docker_rex_gate/main.rs");
+// Keep the canonical optional Docker gate in the outer CLI crate: Cargo
+// omits nested crates from the CLI package. The guest crate uses these same
+// sources, but the ordinary Firecracker setup does not build the gate.
+const GUEST_AGENT_REX_GATE_MAIN_SOURCE: &str = include_str!("embedded/docker_rex_gate/main.rs");
 const GUEST_AGENT_REX_GATE_SUPERVISOR_SOURCE: &str =
-    include_str!("../guest-agent/src/docker_rex_gate/supervisor.rs");
+    include_str!("embedded/docker_rex_gate/supervisor.rs");
 
 // Keep the build image at least as new as the declared guest MSRV.
 const GUEST_AGENT_DOCKERFILE: &str = r#"
@@ -1632,10 +1632,6 @@ mod tests {
         let manifest: toml::Value = toml::from_str(GUEST_AGENT_CARGO_SOURCE).unwrap();
         assert_eq!(manifest["package"]["rust-version"].as_str(), Some("1.89"));
         assert!(GUEST_AGENT_DOCKERFILE.contains("FROM rust:1.89-alpine AS builder"));
-        assert_eq!(
-            GUEST_AGENT_CARGO_SOURCE,
-            include_str!("../guest-agent/Cargo.toml")
-        );
         let dir = tempfile::tempdir().unwrap();
         write_guest_agent_build_context(dir.path()).unwrap();
         for (path, expected) in [
