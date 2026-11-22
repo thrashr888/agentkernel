@@ -544,14 +544,14 @@ export function SandboxDetail() {
 
       {/* Header — Docker Desktop style */}
       <div className="flex items-start justify-between pb-4">
-        <div className="flex items-start gap-3">
+        <div className="flex min-w-0 items-start gap-3">
           <Link
             to="/sandboxes"
-            className="mt-1.5 text-muted-foreground hover:text-foreground"
+            className="mt-1.5 shrink-0 text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="h-5 w-5" />
           </Link>
-          <div>
+          <div className="min-w-0">
             <h1 className="text-2xl font-semibold leading-tight">
               {sandbox.name}
             </h1>
@@ -580,15 +580,15 @@ export function SandboxDetail() {
                   <span className="text-border">|</span>
                   <button
                     type="button"
-                    className="group inline-flex items-center gap-1 font-mono text-blue-500 hover:underline"
+                    className="group inline-flex max-w-full min-w-0 items-center gap-1 text-left font-mono text-blue-500 hover:underline"
                     onClick={() => copyToClipboard(sandbox.image!, "image")}
                     title="Copy image name"
                   >
-                    {sandbox.image}
+                    <span className="min-w-0 wrap-anywhere">{sandbox.image}</span>
                     {copiedField === "image" ? (
-                      <Check className="h-3 w-3 text-green-500" />
+                      <Check className="h-3 w-3 shrink-0 text-green-500" />
                     ) : (
-                      <Copy className="h-3 w-3 opacity-0 group-hover:opacity-70" />
+                      <Copy className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-70" />
                     )}
                   </button>
                 </>
@@ -816,17 +816,17 @@ export function SandboxDetail() {
                     {sandbox.image ? (
                       <button
                         type="button"
-                        className="group inline-flex items-center gap-1.5 font-mono hover:text-foreground"
+                        className="group inline-flex max-w-full min-w-0 items-center gap-1.5 text-left font-mono hover:text-foreground"
                         onClick={() =>
                           copyToClipboard(sandbox.image!, "image-inspect")
                         }
                         title="Copy"
                       >
-                        {sandbox.image}
+                        <span className="min-w-0 wrap-anywhere">{sandbox.image}</span>
                         {copiedField === "image-inspect" ? (
-                          <Check className="h-3 w-3 text-green-500" />
+                          <Check className="h-3 w-3 shrink-0 text-green-500" />
                         ) : (
-                          <Copy className="h-3 w-3 opacity-0 group-hover:opacity-70" />
+                          <Copy className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-70" />
                         )}
                       </button>
                     ) : (
