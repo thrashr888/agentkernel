@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	sdkVersion     = "0.21.2"
+	sdkVersion     = "0.21.3"
 	defaultBaseURL = "http://localhost:18888"
 	defaultTimeout = 30 * time.Second
 )
