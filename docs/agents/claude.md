@@ -1,4 +1,3 @@
-
 # Claude Code
 
 Use [Claude Code](https://claude.ai/code) with agentkernel for isolated code execution.
@@ -8,7 +7,7 @@ Use [Claude Code](https://claude.ai/code) with agentkernel for isolated code exe
 | Level | How It Works | Setup |
 |-------|-------------|-------|
 | **MCP Tools** | Claude calls agentkernel MCP tools for sandbox control | `agentkernel plugin install claude` |
-| **Full Isolation** | Run Claude Code itself inside an agentkernel sandbox | `agentkernel sandbox create` + `agentkernel attach` |
+| **Guest CLI** | Run Claude Code itself inside an agentkernel sandbox | `agentkernel sandbox create` + `agentkernel attach` |
 
 Claude Code has its own [native sandbox](https://code.claude.com/docs/en/sandboxing) using OS-level primitives (Seatbelt on macOS, bubblewrap on Linux). That sandbox cannot be replaced with a custom runtime. The MCP plugin gives Claude access to agentkernel sandboxes as tools it can call.
 
@@ -40,122 +39,54 @@ For global installation (available in all projects):
 agentkernel plugin install claude --global
 ```
 
-## Sandbox Mode
+## Run Claude in a sandbox
 
-Run Claude Code itself inside an isolated sandbox:
-
-```bash
-# Create sandbox with Claude Code pre-installed
-agentkernel sandbox create claude-dev --config examples/agents/claude-code/agentkernel.toml
-
-# Start the sandbox
-agentkernel sandbox start claude-dev
-
-# Run Claude with your API key
-agentkernel attach claude-dev -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
-
-# Inside the sandbox:
-claude
-```
-
-## API Key
-
-Claude Code requires an Anthropic API key. Get one from [console.anthropic.com](https://console.anthropic.com/).
-
-**Important:** Use a regular API key (`sk-ant-api03-...`), not an OAuth token.
-
-Pass the key when running commands:
+From a checkout of this repository, create a Docker sandbox with the
+[Claude example config](https://github.com/thrashr888/agentkernel/tree/main/examples/agents/claude-code).
+Bind only the project directory you intend to share with the guest:
 
 ```bash
-# Interactive session
-agentkernel attach claude-dev -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
-
-# One-off command
-agentkernel exec claude-dev -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY -- \
-  claude -p "Explain this code"
-```
-
-## Configuration
-
-The example config at `examples/agents/claude-code/agentkernel.toml`:
-
-```toml
-[sandbox]
-name = "claude-code-sandbox"
-
-[build]
-dockerfile = "Dockerfile"
-
-[agent]
-preferred = "claude"
-compatibility_mode = "claude"
-
-[resources]
-vcpus = 2
-memory_mb = 1024
-
-[security]
-profile = "moderate"
-network = true      # Claude needs network for API calls
-mount_cwd = true    # Mount project directory
-```
-
-## What's Included
-
-The Claude Code image includes:
-
-- **Node.js 24 LTS** - Runtime for Claude Code
-- **Claude Code CLI** - `@anthropic-ai/claude-code`
-- **Git** - Version control
-- **Python 3** - For Python projects
-- **ripgrep** - Fast search (used by Claude Code)
-- **fd** - Fast file finder
-- **jq** - JSON processing
-
-## Working with Projects
-
-Mount your project into the sandbox:
-
-```bash
-# Create with your project
-agentkernel sandbox create my-project \
+agentkernel sandbox create claude-dev --backend docker \
   --config examples/agents/claude-code/agentkernel.toml \
   --dir /path/to/your/project
-
-# Your code is at /workspace inside the sandbox
-agentkernel attach my-project -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
-claude  # Claude can now access your project
+agentkernel sandbox start claude-dev
+agentkernel attach claude-dev
 ```
 
-## Permissions Mode
+Inside the guest, run `claude --version`, then `claude`. The example builds a
+Docker image with a pinned CLI. The built-in `claude-sandbox` template is a
+separate path that installs its pinned CLI during initialization. Neither
+path includes account credentials or configures a Rex host.
 
-For fully autonomous operation, Claude Code supports `--dangerously-skip-permissions`:
+## Authenticate inside the guest
 
-```bash
-agentkernel exec claude-dev -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY -- \
-  claude --dangerously-skip-permissions -p "Fix all linting errors"
-```
+- **Personal subscription:** For an interactive guest, follow Claude Code's
+  sign-in prompt or run `/login`. Sign in to the isolated guest using the
+  supported flow rather than copying your host's credential store. A fresh
+  guest without retained auth state may need to sign in again.
+- **Noninteractive subscription:** Anthropic documents `claude setup-token` and
+  `CLAUDE_CODE_OAUTH_TOKEN` for eligible subscriptions when browser login is
+  unavailable. This token is a secret and supports model requests, not Claude
+  Remote Control or Claude.ai connectors. Bare mode does not read it. Inject
+  it only through an approved runtime secret mechanism; this example does not
+  provision it.
+- **API billing:** Use `ANTHROPIC_API_KEY` if API billing is intended. See
+  [AgentKernel's secret delivery options](../features/secrets.md) for the
+  backend in use. Never place a token or API key in a Dockerfile, build arg,
+  template, repository, or command argument containing the expanded value.
 
-This is safe inside agentkernel because the sandbox provides isolation.
+See [Anthropic's authentication guide](https://code.claude.com/docs/en/authentication)
+for supported plans and authentication precedence. Check the guest can reach
+the documented authentication and API endpoints under its existing network
+policy. Installing the CLI does not establish sign-in, credential retention,
+or working model requests.
 
-## Customizing
+## Review the guest's access
 
-Create a custom Dockerfile based on the example:
+Keep Claude Code's normal permission prompts. The guest can still access its
+mounted files and use any credentials or network access you provide. Do not
+mount your home directory or copy your whole `.claude` profile into an image.
 
-```dockerfile
-FROM node:24-alpine3.24
-
-# Base tools
-RUN apk add --no-cache git bash python3 ripgrep fd jq
-
-# Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code@2.1.239
-
-# Your additions
-RUN apk add --no-cache rust cargo
-COPY .claude /home/developer/.claude/
-
-# Setup
-WORKDIR /workspace
-USER developer
-```
+For a terminal in Rex, use the separately prepared guest and connection steps
+in the [Rex guide](../use-cases/rex.md). The published AgentKernel server
+container is not a Claude or Rex guest image.

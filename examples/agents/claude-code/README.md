@@ -18,24 +18,19 @@ claude
 
 The Dockerfile is built automatically when you use the config file.
 
-## Environment Variables
+## Authentication
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Your Anthropic API key for Claude |
+The image includes the stock Claude Code CLI, not credentials. Run
+`claude --version` before signing in. For an interactive session, use the
+Claude Code sign-in flow inside the guest. For a noninteractive session,
+Anthropic supports an eligible subscription token or an API key, depending on
+the mode and billing you intend. See the
+[authentication guide](https://code.claude.com/docs/en/authentication).
 
-## Passing API Keys
-
-When creating a sandbox, pass your API key:
-
-```bash
-# Option 1: Set in environment before creating
-export ANTHROPIC_API_KEY=sk-ant-...
-agentkernel sandbox create my-project --image agentkernel/claude-code
-
-# Option 2: Pass via exec
-agentkernel exec my-project -- env ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY claude
-```
+Pass credentials only through an approved runtime mechanism. Do not bake them
+into images or templates, pass expanded values as command arguments, or copy
+your host's auth profile. This example does not verify subscription login,
+token refresh, or persistence across guest replacement.
 
 ## What's Included
 
@@ -54,16 +49,20 @@ Create your own Dockerfile based on this one:
 
 ```dockerfile
 FROM agentkernel/claude-code
+USER root
 
 # Add your tools
 RUN apk add --no-cache your-tools
 
 # Add project-specific setup
-COPY your-config /home/developer/.config/
+# Copy only non-secret, project-specific settings
+COPY --chown=developer:developer your-config /home/developer/.config/
+USER developer
 ```
 
 ## Security Notes
 
 - Runs as non-root user `developer`
 - Workspace is isolated at `/workspace`
-- Network access is controlled by agentkernel security profiles
+- Guest network access and mounted files remain subject to backend and runtime policy
+- This image is not the AgentKernel server image or a prepared Rex guest

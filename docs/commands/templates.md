@@ -48,6 +48,10 @@ agentkernel ships with 26 built-in templates:
 | `pi-sandbox` | `node:24-alpine3.24` | Pi coding agent |
 | `symphony-sandbox` | `elixir:1.19-otp-28-slim` | Symphony orchestration agent |
 
+The Claude template installs its pinned CLI at guest initialization. It does not
+carry credentials or supply a prepared Rex guest. See [Claude Code](../agents/claude.md)
+and the [Rex guide](../use-cases/rex.md).
+
 ### Dev Tools
 
 | Template | Image | Ports | Use Case |
@@ -74,7 +78,7 @@ $ agentkernel template list
 NAME                 SOURCE     IMAGE
 bash                 built-in   alpine:3.24
 c                    built-in   gcc:14-bookworm
-claude-sandbox       built-in   python:3.12-alpine
+claude-sandbox       built-in   node:24-alpine3.24
 python               built-in   python:3.12-alpine
 rust                 built-in   rust:1.85-alpine
 my-custom            local      ubuntu:24.04
