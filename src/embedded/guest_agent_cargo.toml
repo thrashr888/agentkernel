@@ -11,6 +11,14 @@ license = "MIT"
 name = "agent"
 path = "src/main.rs"
 
+[features]
+docker-rex-gate = []
+
+[[bin]]
+name = "rex-eof-guest"
+path = "src/docker_rex_gate/main.rs"
+required-features = ["docker-rex-gate"]
+
 [dependencies]
 anyhow = "1.0"
 base64 = "0.23"

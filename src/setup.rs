@@ -812,6 +812,12 @@ CMD ["__AGENTKERNEL_DEFAULT_KERNEL__"]
 const GUEST_AGENT_MAIN_SOURCE: &str = include_str!("embedded/guest_agent_main.rs");
 const GUEST_AGENT_PTY_SOURCE: &str = include_str!("embedded/guest_agent_pty.rs");
 const GUEST_AGENT_CARGO_SOURCE: &str = include_str!("embedded/guest_agent_cargo.toml");
+// The canonical optional Docker gate sources are packaged alongside the guest
+// crate but are not built by the ordinary Firecracker setup.
+const GUEST_AGENT_REX_GATE_MAIN_SOURCE: &str =
+    include_str!("../guest-agent/src/docker_rex_gate/main.rs");
+const GUEST_AGENT_REX_GATE_SUPERVISOR_SOURCE: &str =
+    include_str!("../guest-agent/src/docker_rex_gate/supervisor.rs");
 
 // Keep the build image at least as new as the declared guest MSRV.
 const GUEST_AGENT_DOCKERFILE: &str = r#"
@@ -819,7 +825,7 @@ FROM rust:1.89-alpine AS builder
 RUN apk add --no-cache musl-dev
 WORKDIR /build
 COPY . .
-RUN cargo build --release --target x86_64-unknown-linux-musl 2>/dev/null || cargo build --release
+RUN cargo build --release --bin agent --target x86_64-unknown-linux-musl 2>/dev/null || cargo build --release --bin agent
 RUN cp target/*/release/agent /agent || cp target/release/agent /agent
 
 FROM scratch
@@ -832,6 +838,14 @@ fn write_guest_agent_build_context(build_dir: &Path) -> Result<()> {
         ("Cargo.toml", GUEST_AGENT_CARGO_SOURCE),
         ("src/main.rs", GUEST_AGENT_MAIN_SOURCE),
         ("src/pty.rs", GUEST_AGENT_PTY_SOURCE),
+        (
+            "src/docker_rex_gate/main.rs",
+            GUEST_AGENT_REX_GATE_MAIN_SOURCE,
+        ),
+        (
+            "src/docker_rex_gate/supervisor.rs",
+            GUEST_AGENT_REX_GATE_SUPERVISOR_SOURCE,
+        ),
     ] {
         let path = build_dir.join(relative_path);
         if let Some(parent) = path.parent() {
@@ -1622,6 +1636,27 @@ mod tests {
             GUEST_AGENT_CARGO_SOURCE,
             include_str!("../guest-agent/Cargo.toml")
         );
+        let dir = tempfile::tempdir().unwrap();
+        write_guest_agent_build_context(dir.path()).unwrap();
+        for (path, expected) in [
+            ("Cargo.toml", GUEST_AGENT_CARGO_SOURCE),
+            ("src/main.rs", GUEST_AGENT_MAIN_SOURCE),
+            ("src/pty.rs", GUEST_AGENT_PTY_SOURCE),
+            (
+                "src/docker_rex_gate/main.rs",
+                GUEST_AGENT_REX_GATE_MAIN_SOURCE,
+            ),
+            (
+                "src/docker_rex_gate/supervisor.rs",
+                GUEST_AGENT_REX_GATE_SUPERVISOR_SOURCE,
+            ),
+        ] {
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join(path)).unwrap(),
+                expected
+            );
+        }
+        assert!(GUEST_AGENT_DOCKERFILE.contains("cargo build --release --bin agent"));
     }
 
     #[cfg(unix)]
