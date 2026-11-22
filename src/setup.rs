@@ -815,8 +815,7 @@ const GUEST_AGENT_CARGO_SOURCE: &str = include_str!("embedded/guest_agent_cargo.
 // Keep the canonical optional Docker gate in the outer CLI crate: Cargo
 // omits nested crates from the CLI package. The guest crate uses these same
 // sources, but the ordinary Firecracker setup does not build the gate.
-const GUEST_AGENT_REX_GATE_MAIN_SOURCE: &str =
-    include_str!("embedded/docker_rex_gate/main.rs");
+const GUEST_AGENT_REX_GATE_MAIN_SOURCE: &str = include_str!("embedded/docker_rex_gate/main.rs");
 const GUEST_AGENT_REX_GATE_SUPERVISOR_SOURCE: &str =
     include_str!("embedded/docker_rex_gate/supervisor.rs");
 
@@ -1633,9 +1632,15 @@ mod tests {
         let manifest: toml::Value = toml::from_str(GUEST_AGENT_CARGO_SOURCE).unwrap();
         assert_eq!(manifest["package"]["rust-version"].as_str(), Some("1.89"));
         assert!(GUEST_AGENT_DOCKERFILE.contains("FROM rust:1.89-alpine AS builder"));
+        // The repository guest shares the outer crate's canonical sources;
+        // the standalone build context has its own embedded copy.
+        let repo_manifest = include_str!("../guest-agent/Cargo.toml");
+        let repo_gate = r#"path = "../src/embedded/docker_rex_gate/main.rs""#;
+        let embedded_gate = r#"path = "src/docker_rex_gate/main.rs""#;
+        assert_eq!(repo_manifest.matches(repo_gate).count(), 1);
         assert_eq!(
             GUEST_AGENT_CARGO_SOURCE,
-            include_str!("../guest-agent/Cargo.toml")
+            repo_manifest.replace(repo_gate, embedded_gate)
         );
         let dir = tempfile::tempdir().unwrap();
         write_guest_agent_build_context(dir.path()).unwrap();
