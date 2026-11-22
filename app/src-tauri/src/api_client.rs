@@ -37,6 +37,32 @@ impl ApiClient {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn new_owned_unix(
+        socket: std::path::PathBuf,
+        api_key: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static("agentkernel-desktop"));
+        if let Some(key) = api_key {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {key}"))?,
+            );
+        }
+        let http = reqwest::Client::builder()
+            .default_headers(headers)
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .unix_socket(socket)
+            .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+            .build()?;
+        Ok(Self {
+            base_url: "http://localhost".to_owned(),
+            http,
+        })
+    }
+
     // -----------------------------------------------------------------
     // Health
     // -----------------------------------------------------------------
@@ -77,6 +103,106 @@ impl ApiClient {
     pub async fn list_sandboxes(&self) -> anyhow::Result<Vec<SandboxInfo>> {
         self.request(reqwest::Method::GET, "/sandboxes", None::<&()>)
             .await
+    }
+
+    /// Only called by the matching app-owned Unix control command.
+    #[cfg(target_os = "macos")]
+    pub(crate) async fn local_rex_available(&self) -> anyhow::Result<bool> {
+        #[derive(serde::Deserialize)]
+        struct Availability {
+            available: bool,
+        }
+        let response: Availability = self
+            .request(
+                reqwest::Method::GET,
+                "/owner-local/rex/availability",
+                None::<&()>,
+            )
+            .await?;
+        Ok(response.available)
+    }
+
+    /// Only called by the matching app-owned Unix control command.
+    #[cfg(target_os = "macos")]
+    pub(crate) async fn create_local_rex(&self, name: &str) -> anyhow::Result<LocalRexSandbox> {
+        if !valid_local_rex_name(name) {
+            anyhow::bail!("Invalid sandbox name.");
+        }
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            name: &'a str,
+        }
+        let result: LocalRexSandbox = self
+            .request_with_timeout(
+                reqwest::Method::POST,
+                "/owner-local/rex/sandboxes",
+                Some(&Body { name }),
+                Some(Duration::from_secs(120)),
+            )
+            .await?;
+        if result.name != name || !valid_rex_unix_address(&result.rex_url) {
+            anyhow::bail!("Server did not return a valid local Rex sandbox address.");
+        }
+        Ok(result)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) async fn list_prepared_rex(&self) -> anyhow::Result<Vec<PreparedRexSandbox>> {
+        #[derive(serde::Deserialize)]
+        struct List {
+            sandboxes: Vec<PreparedRexSandbox>,
+        }
+        let list: List = self
+            .request(
+                reqwest::Method::GET,
+                "/owner-local/rex/sandboxes",
+                None::<&()>,
+            )
+            .await?;
+        if list
+            .sandboxes
+            .iter()
+            .any(|sandbox| !valid_local_rex_name(&sandbox.name))
+        {
+            anyhow::bail!("Server returned an invalid prepared Rex sandbox.");
+        }
+        Ok(list.sandboxes)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) async fn reopen_prepared_rex(&self, name: &str) -> anyhow::Result<LocalRexSandbox> {
+        let route = prepared_rex_path(name)?;
+        let result: LocalRexSandbox = self
+            .request(
+                reqwest::Method::POST,
+                &format!("{route}/reopen"),
+                None::<&()>,
+            )
+            .await?;
+        if result.name != name || !valid_rex_unix_address(&result.rex_url) {
+            anyhow::bail!("Server did not verify the original local Rex address.");
+        }
+        Ok(result)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) async fn remove_prepared_rex(&self, name: &str) -> anyhow::Result<()> {
+        #[derive(serde::Deserialize)]
+        struct Removal {
+            removed: bool,
+        }
+        let result: Removal = self
+            .request(
+                reqwest::Method::DELETE,
+                &prepared_rex_path(name)?,
+                None::<&()>,
+            )
+            .await?;
+        anyhow::ensure!(
+            result.removed,
+            "Server did not confirm prepared Rex sandbox removal."
+        );
+        Ok(())
     }
 
     /// Discover server-supported and ready sandbox backends.
@@ -997,8 +1123,21 @@ impl ApiClient {
         path: &str,
         body: Option<&(impl serde::Serialize + ?Sized)>,
     ) -> anyhow::Result<T> {
+        self.request_with_timeout(method, path, body, None).await
+    }
+
+    async fn request_with_timeout<T: serde::de::DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&(impl serde::Serialize + ?Sized)>,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<T> {
         let url = format!("{}{path}", self.base_url);
         let mut req = self.http.request(method, &url);
+        if let Some(timeout) = timeout {
+            req = req.timeout(timeout);
+        }
         if let Some(b) = body {
             req = req.header(CONTENT_TYPE, "application/json").json(b);
         }
@@ -1021,5 +1160,95 @@ impl ApiClient {
         parsed
             .data
             .ok_or_else(|| anyhow::anyhow!("Missing data field in response"))
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn prepared_rex_path(name: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(valid_local_rex_name(name), "Invalid sandbox name.");
+    Ok(format!("/owner-local/rex/sandboxes/{name}"))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn valid_local_rex_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    bytes.len() <= 63
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        && !bytes
+            .windows(2)
+            .any(|pair| matches!(pair, b"--" | b"__" | b"-_" | b"_-"))
+}
+
+// No URL normalization or host inference: render exactly the server's verified
+// local address, never an SSH/TCP URL, remote authority, or encoded path.
+#[cfg(any(target_os = "macos", test))]
+fn valid_rex_unix_address(address: &str) -> bool {
+    let Some(path) = address.strip_prefix("unix://") else {
+        return false;
+    };
+    let Some(segments) = path.strip_prefix('/') else {
+        return false;
+    };
+    path.len() <= 103
+        && segments.split('/').all(|part| {
+            !matches!(part, "" | "." | "..")
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        })
+}
+
+#[cfg(test)]
+mod private_rex_tests {
+    use super::{prepared_rex_path, valid_local_rex_name, valid_rex_unix_address};
+
+    #[test]
+    fn management_path_requires_a_valid_logical_name() {
+        assert_eq!(
+            prepared_rex_path("valid-1").unwrap(),
+            "/owner-local/rex/sandboxes/valid-1"
+        );
+        for name in ["../default", "valid/stop", "valid%2fstop", "valid?foo"] {
+            assert!(prepared_rex_path(name).is_err());
+        }
+    }
+
+    #[test]
+    fn only_the_sandbox_name_is_accepted() {
+        assert!(valid_local_rex_name("box-01_ok"));
+        for invalid in ["", "/tmp/a", " space", "a--b", "a-_b", "a.", "é"] {
+            assert!(!valid_local_rex_name(invalid));
+        }
+        assert!(!valid_local_rex_name(&"a".repeat(64)));
+    }
+
+    #[test]
+    fn requires_an_exact_hostless_unix_address() {
+        assert!(valid_rex_unix_address(
+            "unix:///private/tmp/ak-r_12/pinned/rex.sock"
+        ));
+        for invalid in [
+            "ssh://sandbox@localhost:22",
+            "unix://server/tmp/rex.sock",
+            "unix:////tmp/rex.sock",
+            "unix:///tmp/../rex.sock",
+            "unix:///tmp//rex.sock",
+            "unix:///tmp/rex%2esock",
+            "unix:///tmp/rex.sock?read=1",
+            "unix:///tmp/rex.sock#f",
+            "unix:///tmp/rex.sock
+",
+            "unix:///tmp/rex.sock ",
+        ] {
+            assert!(!valid_rex_unix_address(invalid), "accepted {invalid:?}");
+        }
+        assert!(!valid_rex_unix_address(&format!(
+            "unix:///{}",
+            "a".repeat(103)
+        )));
     }
 }

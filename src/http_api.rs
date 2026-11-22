@@ -289,6 +289,9 @@ impl From<LifecyclePolicyRequest> for crate::vmm::SandboxLifecyclePolicy {
 #[derive(Debug, Deserialize)]
 struct CreateRequest {
     name: String,
+    /// Opt in to Docker SSH from the authenticated owner Unix socket only.
+    #[serde(default)]
+    managed_local_ssh: bool,
     /// Backend to use for this sandbox. Omit or use `automatic` to select the
     /// server default.
     #[serde(default)]
@@ -2175,6 +2178,21 @@ async fn handle_request(
 
     // Parse path segments
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+    if segments.starts_with(&["owner-local", "rex"]) {
+        #[cfg(all(
+            target_os = "macos",
+            target_arch = "aarch64",
+            feature = "docker-rex-local"
+        ))]
+        if permits_managed_local_ssh(&req) {
+            return Ok(handle_owner_local_rex(req, state, &method, &segments).await);
+        }
+        return Ok(json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Not found"),
+        ));
+    }
 
     // Health check doesn't require authentication
     if method == Method::GET && segments.as_slice() == ["health"] {
@@ -4459,6 +4477,230 @@ async fn handle_list_backends(state: Arc<AppState>) -> Response<BoxBody> {
     )
 }
 
+/// Transport assertion added by the Unix acceptor, never deserialized.
+#[derive(Clone)]
+struct SameOwnerUnixControl;
+
+fn permits_managed_local_ssh<T>(req: &Request<T>) -> bool {
+    req.extensions().get::<SameOwnerUnixControl>().is_some()
+}
+
+#[cfg(all(
+    target_os = "macos",
+    target_arch = "aarch64",
+    feature = "docker-rex-local"
+))]
+async fn handle_owner_local_rex(
+    req: Request<Incoming>,
+    state: Arc<AppState>,
+    method: &Method,
+    segments: &[&str],
+) -> Response<BoxBody> {
+    let available = match state.vm_manager.get() {
+        Some(manager) => manager.read().await.owner_local_rex_available(),
+        None => false,
+    };
+    if *method == Method::GET && segments == ["owner-local", "rex", "availability"] {
+        return json_response(
+            StatusCode::OK,
+            &ApiResponse::success(serde_json::json!({"available":available})),
+        );
+    }
+    if available && *method == Method::GET && segments == ["owner-local", "rex", "sandboxes"] {
+        let Some(manager) = state.vm_manager.get() else {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error("Not available"),
+            );
+        };
+        return match manager.read().await.list_owner_prepared_rex() {
+            Ok(items) => {
+                let sandboxes = items
+                    .into_iter()
+                    .map(|(name, status)| serde_json::json!({"name":name,"status":status}))
+                    .collect::<Vec<_>>();
+                json_response(
+                    StatusCode::OK,
+                    &ApiResponse::success(serde_json::json!({"sandboxes":sandboxes})),
+                )
+            }
+            Err(_) => json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &ApiResponse::<()>::error("Could not list prepared Rex sandboxes"),
+            ),
+        };
+    }
+    if available
+        && *method == Method::POST
+        && let ["owner-local", "rex", "sandboxes", name, "reopen"] = segments
+    {
+        let (Some(manager), true) = (
+            state.vm_manager.get().cloned(),
+            crate::validation::validate_sandbox_name(name).is_ok(),
+        ) else {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error("Not found"),
+            );
+        };
+        // No input fields may replace owner journal identity. Reopen accepts
+        // only an empty request, never a supplied endpoint/ID/image.
+        if http_body_util::Limited::new(req.into_body(), 1)
+            .collect()
+            .await
+            .map_or(true, |body| !body.to_bytes().is_empty())
+        {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error("Reopen does not take a request body"),
+            );
+        }
+        let name = name.to_string();
+        let task_name = name.clone();
+        return match tokio::spawn(async move {
+            manager
+                .write()
+                .await
+                .reopen_owner_prepared_rex(&task_name)
+                .await
+        })
+        .await
+        {
+            Ok(Ok(path)) => json_response(
+                StatusCode::OK,
+                &ApiResponse::success(serde_json::json!({
+                    "name":name,"rex_url":format!("unix://{}",path.display())
+                })),
+            ),
+            Ok(Err(error))
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                json_response(
+                    StatusCode::NOT_FOUND,
+                    &ApiResponse::<()>::error("Not found"),
+                )
+            }
+            _ => json_response(
+                StatusCode::CONFLICT,
+                &ApiResponse::<()>::error("The original prepared Rex boot is unavailable"),
+            ),
+        };
+    }
+    if available
+        && *method == Method::DELETE
+        && let ["owner-local", "rex", "sandboxes", name] = segments
+    {
+        let (Some(manager), true) = (
+            state.vm_manager.get().cloned(),
+            crate::validation::validate_sandbox_name(name).is_ok(),
+        ) else {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &ApiResponse::<()>::error("Not found"),
+            );
+        };
+        let name = name.to_string();
+        return match tokio::spawn(async move {
+            manager.write().await.remove_owner_prepared_rex(&name).await
+        })
+        .await
+        {
+            Ok(Ok(())) => json_response(
+                StatusCode::OK,
+                &ApiResponse::success(serde_json::json!({"removed":true})),
+            ),
+            Ok(Err(error))
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                json_response(
+                    StatusCode::NOT_FOUND,
+                    &ApiResponse::<()>::error("Not found"),
+                )
+            }
+            _ => json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &ApiResponse::<()>::error("Could not remove the vetted Rex sandbox"),
+            ),
+        };
+    }
+    if *method != Method::POST || segments != ["owner-local", "rex", "sandboxes"] || !available {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Not available"),
+        );
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Create {
+        name: String,
+    }
+    let body = match http_body_util::Limited::new(req.into_body(), 1024)
+        .collect()
+        .await
+    {
+        Ok(body) => body.to_bytes(),
+        Err(_) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error("Invalid request"),
+            );
+        }
+    };
+    let request = match serde_json::from_slice::<Create>(&body) {
+        Ok(value) if crate::validation::validate_sandbox_name(&value.name).is_ok() => value,
+        _ => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error("Invalid sandbox name"),
+            );
+        }
+    };
+    let name = request.name;
+    let task_name = name.clone();
+    let Some(manager) = state.vm_manager.get().cloned() else {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &ApiResponse::<()>::error("Not available"),
+        );
+    };
+    // Owned operation: closing the HTTP request must not cancel Docker
+    // creation/cleanup partway through the persisted exact-ID transition.
+    match tokio::spawn(async move {
+        manager
+            .write()
+            .await
+            .create_owner_prepared_rex(&task_name)
+            .await
+    })
+    .await
+    {
+        Ok(Ok(path)) => json_response(
+            StatusCode::CREATED,
+            &ApiResponse::success(serde_json::json!({
+                "name": name, "rex_url": format!("unix://{}", path.display())
+            })),
+        ),
+        Ok(Err(error))
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) =>
+        {
+            json_response(
+                StatusCode::CONFLICT,
+                &ApiResponse::<()>::error("Prepared Rex sandbox already exists"),
+            )
+        }
+        _ => json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &ApiResponse::<()>::error("Could not start the vetted Rex sandbox"),
+        ),
+    }
+}
+
 async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> Response<BoxBody> {
     let start = std::time::Instant::now();
 
@@ -4497,17 +4739,33 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         );
     }
 
+    let owner_unix = permits_managed_local_ssh(&req);
     let body: CreateRequest = match read_json_body(req).await {
         Ok(b) => b,
         Err(resp) => return resp,
     };
 
+    if body.managed_local_ssh && !owner_unix {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            &ApiResponse::<()>::error(
+                "Managed SSH requires the same-owner local Unix control channel.",
+            ),
+        );
+    }
     let requested_backend = match parse_backend_selection(body.backend.as_deref()) {
         Ok(backend) => backend,
         Err(error) => {
             return json_response(StatusCode::BAD_REQUEST, &ApiResponse::<()>::error(error));
         }
     };
+
+    if body.managed_local_ssh && requested_backend != Some(crate::backend::BackendType::Docker) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error("Managed local SSH requires explicitly selecting Docker."),
+        );
+    }
 
     if let Some(backend) = requested_backend
         && !backend_readiness(backend).usable
@@ -4603,6 +4861,25 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         }
     };
 
+    if body.managed_local_ssh
+        && ports.iter().any(|port| {
+            port.container_port == 22 && port.protocol == crate::backend::PortProtocol::Tcp
+        })
+    {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &ApiResponse::<()>::error(
+                "Managed local SSH cannot be combined with an explicit TCP port 22 mapping.",
+            ),
+        );
+    }
+    #[cfg(feature = "enterprise")]
+    if body.managed_local_ssh
+        && let Err(response) =
+            enforce_policy(&state, &identity, crate::policy::Action::SSH, &body.name).await
+    {
+        return response;
+    }
     if let Err(e) = validate_volume_specs(&body.volumes, state.volume_base_dir.as_deref()) {
         return json_response(
             StatusCode::BAD_REQUEST,
@@ -4612,7 +4889,7 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
 
     // Enterprise policy enforcement for port mapping
     #[cfg(feature = "enterprise")]
-    if !ports.is_empty()
+    if (body.managed_local_ssh || !ports.is_empty())
         && let Err(resp) = enforce_policy(
             &state,
             &identity,
@@ -4885,12 +5162,48 @@ async fn handle_create_sandbox(req: Request<Incoming>, state: Arc<AppState>) -> 
         crate::permissions::SecurityProfile::default().permissions()
     };
 
+    if body.managed_local_ssh {
+        if !perms.network || perms.read_only_root {
+            let _ = manager.remove(&body.name).await;
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &ApiResponse::<()>::error(
+                    "Managed local SSH needs a network-enabled, writable Docker profile.",
+                ),
+            );
+        }
+        if let Err(error) = manager.set_ssh_enabled(&body.name, true) {
+            let _ = manager.remove(&body.name).await;
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &ApiResponse::<()>::error(format!("Could not enable managed local SSH: {error}")),
+            );
+        }
+    }
+
     if let Err(e) = manager.start_with_permissions(&body.name, &perms).await {
         let _ = manager.remove(&body.name).await;
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &ApiResponse::<()>::error(e.to_string()),
         );
+    }
+
+    if body.managed_local_ssh {
+        let ready = if let Some(sandbox) = manager.get_state(&body.name).cloned() {
+            tokio::task::spawn_blocking(move || crate::ssh::sandbox_ssh_url_for_state(&sandbox))
+                .await
+                .is_ok_and(|lookup| lookup.is_ok())
+        } else {
+            false
+        };
+        if !ready {
+            let _ = manager.remove(&body.name).await;
+            return json_response(
+                StatusCode::CONFLICT,
+                &ApiResponse::<()>::error("Docker created no ready, private managed SSH endpoint."),
+            );
+        }
     }
 
     // Clone git repo if source_url is specified
@@ -9772,6 +10085,37 @@ pub async fn run_server_with_tls_config(
     };
 
     let mut app_state = AppState::new(api_keys, otel_endpoint, webhook_urls, config_path.clone())?;
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "docker-rex-local"
+    ))]
+    if control_socket.is_some() {
+        let explicit = std::env::var_os("AGENTKERNEL_OWNER_REX_MANIFEST");
+        let config = dirs::config_dir();
+        match crate::docker_rex::OwnerLocalRex::discover_owner_manifest(
+            explicit.as_deref(),
+            config.as_deref(),
+        ) {
+            Ok(Some(registry)) => {
+                let result = async {
+                    app_state
+                        .ensure_manager()?
+                        .write()
+                        .await
+                        .enable_owner_local_rex(registry)
+                }
+                .await;
+                if result.is_err() {
+                    eprintln!("Owner-local Rex unavailable: could not enable owner registry");
+                }
+            }
+            Ok(None) => (),
+            Err(_) => eprintln!(
+                "Owner-local Rex unavailable: owner manifest or pinned assets failed validation"
+            ),
+        }
+    }
     app_state.configure_job_scheduler(config_path.as_deref())?;
     app_state.start_job_scheduler();
     let state = Arc::new(app_state);
@@ -9837,9 +10181,18 @@ pub async fn run_server_with_tls_config(
                         break;
                     }
                 };
+                // Only the kernel-provided peer identity can grant owner-local
+                // privileges. Other Unix traffic keeps existing API behavior.
+                // SAFETY: geteuid has no input or memory preconditions.
+                let same_owner = stream
+                    .peer_cred()
+                    .is_ok_and(|cred| cred.uid() == unsafe { libc::geteuid() });
                 let state = unix_state.clone();
                 tokio::task::spawn(async move {
-                    let service = service_fn(move |req| {
+                    let service = service_fn(move |mut req: Request<Incoming>| {
+                        if same_owner {
+                            req.extensions_mut().insert(SameOwnerUnixControl);
+                        }
                         let state = state.clone();
                         handle_request(req, state)
                     });
@@ -15091,6 +15444,20 @@ max_total_sandboxes = 0
         };
         assert!(!is_retryable_error("PermissionDenied: blocked", &policy));
         assert!(is_retryable_error("Temporary network issue", &policy));
+    }
+
+    #[test]
+    fn managed_local_ssh_is_default_off_and_cannot_be_authorized_by_a_header() {
+        let request = Request::builder()
+            .header("x-agentkernel-owner-unix", "true")
+            .body(())
+            .unwrap();
+        assert!(!permits_managed_local_ssh(&request));
+        let mut owner_request = request;
+        owner_request.extensions_mut().insert(SameOwnerUnixControl);
+        assert!(permits_managed_local_ssh(&owner_request));
+        let ordinary: CreateRequest = serde_json::from_str(r#"{"name":"box"}"#).unwrap();
+        assert!(!ordinary.managed_local_ssh);
     }
 
     // === Extended CreateRequest tests ===

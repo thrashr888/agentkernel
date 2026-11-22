@@ -17,6 +17,12 @@ mod cow;
 mod daemon;
 mod devcontainer;
 mod docker_backend;
+#[cfg(all(
+    target_os = "macos",
+    target_arch = "aarch64",
+    feature = "docker-rex-local"
+))]
+pub mod docker_rex;
 mod durable_storage;
 mod events;
 mod firecracker_client;
@@ -1437,9 +1443,11 @@ memory_mb = 512
                 // Handle --ssh flag: add SSH port mapping and configure SSH
                 let enable_ssh = ssh_flag || cfg.security.transport.ssh;
                 if enable_ssh {
-                    // Auto-add SSH port mapping if not already present
-                    let has_ssh_port = ports.iter().any(|p| p.container_port == 22);
-                    if !has_ssh_port {
+                    // Docker adds implicit SSH in the backend using actual loopback.
+                    let has_ssh_port = ports.iter().any(|p| {
+                        p.container_port == 22 && p.protocol == crate::backend::PortProtocol::Tcp
+                    });
+                    if manager.backend() != crate::backend::BackendType::Docker && !has_ssh_port {
                         ports.push(crate::backend::PortMapping {
                             host_port: None, // auto-assign
                             container_port: 22,

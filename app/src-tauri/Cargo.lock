@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentkernel-desktop"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -25,6 +25,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "toml 1.1.4+spec-1.1.0",

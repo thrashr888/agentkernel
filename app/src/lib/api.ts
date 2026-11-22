@@ -9,6 +9,8 @@ import type {
   DetachedCommand,
   DetachedLogsResponse,
   CreateSandboxRequest,
+  LocalRexSandbox,
+  PreparedRexSandbox,
   TemplateInfo,
   Settings,
   AuditLogEntry,
@@ -66,6 +68,12 @@ export const api = {
   getSandbox: (name: string) => invoke<SandboxInfo>("get_sandbox", { name }),
   getSandboxSshUrl: (name: string) =>
     invoke<string>("get_sandbox_ssh_url", { name }),
+  managedLocalSshAvailable: () => invoke<boolean>("managed_local_ssh_available"),
+  localRexAvailable: () => invoke<boolean>("local_rex_available"),
+  listPreparedRex: () => invoke<PreparedRexSandbox[]>("list_prepared_rex"),
+  reopenPreparedRex: (name: string) => invoke<LocalRexSandbox>("reopen_prepared_rex", { name }),
+  removePreparedRex: (name: string) => invoke<void>("remove_prepared_rex", { name }),
+  createLocalRex: (name: string) => invoke<LocalRexSandbox>("create_local_rex", { name }),
   createSandbox: (req: CreateSandboxRequest) =>
     invoke<SandboxInfo>("create_sandbox", { req }),
   removeSandbox: (name: string) => invoke<void>("remove_sandbox", { name }),

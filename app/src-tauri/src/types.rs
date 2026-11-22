@@ -170,6 +170,8 @@ pub struct DetachedLogsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSandboxRequest {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_local_ssh: Option<bool>,
     /// Backend identifier, or `automatic`/omitted for server selection.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
@@ -829,4 +831,24 @@ pub struct TemplateInfo {
     /// Used to auto-configure proxy secret bindings on sandbox creation.
     #[serde(default)]
     pub secrets: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct LocalRexSandbox {
+    pub name: String,
+    pub rex_url: String,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedRexStatus {
+    Open,
+    Reopenable,
+    Unavailable,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct PreparedRexSandbox {
+    pub name: String,
+    pub status: PreparedRexStatus,
 }

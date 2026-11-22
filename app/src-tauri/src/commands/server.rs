@@ -1,5 +1,5 @@
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
@@ -19,20 +19,81 @@ fn terminate_child(mut child: Child) {
 /// desktop app, which keeps remote and user-managed server entries safe.
 pub struct ServerProcess {
     pub child: Mutex<Option<Child>>,
+    #[cfg(target_os = "macos")]
+    owned_control: Mutex<Option<OwnedControl>>,
+}
+
+#[cfg(target_os = "macos")]
+struct OwnedControl {
+    dir: tempfile::TempDir,
+    selection: (String, String, Option<String>),
+}
+
+#[cfg(target_os = "macos")]
+fn owned_selection(entry: &ServerEntry) -> (String, String, Option<String>) {
+    (
+        entry.name.clone(),
+        entry.url.clone(),
+        entry.config_path.clone(),
+    )
 }
 
 impl Default for ServerProcess {
     fn default() -> Self {
         Self {
             child: Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            owned_control: Mutex::new(None),
         }
     }
 }
 
 impl ServerProcess {
+    #[cfg(target_os = "macos")]
+    pub(super) fn managed_ssh_client(
+        &self,
+        app_state: &AppState,
+    ) -> Option<crate::api_client::ApiClient> {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+        // Maintain the same lock order as child startup.
+        let mut child = self.child.lock().ok()?;
+        let current = child.as_mut()?;
+        if current.try_wait().ok()?.is_some() {
+            return None;
+        }
+        let settings = app_state.settings.lock().ok()?;
+        let entry = active_owned_server(&settings)?;
+        if entry
+            .ssh_tunnel
+            .as_ref()
+            .is_some_and(|tunnel| tunnel.enabled)
+        {
+            return None;
+        }
+        let control = self.owned_control.lock().ok()?;
+        let owned = control.as_ref()?;
+        if owned.selection != owned_selection(entry) {
+            return None;
+        }
+        let socket = owned.dir.path().join("ctl.sock");
+        let meta = std::fs::symlink_metadata(&socket).ok()?;
+        let dir_meta = std::fs::metadata(owned.dir.path()).ok()?;
+        if !meta.file_type().is_socket()
+            || meta.mode() & 0o777 != 0o600
+            || dir_meta.mode() & 0o777 != 0o700
+            || meta.uid() != dir_meta.uid()
+        {
+            return None;
+        }
+        crate::api_client::ApiClient::new_owned_unix(socket, entry.api_key.as_deref()).ok()
+    }
+
     /// Stop the child owned by this app, if one is still running.
     pub fn stop(&self) -> Result<bool, String> {
         let mut child_lock = self.child.lock().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "macos")]
+        let _owned = self.owned_control.lock().map_err(|e| e.to_string())?.take();
         let Some(mut child) = child_lock.take() else {
             return Ok(false);
         };
@@ -145,6 +206,79 @@ pub fn config_path_for_server(entry: &ServerEntry) -> Result<PathBuf, String> {
     }
 }
 
+/// The server schema requires [sandbox]. Use its defaults for every other
+/// field; in particular, do not enable or synthesize a governance policy.
+const DEFAULT_DESKTOP_SERVER_CONFIG: &str = "[sandbox]\nname = \"agentkernel-desktop\"\n";
+
+fn startup_config_path(entry: &ServerEntry, default: &Path) -> Result<PathBuf, String> {
+    use std::io::{ErrorKind, Write};
+
+    let configured = match entry.config_path.as_deref() {
+        Some(explicit) => PathBuf::from(explicit),
+        None => {
+            // Only an implicit, missing desktop default can be initialized.
+            // Publish complete TOML without overwriting a concurrent writer.
+            match std::fs::symlink_metadata(default) {
+                Ok(_) => {}
+                Err(e) if e.kind() == ErrorKind::NotFound => {
+                    let parent = default.parent().ok_or_else(|| {
+                        "Default desktop server config has no parent directory".to_string()
+                    })?;
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        format!("Failed to create desktop server config directory: {e}")
+                    })?;
+                    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| {
+                        format!("Failed to stage default desktop server config: {e}")
+                    })?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        temp.as_file()
+                            .set_permissions(std::fs::Permissions::from_mode(0o600))
+                            .map_err(|e| {
+                                format!("Failed to protect default desktop server config: {e}")
+                            })?;
+                    }
+                    temp.write_all(DEFAULT_DESKTOP_SERVER_CONFIG.as_bytes())
+                        .and_then(|()| temp.as_file().sync_all())
+                        .map_err(|e| {
+                            format!("Failed to write default desktop server config: {e}")
+                        })?;
+                    match temp.persist_noclobber(default) {
+                        Ok(_) => {}
+                        Err(e) if e.error.kind() == ErrorKind::AlreadyExists => {}
+                        Err(e) => {
+                            return Err(format!(
+                                "Failed to publish default desktop server config: {}",
+                                e.error
+                            ))
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "Failed to inspect default desktop server config: {e}"
+                    ))
+                }
+            }
+            default.to_path_buf()
+        }
+    };
+    let path = std::fs::canonicalize(&configured).map_err(|e| {
+        format!(
+            "Failed to open server config '{}': {e}",
+            configured.display()
+        )
+    })?;
+    if !path.is_file() {
+        return Err(format!(
+            "Server config '{}' is not a regular file",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
 /// Find the CLI binary shipped by Tauri, with development fallbacks.
 ///
 /// Tauri's `externalBin` configuration places the normalized sidecar next to
@@ -197,6 +331,20 @@ fn find_agentkernel_binary() -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
+#[cfg(target_os = "macos")]
+fn is_packaged_sidecar(binary: &std::path::Path) -> bool {
+    // The signed app's sibling sidecar and the assembled developer sidecar
+    // are version-matched; a PATH fallback might not implement this option.
+    let built_sidecars = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
+    binary.parent() == Some(built_sidecars.as_path())
+        || std::env::current_exe().is_ok_and(|exe| {
+            exe.parent().is_some_and(|dir| {
+                binary.parent() == Some(dir)
+                    || binary.parent() == Some(dir.join("binaries").as_path())
+            })
+        })
+}
+
 /// Start the app-owned local server, if the active entry opts into ownership.
 ///
 /// This is called from Tauri setup as well as the manual start command, so the
@@ -234,7 +382,7 @@ pub fn start_owned_server(
         "Bundled agentkernel sidecar is unavailable. Build the desktop sidecar or install 'agentkernel' for development.".to_string()
     })?;
     let port = port_for_server(&entry);
-    let config_path = config_path_for_server(&entry)?;
+    let config_path = startup_config_path(&entry, &default_local_config_path())?;
 
     let mut command = Command::new(&binary);
     command.args(["serve", "--host", "127.0.0.1", "--port", &port.to_string()]);
@@ -247,6 +395,42 @@ pub fn start_owned_server(
             .to_str()
             .ok_or_else(|| "Server config path is not valid UTF-8".to_string())?,
     ]);
+    #[cfg(target_os = "macos")]
+    let mut control = server_process
+        .owned_control
+        .lock()
+        .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        *control = None;
+    }
+    // Keep the existing TCP API, but offer managed SSH only through a
+    // separately owned, ephemeral local socket. Ordinary startup still works
+    // if the private socket directory cannot be created.
+    #[cfg(target_os = "macos")]
+    let private_control = if entry
+        .ssh_tunnel
+        .as_ref()
+        .is_some_and(|tunnel| tunnel.enabled)
+        || !is_packaged_sidecar(&binary)
+    {
+        None
+    } else {
+        tempfile::Builder::new()
+            .prefix("ak-ui-")
+            .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .tempdir_in("/private/tmp")
+            .ok()
+            .map(|dir| {
+                command
+                    .arg("--control-socket")
+                    .arg(dir.path().join("ctl.sock"));
+                OwnedControl {
+                    dir,
+                    selection: owned_selection(&entry),
+                }
+            })
+    };
     let child = command
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -255,6 +439,10 @@ pub fn start_owned_server(
 
     let pid = child.id();
     *child_lock = Some(child);
+    #[cfg(target_os = "macos")]
+    {
+        *control = private_control;
+    }
     Ok(format!("Server started (PID {pid}) on port {port}"))
 }
 
@@ -338,6 +526,69 @@ mod tests {
             ssh_tunnel: None,
             config_path: None,
         }
+    }
+
+    #[test]
+    fn first_start_creates_an_anchored_default_and_never_overwrites_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let default = dir.path().join("desktop/agentkernel.toml");
+        let local = entry("http://localhost:18888", true);
+        let path = startup_config_path(&local, &default).unwrap();
+        assert_eq!(path, default.canonicalize().unwrap());
+        let initial = std::fs::read_to_string(&path).unwrap();
+        let toml: toml::Value = toml::from_str(&initial).unwrap();
+        assert_eq!(
+            toml["sandbox"]["name"].as_str(),
+            Some("agentkernel-desktop")
+        );
+        assert!(toml.get("llm_governance").is_none());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        let policy = "[sandbox]\nname = \"existing\"\n[llm_governance]\nenabled = true\n";
+        std::fs::write(&path, policy).unwrap();
+        assert_eq!(startup_config_path(&local, &default).unwrap(), path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), policy);
+    }
+
+    #[test]
+    fn missing_explicit_config_never_falls_back_or_creates_any_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let default = dir.path().join("desktop/agentkernel.toml");
+        let custom = dir.path().join("explicit/agentkernel.toml");
+        let mut local = entry("http://localhost:18888", true);
+        local.config_path = Some(custom.to_str().unwrap().to_string());
+        assert!(startup_config_path(&local, &default).is_err());
+        assert!(!custom.parent().unwrap().exists());
+        assert!(!default.exists());
+
+        std::fs::create_dir_all(custom.parent().unwrap()).unwrap();
+        std::fs::write(&custom, "explicit").unwrap();
+        assert_eq!(
+            startup_config_path(&local, &default).unwrap(),
+            custom.canonicalize().unwrap()
+        );
+        assert_eq!(std::fs::read_to_string(&custom).unwrap(), "explicit");
+        assert!(!default.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_default_symlink_is_not_replaced_or_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let default = dir.path().join("agentkernel.toml");
+        let target = dir.path().join("missing.toml");
+        std::os::unix::fs::symlink(&target, &default).unwrap();
+        let local = entry("http://localhost:18888", true);
+        assert!(startup_config_path(&local, &default).is_err());
+        assert_eq!(std::fs::read_link(&default).unwrap(), target);
+        assert!(!target.exists());
     }
 
     #[test]

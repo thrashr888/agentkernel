@@ -64,7 +64,7 @@ interface ParsedPort {
   protocol: string;
 }
 
-function SandboxSshUrl({ name }: { name: string }) {
+function SandboxSshUrl({ name, scope }: { name: string; scope: string }) {
   const active = useRef(false);
   useEffect(() => {
     active.current = true;
@@ -72,66 +72,68 @@ function SandboxSshUrl({ name }: { name: string }) {
       active.current = false;
     };
   }, []);
-  const lookup = useMutation({
+  const queryClient = useQueryClient();
+  const queryKey = ["sandbox-ssh-url", scope, name];
+  const lookup = useQuery({
+    queryKey,
+    queryFn: () => api.getSandboxSshUrl(name),
+    retry: false,
+    gcTime: 0,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchInterval: 5000,
+  });
+  const copy = useMutation({
     mutationFn: () => api.getSandboxSshUrl(name),
+    onSuccess: (url) => {
+      if (active.current) queryClient.setQueryData(queryKey, url);
+    },
+    onError: () => {
+      if (active.current) void queryClient.invalidateQueries({ queryKey });
+    },
   });
 
-  if (lookup.data) {
-    const url = lookup.data;
+  if (lookup.isPending || lookup.isFetching) {
+    return <span className="text-xs text-muted-foreground">Checking SSH address…</span>;
+  }
+  if (lookup.isError || !lookup.data) {
     return (
-      <div className="flex flex-wrap items-center gap-2">
-        <code className="break-all">{url}</code>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={() => {
-            if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
-              toast.error("Clipboard unavailable. Select the URL to copy it manually.");
-              return;
-            }
-            // Invoke clipboard.write from the click gesture for WebKit, but
-            // populate it from a fresh lookup so restarts cannot copy old ports.
-            const address = lookup.mutateAsync().then((currentUrl) => {
-              if (!active.current) throw new Error("Sandbox selection changed");
-              return new Blob([currentUrl], { type: "text/plain" });
-            });
-            void navigator.clipboard.write([new ClipboardItem({ "text/plain": address })]).then(
-              () => {
-                if (active.current) toast.success("SSH URL copied");
-              },
-              () => {
-                if (active.current) toast.error("Couldn’t copy the SSH URL.");
-              },
-            );
-          }}
-        >
-          <Copy className="h-3 w-3" />
-          Copy SSH URL
-        </Button>
-        <span className="text-xs text-muted-foreground">Authentication is separate.</span>
-      </div>
+      <span className="text-xs text-muted-foreground">
+        {lookup.error instanceof Error ? lookup.error.message : String(lookup.error ?? "No verified SSH address.")}
+      </span>
     );
   }
 
   return (
-    <>
+    <div className="flex flex-wrap items-center gap-2">
+      <code className="break-all select-text">{lookup.data}</code>
       <Button
         type="button"
         size="sm"
         variant="outline"
-        disabled={lookup.isPending}
-        onClick={() => lookup.mutate()}
+        disabled={copy.isPending}
+        onClick={() => {
+          if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+            toast.error("Clipboard unavailable. Select the URL to copy it manually.");
+            return;
+          }
+          // WebKit requires the gesture now, but the bytes must come from a
+          // fresh lookup so a sandbox restart can't copy an old address.
+          const address = copy.mutateAsync().then((url) => {
+            if (!active.current) throw new Error("Sandbox selection changed");
+            return new Blob([url], { type: "text/plain" });
+          });
+          void navigator.clipboard.write([new ClipboardItem({ "text/plain": address })]).then(
+            () => { if (active.current) toast.success("SSH URL copied"); },
+            () => { if (active.current) toast.error("Couldn’t copy the SSH URL."); },
+          );
+        }}
       >
-        {lookup.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
-        Show SSH URL
+        <Copy className="h-3 w-3" />
+        Copy SSH URL
       </Button>
-      {lookup.isError && (
-        <p role="alert" className="mt-2 text-xs text-muted-foreground">
-          {lookup.error instanceof Error ? lookup.error.message : String(lookup.error)}
-        </p>
-      )}
-    </>
+      <span className="text-xs text-muted-foreground">Authentication is separate.</span>
+    </div>
   );
 }
 
@@ -171,6 +173,10 @@ export function SandboxDetail() {
     isLocalServer(activeServer.url)
       ? activeServer
       : undefined;
+
+  const localSshScope = localSshServer && sandbox
+    ? JSON.stringify([localSshServer.name, localSshServer.url, localSshServer.config_path, sandbox.uuid ?? sandbox.name])
+    : undefined;
 
   const [commandInput, setCommandInput] = useState("");
   const [history, setHistory] = useState<CommandEntry[]>([]);
@@ -738,12 +744,13 @@ export function SandboxDetail() {
                     <SandboxStatusBadge status={sandbox.status} />
                   </td>
                 </tr>
-                {isRunning && localSshServer && sandbox.backend.toLowerCase() === "docker" && (
+                {isRunning && localSshScope && sandbox.backend.toLowerCase() === "docker" && (
                   <tr className="border-b">
                     <td className="px-4 py-2.5 text-muted-foreground">SSH URL</td>
                     <td className="px-4 py-2.5">
                       <SandboxSshUrl
-                        key={JSON.stringify([localSshServer.name, localSshServer.url, localSshServer.config_path, sandbox.uuid ?? sandbox.name])}
+                        key={localSshScope}
+                        scope={localSshScope}
                         name={sandbox.name}
                       />
                     </td>
