@@ -9,10 +9,6 @@ fn embedded_guest_agent_sources_match_canonical_sources() {
             "src/embedded/guest_agent_main.rs",
         ),
         ("guest-agent/src/pty.rs", "src/embedded/guest_agent_pty.rs"),
-        (
-            "guest-agent/Cargo.toml",
-            "src/embedded/guest_agent_cargo.toml",
-        ),
     ] {
         let canonical_source =
             std::fs::read(project_root.join(canonical)).expect("read canonical guest-agent source");
@@ -23,4 +19,16 @@ fn embedded_guest_agent_sources_match_canonical_sources() {
             "embedded guest-agent source is out of sync: {embedded}"
         );
     }
+}
+
+#[test]
+fn embedded_guest_manifest_differs_only_in_gate_source_path() {
+    let canonical = include_str!("../guest-agent/Cargo.toml");
+    let embedded = include_str!("../src/embedded/guest_agent_cargo.toml");
+    // The repository builds the canonical gate outside the nested crate so
+    // Cargo can package it. Standalone guest builds use the materialized copy.
+    let canonical_path = r#"path = "../src/embedded/docker_rex_gate/main.rs""#;
+    let embedded_path = r#"path = "src/docker_rex_gate/main.rs""#;
+    assert_eq!(canonical.matches(canonical_path).count(), 1);
+    assert_eq!(embedded, canonical.replace(canonical_path, embedded_path));
 }
