@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Plus, MoreHorizontal, Trash2, Camera, Square, Play, ChevronLeft, ChevronRight, Terminal, Copy, ArrowUpDown, ArrowUp, ArrowDown, Search, X, Upload } from "lucide-react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSandboxes } from "@/lib/hooks/use-sandboxes";
 import { api } from "@/lib/api";
 import type { BackendDescriptor, CreateSandboxRequest } from "@/lib/types";
@@ -44,11 +44,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "@/components/ui/use-toast";
 import { formatRelativeDate } from "@/lib/utils";
+import { CreateRexSandbox, PreparedRexSandboxes } from "@/components/sandbox/create-rex-sandbox";
 import { ServerRecovery } from "@/components/server-recovery";
 
 export function Sandboxes() {
   const { data: sandboxes, isLoading, error, refetch } = useSandboxes();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [dialogOpen, setDialogOpen] = useState(false);
 
@@ -67,6 +69,17 @@ export function Sandboxes() {
   const [formMemory, setFormMemory] = useState(512);
   const [formProfile, setFormProfile] = useState("restrictive");
   const [formBackend, setFormBackend] = useState("automatic");
+  const [formManagedSsh, setFormManagedSsh] = useState(false);
+  const { data: hasOwnedControl } = useQuery({
+    queryKey: ["managed-local-ssh-available"],
+    queryFn: api.managedLocalSshAvailable,
+    enabled: dialogOpen,
+    staleTime: 0,
+    refetchInterval: 2000,
+    retry: false,
+  });
+  const canManageSsh = hasOwnedControl === true && formBackend === "docker";
+  const sshProfileOk = formProfile !== "restrictive";
   const [formAgent, setFormAgent] = useState("");
   const [formLabels, setFormLabels] = useState("");
   const [formDescription, setFormDescription] = useState("");
@@ -94,11 +107,12 @@ export function Sandboxes() {
     onMutate: () => {
       return { toastId: toast("Creating sandbox...") };
     },
-    onSuccess: (_data, _vars, context) => {
-      if (context?.toastId) toast.update(context.toastId, "Sandbox created!", "success");
+    onSuccess: (sandbox, request, context) => {
+      if (context?.toastId) toast.update(context.toastId, request.managed_local_ssh ? "Sandbox and managed SSH ready." : "Sandbox created!", "success");
       queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
       setDialogOpen(false);
       resetForm();
+      if (request.managed_local_ssh) navigate(`/sandboxes/${encodeURIComponent(sandbox.name)}`);
     },
     onError: (err: unknown, _vars, context) => {
       if (context?.toastId) toast.update(context.toastId, err instanceof Error ? err.message : String(err), "error");
@@ -196,6 +210,7 @@ export function Sandboxes() {
     setFormMemory(512);
     setFormProfile("restrictive");
     setFormBackend("automatic");
+    setFormManagedSsh(false);
     setFormAgent("");
     setFormLabels("");
     setFormDescription("");
@@ -203,6 +218,10 @@ export function Sandboxes() {
 
   function handleCreate() {
     if (!formName.trim()) return;
+    if (formManagedSsh && (!canManageSsh || !sshProfileOk)) {
+      toast.error("Managed SSH needs the app-managed Docker server and a writable network-enabled profile.");
+      return;
+    }
     const labels: Record<string, string> = {};
     if (formLabels.trim()) {
       for (const part of formLabels.split(",")) {
@@ -217,6 +236,7 @@ export function Sandboxes() {
       memory_mb: formMemory,
       profile: formProfile,
       ...(formBackend !== "automatic" ? { backend: formBackend } : {}),
+      ...(formManagedSsh ? { managed_local_ssh: true as const } : {}),
       ...(formAgent && formAgent !== "none" ? { agent: formAgent } : {}),
       ...(Object.keys(labels).length > 0 ? { labels } : {}),
       ...(formDescription.trim() ? { description: formDescription.trim() } : {}),
@@ -283,13 +303,14 @@ export function Sandboxes() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Sandboxes</h1>
           <p className="text-muted-foreground">
             Manage your isolated sandbox environments
           </p>
         </div>
+        <CreateRexSandbox />
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
             <Button>
@@ -325,7 +346,10 @@ export function Sandboxes() {
               </div>
               <div className="grid gap-2">
                 <Label>Backend</Label>
-                <Select value={formBackend} onValueChange={setFormBackend}>
+                <Select value={formBackend} onValueChange={(backend) => {
+                  setFormBackend(backend);
+                  setFormManagedSsh(false);
+                }}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -342,6 +366,19 @@ export function Sandboxes() {
                   Only backends reported ready by the server are listed.
                 </p>
               </div>
+              {canManageSsh && (
+                <label className="flex items-start gap-2 text-sm">
+                  <input type="checkbox" checked={formManagedSsh}
+                    disabled={!sshProfileOk && !formManagedSsh}
+                    onChange={(event) => setFormManagedSsh(event.target.checked)} />
+                  <span>
+                    Enable managed SSH on this Mac
+                    <span className="block text-xs text-muted-foreground">
+                      {sshProfileOk ? "Certificate-based authentication. Loopback only." : "Requires a writable network-enabled profile."}
+                    </span>
+                  </span>
+                </label>
+              )}
               <div className="grid gap-2">
                 <Label>Agent (optional)</Label>
                 <Select value={formAgent} onValueChange={(val) => {
@@ -465,6 +502,8 @@ export function Sandboxes() {
           </DialogContent>
         </Dialog>
       </div>
+
+      <PreparedRexSandboxes />
 
       {isLoading ? (
         <div className="space-y-2">

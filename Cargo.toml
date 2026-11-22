@@ -30,6 +30,7 @@ include = [
 [features]
 default = ["kubernetes", "nomad", "enterprise"]
 hyperlight = ["dep:hyperlight-wasm"]
+docker-rex-local = ["dep:socket2"]
 kubernetes = ["dep:kube", "dep:k8s-openapi", "dep:schemars", "dep:serde_yaml"]
 nomad = []
 enterprise = ["dep:cedar-policy", "dep:ed25519-dalek", "dep:jsonwebtoken"]
@@ -108,6 +109,7 @@ webpki-roots = "1.0.6"
 hyperlocal = "0.9"
 tokio-vsock = "0.6"
 libc = "0.2"
+socket2 = { version = "0.6", optional = true }
 
 # Hyperlight for sub-millisecond Wasm sandboxes (Linux only, requires KVM)
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -133,8 +133,19 @@ export interface GcResult {
 }
 
 // Request types
+export interface PreparedRexSandbox {
+  name: string;
+  status: "open" | "reopenable" | "unavailable";
+}
+
+export interface LocalRexSandbox {
+  name: string;
+  rex_url: string;
+}
+
 export interface CreateSandboxRequest {
   name: string;
+  managed_local_ssh?: true;
   /** Backend identifier; omit or use automatic for server selection. */
   backend?: string;
   image?: string;

@@ -104,9 +104,15 @@ jobs:
         working-directory: app
 
       - name: Build bundled AgentKernel sidecar
-        run: cargo build --release --target ${{ matrix.target }} --bin agentkernel
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
+          DESKTOP_TARGET: ${{ matrix.target }}
+        run: |
+          if [[ "$DESKTOP_TARGET" == aarch64-apple-darwin ]]; then
+            cargo build --locked --release --target "$DESKTOP_TARGET" --bin agentkernel --features docker-rex-local
+          else
+            cargo build --release --target "$DESKTOP_TARGET" --bin agentkernel
+          fi
       - name: Stage bundled AgentKernel sidecar
         run: |
           mkdir -p app/src-tauri/binaries

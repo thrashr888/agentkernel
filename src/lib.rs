@@ -11,6 +11,8 @@ pub mod config;
 pub mod container_network;
 pub mod cow;
 pub mod docker_backend;
+#[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "docker-rex-local"))]
+pub mod docker_rex;
 pub mod durable_storage;
 pub mod firecracker_client;
 pub mod full_state;

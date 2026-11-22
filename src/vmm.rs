@@ -226,6 +226,8 @@ pub struct SandboxState {
     /// Host port mapped to sshd inside the sandbox
     #[serde(default)]
     pub ssh_host_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker_ssh_launch: Option<crate::ssh::DockerSshLaunch>,
     /// Volume mounts (slug:/path format)
     #[serde(default)]
     pub volumes: Vec<String>,
@@ -510,6 +512,13 @@ pub struct VmManager {
     backend: BackendType,
     /// Running sandboxes (unified interface)
     running: HashMap<String, Box<dyn Sandbox>>,
+    /// Explicit owner-only opt-in; ordinary start never enables Rex.
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "docker-rex-local"
+    ))]
+    owner_local_rex: Option<crate::docker_rex::OwnerLocalRex>,
     /// Interrupted pause transitions retained after automatic recovery fails.
     /// Entries own either a possibly-live source runtime, safe completed
     /// staging metadata, or both. Only resume or explicit removal may consume
@@ -619,6 +628,12 @@ impl VmManager {
         Ok(Self {
             backend: BackendType::Docker,
             running: HashMap::new(),
+            #[cfg(all(
+                target_os = "macos",
+                target_arch = "aarch64",
+                feature = "docker-rex-local"
+            ))]
+            owner_local_rex: None,
             pause_recovery: HashMap::new(),
             resume_state_recovery: HashMap::new(),
             sandboxes: HashMap::new(),
@@ -736,6 +751,12 @@ impl VmManager {
         let mut manager = Self {
             backend,
             running: HashMap::new(),
+            #[cfg(all(
+                target_os = "macos",
+                target_arch = "aarch64",
+                feature = "docker-rex-local"
+            ))]
+            owner_local_rex: None,
             pause_recovery: HashMap::new(),
             resume_state_recovery: HashMap::new(),
             sandboxes,
@@ -1636,6 +1657,7 @@ impl VmManager {
             managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
+            docker_ssh_launch: None,
             volumes: Vec::new(),
             agent,
             secret_bindings: Vec::new(),
@@ -1691,14 +1713,168 @@ impl VmManager {
         Ok(())
     }
 
+    /// Install the prevalidated, owner-vetted registry on this manager.
+    /// No discovery, generic Create or persisted state can turn this on.
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "docker-rex-local"
+    ))]
+    pub fn enable_owner_local_rex(
+        &mut self,
+        registry: crate::docker_rex::OwnerLocalRex,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            self.owner_local_rex.is_none(),
+            "Owner-local Rex is already enabled"
+        );
+        self.owner_local_rex = Some(registry);
+        Ok(())
+    }
+
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "docker-rex-local"
+    ))]
+    pub(crate) fn owner_local_rex_available(&self) -> bool {
+        self.owner_local_rex.is_some()
+    }
+
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "docker-rex-local"
+    ))]
+    pub(crate) async fn create_owner_prepared_rex(&mut self, name: &str) -> Result<PathBuf> {
+        crate::validation::validate_sandbox_name(name)?;
+        let registry = self
+            .owner_local_rex
+            .as_mut()
+            .context("Owner-local Rex is not enabled")?;
+        Ok(registry.create_prepared_sandbox(name).await?)
+    }
+
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "docker-rex-local"
+    ))]
+    pub(crate) async fn remove_owner_prepared_rex(&mut self, name: &str) -> Result<()> {
+        crate::validation::validate_sandbox_name(name)?;
+        let registry = self
+            .owner_local_rex
+            .as_mut()
+            .context("Owner-local Rex is not enabled")?;
+        Ok(registry.remove_prepared_sandbox(name).await?)
+    }
+
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "docker-rex-local"
+    ))]
+    pub(crate) fn list_owner_prepared_rex(&self) -> Result<Vec<(String, &'static str)>> {
+        let registry = self
+            .owner_local_rex
+            .as_ref()
+            .context("Owner-local Rex is not enabled")?;
+        Ok(registry.list_prepared_sandboxes()?)
+    }
+
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "docker-rex-local"
+    ))]
+    pub(crate) async fn reopen_owner_prepared_rex(&mut self, name: &str) -> Result<PathBuf> {
+        let registry = self
+            .owner_local_rex
+            .as_mut()
+            .context("Owner-local Rex is not enabled")?;
+        Ok(registry.reopen_prepared_sandbox(name).await?)
+    }
+
+    /// Owner-only entry point, called by the explicit prepared-Docker launch
+    /// handler after it has published the VMM capture. No name-based Docker
+    /// recovery: the lookup below checks manager state and compares the exact
+    /// captured launch; all Engine calls use its full ID.
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "docker-rex-local"
+    ))]
+    pub async fn register_owner_local_rex(
+        &mut self,
+        name: &str,
+        expected: &crate::ssh::DockerSshLaunch,
+    ) -> Result<PathBuf> {
+        let registry = self
+            .owner_local_rex
+            .as_mut()
+            .context("Owner-local Rex is not enabled")?;
+        let state = self
+            .sandboxes
+            .get(name)
+            .context("No manager-owned sandbox state")?;
+        anyhow::ensure!(
+            self.running.contains_key(name)
+                && state.backend == Some(BackendType::Docker)
+                && state.ssh_enabled
+                && state.image == registry.expected_image_id()
+                && state.docker_ssh_launch.as_ref() == Some(expected),
+            "No matching manager-owned prepared Docker launch"
+        );
+        let (path, _opaque) = registry.attach_captured_launch(expected).await?;
+        Ok(path)
+    }
+
+    /// Durable revocation, then awaited local closure, for the exact manager
+    /// capture. Can also be explicitly used before disabling SSH.
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "docker-rex-local"
+    ))]
+    pub async fn revoke_owner_local_rex(&mut self, name: &str) -> Result<()> {
+        if let (Some(registry), Some(launch)) = (
+            self.owner_local_rex.as_mut(),
+            self.sandboxes
+                .get(name)
+                .and_then(|state| state.docker_ssh_launch.as_ref()),
+        ) {
+            registry.revoke_registered_launch(launch).await?;
+        }
+        Ok(())
+    }
+
     /// Set SSH enabled state for a sandbox
     pub fn set_ssh_enabled(&mut self, name: &str, enabled: bool) -> Result<()> {
+        #[cfg(all(
+            target_os = "macos",
+            target_arch = "aarch64",
+            feature = "docker-rex-local"
+        ))]
+        if !enabled
+            && let Some(registry) = self.owner_local_rex.as_ref()
+            && let Some(launch) = self
+                .sandboxes
+                .get(name)
+                .and_then(|state| state.docker_ssh_launch.as_ref())
+            && registry.has_unrevoked_registration(launch)?
+        {
+            bail!("Revoke the owner-local Rex registration before disabling SSH");
+        }
         {
             let state = self
                 .sandboxes
                 .get_mut(name)
                 .ok_or_else(|| anyhow::anyhow!("Sandbox '{}' not found", name))?;
             state.ssh_enabled = enabled;
+            if !enabled && state.backend == Some(BackendType::Docker) {
+                state.ssh_host_port = None;
+                state.docker_ssh_launch = None;
+            }
         }
         let state = self
             .sandboxes
@@ -3150,6 +3326,19 @@ impl VmManager {
             self.sandboxes.insert(name.to_string(), pending);
         }
 
+        if backend == BackendType::Docker && config.ssh.is_some() {
+            #[cfg(all(
+                target_os = "macos",
+                target_arch = "aarch64",
+                feature = "docker-rex-local"
+            ))]
+            self.revoke_owner_local_rex(name).await?;
+            let mut cleared = self.sandboxes[name].clone();
+            cleared.ssh_host_port = None;
+            cleared.docker_ssh_launch = None;
+            self.save_sandbox(&cleared)?;
+            self.sandboxes.insert(name.to_string(), cleared);
+        }
         if let Err(error) = sandbox.start(&config).await {
             if runtime_may_survive_failed_stop(&error, sandbox.is_running()) {
                 self.running.insert(name.to_string(), sandbox);
@@ -3169,6 +3358,7 @@ impl VmManager {
             return Err(error);
         }
         let previous_firecracker_rootfs = state.firecracker_rootfs.clone();
+        let mut ready_docker_ssh_launch = None;
         let setup_result = async {
         if let Some(persisted) = self.sandboxes.get_mut(name) {
             persisted.work_dir = config.work_dir.clone();
@@ -3312,23 +3502,36 @@ impl VmManager {
         // (apk add openssh-server installs a default sshd_config that would
         // overwrite our custom config if we inject first)
         if let Some(ref ssh_cfg) = ssh_config {
-            // Install openssh-server (Alpine/Debian/RHEL) — must come BEFORE file injection
-            let install_result = sandbox
-                .exec(&[
-                    "sh",
-                    "-c",
-                    "apk add --no-cache openssh-server 2>/dev/null || \
-                     apt-get update -qq && apt-get install -y -qq openssh-server 2>/dev/null || \
-                     yum install -y openssh-server 2>/dev/null || true",
-                ])
-                .await;
-            if let Err(e) = install_result {
-                eprintln!("Warning: Failed to install sshd: {}", e);
+            // A prepared Docker image often includes sshd already. Keep
+            // that path offline; a missing binary retains the existing
+                // install path. Apple and non-Docker behavior is unchanged.
+            let prepared_docker = backend == BackendType::Docker
+                && sandbox
+                    .exec(&["test", "-x", "/usr/sbin/sshd"])
+                    .await
+                    .context("Could not check for prepared Docker OpenSSH")?
+                    .exit_code == 0;
+            if !prepared_docker {
+                let install_result = sandbox
+                    .exec(&[
+                        "sh",
+                        "-c",
+                        "apk add --no-cache openssh-server 2>/dev/null || \
+                         apt-get update -qq && apt-get install -y -qq openssh-server 2>/dev/null || \
+                         yum install -y openssh-server 2>/dev/null || true",
+                    ])
+                    .await;
+                if let Err(e) = install_result {
+                    eprintln!("Warning: Failed to install sshd: {}", e);
+                }
             }
-
             // Now inject SSH config files (overwrites package defaults)
             let (ca_priv, ca_pub) = crate::ssh::generate_ca_keypair()?;
-            let ssh_files = crate::ssh::sshd_file_injections(&ca_pub, ssh_cfg)?;
+            let ssh_files = if backend == BackendType::Docker {
+                crate::ssh::docker_sshd_file_injections(&ca_pub, ssh_cfg)?
+            } else {
+                crate::ssh::sshd_file_injections(&ca_pub, ssh_cfg)?
+            };
             sandbox.inject_files(&ssh_files).await?;
 
             // Store CA private key for later signing
@@ -3338,7 +3541,11 @@ impl VmManager {
             // Make startup script executable and run it
             let _ = sandbox.exec(&["chmod", "+x", "/tmp/start-sshd.sh"]).await;
             let start_result = sandbox.exec(&["sh", "/tmp/start-sshd.sh"]).await;
-            if let Err(e) = start_result {
+            if backend == BackendType::Docker {
+                crate::ssh::require_docker_sshd_start(
+                    start_result.context("Could not start managed Docker sshd")?,
+                )?;
+            } else if let Err(e) = start_result {
                 eprintln!("Warning: Failed to start sshd: {}", e);
             } else if let Ok(ref result) = start_result
                 && !result.stderr.is_empty()
@@ -3346,6 +3553,9 @@ impl VmManager {
                 eprintln!("sshd: {}", result.stderr.trim());
             }
 
+            // Legacy explicit/remote routes can still start, but they do not get a
+            // copyable owner-local desktop URL without this exact launch record.
+            let docker_ssh_launch = sandbox.docker_ssh_launch();
             // Find the mapped host port for SSH.
             // If the port was auto-assigned (host_port: None), query Docker for the actual port.
             let mut ssh_port = state
@@ -3354,7 +3564,9 @@ impl VmManager {
                 .find(|p| p.container_port == 22)
                 .and_then(|p| p.host_port);
 
-            if ssh_port.is_none() {
+            if let Some(launch) = &docker_ssh_launch {
+                ssh_port = Some(launch.port);
+            } else if ssh_port.is_none() {
                 // Query Docker for the auto-assigned host port
                 let container_name = format!("agentkernel-{}", name);
                 if let Ok(output) = std::process::Command::new("docker")
@@ -3375,6 +3587,7 @@ impl VmManager {
             if let Some(port) = ssh_port {
                 if let Some(s) = self.sandboxes.get_mut(name) {
                     s.ssh_host_port = Some(port);
+                    ready_docker_ssh_launch = docker_ssh_launch;
                     // Also update the port mapping so it's visible in list/info
                     if let Some(pm) = s.ports.iter_mut().find(|p| p.container_port == 22) {
                         pm.host_port = Some(port);
@@ -3534,6 +3747,13 @@ impl VmManager {
         }
 
         self.running.insert(name.to_string(), sandbox);
+        if let Some(launch) = ready_docker_ssh_launch {
+            launch.verify_ready(&crate::ssh::local_docker_endpoint()?, name)?;
+            let mut snapshot = self.sandboxes[name].clone();
+            snapshot.docker_ssh_launch = Some(launch);
+            self.save_sandbox(&snapshot)?;
+            self.sandboxes.insert(name.to_string(), snapshot);
+        }
         // A manual start is an explicit revival of a dormant workspace.
         if let Some(state) = self.sandboxes.get_mut(name) {
             state.dormant_at = None;
@@ -4805,6 +5025,7 @@ impl VmManager {
         child_state.ports.clear();
         child_state.ssh_enabled = false;
         child_state.ssh_host_port = None;
+        child_state.docker_ssh_launch = None;
         child_state.volumes.clear();
         child_state.proxy_port = None;
         child_state.full_state_checkpoint = None;
@@ -4911,11 +5132,27 @@ impl VmManager {
     /// Stop a sandbox
     pub async fn stop(&mut self, name: &str) -> Result<()> {
         let stop_start = std::time::Instant::now();
+        #[cfg(all(
+            target_os = "macos",
+            target_arch = "aarch64",
+            feature = "docker-rex-local"
+        ))]
+        self.revoke_owner_local_rex(name).await?;
         let backend = self
             .sandboxes
             .get(name)
             .and_then(|state| state.backend)
             .unwrap_or(self.backend);
+        if backend == BackendType::Docker
+            && let Some(state) = self.sandboxes.get(name)
+            && (state.docker_ssh_launch.is_some() || state.ssh_host_port.is_some())
+        {
+            let mut snapshot = state.clone();
+            snapshot.ssh_host_port = None;
+            snapshot.docker_ssh_launch = None;
+            self.save_sandbox(&snapshot)?;
+            self.sandboxes.insert(name.to_string(), snapshot);
+        }
         if backend == BackendType::Firecracker
             && self.running.contains_key(name)
             && self
@@ -5034,6 +5271,12 @@ impl VmManager {
         {
             return Err(error).with_context(|| format!("refusing to remove sandbox '{name}'"));
         }
+        #[cfg(all(
+            target_os = "macos",
+            target_arch = "aarch64",
+            feature = "docker-rex-local"
+        ))]
+        self.revoke_owner_local_rex(name).await?;
         // Shut down the proxy if running
         if let Some(handle) = PROXY_HANDLES.write().await.remove(name) {
             let _ = handle.shutdown_tx.send(());
@@ -6133,6 +6376,33 @@ runtime_class = "isolated-sandbox"
         );
     }
 
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "docker-rex-local"
+    ))]
+    #[tokio::test]
+    async fn owner_local_rex_disabled_for_fresh_manager() {
+        let t = TempDir::new().unwrap();
+        let mut manager = VmManager::for_tests(t.path()).unwrap();
+        let capture: crate::ssh::DockerSshLaunch = serde_json::from_value(serde_json::json!({
+            "id": "a".repeat(64),
+            "started_at": "2026-11-22T01:02:03.123456789Z",
+            "endpoint": "unix:///no-daemon-should-be-used",
+            "port": 2345,
+        }))
+        .unwrap();
+        assert!(
+            manager
+                .register_owner_local_rex("generic", &capture)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("not enabled")
+        );
+        manager.revoke_owner_local_rex("generic").await.unwrap();
+    }
+
     #[test]
     fn test_sandbox_state_serialize() {
         let state = SandboxState {
@@ -6160,6 +6430,7 @@ runtime_class = "isolated-sandbox"
             managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
+            docker_ssh_launch: None,
             volumes: Vec::new(),
             agent: None,
             secret_bindings: Vec::new(),
@@ -6304,6 +6575,7 @@ runtime_class = "isolated-sandbox"
             managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
+            docker_ssh_launch: None,
             volumes: Vec::new(),
             agent: None,
             secret_bindings: Vec::new(),
@@ -6398,6 +6670,7 @@ runtime_class = "isolated-sandbox"
             managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
+            docker_ssh_launch: None,
             volumes: Vec::new(),
             agent: None,
             secret_bindings: Vec::new(),
@@ -6508,6 +6781,7 @@ runtime_class = "isolated-sandbox"
                 managed_network: None,
                 ssh_enabled: false,
                 ssh_host_port: None,
+                docker_ssh_launch: None,
                 volumes: Vec::new(),
                 agent: None,
                 secret_bindings: Vec::new(),
@@ -6570,6 +6844,12 @@ runtime_class = "isolated-sandbox"
             fail_next_state_save: std::sync::atomic::AtomicBool::new(false),
             backend: BackendType::Docker,
             running: HashMap::new(),
+            #[cfg(all(
+                target_os = "macos",
+                target_arch = "aarch64",
+                feature = "docker-rex-local"
+            ))]
+            owner_local_rex: None,
             pause_recovery: HashMap::new(),
             resume_state_recovery: HashMap::new(),
             rootfs_dir: None,
@@ -6605,6 +6885,7 @@ runtime_class = "isolated-sandbox"
             managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
+            docker_ssh_launch: None,
             volumes: Vec::new(),
             agent: None,
             secret_bindings: Vec::new(),
@@ -6663,6 +6944,12 @@ runtime_class = "isolated-sandbox"
             fail_next_state_save: std::sync::atomic::AtomicBool::new(false),
             backend: BackendType::Docker,
             running: HashMap::new(),
+            #[cfg(all(
+                target_os = "macos",
+                target_arch = "aarch64",
+                feature = "docker-rex-local"
+            ))]
+            owner_local_rex: None,
             pause_recovery: HashMap::new(),
             resume_state_recovery: HashMap::new(),
             rootfs_dir: None,
@@ -6702,6 +6989,7 @@ runtime_class = "isolated-sandbox"
                 managed_network: None,
                 ssh_enabled: false,
                 ssh_host_port: None,
+                docker_ssh_launch: None,
                 volumes: Vec::new(),
                 agent: None,
                 secret_bindings: Vec::new(),
@@ -6765,6 +7053,12 @@ runtime_class = "isolated-sandbox"
             fail_next_state_save: std::sync::atomic::AtomicBool::new(false),
             backend: BackendType::Docker,
             running: HashMap::new(),
+            #[cfg(all(
+                target_os = "macos",
+                target_arch = "aarch64",
+                feature = "docker-rex-local"
+            ))]
+            owner_local_rex: None,
             pause_recovery: HashMap::new(),
             resume_state_recovery: HashMap::new(),
             rootfs_dir: None,
@@ -6800,6 +7094,7 @@ runtime_class = "isolated-sandbox"
             managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
+            docker_ssh_launch: None,
             volumes: Vec::new(),
             agent: None,
             secret_bindings: Vec::new(),
@@ -6888,6 +7183,7 @@ runtime_class = "isolated-sandbox"
             managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
+            docker_ssh_launch: None,
             volumes: Vec::new(),
             agent: None,
             secret_bindings: Vec::new(),
@@ -7177,6 +7473,7 @@ runtime_class = "isolated-sandbox"
             managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
+            docker_ssh_launch: None,
             volumes: Vec::new(),
             agent: None,
             secret_bindings: Vec::new(),

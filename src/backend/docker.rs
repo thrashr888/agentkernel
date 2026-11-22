@@ -39,6 +39,26 @@ impl ContainerRuntime {
     }
 }
 
+fn auto_docker_ssh_port(runtime: ContainerRuntime, config: &SandboxConfig) -> bool {
+    runtime == ContainerRuntime::Docker
+        && config.ssh.as_ref().is_some_and(|ssh| ssh.enabled)
+        && !config
+            .ports
+            .iter()
+            .any(|port| port.container_port == 22 && port.protocol == super::PortProtocol::Tcp)
+}
+
+fn persisted_publish_args(runtime: ContainerRuntime, config: &SandboxConfig) -> Vec<String> {
+    let mut args = Vec::new();
+    for port in &config.ports {
+        args.extend(["-p".to_owned(), port.to_string()]);
+    }
+    if auto_docker_ssh_port(runtime, config) {
+        args.extend(["-p".to_owned(), "127.0.0.1::22".to_owned()]);
+    }
+    args
+}
+
 /// OS of the Docker server, not the host running this CLI. Docker Desktop and
 /// remote contexts can target different OSes from the CLI host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -373,6 +393,8 @@ pub struct DockerSandbox {
     name: String,
     runtime: ContainerRuntime,
     container_id: Option<String>,
+    docker_ssh_endpoint: Option<String>,
+    docker_ssh_launch: Option<crate::ssh::DockerSshLaunch>,
     running: bool,
     /// If true, don't clean up container in Drop (for persistent sandboxes)
     persistent: bool,
@@ -435,6 +457,8 @@ impl DockerSandbox {
             name: name.to_string(),
             runtime,
             container_id: None,
+            docker_ssh_endpoint: None,
+            docker_ssh_launch: None,
             running: false,
             persistent: false,
             managed_network_lease: None,
@@ -447,6 +471,8 @@ impl DockerSandbox {
             name: name.to_string(),
             runtime,
             container_id: None,
+            docker_ssh_endpoint: None,
+            docker_ssh_launch: None,
             running: false,
             persistent: true,
             managed_network_lease: None,
@@ -475,7 +501,7 @@ impl DockerSandbox {
     /// Write a file to the container using docker cp
     async fn write_file_impl(&self, path: &str, content: &[u8]) -> Result<()> {
         let container_name = self.container_name();
-        let cmd = self.runtime.cmd();
+        let target = self.docker_ssh_target().unwrap_or(&container_name);
 
         // Create a temporary file to copy
         let temp_dir = std::env::temp_dir();
@@ -488,13 +514,13 @@ impl DockerSandbox {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "/".to_string());
 
-        let _ = Command::new(cmd)
-            .args(["exec", &container_name, "mkdir", "-p", &parent])
+        let _ = self.container_command()
+            .args(["exec", target, "mkdir", "-p", &parent])
             .output();
 
         // Copy file into container
-        let dest = format!("{}:{}", container_name, path);
-        let output = Command::new(cmd)
+        let dest = format!("{}:{}", target, path);
+        let output = self.container_command()
             .args(["cp", temp_file.to_str().unwrap(), &dest])
             .output()
             .context("Failed to copy file to container")?;
@@ -508,6 +534,17 @@ impl DockerSandbox {
         }
 
         Ok(())
+    }
+
+    fn docker_ssh_target(&self) -> Option<&str> {
+        self.docker_ssh_endpoint.as_ref().and(self.container_id.as_deref())
+    }
+
+    fn container_command(&self) -> Command {
+        match self.docker_ssh_endpoint.as_deref() {
+            Some(endpoint) => crate::ssh::pinned_docker_command(endpoint),
+            None => Command::new(self.runtime.cmd()),
+        }
     }
 
     /// Read a file from the container using docker cp
@@ -565,6 +602,10 @@ impl Sandbox for DockerSandbox {
         Ok(())
     }
 
+    fn docker_ssh_launch(&self) -> Option<crate::ssh::DockerSshLaunch> {
+        self.docker_ssh_launch.clone()
+    }
+
     async fn start(&mut self, config: &SandboxConfig) -> Result<()> {
         if self.runtime == ContainerRuntime::Docker {
             require_linux_docker_engine()?;
@@ -572,8 +613,35 @@ impl Sandbox for DockerSandbox {
         let cmd = self.runtime.cmd();
         let container_name = self.container_name();
 
+        // Resolve the target first and pass it to both commands. A failed
+        // check must not fall back to publishing on a default/remote daemon.
+        let auto_ssh_endpoint = auto_docker_ssh_port(self.runtime, config)
+            .then(|| crate::ssh::local_docker_endpoint().context(
+                "Automatic Docker SSH publication requires a local Unix daemon; specify an explicit port mapping for other contexts",
+            ))
+            .transpose()?;
+        let local_ssh_endpoint = if auto_ssh_endpoint.is_some() {
+            auto_ssh_endpoint
+        } else if self.runtime == ContainerRuntime::Docker && config.ssh.is_some() {
+            crate::ssh::local_docker_endpoint().ok()
+        } else {
+            None
+        };
+        self.docker_ssh_endpoint = None;
+        self.docker_ssh_launch = None;
+        let container_command = || {
+            let mut command = Command::new(cmd);
+            if let Some(endpoint) = &local_ssh_endpoint {
+                command
+                    .env_remove("DOCKER_HOST")
+                    .env_remove("DOCKER_CONTEXT");
+                command.args(["--host", endpoint]);
+            }
+            command
+        };
+
         // Remove any existing container with this name
-        let _ = Command::new(cmd)
+        let _ = container_command()
             .args(["rm", "-f", &container_name])
             .output();
 
@@ -618,11 +686,9 @@ impl Sandbox for DockerSandbox {
             pending_network_lease = Some(lease);
         }
 
-        // Port mappings (-p host:container[/udp])
-        for pm in &config.ports {
-            args.push("-p".to_string());
-            args.push(pm.to_string());
-        }
+        // Explicit maps retain their requested format; implicit Docker SSH
+        // is the only added IPv4-loopback dynamic publication.
+        args.extend(persisted_publish_args(self.runtime, config));
 
         // Mount working directory if requested
         if config.mount_cwd
@@ -670,7 +736,7 @@ impl Sandbox for DockerSandbox {
         ]);
 
         // Start container
-        let output = Command::new(cmd)
+        let output = container_command()
             .args(&args)
             .output()
             .context("Failed to start container")?;
@@ -685,6 +751,10 @@ impl Sandbox for DockerSandbox {
         }
 
         let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        self.docker_ssh_launch = local_ssh_endpoint.as_deref().and_then(|endpoint| {
+            crate::ssh::DockerSshLaunch::observe(endpoint, &self.name, &container_id).ok()
+        });
+        self.docker_ssh_endpoint = local_ssh_endpoint;
         self.container_id = Some(container_id);
         self.running = true;
         if let Some(lease) = pending_network_lease {
@@ -710,7 +780,6 @@ impl Sandbox for DockerSandbox {
     }
 
     async fn exec_with_options(&mut self, cmd: &[&str], opts: &ExecOptions) -> Result<ExecResult> {
-        let runtime_cmd = self.runtime.cmd();
         let container_name = self.container_name();
 
         let mut args = vec!["exec".to_string()];
@@ -730,10 +799,10 @@ impl Sandbox for DockerSandbox {
             args.push(e.clone());
         }
 
-        args.push(container_name);
+        args.push(self.docker_ssh_target().unwrap_or(&container_name).to_string());
         args.extend(cmd.iter().map(|s| s.to_string()));
 
-        let mut command = tokio::process::Command::new(runtime_cmd);
+        let mut command = tokio::process::Command::from(self.container_command());
         command.args(&args).kill_on_drop(true);
         let output = command
             .output()
@@ -1046,6 +1115,44 @@ impl Drop for DockerSandbox {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_implicit_docker_ssh_is_bound_to_ipv4_loopback() {
+        let mut config = SandboxConfig {
+            ssh: Some(crate::ssh::SshConfig {
+                enabled: true,
+                ..Default::default()
+            }),
+            ports: vec![crate::backend::PortMapping::parse("8080:80").unwrap()],
+            ..Default::default()
+        };
+        assert_eq!(
+            persisted_publish_args(ContainerRuntime::Docker, &config),
+            ["-p", "8080:80", "-p", "127.0.0.1::22"]
+        );
+        assert_eq!(
+            persisted_publish_args(ContainerRuntime::Podman, &config),
+            ["-p", "8080:80"]
+        );
+        config
+            .ports
+            .push(crate::backend::PortMapping::parse("22").unwrap());
+        assert_eq!(
+            persisted_publish_args(ContainerRuntime::Docker, &config),
+            ["-p", "8080:80", "-p", "22"]
+        );
+        config.ports[1] = crate::backend::PortMapping::parse("2222:22").unwrap();
+        assert_eq!(
+            persisted_publish_args(ContainerRuntime::Docker, &config),
+            ["-p", "8080:80", "-p", "2222:22"]
+        );
+        config.ports.truncate(1);
+        config.ssh = None;
+        assert_eq!(
+            persisted_publish_args(ContainerRuntime::Docker, &config),
+            ["-p", "8080:80"]
+        );
+    }
+
     use super::*;
     use tempfile::TempDir;
 

@@ -412,6 +412,7 @@ mod tests {
             managed_network: None,
             ssh_enabled: false,
             ssh_host_port: None,
+            docker_ssh_launch: None,
             volumes: Vec::new(),
             agent: None,
             secret_bindings: Vec::new(),

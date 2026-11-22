@@ -62,37 +62,119 @@ pub fn sandbox_ssh_url_for_state(state: &crate::vmm::SandboxState) -> Result<Str
         .ssh_host_port
         .filter(|&port| port != 0)
         .context("No managed SSH host port has been recorded for this sandbox.")?;
+    let expected = state.docker_ssh_launch.as_ref().context(
+        "No verified managed Docker SSH launch has been recorded for this sandbox.",
+    )?;
+    if expected.port != expected_port {
+        bail!("The saved port does not match the managed Docker SSH launch.");
+    }
     let endpoint = local_docker_endpoint()?;
-    // Pin the inspection to the endpoint we validated, even if the configured
-    // context changes between commands.
-    let output = std::process::Command::new("docker")
-        .env_remove("DOCKER_CONTEXT")
-        .env_remove("DOCKER_HOST")
-        .args([
-            "--host",
-            &endpoint,
-            "inspect",
-            "--type",
-            "container",
-            "--format",
-            r#"{{if and .State.Running (not .State.Paused)}}{{json (index .NetworkSettings.Ports "22/tcp")}}{{end}}"#,
-            &format!("agentkernel-{name}"),
-        ])
-        .output()
-        .with_context(|| format!("Could not inspect sandbox '{name}' with Docker"))?;
-    if !output.status.success() {
-        bail!("Could not inspect sandbox '{name}' with Docker; check that it is running.");
-    }
-    let bindings = String::from_utf8_lossy(&output.stdout);
-    if bindings.trim().is_empty() {
-        bail!("Sandbox '{name}' is stopped or paused.");
-    }
-    local_ssh_url_from_bindings(&bindings, expected_port)?.ok_or_else(|| {
-        anyhow::anyhow!("No local SSH binding matches the recorded port for sandbox '{name}'.")
-    })
+    expected.verify_ready(&endpoint, name)?;
+    Ok(format!("ssh://sandbox@127.0.0.1:{expected_port}"))
 }
 
-fn local_docker_endpoint() -> Result<String> {
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct DockerSshLaunch {
+    id: String,
+    started_at: String,
+    endpoint: String,
+    pub(crate) port: u16,
+}
+
+fn full_docker_id(id: &str) -> bool {
+    id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub(crate) fn pinned_docker_command(endpoint: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("docker");
+    command
+        .env_remove("DOCKER_CONTEXT")
+        .env_remove("DOCKER_HOST")
+        .args(["--host", endpoint]);
+    command
+}
+
+impl DockerSshLaunch {
+    pub(crate) fn observe(endpoint: &str, name: &str, id: &str) -> Result<Self> {
+        anyhow::ensure!(full_docker_id(id), "Invalid Docker container ID");
+        let output = pinned_docker_command(endpoint)
+            .args([
+                "inspect",
+                "--type",
+                "container",
+                "--format",
+                r#"{{if and .State.Running (not .State.Paused) (not .State.Restarting)}}{{.Id}} {{.State.StartedAt}} {{.Name}} {{json (index .NetworkSettings.Ports "22/tcp")}}{{end}}"#,
+                id,
+            ])
+            .output()
+            .context("Could not inspect exact Docker SSH container")?;
+        anyhow::ensure!(output.status.success(), "Exact Docker SSH container is not available");
+        Self::parse(endpoint, name, id, &String::from_utf8_lossy(&output.stdout))
+    }
+
+    fn parse(endpoint: &str, name: &str, id: &str, output: &str) -> Result<Self> {
+        let mut parts = output.trim().splitn(4, ' ');
+        let observed_id = parts.next().context("Missing Docker container ID")?;
+        let started = parts.next().context("Missing Docker start generation")?;
+        let observed_name = parts.next().context("Missing Docker container name")?;
+        let bindings = parts.next().context("Missing Docker SSH binding")?;
+        anyhow::ensure!(
+            full_docker_id(id) && id == observed_id && observed_name == format!("/agentkernel-{name}"),
+            "Docker SSH container identity or name does not match",
+        );
+        let start_time = chrono::DateTime::parse_from_rfc3339(started)
+            .context("Invalid Docker start generation")?;
+        anyhow::ensure!(start_time.timestamp() > 0, "Docker container has no valid start");
+        let raw: serde_json::Value = serde_json::from_str(bindings)?;
+        let port = raw.as_array().and_then(|bindings| bindings.first())
+            .and_then(|binding| binding.get("HostPort"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|port| port.parse::<u16>().ok()).context("Missing Docker SSH host port")?;
+        anyhow::ensure!(port != 0 && private_docker_ssh_url_from_bindings(bindings, port)?.is_some(),
+            "Docker SSH route is not exclusively bound to loopback");
+        Ok(Self { id: id.into(), started_at: started.into(), endpoint: endpoint.into(), port })
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "docker-rex-local"))]
+    pub(crate) fn rex_owner_identity(&self) -> (&str, &str, &str) {
+        (&self.id, &self.started_at, &self.endpoint)
+    }
+
+    fn require_same(&self, observed: &Self) -> Result<()> {
+        anyhow::ensure!(self == observed, "Docker SSH container generation or route changed");
+        Ok(())
+    }
+
+    pub(crate) fn verify_ready(&self, endpoint: &str, name: &str) -> Result<()> {
+        self.verify_ready_with(endpoint, |id| Self::observe(endpoint, name, id), |id| {
+            let status = pinned_docker_command(endpoint)
+                .args(["exec", id, "sh", "-c", DOCKER_SSHD_READY])
+                .output()
+                .context("Could not verify Docker SSH readiness")?;
+            anyhow::ensure!(
+                status.status.success(),
+                "Docker sandbox '{name}' has no ready managed SSH process."
+            );
+            Ok(())
+        })
+    }
+
+    fn verify_ready_with(
+        &self,
+        endpoint: &str,
+        mut observe: impl FnMut(&str) -> Result<Self>,
+        check_listener: impl FnOnce(&str) -> Result<()>,
+    ) -> Result<()> {
+        anyhow::ensure!(self.endpoint == endpoint, "The local Docker SSH endpoint changed");
+        self.require_same(&observe(&self.id)?)?;
+        check_listener(&self.id)?;
+        // Detect a restart, rename or remap during the guest observation.
+        self.require_same(&observe(&self.id)?)
+    }
+
+}
+
+pub(crate) fn local_docker_endpoint() -> Result<String> {
     // DOCKER_CONTEXT wins over DOCKER_HOST. Without an override, inspect the
     // effective context's endpoint without contacting the daemon.
     let docker_context = std::env::var_os("DOCKER_CONTEXT").filter(|v| !v.is_empty());
@@ -137,29 +219,34 @@ fn is_local_docker_endpoint(endpoint: &str) -> bool {
         .is_some_and(|path| path.starts_with('/') && !path.starts_with("//") && path.len() > 1)
 }
 
-fn local_ssh_url_from_bindings(bindings: &str, expected_port: u16) -> Result<Option<String>> {
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "PascalCase")]
-    struct PortBinding {
-        #[serde(rename = "HostIp")]
-        host_ip: String,
-        host_port: String,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct PortBinding {
+    #[serde(rename = "HostIp")]
+    host_ip: String,
+    host_port: String,
+}
+
+fn private_docker_ssh_url_from_bindings(
+    bindings: &str,
+    expected_port: u16,
+) -> Result<Option<String>> {
+    let bindings: Option<Vec<PortBinding>> = serde_json::from_str(bindings)
+        .context("Could not read published Docker SSH port metadata")?;
+    let Some([binding]) = bindings.as_deref() else {
+        return Ok(None);
+    };
+    let literal_host = match binding.host_ip.as_str() {
+        "127.0.0.1" => "127.0.0.1",
+        "::1" => "[::1]",
+        _ => return Ok(None),
+    };
+    if expected_port == 0 || binding.host_port != expected_port.to_string() {
+        return Ok(None);
     }
-    let bindings: Option<Vec<PortBinding>> =
-        serde_json::from_str(bindings).context("Could not read published SSH port metadata")?;
-    Ok(bindings.into_iter().flatten().find_map(|binding| {
-        let port = binding
-            .host_port
-            .parse::<u16>()
-            .ok()
-            .filter(|&port| port != 0 && port == expected_port)?;
-        let host = match binding.host_ip.as_str() {
-            "" | "0.0.0.0" | "127.0.0.1" => "127.0.0.1",
-            "::" | "::1" => "[::1]",
-            _ => return None,
-        };
-        Some(format!("ssh://sandbox@{host}:{port}"))
-    }))
+    Ok(Some(format!(
+        "ssh://sandbox@{literal_host}:{expected_port}"
+    )))
 }
 
 /// Generate an sshd_config string for certificate-only authentication.
@@ -293,6 +380,72 @@ echo "sshd started on port {port}"
         user = config.user,
         port = config.port,
     )
+}
+
+/// Validate the managed PID against the actual Linux process and listener.
+pub(crate) const DOCKER_SSHD_READY: &str = r#"set -e
+pid=$(cat /run/sshd/agentkernel.pid)
+case "$pid" in ""|*[!0-9]*|0|1) exit 1;; esac
+test "$(readlink "/proc/$pid/exe")" = /usr/sbin/sshd
+# The managed listener uses port 22. Confirm that its actual socket is listening.
+set -- $(awk '$2 ~ /:0016$/ && $4 == "0A" { print $10 }' /proc/net/tcp /proc/net/tcp6)
+for inode do
+    for fd in /proc/"$pid"/fd/*; do
+        if [ "$(readlink "$fd")" = "socket:[$inode]" ]; then exit 0; fi
+    done
+done
+exit 1"#;
+
+pub(crate) fn require_docker_sshd_start(result: crate::backend::ExecResult) -> Result<()> {
+    if result.exit_code != 0 {
+        bail!(
+            "Managed Docker sshd setup failed (exit {}): {}",
+            result.exit_code,
+            result.stderr.trim()
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn docker_sshd_file_injections(
+    ca: &str,
+    config: &SshConfig,
+) -> Result<Vec<FileInjection>> {
+    let mut files = sshd_file_injections(ca, config)?;
+    files.retain(|file| !file.dest.ends_with("/.ssh/.keep"));
+    for file in &mut files {
+        match file.dest.as_str() {
+            "/etc/ssh/sshd_config" => {
+                file.content
+                    .extend_from_slice(b"\nPidFile /run/sshd/agentkernel.pid\n");
+            }
+            "/tmp/start-sshd.sh" => {
+                file.content = format!(r#"#!/bin/sh
+set -e
+if ! id -u {user} >/dev/null 2>&1; then
+    if command -v useradd >/dev/null 2>&1; then
+        useradd -m -d /home/{user} -s /bin/sh -p '*' {user}
+    else
+        adduser -D -h /home/{user} -s /bin/sh {user}
+        printf '%s\n' '{user}:*' | chpasswd -e
+    fi
+fi
+id -u {user} >/dev/null
+test ! -L /run/sshd
+mkdir -p /run/sshd
+chown root:root /run/sshd /etc/ssh/sshd_config /etc/ssh/ssh_host_ed25519_key /etc/ssh/ca.pub /etc/ssh/principals
+chmod 755 /run/sshd
+chmod 600 /etc/ssh/ssh_host_ed25519_key
+chmod 644 /etc/ssh/sshd_config /etc/ssh/ca.pub /etc/ssh/principals
+/usr/sbin/sshd -t -f /etc/ssh/sshd_config
+/usr/sbin/sshd -f /etc/ssh/sshd_config
+{DOCKER_SSHD_READY}
+"#, user = config.user).into_bytes();
+            }
+            _ => {}
+        }
+    }
+    Ok(files)
 }
 
 /// Build the list of files to inject into the sandbox for SSH support.
@@ -655,28 +808,34 @@ mod tests {
     }
 
     #[test]
-    fn ssh_url_formats_only_local_tcp_bindings() {
-        assert_eq!(
-            local_ssh_url_from_bindings(r#"[{"HostIp":"0.0.0.0","HostPort":"32768"}]"#, 32768)
-                .unwrap()
-                .as_deref(),
-            Some("ssh://sandbox@127.0.0.1:32768")
-        );
-        assert_eq!(
-            local_ssh_url_from_bindings(r#"[{"HostIp":"::","HostPort":"2200"}]"#, 2200)
-                .unwrap()
-                .as_deref(),
-            Some("ssh://sandbox@[::1]:2200")
-        );
+    fn docker_private_ssh_url_never_rewrites_a_wildcard_or_ambiguous_binding() {
+        for (ip, formatted) in [("127.0.0.1", "127.0.0.1"), ("::1", "[::1]")] {
+            let one = serde_json::json!([{"HostIp":ip,"HostPort":"2200"}]).to_string();
+            assert_eq!(
+                private_docker_ssh_url_from_bindings(&one, 2200).unwrap(),
+                Some(format!("ssh://sandbox@{formatted}:2200"))
+            );
+            assert_eq!(
+                private_docker_ssh_url_from_bindings(&one, 2201).unwrap(),
+                None
+            );
+        }
+        for ip in ["", "0.0.0.0", "::", "192.0.2.1"] {
+            let one = serde_json::json!([{"HostIp":ip,"HostPort":"2200"}]).to_string();
+            assert_eq!(
+                private_docker_ssh_url_from_bindings(&one, 2200).unwrap(),
+                None
+            );
+        }
         for input in [
             "null",
             "[]",
-            r#"[{"HostIp":"127.0.0.1","HostPort":"0"}]"#,
-            r#"[{"HostIp":"0.0.0.0","HostPort":"65536"}]"#,
-            r#"[{"HostIp":"192.0.2.1","HostPort":"2200"}]"#,
-            r#"[{"HostIp":"127.0.0.1","HostPort":"2201"}]"#,
+            r#"[{"HostIp":"127.0.0.1","HostPort":"2200"},{"HostIp":"0.0.0.0","HostPort":"2200"}]"#,
         ] {
-            assert_eq!(local_ssh_url_from_bindings(input, 2200).unwrap(), None);
+            assert_eq!(
+                private_docker_ssh_url_from_bindings(input, 2200).unwrap(),
+                None
+            );
         }
     }
 
@@ -838,6 +997,80 @@ mod tests {
         let error = sign_client_key_local(&ca_priv, "invalid", &["sandbox"], 1800).unwrap_err();
         assert_eq!(error.to_string(), "Failed to parse client public key");
         assert!(error.chain().count() > 1);
+    }
+
+    #[test]
+    fn docker_ssh_generation_rejects_replacement_and_restart_at_same_port() {
+        const ENDPOINT: &str = "unix:///private/tmp/test.sock";
+        let id = "a".repeat(64);
+        let newcomer = "b".repeat(64);
+        let row = |id: &str, stamp: &str| format!(
+            r#"{id} {stamp} /agentkernel-test [{{"HostIp":"127.0.0.1","HostPort":"42022"}}]"#
+        );
+        let old_stamp = "2026-11-22T01:00:00.012345678Z";
+        let new_stamp = "2026-11-22T01:00:00.012345679Z";
+        let old = DockerSshLaunch::parse(ENDPOINT, "test", &id, &row(&id, old_stamp)).unwrap();
+        let restarted = DockerSshLaunch::parse(ENDPOINT, "test", &id, &row(&id, new_stamp)).unwrap();
+        let replacement = DockerSshLaunch::parse(
+            ENDPOINT, "test", &newcomer, &row(&newcomer, old_stamp)
+        ).unwrap();
+        assert!(DockerSshLaunch::parse(
+            ENDPOINT, "test", &id, &row(&newcomer, old_stamp)
+        ).is_err());
+        for candidate in [&restarted, &replacement] {
+            assert!(old.verify_ready_with(
+                ENDPOINT,
+                |requested| {
+                    assert_eq!(requested, id);
+                    Ok(candidate.clone())
+                },
+                |_| panic!("must not probe an altered or unowned launch"),
+            ).is_err());
+        }
+        let mut observations = [old.clone(), restarted].into_iter();
+        assert!(old.verify_ready_with(
+            ENDPOINT, |_| Ok(observations.next().unwrap()), |_| Ok(())
+        ).is_err());
+        assert!(old.verify_ready_with(
+            ENDPOINT, |_| Ok(old.clone()),
+            |requested| { assert_eq!(requested, id); Ok(()) }
+        ).is_ok());
+    }
+
+    #[test]
+    fn docker_provisioning_uses_a_dedicated_account_and_verified_listener() {
+        let files = docker_sshd_file_injections("synthetic-ca", &SshConfig::default()).unwrap();
+        assert!(!files.iter().any(|file| file.dest.starts_with("/home/")));
+        let get = |dest| {
+            String::from_utf8_lossy(&files.iter().find(|file| file.dest == dest).unwrap().content)
+        };
+        let config = get("/etc/ssh/sshd_config");
+        assert!(config.contains("PidFile /run/sshd/agentkernel.pid"));
+        assert!(config.contains("PasswordAuthentication no"));
+        let script = get("/tmp/start-sshd.sh");
+        assert!(script.contains("if ! id -u sandbox"));
+        assert!(script.contains(" -p '*' sandbox"));
+        assert!(!script.contains("/etc/shadow"));
+        assert!(script.contains("test ! -L /run/sshd"));
+        let validate = script.find("/usr/sbin/sshd -t").unwrap();
+        let start = script.find("/usr/sbin/sshd -f").unwrap();
+        assert!(validate < start && script[start..].contains(DOCKER_SSHD_READY));
+    }
+
+    #[test]
+    fn docker_startup_failure_preserves_guest_error() {
+        use crate::backend::ExecResult;
+        assert!(require_docker_sshd_start(ExecResult::success(String::new())).is_ok());
+        let result = ExecResult {
+            exit_code: 17,
+            stdout: String::new(),
+            stderr: "synthetic boot failure".into(),
+        };
+        let error = require_docker_sshd_start(result).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Managed Docker sshd setup failed (exit 17): synthetic boot failure"
+        );
     }
 
     #[test]

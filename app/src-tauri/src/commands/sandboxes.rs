@@ -46,6 +46,130 @@ pub async fn get_sandbox_ssh_url(
         .map_err(|e| e.to_string())
 }
 
+/// Feature availability is derived from the app-owned process and its live
+/// private socket, not the URL in desktop settings.
+#[tauri::command(rename_all = "snake_case")]
+pub fn managed_local_ssh_available(
+    state: State<'_, AppState>,
+    server: State<'_, super::server::ServerProcess>,
+) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        server.managed_ssh_client(&state).is_some()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (state, server);
+        false
+    }
+}
+
+/// Fail closed when the exact desktop-owned Unix control channel or server
+/// capability is unavailable. Never use the settings-derived TCP API client.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn local_rex_available(
+    state: State<'_, AppState>,
+    server: State<'_, super::server::ServerProcess>,
+) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    if let Some(client) = server.managed_ssh_client(&state) {
+        return Ok(client.local_rex_available().await.unwrap_or(false));
+    }
+    let _ = (state, server);
+    Ok(false)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn create_local_rex(
+    name: String,
+    state: State<'_, AppState>,
+    server: State<'_, super::server::ServerProcess>,
+) -> Result<crate::types::LocalRexSandbox, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let client = server
+            .managed_ssh_client(&state)
+            .ok_or("Rex sandbox creation requires the running app-owned local server.")?;
+        return client
+            .create_local_rex(&name)
+            .await
+            .map_err(|e| e.to_string());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (name, state, server);
+        Err("Local Rex sandbox creation is unavailable on this platform.".into())
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn list_prepared_rex(
+    state: State<'_, AppState>,
+    server: State<'_, super::server::ServerProcess>,
+) -> Result<Vec<crate::types::PreparedRexSandbox>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let client = server
+            .managed_ssh_client(&state)
+            .ok_or("Prepared Rex sandboxes require the running app-owned local server.")?;
+        return client
+            .list_prepared_rex()
+            .await
+            .map_err(|error| error.to_string());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (state, server);
+        Err("Prepared Rex sandboxes are unavailable on this platform.".into())
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn reopen_prepared_rex(
+    name: String,
+    state: State<'_, AppState>,
+    server: State<'_, super::server::ServerProcess>,
+) -> Result<crate::types::LocalRexSandbox, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let client = server
+            .managed_ssh_client(&state)
+            .ok_or("Prepared Rex sandboxes require the running app-owned local server.")?;
+        return client
+            .reopen_prepared_rex(&name)
+            .await
+            .map_err(|error| error.to_string());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (name, state, server);
+        Err("Prepared Rex sandboxes are unavailable on this platform.".into())
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn remove_prepared_rex(
+    name: String,
+    state: State<'_, AppState>,
+    server: State<'_, super::server::ServerProcess>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let client = server
+            .managed_ssh_client(&state)
+            .ok_or("Prepared Rex sandboxes require the running app-owned local server.")?;
+        return client
+            .remove_prepared_rex(&name)
+            .await
+            .map_err(|error| error.to_string());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (name, state, server);
+        Err("Prepared Rex sandboxes are unavailable on this platform.".into())
+    }
+}
+
 /// Create a new sandbox.
 ///
 /// Resolves `secret_mappings` (env_var → host) from host environment variables
@@ -56,6 +180,7 @@ pub async fn get_sandbox_ssh_url(
 pub async fn create_sandbox(
     mut req: CreateSandboxRequest,
     state: State<'_, AppState>,
+    server: State<'_, super::server::ServerProcess>,
 ) -> Result<SandboxInfo, String> {
     // Resolve template secret_mappings from host env vars
     if !req.secret_mappings.is_empty() {
@@ -77,6 +202,22 @@ pub async fn create_sandbox(
         // Keep secret_mappings — the API persists them for UI display
     }
 
+    if req.managed_local_ssh == Some(true) {
+        #[cfg(target_os = "macos")]
+        {
+            let client = server.managed_ssh_client(&state).ok_or(
+                "Managed SSH is unavailable: select a running server started by this desktop app.",
+            )?;
+            return client.create_sandbox(&req).await.map_err(|e| e.to_string());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = server;
+            return Err("Managed local SSH is unavailable on this desktop platform.".into());
+        }
+    }
+    // Ordinary remote/TCP Create never sends the opt-in field, even if false.
+    req.managed_local_ssh = None;
     let client = state.client.lock().map_err(|e| e.to_string())?.clone();
     client.create_sandbox(&req).await.map_err(|e| e.to_string())
 }
@@ -199,6 +340,7 @@ pub async fn quickstart_agent(
 
     // Create sandbox with agent field + secret bindings for LLM proxy
     let req = CreateSandboxRequest {
+        managed_local_ssh: None,
         name: sandbox_name.clone(),
         backend: None,
         image: Some(image.to_string()),

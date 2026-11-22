@@ -893,6 +893,11 @@ pub trait Sandbox: Send + Sync {
         self.attach(shell).await
     }
 
+    /// Exact owner-local Docker SSH launch observed by the backend after create.
+    fn docker_ssh_launch(&self) -> Option<crate::ssh::DockerSshLaunch> {
+        None
+    }
+
     /// Runtime metadata for provider-backed sandboxes.
     fn runtime_metadata(&self) -> Option<SandboxRuntimeMetadata> {
         None
