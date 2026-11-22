@@ -1522,6 +1522,9 @@ memory_mb = 512
                         None,
                     )
                     .await?;
+                if !volume_specs.is_empty() {
+                    manager.set_volumes(&name, &volume_specs)?;
+                }
                 let stored_config_path = stored_config_path.or_else(|| {
                     devcontainer_config
                         .as_ref()
