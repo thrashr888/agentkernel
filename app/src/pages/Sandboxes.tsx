@@ -635,7 +635,9 @@ export function Sandboxes() {
                     <SandboxStatusBadge status={sandbox.status} />
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {sandbox.image ?? sandbox.backend}
+                    <span className="block max-w-48 truncate" title={sandbox.image ?? sandbox.backend}>
+                      {sandbox.image ?? sandbox.backend}
+                    </span>
                   </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
                     {sandbox.ip ?? "—"}

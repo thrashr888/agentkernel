@@ -234,9 +234,9 @@ export function Dashboard() {
       )}
 
       {/* Two-column layout: Recent Sandboxes | Quick Actions + Quickstart */}
-      <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         {/* Left column — Recent Sandboxes */}
-        <div className="space-y-3">
+        <div className="min-w-0 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Recent Sandboxes</h2>
             <Link
@@ -263,7 +263,7 @@ export function Dashboard() {
               {recentSandboxes.map((sandbox) => (
                 <div
                   key={sandbox.name}
-                  className="flex items-center justify-between px-4 py-3 hover:bg-accent/50 transition-colors"
+                  className="flex items-center gap-2 px-4 py-3 hover:bg-accent/50 transition-colors"
                 >
                   <Link
                     to={`/sandboxes/${sandbox.name}`}
@@ -274,20 +274,23 @@ export function Dashboard() {
                       <p className="font-medium text-sm truncate">
                         {sandbox.name}
                       </p>
-                      <p className="text-xs text-muted-foreground font-mono truncate">
+                      <p
+                        className="text-xs text-muted-foreground font-mono truncate"
+                        title={sandbox.image ?? sandbox.backend}
+                      >
                         {sandbox.image ?? sandbox.backend}
                       </p>
                     </div>
                   </Link>
                   <div className="flex items-center gap-2 shrink-0">
                     {sandbox.created_at && (
-                      <span className="text-xs text-muted-foreground">
+                      <span className="whitespace-nowrap text-xs text-muted-foreground">
                         {formatRelativeDate(sandbox.created_at)}
                       </span>
                     )}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-7 w-7">
+                        <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Actions for ${sandbox.name}`}>
                           <MoreHorizontal className="h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>
