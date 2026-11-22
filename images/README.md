@@ -1,6 +1,12 @@
 # Agentkernel VM Images
 
-Pre-built kernel and rootfs images for Firecracker microVMs.
+Kernel and root filesystem build inputs for Firecracker microVMs.
+
+These assets are separate from the root [server Dockerfile](../Dockerfile),
+which builds the AgentKernel service for Kubernetes/Nomad, and from the
+[Claude Docker guest example](../examples/agents/claude-code/README.md). None
+of these assets is the owner-prepared guest required for the local, no-port
+[Rex workflow](../docs/use-cases/rex.md).
 
 Fresh setup defaults to Firecracker `v1.16.1` and Linux `6.18.45`. Firecracker
 1.16 is the first supported line for the 6.18 host kernel, and 1.16.1 is the

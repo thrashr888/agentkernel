@@ -1,10 +1,10 @@
 # Claude Code Agent Configuration
+# Copy this file and its Dockerfile into your project, then run:
+#   agentkernel run --backend docker --config agentkernel.toml -- claude --version
 #
-# Use this config to create a sandbox with Claude Code pre-installed:
-#   agentkernel create my-project --config examples/agents/claude-code/agentkernel.toml
-#
-# Or copy to your project directory and run:
-#   agentkernel create my-project --config agentkernel.toml
+# The configuration mounts this project at /workspace. It does not mount the
+# host home or inject credentials. Start `claude` inside the guest to sign in;
+# do not snapshot or export a guest after signing in.
 
 [sandbox]
 name = "claude-code-sandbox"

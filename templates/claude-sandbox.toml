@@ -7,6 +7,7 @@ base_image = "node:24-alpine3.24"
 init_script = """
 set -e
 npm install -g @anthropic-ai/claude-code@2.1.327
+claude --version | grep -Fx "2.1.327 (Claude Code)"
 """
 
 [agent]
@@ -31,7 +32,9 @@ description = "Claude Code agent sandbox"
 category = "Agent Sandboxes"
 help_text = """
 How to use: Start the sandbox and run your workflow inside /workspace.
-Example command: ls -la /workspace
+Example command: claude --version
+Sign in inside the guest, or use the optional Anthropic API-key binding.
+Do not snapshot or export an authenticated guest.
 Binaries available: node, npm, npx, claude
 Services and ports: No long-running service is configured by default; only explicitly mapped ports are exposed.
 """
