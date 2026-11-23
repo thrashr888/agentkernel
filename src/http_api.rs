@@ -9939,14 +9939,19 @@ fn spawn_secret_proxy_revival(state: Arc<AppState>) {
         let Ok(manager) = state.manager_handle() else {
             return;
         };
-        let revived = manager.write().await.revive_secret_proxies().await;
-        let ok = revived.iter().filter(|(_, r)| r.is_ok()).count();
-        if !revived.is_empty() {
-            eprintln!(
-                "Secret proxies restarted: {} of {} running sandbox(es)",
-                ok,
-                revived.len()
-            );
+        // Snapshot under a short read lock; container checks and proxy
+        // starts run without holding the manager.
+        let candidates = manager.read().await.secret_proxy_candidates().await;
+        for (name, sandbox_state, backend) in candidates {
+            if !crate::vmm::local_container_running(backend, &name).await {
+                continue;
+            }
+            if let Err(e) = VmManager::revive_secret_proxy(&name, &sandbox_state, backend).await {
+                eprintln!(
+                    "Warning: could not restart the secret proxy for '{}': {:#}. Its secrets won't work until it is recreated.",
+                    name, e
+                );
+            }
         }
     });
 }

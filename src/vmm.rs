@@ -3020,16 +3020,8 @@ impl VmManager {
                 let allowed_hosts: Vec<String> =
                     bindings.iter().map(|b| b.target_host.clone()).collect();
                 // Bind proxy only on the interface the sandbox uses to reach the host
-                let mut listen_addr = proxy_listen_addr(backend)?;
-                // Reuse the port from the last start when it's free, so a
-                // restarted sandbox keeps the proxy address it already knows.
-                if let Some(port) = state.proxy_port
-                    && std::net::TcpListener::bind((listen_addr.ip(), port)).is_ok()
-                {
-                    listen_addr.set_port(port);
-                }
                 let proxy_config = ProxyConfig {
-                    listen_addr,
+                    listen_addr: proxy_listen_addr(backend)?,
                     bindings,
                     allowed_hosts,
                     blocked_hosts: Vec::new(),
@@ -5817,53 +5809,41 @@ impl VmManager {
         self.backend
     }
 
-    /// Restart the secret proxy for running Docker/Podman sandboxes whose
-    /// proxy died with the previous server process (service restart, reboot).
-    ///
-    /// The guest's `HTTPS_PROXY` was fixed at create time, so the proxy must
-    /// come back on the exact saved port. If that port is taken, the sandbox
-    /// is skipped and named in the result so the owner can recreate it.
-    pub async fn revive_secret_proxies(&mut self) -> Vec<(String, Result<u16>)> {
-        let mut results = Vec::new();
-        let candidates: Vec<(String, SandboxState)> = self
-            .sandboxes
+    /// Sandboxes whose secret proxy should be running but isn't in this
+    /// process: Docker/Podman, with `--secret` bindings and a saved port.
+    /// Cheap and lock-friendly; the caller checks the containers afterwards.
+    pub async fn secret_proxy_candidates(&self) -> Vec<(String, SandboxState, BackendType)> {
+        let handles = PROXY_HANDLES.read().await;
+        self.sandboxes
             .iter()
-            .filter(|(_, s)| !s.secret_bindings.is_empty() && s.proxy_port.is_some())
-            .map(|(n, s)| (n.clone(), s.clone()))
-            .collect();
-        for (name, state) in candidates {
-            if PROXY_HANDLES.read().await.contains_key(&name) {
-                continue;
-            }
-            let backend = state.backend.unwrap_or(self.backend);
-            if !matches!(backend, BackendType::Docker | BackendType::Podman) {
-                continue;
-            }
-            if !local_container_running(backend, &name) {
-                continue;
-            }
-            let port = state.proxy_port.unwrap_or(0);
-            let outcome = self
-                .revive_one_secret_proxy(&name, &state, backend, port)
-                .await;
-            if let Err(e) = &outcome {
-                eprintln!(
-                    "Warning: could not restart the secret proxy for '{}' on port {}: {}. Recreate the sandbox to restore its secrets.",
-                    name, port, e
-                );
-            }
-            results.push((name, outcome.map(|_| port)));
-        }
-        results
+            .filter(|(n, s)| {
+                !s.secret_bindings.is_empty() && s.proxy_port.is_some() && !handles.contains_key(*n)
+            })
+            .filter_map(|(n, s)| {
+                let backend = s.backend.unwrap_or(self.backend);
+                matches!(backend, BackendType::Docker | BackendType::Podman)
+                    .then(|| (n.clone(), s.clone(), backend))
+            })
+            .collect()
     }
 
-    async fn revive_one_secret_proxy(
-        &self,
+    /// Restart one sandbox's secret proxy on its saved port and give the
+    /// running container the new proxy CA.
+    ///
+    /// The proxy lives in the server process and the guest's `HTTPS_PROXY`
+    /// is fixed at create time, so after a server restart the proxy must
+    /// come back on the exact saved port. `start_proxy` makes a fresh MITM
+    /// CA, so the guest's CA file and combined bundle are rewritten too;
+    /// processes already running in the guest keep the old CA until they
+    /// restart. Does not need the manager lock.
+    pub async fn revive_secret_proxy(
         name: &str,
         state: &SandboxState,
         backend: BackendType,
-        port: u16,
-    ) -> Result<()> {
+    ) -> Result<u16> {
+        let port = state
+            .proxy_port
+            .ok_or_else(|| anyhow::anyhow!("no saved proxy port"))?;
         let model_governance = Self::model_governance_for_state(state)?;
         let vault = SecretVault::new(SecretBackend::default());
         let mut bindings = Vec::new();
@@ -5877,6 +5857,11 @@ impl VmManager {
                         binding.header_name.clone(),
                         format!("{}{}", binding.header_prefix, secret_val),
                     ),
+                );
+            } else {
+                eprintln!(
+                    "Warning: Secret '{}' not found in vault, skipping binding for '{}'",
+                    binding.secret_key, name
                 );
             }
             bindings.push(binding);
@@ -5905,10 +5890,27 @@ impl VmManager {
             resolved_secrets,
             crate::vsock_secrets::PlaceholderMap::new(),
         )
-        .await?;
-        PROXY_HANDLES.write().await.insert(name.to_string(), handle);
+        .await
+        .with_context(|| {
+            format!(
+                "port {} is unavailable (another agentkernel server may own this sandbox's proxy)",
+                port
+            )
+        })?;
+        if let Err(e) = install_proxy_ca_in_container(backend, name, &handle.ca_cert_pem).await {
+            let _ = handle.shutdown_tx.send(());
+            return Err(e.context("could not give the container the new proxy CA"));
+        }
+        let mut handles = PROXY_HANDLES.write().await;
+        if handles.contains_key(name) {
+            // The sandbox was started through the API while we worked; its
+            // own proxy wins.
+            let _ = handle.shutdown_tx.send(());
+            return Ok(port);
+        }
+        handles.insert(name.to_string(), handle);
         eprintln!("Restarted secret proxy for '{}' on port {}", name, port);
-        Ok(())
+        Ok(port)
     }
 
     /// Get a reference to the global proxy handles registry.
@@ -6213,22 +6215,72 @@ impl VmManager {
     }
 }
 
-/// Whether the local Docker/Podman container for a sandbox is running.
-fn local_container_running(backend: BackendType, name: &str) -> bool {
-    let cmd = match backend {
+fn container_cli(backend: BackendType) -> &'static str {
+    match backend {
         BackendType::Podman => "podman",
         _ => "docker",
-    };
-    std::process::Command::new(cmd)
+    }
+}
+
+/// Whether the local Docker/Podman container for a sandbox is running.
+/// Gives up after 10 s so a hung daemon can't stall server start.
+pub async fn local_container_running(backend: BackendType, name: &str) -> bool {
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::process::Command::new(container_cli(backend))
+            .args([
+                "inspect",
+                "-f",
+                "{{.State.Running}}",
+                &format!("agentkernel-{}", name),
+            ])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    matches!(out, Ok(Ok(o)) if o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
+}
+
+/// Write the proxy CA into a running container and rebuild the combined
+/// bundle, the same files the start path writes.
+async fn install_proxy_ca_in_container(
+    backend: BackendType,
+    name: &str,
+    ca_pem: &str,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let script = "mkdir -p /usr/local/share/ca-certificates /etc/ssl/certs && \
+        cat > /usr/local/share/ca-certificates/agentkernel-proxy.crt && \
+        { { cat /etc/ssl/certs/ca-certificates.crt /usr/local/share/ca-certificates/agentkernel-proxy.crt > /etc/ssl/certs/agentkernel-combined.crt && [ -s /etc/ssl/certs/agentkernel-combined.crt ]; } 2>/dev/null || \
+          { cat /etc/pki/tls/certs/ca-bundle.crt /usr/local/share/ca-certificates/agentkernel-proxy.crt > /etc/ssl/certs/agentkernel-combined.crt && [ -s /etc/ssl/certs/agentkernel-combined.crt ]; } 2>/dev/null || \
+          cp /usr/local/share/ca-certificates/agentkernel-proxy.crt /etc/ssl/certs/agentkernel-combined.crt; } && \
+        { update-ca-certificates 2>/dev/null || update-ca-trust 2>/dev/null || true; }";
+    let mut child = tokio::process::Command::new(container_cli(backend))
         .args([
-            "inspect",
-            "-f",
-            "{{.State.Running}}",
+            "exec",
+            "-i",
+            "-u",
+            "0",
             &format!("agentkernel-{}", name),
+            "sh",
+            "-c",
+            script,
         ])
-        .output()
-        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
-        .unwrap_or(false)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(ca_pem.as_bytes()).await?;
+    }
+    let out = tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output())
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out"))??;
+    if !out.status.success() {
+        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(())
 }
 
 /// Env var that overrides the secret proxy's listen address (e.g. `127.0.0.1:0`).
