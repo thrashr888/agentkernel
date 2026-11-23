@@ -2500,7 +2500,10 @@ impl VmManager {
                             );
                         }
                         Err(e) => {
-                            eprintln!("Warning: Failed to start placeholder proxy: {}", e);
+                            eprintln!(
+                                "Warning: Failed to start placeholder proxy: {} (set {} to an address on the interface this sandbox uses to reach the host)",
+                                e, PROXY_LISTEN_ENV
+                            );
                         }
                     }
                 }
@@ -3100,7 +3103,10 @@ impl VmManager {
                         if model_governance.is_some() {
                             return Err(e.context("LLM governance proxy failed to start"));
                         }
-                        eprintln!("Warning: Failed to start secret proxy: {}", e);
+                        eprintln!(
+                            "Warning: Failed to start secret proxy: {} (set {} to an address on the interface this sandbox uses to reach the host)",
+                            e, PROXY_LISTEN_ENV
+                        );
                     }
                 }
             }
@@ -3253,7 +3259,10 @@ impl VmManager {
                                 if model_governance.is_some() {
                                     return Err(e.context("LLM governance proxy failed to start"));
                                 }
-                                eprintln!("Warning: Failed to start org LLM key proxy: {}", e);
+                                eprintln!(
+                                    "Warning: Failed to start org LLM key proxy: {} (set {} to an address on the interface this sandbox uses to reach the host)",
+                                    e, PROXY_LISTEN_ENV
+                                );
                             }
                         }
                     }
@@ -6118,14 +6127,31 @@ pub const PROXY_LISTEN_ENV: &str = "AGENTKERNEL_PROXY_LISTEN_ADDR";
 /// `AGENTKERNEL_PROXY_LISTEN_ADDR` overrides this. A wildcard override
 /// (`0.0.0.0` or `::`) is refused.
 pub(crate) fn proxy_listen_addr(backend: BackendType) -> Result<std::net::SocketAddr> {
-    let addr = match std::env::var(PROXY_LISTEN_ENV) {
-        Ok(v) if !v.trim().is_empty() => v
-            .trim()
+    resolve_proxy_listen_addr(
+        backend,
+        cfg!(target_os = "macos"),
+        std::env::var(PROXY_LISTEN_ENV).ok().as_deref(),
+    )
+}
+
+fn resolve_proxy_listen_addr(
+    backend: BackendType,
+    is_macos: bool,
+    override_addr: Option<&str>,
+) -> Result<std::net::SocketAddr> {
+    let addr = match override_addr.map(str::trim) {
+        Some(v) if !v.is_empty() => v
             .parse::<std::net::SocketAddr>()
             .map_err(|e| anyhow::anyhow!("Invalid {}='{}': {}", PROXY_LISTEN_ENV, v, e))?,
-        _ => default_proxy_listen_addr(backend, cfg!(target_os = "macos")),
+        _ => default_proxy_listen_addr(backend, is_macos),
     };
-    if addr.ip().is_unspecified() {
+    let unspecified = match addr.ip() {
+        std::net::IpAddr::V4(ip) => ip.is_unspecified(),
+        std::net::IpAddr::V6(ip) => {
+            ip.is_unspecified() || ip.to_ipv4_mapped().is_some_and(|v4| v4.is_unspecified())
+        }
+    };
+    if unspecified {
         bail!(
             "Refusing to start the secret proxy on {}: it would expose injected credentials on every interface. Set {} to a specific address.",
             addr,
@@ -6147,6 +6173,22 @@ fn default_proxy_listen_addr(backend: BackendType, is_macos: bool) -> std::net::
 #[cfg(test)]
 mod tests {
     #[test]
+    fn proxy_listen_addr_override() {
+        use super::resolve_proxy_listen_addr as r;
+        let d = BackendType::Docker;
+        assert_eq!(
+            r(d, true, Some("10.88.0.1:0")).unwrap().to_string(),
+            "10.88.0.1:0"
+        );
+        assert_eq!(r(d, true, Some("  ")).unwrap().to_string(), "127.0.0.1:0");
+        assert_eq!(r(d, true, None).unwrap().to_string(), "127.0.0.1:0");
+        assert!(r(d, true, Some("nope")).is_err());
+        assert!(r(d, true, Some("0.0.0.0:0")).is_err());
+        assert!(r(d, true, Some("[::]:0")).is_err());
+        assert!(r(d, true, Some("[::ffff:0.0.0.0]:0")).is_err());
+    }
+
+    #[test]
     fn proxy_listen_addr_never_wildcard_by_default() {
         for backend in [
             BackendType::Docker,
@@ -6154,6 +6196,7 @@ mod tests {
             BackendType::Firecracker,
             BackendType::Apple,
             BackendType::Hyperlight,
+            BackendType::CloudHypervisor,
         ] {
             for macos in [true, false] {
                 let addr = super::default_proxy_listen_addr(backend, macos);
