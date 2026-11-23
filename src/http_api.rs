@@ -9932,6 +9932,30 @@ fn spawn_workspace_scheduler(state: Arc<AppState>, config_path: Option<&std::pat
     let _ = crate::workspace_scheduler::spawn_enforcement_loop(manager, scheduling);
 }
 
+/// Bring back secret proxies for sandboxes that kept running while the
+/// previous server process (and its in-process proxies) went away.
+fn spawn_secret_proxy_revival(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let Ok(manager) = state.manager_handle() else {
+            return;
+        };
+        // Snapshot under a short read lock; container checks and proxy
+        // starts run without holding the manager.
+        let candidates = manager.read().await.secret_proxy_candidates().await;
+        for (name, sandbox_state, backend) in candidates {
+            if !crate::vmm::local_container_running(backend, &name).await {
+                continue;
+            }
+            if let Err(e) = VmManager::revive_secret_proxy(&name, &sandbox_state, backend).await {
+                eprintln!(
+                    "Warning: could not restart the secret proxy for '{}': {:#}. Its secrets won't work until it is recreated.",
+                    name, e
+                );
+            }
+        }
+    });
+}
+
 fn spawn_delegated_start_cleanup() {
     let data_dir = crate::setup::default_data_dir();
     let mut entries = None;
@@ -9992,6 +10016,7 @@ pub async fn run_server(addr: SocketAddr, api_keys: Vec<String>) -> Result<()> {
     spawn_task_worker(state.clone());
     spawn_workspace_scheduler(state.clone(), None);
     spawn_delegated_start_cleanup();
+    spawn_secret_proxy_revival(state.clone());
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) = (
         state.orchestration_store.clone(),
@@ -10123,6 +10148,7 @@ pub async fn run_server_with_tls_config(
     spawn_task_worker(state.clone());
     spawn_workspace_scheduler(state.clone(), config_path.as_deref());
     spawn_delegated_start_cleanup();
+    spawn_secret_proxy_revival(state.clone());
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) = (
         state.orchestration_store.clone(),
