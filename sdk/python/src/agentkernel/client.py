@@ -34,7 +34,7 @@ from .types import (
     StreamEvent,
 )
 
-SDK_VERSION = "0.21.3"
+SDK_VERSION = "0.21.4"
 
 
 class SandboxSession:
