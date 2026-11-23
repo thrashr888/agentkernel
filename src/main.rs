@@ -4271,10 +4271,7 @@ memory_mb = 512
                     let val = if let Some(v) = value {
                         v
                     } else {
-                        eprint!("Enter value for {}: ", key);
-                        let mut buf = String::new();
-                        std::io::stdin().read_line(&mut buf)?;
-                        buf.trim().to_string()
+                        read_secret_value(&key)?
                     };
                     vault.set(&key, &val)?;
                     println!("Stored '{}' (backend: {})", key, vault.backend());
@@ -7422,4 +7419,19 @@ mod tests {
             "agentkernel attach demo"
         );
     }
+}
+
+/// Read a secret value from stdin. On a terminal the input is hidden like a
+/// password prompt; piped input (`echo "$KEY" | agentkernel secret set NAME`)
+/// is read as a plain line.
+fn read_secret_value(key: &str) -> Result<String> {
+    use std::io::IsTerminal;
+    let raw = if std::io::stdin().is_terminal() {
+        rpassword::prompt_password(format!("Enter value for {} (input hidden): ", key))?
+    } else {
+        let mut buf = String::new();
+        std::io::stdin().read_line(&mut buf)?;
+        buf
+    };
+    Ok(raw.trim().to_string())
 }
