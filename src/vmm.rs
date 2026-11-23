@@ -2434,7 +2434,7 @@ impl VmManager {
                 );
                 if !placeholder_map.is_empty() {
                     let proxy_config = crate::proxy::ProxyConfig {
-                        listen_addr: "0.0.0.0:0".parse().unwrap(),
+                        listen_addr: proxy_listen_addr(backend)?,
                         bindings: Vec::new(),
                         allowed_hosts: Vec::new(),
                         blocked_hosts: Vec::new(),
@@ -2500,7 +2500,10 @@ impl VmManager {
                             );
                         }
                         Err(e) => {
-                            eprintln!("Warning: Failed to start placeholder proxy: {}", e);
+                            eprintln!(
+                                "Warning: Failed to start placeholder proxy: {} (set {} to an address on the interface this sandbox uses to reach the host)",
+                                e, PROXY_LISTEN_ENV
+                            );
                         }
                     }
                 }
@@ -3016,9 +3019,9 @@ impl VmManager {
             if !resolved_secrets.is_empty() || model_governance.is_some() {
                 let allowed_hosts: Vec<String> =
                     bindings.iter().map(|b| b.target_host.clone()).collect();
-                // Bind proxy to 0.0.0.0 so VMs on the host network can reach it
+                // Bind proxy only on the interface the sandbox uses to reach the host
                 let proxy_config = ProxyConfig {
-                    listen_addr: "0.0.0.0:0".parse().unwrap(),
+                    listen_addr: proxy_listen_addr(backend)?,
                     bindings,
                     allowed_hosts,
                     blocked_hosts: Vec::new(),
@@ -3100,7 +3103,10 @@ impl VmManager {
                         if model_governance.is_some() {
                             return Err(e.context("LLM governance proxy failed to start"));
                         }
-                        eprintln!("Warning: Failed to start secret proxy: {}", e);
+                        eprintln!(
+                            "Warning: Failed to start secret proxy: {} (set {} to an address on the interface this sandbox uses to reach the host)",
+                            e, PROXY_LISTEN_ENV
+                        );
                     }
                 }
             }
@@ -3166,7 +3172,7 @@ impl VmManager {
                             org_bindings.iter().map(|b| b.target_host.clone()).collect();
                         let allowed_hosts = org_domains.clone();
                         let proxy_config = ProxyConfig {
-                            listen_addr: "0.0.0.0:0".parse().unwrap(),
+                            listen_addr: proxy_listen_addr(backend)?,
                             bindings: org_bindings,
                             allowed_hosts,
                             blocked_hosts: Vec::new(),
@@ -3253,7 +3259,10 @@ impl VmManager {
                                 if model_governance.is_some() {
                                     return Err(e.context("LLM governance proxy failed to start"));
                                 }
-                                eprintln!("Warning: Failed to start org LLM key proxy: {}", e);
+                                eprintln!(
+                                    "Warning: Failed to start org LLM key proxy: {} (set {} to an address on the interface this sandbox uses to reach the host)",
+                                    e, PROXY_LISTEN_ENV
+                                );
                             }
                         }
                     }
@@ -6102,8 +6111,113 @@ impl VmManager {
     }
 }
 
+/// Env var that overrides the secret proxy's listen address (e.g. `127.0.0.1:0`).
+pub const PROXY_LISTEN_ENV: &str = "AGENTKERNEL_PROXY_LISTEN_ADDR";
+
+/// Address the secret-injection proxy listens on for a backend.
+///
+/// The proxy injects real credentials, so it must never listen on every
+/// interface. It binds only the address the sandbox is told to use:
+/// - Docker/Podman on macOS: `127.0.0.1` (Docker Desktop forwards
+///   `host.docker.internal` to host loopback)
+/// - Docker/Podman on Linux: `172.17.0.1` (the docker0 bridge)
+/// - Apple Containers: `192.168.64.1` (the vmnet gateway)
+/// - everything else: `127.0.0.1`
+///
+/// `AGENTKERNEL_PROXY_LISTEN_ADDR` overrides this. A wildcard override
+/// (`0.0.0.0` or `::`) is refused.
+pub(crate) fn proxy_listen_addr(backend: BackendType) -> Result<std::net::SocketAddr> {
+    resolve_proxy_listen_addr(
+        backend,
+        cfg!(target_os = "macos"),
+        std::env::var(PROXY_LISTEN_ENV).ok().as_deref(),
+    )
+}
+
+fn resolve_proxy_listen_addr(
+    backend: BackendType,
+    is_macos: bool,
+    override_addr: Option<&str>,
+) -> Result<std::net::SocketAddr> {
+    let addr = match override_addr.map(str::trim) {
+        Some(v) if !v.is_empty() => v
+            .parse::<std::net::SocketAddr>()
+            .map_err(|e| anyhow::anyhow!("Invalid {}='{}': {}", PROXY_LISTEN_ENV, v, e))?,
+        _ => default_proxy_listen_addr(backend, is_macos),
+    };
+    let unspecified = match addr.ip() {
+        std::net::IpAddr::V4(ip) => ip.is_unspecified(),
+        std::net::IpAddr::V6(ip) => {
+            ip.is_unspecified() || ip.to_ipv4_mapped().is_some_and(|v4| v4.is_unspecified())
+        }
+    };
+    if unspecified {
+        bail!(
+            "Refusing to start the secret proxy on {}: it would expose injected credentials on every interface. Set {} to a specific address.",
+            addr,
+            PROXY_LISTEN_ENV
+        );
+    }
+    Ok(addr)
+}
+
+fn default_proxy_listen_addr(backend: BackendType, is_macos: bool) -> std::net::SocketAddr {
+    let ip = match backend {
+        BackendType::Apple => "192.168.64.1",
+        BackendType::Docker | BackendType::Podman if !is_macos => "172.17.0.1",
+        _ => "127.0.0.1",
+    };
+    format!("{}:0", ip).parse().unwrap()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn proxy_listen_addr_override() {
+        use super::resolve_proxy_listen_addr as r;
+        let d = BackendType::Docker;
+        assert_eq!(
+            r(d, true, Some("10.88.0.1:0")).unwrap().to_string(),
+            "10.88.0.1:0"
+        );
+        assert_eq!(r(d, true, Some("  ")).unwrap().to_string(), "127.0.0.1:0");
+        assert_eq!(r(d, true, None).unwrap().to_string(), "127.0.0.1:0");
+        assert!(r(d, true, Some("nope")).is_err());
+        assert!(r(d, true, Some("0.0.0.0:0")).is_err());
+        assert!(r(d, true, Some("[::]:0")).is_err());
+        assert!(r(d, true, Some("[::ffff:0.0.0.0]:0")).is_err());
+    }
+
+    #[test]
+    fn proxy_listen_addr_never_wildcard_by_default() {
+        for backend in [
+            BackendType::Docker,
+            BackendType::Podman,
+            BackendType::Firecracker,
+            BackendType::Apple,
+            BackendType::Hyperlight,
+            BackendType::CloudHypervisor,
+        ] {
+            for macos in [true, false] {
+                let addr = super::default_proxy_listen_addr(backend, macos);
+                assert!(!addr.ip().is_unspecified(), "{:?} macos={}", backend, macos);
+                assert_eq!(addr.port(), 0);
+            }
+        }
+        assert_eq!(
+            super::default_proxy_listen_addr(BackendType::Docker, true).to_string(),
+            "127.0.0.1:0"
+        );
+        assert_eq!(
+            super::default_proxy_listen_addr(BackendType::Docker, false).to_string(),
+            "172.17.0.1:0"
+        );
+        assert_eq!(
+            super::default_proxy_listen_addr(BackendType::Apple, true).to_string(),
+            "192.168.64.1:0"
+        );
+    }
+
     use super::*;
     use crate::backend::ExecResult;
     use crate::cow::{RootfsCow, RootfsCowStore};
