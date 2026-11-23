@@ -36,6 +36,7 @@ nomad = []
 enterprise = ["dep:cedar-policy", "dep:ed25519-dalek", "dep:jsonwebtoken"]
 
 [dependencies]
+rpassword = "7"
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.23"
