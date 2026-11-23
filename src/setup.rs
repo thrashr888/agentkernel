@@ -1690,9 +1690,7 @@ esac
         );
         std::fs::write(&docker, script).unwrap();
         std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
-        build_kernel_with_docker(temp.path(), &docker)
-            .await
-            .unwrap();
+        build_with_fake_docker(temp.path(), &docker).await.unwrap();
         let calls = std::fs::read_to_string(log).unwrap();
         assert_eq!(calls.lines().count(), 2);
         assert!(calls.starts_with("build -t agentkernel-kernel-builder .\n"));
@@ -1703,6 +1701,29 @@ esac
             std::fs::read_to_string(temp.path().join("images/kernel/microvm.config")).unwrap(),
             include_str!("../images/kernel/microvm.config")
         );
+    }
+
+    /// Runs `build_kernel_with_docker` against a fake `docker` script the test
+    /// just wrote. Another test thread can fork while that script's write fd is
+    /// still open, so the kernel refuses to exec it (ETXTBSY) until that child
+    /// execs or exits. The exec never started then, so retrying is safe.
+    #[cfg(unix)]
+    async fn build_with_fake_docker(data_dir: &Path, docker: &Path) -> Result<()> {
+        for _ in 0..100 {
+            match build_kernel_with_docker(data_dir, docker).await {
+                Err(error)
+                    if error.chain().any(|cause| {
+                        cause
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|io| io.kind() == std::io::ErrorKind::ExecutableFileBusy)
+                    }) =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                result => return result,
+            }
+        }
+        build_kernel_with_docker(data_dir, docker).await
     }
 
     #[cfg(unix)]
@@ -1722,7 +1743,7 @@ esac
         )
         .unwrap();
         std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let error = build_kernel_with_docker(temp.path(), &docker)
+        let error = build_with_fake_docker(temp.path(), &docker)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("Failed to build kernel builder"));

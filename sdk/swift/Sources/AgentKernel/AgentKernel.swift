@@ -14,7 +14,7 @@ public actor AgentKernel {
     private let session: URLSession
 
     /// SDK version string.
-    static let sdkVersion = "0.21.3"
+    static let sdkVersion = "0.21.4"
 
     /// Create a client with optional configuration.
     /// Resolution order: explicit options > environment variables > defaults.
