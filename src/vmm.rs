@@ -3020,8 +3020,16 @@ impl VmManager {
                 let allowed_hosts: Vec<String> =
                     bindings.iter().map(|b| b.target_host.clone()).collect();
                 // Bind proxy only on the interface the sandbox uses to reach the host
+                let mut listen_addr = proxy_listen_addr(backend)?;
+                // Reuse the port from the last start when it's free, so a
+                // restarted sandbox keeps the proxy address it already knows.
+                if let Some(port) = state.proxy_port
+                    && std::net::TcpListener::bind((listen_addr.ip(), port)).is_ok()
+                {
+                    listen_addr.set_port(port);
+                }
                 let proxy_config = ProxyConfig {
-                    listen_addr: proxy_listen_addr(backend)?,
+                    listen_addr,
                     bindings,
                     allowed_hosts,
                     blocked_hosts: Vec::new(),
@@ -5809,6 +5817,100 @@ impl VmManager {
         self.backend
     }
 
+    /// Restart the secret proxy for running Docker/Podman sandboxes whose
+    /// proxy died with the previous server process (service restart, reboot).
+    ///
+    /// The guest's `HTTPS_PROXY` was fixed at create time, so the proxy must
+    /// come back on the exact saved port. If that port is taken, the sandbox
+    /// is skipped and named in the result so the owner can recreate it.
+    pub async fn revive_secret_proxies(&mut self) -> Vec<(String, Result<u16>)> {
+        let mut results = Vec::new();
+        let candidates: Vec<(String, SandboxState)> = self
+            .sandboxes
+            .iter()
+            .filter(|(_, s)| !s.secret_bindings.is_empty() && s.proxy_port.is_some())
+            .map(|(n, s)| (n.clone(), s.clone()))
+            .collect();
+        for (name, state) in candidates {
+            if PROXY_HANDLES.read().await.contains_key(&name) {
+                continue;
+            }
+            let backend = state.backend.unwrap_or(self.backend);
+            if !matches!(backend, BackendType::Docker | BackendType::Podman) {
+                continue;
+            }
+            if !local_container_running(backend, &name) {
+                continue;
+            }
+            let port = state.proxy_port.unwrap_or(0);
+            let outcome = self
+                .revive_one_secret_proxy(&name, &state, backend, port)
+                .await;
+            if let Err(e) = &outcome {
+                eprintln!(
+                    "Warning: could not restart the secret proxy for '{}' on port {}: {}. Recreate the sandbox to restore its secrets.",
+                    name, port, e
+                );
+            }
+            results.push((name, outcome.map(|_| port)));
+        }
+        results
+    }
+
+    async fn revive_one_secret_proxy(
+        &self,
+        name: &str,
+        state: &SandboxState,
+        backend: BackendType,
+        port: u16,
+    ) -> Result<()> {
+        let model_governance = Self::model_governance_for_state(state)?;
+        let vault = SecretVault::new(SecretBackend::default());
+        let mut bindings = Vec::new();
+        let mut resolved_secrets = HashMap::new();
+        for raw in &state.secret_bindings {
+            let (binding, _) = SecretBinding::parse_cli(raw)?;
+            if let Ok(Some(secret_val)) = vault.get(&binding.secret_key) {
+                resolved_secrets.insert(
+                    binding.target_host.clone(),
+                    (
+                        binding.header_name.clone(),
+                        format!("{}{}", binding.header_prefix, secret_val),
+                    ),
+                );
+            }
+            bindings.push(binding);
+        }
+        if resolved_secrets.is_empty() {
+            bail!("none of its secrets are in the vault");
+        }
+        let mut listen_addr = proxy_listen_addr(backend)?;
+        listen_addr.set_port(port);
+        let allowed_hosts = bindings.iter().map(|b| b.target_host.clone()).collect();
+        let proxy_config = ProxyConfig {
+            listen_addr,
+            bindings,
+            allowed_hosts,
+            blocked_hosts: Vec::new(),
+            allowlist_only: false,
+            sandbox_name: name.to_string(),
+            hooks: Vec::new(),
+            llm_intercept: true,
+            llm_domains: Vec::new(),
+            org_managed_domains: Vec::new(),
+            llm_governance: model_governance,
+        };
+        let handle = crate::proxy::start_proxy(
+            proxy_config,
+            resolved_secrets,
+            crate::vsock_secrets::PlaceholderMap::new(),
+        )
+        .await?;
+        PROXY_HANDLES.write().await.insert(name.to_string(), handle);
+        eprintln!("Restarted secret proxy for '{}' on port {}", name, port);
+        Ok(())
+    }
+
     /// Get a reference to the global proxy handles registry.
     pub fn proxy_handles_registry() -> &'static RwLock<HashMap<String, ProxyHandle>> {
         &PROXY_HANDLES
@@ -6109,6 +6211,24 @@ impl VmManager {
 
         Ok(content)
     }
+}
+
+/// Whether the local Docker/Podman container for a sandbox is running.
+fn local_container_running(backend: BackendType, name: &str) -> bool {
+    let cmd = match backend {
+        BackendType::Podman => "podman",
+        _ => "docker",
+    };
+    std::process::Command::new(cmd)
+        .args([
+            "inspect",
+            "-f",
+            "{{.State.Running}}",
+            &format!("agentkernel-{}", name),
+        ])
+        .output()
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
+        .unwrap_or(false)
 }
 
 /// Env var that overrides the secret proxy's listen address (e.g. `127.0.0.1:0`).

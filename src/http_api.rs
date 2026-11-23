@@ -9932,6 +9932,25 @@ fn spawn_workspace_scheduler(state: Arc<AppState>, config_path: Option<&std::pat
     let _ = crate::workspace_scheduler::spawn_enforcement_loop(manager, scheduling);
 }
 
+/// Bring back secret proxies for sandboxes that kept running while the
+/// previous server process (and its in-process proxies) went away.
+fn spawn_secret_proxy_revival(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let Ok(manager) = state.manager_handle() else {
+            return;
+        };
+        let revived = manager.write().await.revive_secret_proxies().await;
+        let ok = revived.iter().filter(|(_, r)| r.is_ok()).count();
+        if !revived.is_empty() {
+            eprintln!(
+                "Secret proxies restarted: {} of {} running sandbox(es)",
+                ok,
+                revived.len()
+            );
+        }
+    });
+}
+
 fn spawn_delegated_start_cleanup() {
     let data_dir = crate::setup::default_data_dir();
     let mut entries = None;
@@ -9992,6 +10011,7 @@ pub async fn run_server(addr: SocketAddr, api_keys: Vec<String>) -> Result<()> {
     spawn_task_worker(state.clone());
     spawn_workspace_scheduler(state.clone(), None);
     spawn_delegated_start_cleanup();
+    spawn_secret_proxy_revival(state.clone());
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) = (
         state.orchestration_store.clone(),
@@ -10123,6 +10143,7 @@ pub async fn run_server_with_tls_config(
     spawn_task_worker(state.clone());
     spawn_workspace_scheduler(state.clone(), config_path.as_deref());
     spawn_delegated_start_cleanup();
+    spawn_secret_proxy_revival(state.clone());
     // Spawn hibernation daemon for durable objects
     if let (Some(store), Some(manager)) = (
         state.orchestration_store.clone(),
